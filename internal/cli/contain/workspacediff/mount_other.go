@@ -5,6 +5,12 @@
 
 package workspacediff
 
+import "os"
+
+func fileMountID(_ *os.File) (id uint64, ok bool) {
+	return 0, false
+}
+
 // mountID has no portable equivalent outside Linux's statx(STATX_MNT_ID);
 // ok=false everywhere it's consulted, so callers fall back to the
 // device-only mount-boundary check. contain run is Linux-only today (see

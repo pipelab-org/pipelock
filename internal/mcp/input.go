@@ -870,7 +870,7 @@ func ForwardScannedInput(
 			if admitErr != nil {
 				outcome.settle(logW, opts, mcpOutcomeStatusBlocked, -1, "receipt_admission_failed")
 				logMCPV3Error(logW, admitErr)
-				sendInputDenial(opts, mcpReceiptMcpInputDenialAudit(), mcpV3SendDenial(frame, effect), blockedCh)
+				sendInputDenial(opts, mcpReceiptMcpInputDenialAudit(), mcpV3SendDenial(frame, effect, admitErr), blockedCh)
 				return false, nil
 			}
 			awaitReply := isTrackableRequest(msg, frame.ID)
@@ -1163,13 +1163,6 @@ func ForwardScannedInput(
 					InspectionMode:  inspectionMode,
 					FallbackReason:  fallbackReason,
 				})
-				sendInputDenial(opts, denialAudit, BlockedRequest{
-					ID:             verdict.ID,
-					IsNotification: isRPCNotification(verdict.ID),
-					LogMessage:     fmt.Sprintf("pipelock: input line %d: CEE blocked", lineNum),
-					ErrorCode:      -32005,
-					ErrorMessage:   fmt.Sprintf("pipelock: %s", reason),
-				}, blockedCh)
 				// A method that carries neither a tool call nor required receipt
 				// metadata never minted a receipt identity, and the emitter drops
 				// a receipt with an empty action ID. Mint one here so a CEE block
@@ -1187,6 +1180,14 @@ func ForwardScannedInput(
 					receiptPatternOverride = matchedPattern
 				}
 				receiptSeverityOverride = "critical"
+				v3Evidence.Layer, v3Evidence.Pattern, v3Evidence.Severity = receiptLayerOverride, receiptPatternOverride, receiptSeverityOverride
+				sendInputDenial(opts, denialAudit, BlockedRequest{
+					ID:             verdict.ID,
+					IsNotification: isRPCNotification(verdict.ID),
+					LogMessage:     fmt.Sprintf("pipelock: input line %d: CEE blocked", lineNum),
+					ErrorCode:      -32005,
+					ErrorMessage:   fmt.Sprintf("pipelock: %s", reason),
+				}, blockedCh)
 				_ = emitToolReceipt(config.ActionBlock)
 				continue
 			}
@@ -1964,13 +1965,6 @@ func ForwardScannedInput(
 					InspectionMode:  inspectionMode,
 					FallbackReason:  fallbackReason,
 				})
-				sendInputDenial(opts, denialAudit, BlockedRequest{
-					ID:             verdict.ID,
-					IsNotification: isRPCNotification(verdict.ID),
-					LogMessage:     fmt.Sprintf("pipelock: input line %d: CEE blocked", lineNum),
-					ErrorCode:      -32005,
-					ErrorMessage:   fmt.Sprintf("pipelock: %s", reason),
-				}, blockedCh)
 				// A method that carries neither a tool call nor required receipt
 				// metadata never minted a receipt identity, and the emitter drops
 				// a receipt with an empty action ID. Mint one here so a CEE block
@@ -1988,6 +1982,14 @@ func ForwardScannedInput(
 					receiptPatternOverride = matchedPattern
 				}
 				receiptSeverityOverride = "critical"
+				v3Evidence.Layer, v3Evidence.Pattern, v3Evidence.Severity = receiptLayerOverride, receiptPatternOverride, receiptSeverityOverride
+				sendInputDenial(opts, denialAudit, BlockedRequest{
+					ID:             verdict.ID,
+					IsNotification: isRPCNotification(verdict.ID),
+					LogMessage:     fmt.Sprintf("pipelock: input line %d: CEE blocked", lineNum),
+					ErrorCode:      -32005,
+					ErrorMessage:   fmt.Sprintf("pipelock: %s", reason),
+				}, blockedCh)
 				_ = emitToolReceipt(config.ActionBlock)
 				continue
 			}

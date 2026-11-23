@@ -258,17 +258,17 @@ func (o MCPProxyOpts) pendingV3Send(id json.RawMessage) *mcpV3Exchange {
 	return o.v3Session.pending[canonicalID(id)]
 }
 
-func mcpV3SendDenial(frame MCPFrame, send *mcpV3Exchange) BlockedRequest {
+func mcpV3SendDenial(frame MCPFrame, send *mcpV3Exchange, admitErr error) BlockedRequest {
 	return BlockedRequest{
 		ID: frame.ID, IsNotification: frame.Method == "" || isRPCNotification(frame.ID),
 		LogMessage: "receipt emission failed", ErrorCode: -32007,
 		ErrorMessage: requiredReceiptFailureMessage(nil), ErrorData: mcpBlockReasonData(blockreason.ReceiptEmissionFailed),
-		v3ReplyParent: send, v3SendDenied: true,
+		v3ReplyParent: send, v3SendDenied: errors.Is(admitErr, v3.ErrEffectNotReleased),
 	}
 }
 
-func (o MCPProxyOpts) writeV3SendDenial(log io.Writer, writer transport.MessageWriter, frame MCPFrame, send *mcpV3Exchange) error {
-	br := mcpV3SendDenial(frame, send)
+func (o MCPProxyOpts) writeV3SendDenial(log io.Writer, writer transport.MessageWriter, frame MCPFrame, send *mcpV3Exchange, admitErr error) error {
+	br := mcpV3SendDenial(frame, send, admitErr)
 	inputMCPDenial(o, mcpReceiptMcpInputDenialAudit(), &br)
 	err := deliverMCPInputResult(o, br, o.v3SendDenialWriter(writer, log, br))
 	logMCPV3Error(log, err)
@@ -277,7 +277,7 @@ func (o MCPProxyOpts) writeV3SendDenial(log io.Writer, writer transport.MessageW
 
 func (o MCPProxyOpts) v3SendDenialWriter(writer transport.MessageWriter, log io.Writer, br BlockedRequest) transport.MessageWriter {
 	if !o.receiptEffects.enabled || !br.v3SendDenied {
-		return o.localV3ReplyWriter(writer, log, nil)
+		return o.localV3ReplyWriter(writer, log, br.v3ReplyParent)
 	}
 	return &mcpV3LocalWriter{base: writer, opts: o, log: log, send: br.v3ReplyParent, sendDenied: true}
 }
@@ -333,8 +333,11 @@ func (w *mcpV3LocalWriter) writeInputDenial(br BlockedRequest, msg []byte) error
 }
 
 func (w *mcpV3LocalWriter) reportDenialFailure(msg []byte, err error) error {
-	if len(msg) != 0 && errors.Is(err, errMCPV3ReplyAdmission) &&
-		w.opts.receiptEffects.gate.RequiresReceipts() && w.opts.onLocalV3ReplyFailure != nil {
+	if len(msg) == 0 || w.opts.onLocalV3ReplyFailure == nil {
+		return err
+	}
+	if errors.Is(err, errMCPDownstreamFrameWrite) ||
+		(errors.Is(err, errMCPV3ReplyAdmission) && w.opts.receiptEffects.gate.RequiresReceipts()) {
 		w.opts.onLocalV3ReplyFailure(err)
 	}
 	return err

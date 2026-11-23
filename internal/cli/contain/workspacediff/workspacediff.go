@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -245,7 +246,11 @@ func Snapshot(root string, capBytes int64, budget Budget) (Manifest, error) {
 					m.markUnreadable(path, fmt.Sprintf("could not safely hash: %v", relErr))
 					return nil
 				}
-				digest, oversize, herr := hashFileSafe(rootHandle, relPath, path, capBytes, wantDev, wantIno, haveIDs)
+				digest, oversize, herr := hashFileSafe(snapshotFile{
+					root: rootHandle, relPath: relPath, path: path,
+					dev: wantDev, ino: wantIno, haveIDs: haveIDs,
+					workspaceMount: rootMnt, workspaceMountKnown: rootMntOK,
+				}, capBytes)
 				if herr != nil {
 					m.markUnreadable(path, fmt.Sprintf("could not safely hash: %v", herr))
 					return nil
@@ -287,35 +292,82 @@ func (m *Manifest) markUnreadable(path, reason string) {
 // secret outside the workspace). Content is read through a length-capped
 // reader so an attacker cannot force reading past capBytes even if the file
 // grew after the size check.
-func hashFileSafe(root *os.Root, relPath, path string, capBytes int64, wantDev, wantIno uint64, haveIDs bool) (digest string, oversize bool, err error) {
-	f, err := root.OpenFile(relPath, os.O_RDONLY, 0)
+func hashFileSafe(file snapshotFile, capBytes int64) (digest string, oversize bool, err error) {
+	f, err := openSnapshotRegular(file)
 	if err != nil {
-		return "", false, fmt.Errorf("open %s (root-confined): %w", path, err)
+		return "", false, err
 	}
 	defer func() { _ = f.Close() }()
 
-	fi, err := f.Stat()
-	if err != nil {
-		return "", false, fmt.Errorf("stat opened descriptor for %s: %w", path, err)
-	}
-	if !fi.Mode().IsRegular() {
-		return "", false, fmt.Errorf("%s is no longer a regular file (possible TOCTOU)", path)
-	}
-	if haveIDs {
-		if dev, ino, ok := statIDs(fi); ok && (dev != wantDev || ino != wantIno) {
-			return "", false, fmt.Errorf("%s identity changed between walk and open (possible TOCTOU)", path)
-		}
-	}
-
 	h := sha256.New()
-	n, err := io.Copy(h, io.LimitReader(f, capBytes+1))
+	n, err := io.Copy(h, io.LimitReader(f, readLimit(capBytes)))
 	if err != nil {
-		return "", false, fmt.Errorf("read %s: %w", path, err)
+		return "", false, fmt.Errorf("read %s: %w", file.path, err)
 	}
 	if n > capBytes {
 		return "", true, nil
 	}
 	return hex.EncodeToString(h.Sum(nil)), false, nil
+}
+
+// readLimit is how many bytes to read to learn whether a file exceeds limit: one
+// more than limit, which a limit of math.MaxInt64 cannot hold. No file is longer
+// than that, so reading limit bytes still cannot miss an excess byte.
+func readLimit(limit int64) int64 {
+	if limit == math.MaxInt64 {
+		return limit
+	}
+	return limit + 1
+}
+
+// snapshotFile names a regular file a walk observed, and what opening it must
+// still match.
+type snapshotFile struct {
+	root    *os.Root
+	relPath string
+	path    string
+	// dev and ino are the identity the walk observed; haveIDs is false where
+	// the platform does not report one.
+	dev, ino uint64
+	haveIDs  bool
+	// workspaceMount is the mount the walk checked the workspace root against.
+	// An opened file must be on it. workspaceMountKnown is false when the kernel
+	// reports no mount IDs, which leaves the walk's device check as the boundary.
+	workspaceMount      uint64
+	workspaceMountKnown bool
+}
+
+func openSnapshotRegular(file snapshotFile) (*os.File, error) {
+	f, err := file.root.OpenFile(file.relPath, snapshotOpenFlags, 0)
+	if err != nil {
+		return nil, fmt.Errorf("open %s (root-confined): %w", file.path, err)
+	}
+
+	fi, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("stat opened descriptor for %s: %w", file.path, err)
+	}
+	if !fi.Mode().IsRegular() {
+		_ = f.Close()
+		return nil, fmt.Errorf("%s is no longer a regular file (possible TOCTOU)", file.path)
+	}
+	if file.haveIDs {
+		if dev, ino, ok := statIDs(fi); ok && (dev != file.dev || ino != file.ino) {
+			_ = f.Close()
+			return nil, fmt.Errorf("%s identity changed between walk and open (possible TOCTOU)", file.path)
+		}
+	}
+
+	// Compare the descriptor with the workspace's mount, not with a pathname
+	// looked up after the open: a path swapped to a bind mount of the same inode
+	// would report the new mount to both and pass.
+	openedMount, openedOK := fileMountID(f)
+	if crossedMount(file.workspaceMount, openedMount, file.workspaceMountKnown, openedOK) {
+		_ = f.Close()
+		return nil, fmt.Errorf("%s mount changed between walk and open", file.path)
+	}
+	return f, nil
 }
 
 // statIDsWithInode is a small alias kept separate from statIDs used for the
@@ -351,19 +403,20 @@ type Counts struct {
 // snapshots, bound to the session whose posture capsule digest it carries.
 // It is evidence only: it names paths, never carries file content.
 type Statement struct {
-	Root               string            `json:"root"`
-	CapBytes           int64             `json:"cap_bytes"`
-	BoundaryCheck      BoundaryCheck     `json:"boundary_check"`
-	GeneratedAt        time.Time         `json:"generated_at"`
-	RootMissingAtStart bool              `json:"root_missing_at_start"`
-	RootMissingAtEnd   bool              `json:"root_missing_at_end"`
-	Incomplete         bool              `json:"incomplete"`
-	IncompleteReason   string            `json:"incomplete_reason,omitempty"`
-	Added              []string          `json:"added"`
-	Removed            []string          `json:"removed"`
-	Modified           []string          `json:"modified"`
-	Unreadable         []UnreadableEntry `json:"unreadable"`
-	Counts             Counts            `json:"counts"`
+	Root               string                   `json:"root"`
+	CapBytes           int64                    `json:"cap_bytes"`
+	BoundaryCheck      BoundaryCheck            `json:"boundary_check"`
+	GeneratedAt        time.Time                `json:"generated_at"`
+	RootMissingAtStart bool                     `json:"root_missing_at_start"`
+	RootMissingAtEnd   bool                     `json:"root_missing_at_end"`
+	Incomplete         bool                     `json:"incomplete"`
+	IncompleteReason   string                   `json:"incomplete_reason,omitempty"`
+	Added              []string                 `json:"added"`
+	Removed            []string                 `json:"removed"`
+	Modified           []string                 `json:"modified"`
+	Unreadable         []UnreadableEntry        `json:"unreadable"`
+	Counts             Counts                   `json:"counts"`
+	ControlSurface     *ControlSurfaceStatement `json:"control_surface,omitempty"`
 }
 
 // Diff compares a before/after snapshot pair of the SAME root and reports
@@ -593,7 +646,10 @@ type SignedStatement struct {
 	Signature            string      `json:"signature"`
 }
 
-const SchemaVersionV1 = "workspace-change-statement/v1"
+const (
+	SchemaVersionV1 = "workspace-change-statement/v1"
+	SchemaVersionV2 = "workspace-change-statement/v2"
+)
 
 // Sign binds sts (one Statement per granted workspace root) to the posture
 // capsule identified by capsuleSHA256 (the SAME session's signed posture
@@ -620,6 +676,13 @@ func Sign(sts []Statement, capsuleSHA256 string, privKey ed25519.PrivateKey) (Si
 		PostureCapsuleSHA256: capsuleSHA256,
 		SignerKeyID:          hex.EncodeToString(privKey.Public().(ed25519.PublicKey)),
 	}
+	if sts[0].ControlSurface != nil {
+		signed.SchemaVersion = SchemaVersionV2
+	}
+	if err := ValidateSchema(signed); err != nil {
+		return SignedStatement{}, err
+	}
+
 	payload, err := signablePayload(signed)
 	if err != nil {
 		return SignedStatement{}, err
@@ -632,8 +695,13 @@ func Sign(sts []Statement, capsuleSHA256 string, privKey ed25519.PrivateKey) (Si
 // digest-shaped (64 lowercase-or-uppercase hex char) capsule binding, before
 // any cryptographic verification runs.
 func ValidateSchema(signed SignedStatement) error {
-	if signed.SchemaVersion != SchemaVersionV1 {
-		return fmt.Errorf("workspacediff: unknown schema_version %q, want %q", signed.SchemaVersion, SchemaVersionV1)
+	if signed.SchemaVersion != SchemaVersionV1 && signed.SchemaVersion != SchemaVersionV2 {
+		return fmt.Errorf("workspacediff: unknown schema_version %q, want %q or %q", signed.SchemaVersion, SchemaVersionV1, SchemaVersionV2)
+	}
+	for _, statement := range signed.Statements {
+		if (signed.SchemaVersion == SchemaVersionV2) != (statement.ControlSurface != nil) {
+			return fmt.Errorf("workspacediff: control_surface does not match schema_version %q", signed.SchemaVersion)
+		}
 	}
 	if err := validateCapsuleSHA256(signed.PostureCapsuleSHA256); err != nil {
 		return err

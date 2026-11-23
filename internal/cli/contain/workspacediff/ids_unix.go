@@ -10,6 +10,8 @@ import (
 	"syscall"
 )
 
+const snapshotOpenFlags = os.O_RDONLY | syscall.O_NOFOLLOW | syscall.O_NONBLOCK
+
 // statIDs returns the device and inode numbers backing fi, when the
 // underlying platform exposes them via syscall.Stat_t (true for every unix
 // this repo targets). ok is false only if fi's Sys() is not a *syscall.Stat_t.

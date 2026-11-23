@@ -12,6 +12,8 @@ import "os"
 // here (ok=false everywhere they are consulted); contain run is Linux-only
 // today (see containRunSupported), so this path exists only to keep the
 // package buildable on other platforms for tooling/tests.
+const snapshotOpenFlags = os.O_RDONLY
+
 func statIDs(_ os.FileInfo) (dev, ino uint64, ok bool) {
 	return 0, 0, false
 }

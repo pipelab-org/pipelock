@@ -9,8 +9,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -1718,10 +1720,11 @@ func TestPostureVerify_WorkspaceStatementCompleteness(t *testing.T) {
 				Passed             bool   `json:"passed"`
 				Error              string `json:"error"`
 				WorkspaceStatement struct {
-					Bound            bool   `json:"bound"`
-					Complete         *bool  `json:"complete"`
-					BoundaryCheck    string `json:"boundary_check"`
-					IncompleteReason string `json:"incomplete_reason"`
+					ControlSurfaceStatus string `json:"control_surface_status"`
+					Bound                bool   `json:"bound"`
+					Complete             *bool  `json:"complete"`
+					BoundaryCheck        string `json:"boundary_check"`
+					IncompleteReason     string `json:"incomplete_reason"`
 				} `json:"workspace_statement"`
 			}
 			if err := json.Unmarshal(jsonOutput.Bytes(), &out); err != nil {
@@ -1732,6 +1735,9 @@ func TestPostureVerify_WorkspaceStatementCompleteness(t *testing.T) {
 			}
 			if !out.Verified {
 				t.Errorf("verified = false, want true\noutput:\n%s", jsonOutput.String())
+			}
+			if out.WorkspaceStatement.ControlSurfaceStatus != "not_recorded" {
+				t.Errorf("control_surface_status = %q, want not_recorded for v1", out.WorkspaceStatement.ControlSurfaceStatus)
 			}
 			if !out.WorkspaceStatement.Bound {
 				t.Fatalf("workspace_statement.bound = false, want true\noutput:\n%s", jsonOutput.String())
@@ -1781,6 +1787,146 @@ func TestPostureVerify_WorkspaceStatementCompleteness(t *testing.T) {
 				}
 			} else if !strings.Contains(textOutput.String(), tt.wantIncompleteReason) {
 				t.Errorf("text output does not name incomplete reason %q:\n%s", tt.wantIncompleteReason, textOutput.String())
+			}
+		})
+	}
+}
+
+func TestPostureVerify_WorkspaceControlSurface(t *testing.T) {
+	partial := workspacediff.ControlSurfaceStatement{NestedDiscoveryPartial: true, NestedDiscoveryReason: "nested depth limit"}
+	partialAndChanged := partial
+	partialAndChanged.Changed = true
+	partialAndChanged.Modified = []string{".envrc"}
+	incomplete := workspacediff.ControlSurfaceStatement{Incomplete: true, IncompleteReason: "root limit"}
+	for _, tc := range []struct {
+		name         string
+		observation  workspacediff.ControlSurfaceStatement
+		allow        bool
+		allowPartial bool
+		status       string
+		fail         bool
+	}{
+		{name: "clean", status: "clean"},
+		{name: "partial", observation: partial, status: "partial", fail: true},
+		{name: "partial allowed", observation: partial, status: "partial", allowPartial: true},
+		{name: "changes flag cannot allow partial", observation: partial, status: "partial", allow: true, fail: true},
+		{name: "partial and changed with only changes allowed", observation: partialAndChanged, status: "changed", allow: true, fail: true},
+		{name: "partial and changed with only partial allowed", observation: partialAndChanged, status: "changed", allowPartial: true, fail: true},
+		{name: "partial and changed with both allowed", observation: partialAndChanged, status: "changed", allow: true, allowPartial: true},
+		{name: "incomplete with partial allowed", observation: incomplete, status: "incomplete", allowPartial: true, fail: true},
+		{name: "incomplete with both allowed", observation: incomplete, status: "incomplete", allow: true, allowPartial: true, fail: true},
+		{name: "partial without reason", observation: workspacediff.ControlSurfaceStatement{NestedDiscoveryPartial: true}, status: "incomplete", allowPartial: true, fail: true},
+		{name: "reason without partial", observation: workspacediff.ControlSurfaceStatement{NestedDiscoveryReason: "nested depth limit"}, status: "incomplete", allowPartial: true, fail: true},
+		{name: "changed", observation: workspacediff.ControlSurfaceStatement{Changed: true, Modified: []string{".envrc"}}, status: "changed", fail: true},
+		{name: "changed allowed", observation: workspacediff.ControlSurfaceStatement{Changed: true, Modified: []string{".envrc"}}, status: "changed", allow: true},
+		{name: "incomplete", observation: workspacediff.ControlSurfaceStatement{Incomplete: true, IncompleteReason: "nested limit"}, status: "incomplete", fail: true},
+		{name: "incomplete with changes allowed", observation: workspacediff.ControlSurfaceStatement{Changed: true, Modified: []string{".envrc"}, Incomplete: true, IncompleteReason: "nested limit"}, status: "incomplete", allow: true, fail: true},
+		{name: "paths without the changed flag", observation: workspacediff.ControlSurfaceStatement{Added: []string{".envrc"}}, status: "changed", fail: true},
+		{name: "unreadable path without the incomplete flag", observation: workspacediff.ControlSurfaceStatement{Unreadable: []workspacediff.UnreadableEntry{{Path: ".mcp.json", Reason: "example"}}}, status: "incomplete", allow: true, fail: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fix := newTestVerifyFixture(t, perfectEvidence())
+			statement := completeWorkspaceStatement(t)
+			statement.ControlSurface = &tc.observation
+			stmtPath := writeWorkspaceStatementForVerify(t, fix, statement)
+			args := []string{
+				"posture", "verify", "--proof", fix.ProofPath, "--key", fix.PubKeyPath,
+				"--policy", testVerifyPolicyNone, "--workspace-statement", stmtPath,
+			}
+			if tc.allow {
+				args = append(args, "--allow-control-surface-changes")
+			}
+			if tc.allowPartial {
+				args = append(args, "--allow-partial-nested-discovery")
+			}
+			for _, jsonMode := range []bool{true, false} {
+				var out bytes.Buffer
+				cmd := rootCmd()
+				cmd.SetOut(&out)
+				cmd.SetErr(io.Discard)
+				cmd.SetArgs(args)
+				if jsonMode {
+					cmd.SetArgs(append(slices.Clone(args), "--json"))
+				}
+				err := cmd.Execute()
+				if tc.fail {
+					assertExitCode(t, err, exitVerifyPolicyFail)
+				} else if err != nil {
+					t.Fatalf("verification: %v", err)
+				}
+				if !jsonMode {
+					if !strings.Contains(out.String(), "control_surface_status="+tc.status) ||
+						(tc.observation.NestedDiscoveryPartial && !strings.Contains(out.String(), "Workspace nested control discovery: partial:")) ||
+						(len(tc.observation.Paths()) > 0 && !strings.Contains(out.String(), ".envrc")) {
+						t.Fatalf("text output omitted control evidence:\n%s", out.String())
+					}
+					continue
+				}
+				var got struct {
+					Passed             bool `json:"passed"`
+					WorkspaceStatement struct {
+						Bound         bool     `json:"bound"`
+						Status        string   `json:"control_surface_status"`
+						Changed       bool     `json:"control_surface_changed"`
+						Paths         []string `json:"control_surface_paths"`
+						NestedPartial bool     `json:"control_surface_nested_discovery_partial"`
+						NestedReason  string   `json:"control_surface_nested_discovery_reason"`
+					} `json:"workspace_statement"`
+				}
+				if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+					t.Fatalf("decode verifier output: %v\n%s", err, out.String())
+				}
+				ws := got.WorkspaceStatement
+				wantChanged := tc.observation.Changed || len(tc.observation.Paths()) > 0
+				if !ws.Bound || got.Passed == tc.fail || ws.Status != tc.status || ws.Changed != wantChanged ||
+					ws.NestedPartial != tc.observation.NestedDiscoveryPartial ||
+					(ws.NestedPartial && !strings.Contains(ws.NestedReason, tc.observation.NestedDiscoveryReason)) ||
+					(len(tc.observation.Paths()) > 0 && !slices.Contains(ws.Paths, filepath.Join(statement.Root, ".envrc"))) {
+					t.Fatalf("unexpected verifier output:\n%s", out.String())
+				}
+			}
+		})
+	}
+}
+
+func TestPostureVerify_WorkspaceControlSurfaceSchemaMismatch(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		version string
+		control *workspacediff.ControlSurfaceStatement
+	}{
+		{"v1 with control evidence", workspacediff.SchemaVersionV1, &workspacediff.ControlSurfaceStatement{}},
+		{"v2 without control evidence", workspacediff.SchemaVersionV2, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fix := newTestVerifyFixture(t, perfectEvidence())
+			statement := completeWorkspaceStatement(t)
+			statement.ControlSurface = tc.control
+			path := writeWorkspaceStatementForVerify(t, fix, statement)
+			data, err := os.ReadFile(filepath.Clean(path))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var signed workspacediff.SignedStatement
+			if err := json.Unmarshal(data, &signed); err != nil {
+				t.Fatal(err)
+			}
+			signed.SchemaVersion = tc.version
+			path, err = workspacediff.WriteJSON(t.TempDir(), signed)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cmd := rootCmd()
+			cmd.SetOut(io.Discard)
+			cmd.SetErr(io.Discard)
+			cmd.SetArgs([]string{
+				"posture", "verify", "--proof", fix.ProofPath, "--key", fix.PubKeyPath,
+				"--policy", testVerifyPolicyNone, "--workspace-statement", path,
+			})
+			err = cmd.Execute()
+			assertExitCode(t, err, exitVerifyIntegrity)
+			if !strings.Contains(err.Error(), "control_surface does not match schema_version") {
+				t.Fatalf("expected schema error, got %v", err)
 			}
 		})
 	}
