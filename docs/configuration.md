@@ -108,6 +108,19 @@ explain_blocks: true
 | **balanced** | Blocks known-bad, detects suspicious. All domains reachable. | Most developers (default) |
 | **audit** | With `enforce: false`, warns on ordinary findings. Core credentials, SSRF, and fail-closed transport checks can still block. A configured HTTP request-policy block on fully inspected content is observed. A configured git-push allowlist mismatch on a fully parsed smart-HTTP push is observed. An enabled git-push allowlist that is empty, and a push whose allowlist patterns cannot be evaluated, still refuse. The observation needs enforcement off both when the connection was admitted and when the push is evaluated, so a TLS-intercepted tunnel admitted under enforcement keeps refusing after a reload to `enforce: false`. These still refuse in audit mode: a body the `on_parse_error`, `on_opaque_operation` or `on_undecodable_encoding` setting blocks (each defaults to `block`; `warn` and `allow` forward), an `except` rule whose body can't be compared with the exception, an unreadable or oversize body, and a key-integrity or batch-integrity failure. A body can't be compared when it doesn't parse; for an exact-request exception, when it repeats a JSON key at any depth; for a field exception, when it isn't a JSON object, repeats the exception field, or carries a case variant of that field. A body that was compared and doesn't match is an ordinary rule match and is observed. MCP client request tool-policy block and ask are observed; the lists below say which MCP checks stay refused. The audit preset sets `enforce: false` and disables adaptive escalation. | Evaluation before enforcement |
 
+#### Audit mode in plain terms
+
+Audit mode (`enforce: false`) lets you watch what Pipelock would block before you turn blocking on. Ordinary findings are logged and the traffic goes through.
+
+A few checks still block, because a log entry can't undo the damage once it happens:
+
+- A recognized credential leaving in a request. Once it's sent, it's exposed.
+- A request to a private network or cloud metadata address, where cloud credentials are served.
+- Content Pipelock couldn't fully read or parse. A finding it never saw can't be logged.
+- Other controls that don't read `enforce`, such as the kill switch and adaptive escalation.
+
+The exact lists for each transport follow. `pipelock doctor` reports when `mode: audit` is set but blocking is still on.
+
 `mode: audit` alone leaves `enforce` at its default of `true`, so ordinary URL DLP, entropy and blocklist findings still block. Use the bundled `audit` preset for an observation trial. Changing only the mode name doesn't select that preset or change its scanning actions. Where this reference describes what "audit mode" does, it means `enforce: false`.
 
 With `enforce: false`, an MCP proxy or listener prints: some configured MCP request block and ask actions are observed; other checks, floors, limits, redirect, defer and responses still apply. On a client request, block and ask become a warning for configured DLP, injection, and address-protection findings; for a matched tool-policy rule with block or ask; for session binding; for chain detection; for a baseline deviation; for a completed A2A content block; and for the cross-request entropy budget and a cross-request fragment match that is not a core credential. One floor finding keeps the whole message refused.
