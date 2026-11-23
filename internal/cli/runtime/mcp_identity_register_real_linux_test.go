@@ -13,7 +13,6 @@ import (
 )
 
 func TestMCPIdentityRegisterRealProcessLoadsAndVerifies(t *testing.T) {
-	t.Setenv("NODE_EXTRA_CA_CERTS", "fixture-ca.pem")
 	reg := newE2ERegistration(t, config.MCPIdentitySchemeHTTP, false)
 	service := startIdentityE2EServer(t, identityE2EServerOpts{Hold: reg.MappedPath})
 	upstream := service.url(config.MCPIdentitySchemeHTTP)
