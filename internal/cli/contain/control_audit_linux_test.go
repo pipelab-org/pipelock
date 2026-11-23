@@ -517,3 +517,47 @@ func TestControlAuditStoreOwnerMismatchOnLiveDirectories(t *testing.T) {
 		})
 	}
 }
+
+// The store's two private directories are checked for exact mode and owner; every
+// directory above them only has to be unwritable by anyone but root. The
+// "group writable ancestor" case above changes the parent of the store, which is
+// itself private, so these target the directories above it.
+func TestControlAuditStoreRejectsUnsafeAncestors(t *testing.T) {
+	store := controlAuditStore{}
+	for name, tc := range map[string]struct {
+		st   unix.Stat_t
+		safe bool
+	}{
+		"root owned":              {unix.Stat_t{Mode: unix.S_IFDIR | 0o755}, true},
+		"root owned sticky world": {unix.Stat_t{Mode: unix.S_IFDIR | unix.S_ISVTX | 0o777}, true},
+		"world writable":          {unix.Stat_t{Mode: unix.S_IFDIR | 0o777}, false},
+		"group writable":          {unix.Stat_t{Mode: unix.S_IFDIR | 0o775}, false},
+		"foreign owner":           {unix.Stat_t{Uid: 123, Mode: unix.S_IFDIR | 0o755}, false},
+		"foreign sticky world":    {unix.Stat_t{Uid: 123, Mode: unix.S_IFDIR | unix.S_ISVTX | 0o777}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := store.checkDir(tc.st, false); (err == nil) != tc.safe {
+				t.Fatalf("ancestor check = %v, want safe=%t", err, tc.safe)
+			}
+		})
+	}
+	for name, change := range map[string]func(*testing.T, *controlAuditEnv){
+		"group writable": func(t *testing.T, env *controlAuditEnv) {
+			if err := os.Chmod(filepath.Dir(filepath.Dir(env.store.path)), 0o770); err != nil { // #nosec G302 -- unsafe ancestor fixture.
+				t.Fatal(err)
+			}
+		},
+		"foreign owner": func(_ *testing.T, env *controlAuditEnv) { env.store.uid++ },
+	} {
+		t.Run("live "+name, func(t *testing.T) {
+			env, root := controlAuditFixture(t)
+			_, _ = runAuditFixture(t, env, controlAuditOptions{workspace: root, record: true}, 0)
+			t.Cleanup(func() { _ = os.Chmod(filepath.Dir(filepath.Dir(env.store.path)), 0o700) }) // #nosec G302 -- restore so the temp dir can be removed.
+			change(t, &env)
+			_, err := runAuditFixture(t, env, controlAuditOptions{workspace: root}, 1)
+			if !strings.Contains(err.Error(), "unsafe ancestor directory") {
+				t.Fatalf("an unsafe ancestor must be reported as one: %v", err)
+			}
+		})
+	}
+}
