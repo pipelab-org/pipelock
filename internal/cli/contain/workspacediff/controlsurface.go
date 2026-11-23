@@ -166,6 +166,8 @@ type controlTree struct {
 	fixed    bool
 	// source is the path whose contents referenced this tree, if any.
 	source string
+	// walked is set once the walk has listed the tree.
+	walked bool
 }
 
 type controlWalker struct {
@@ -180,7 +182,8 @@ type controlWalker struct {
 	pass         controlPass
 	entryCount   int
 	pathBytes    int64
-	trees        []controlTree
+	trees        []*controlTree
+	queuedTrees  map[string]*controlTree
 	treeEntries  int
 	coveredTrees map[string]struct{}
 	// worktreeSlots are agent worktree checkouts found inside fixed control
@@ -206,6 +209,7 @@ func (w *controlWalker) walkPass(seed func()) controlPass {
 	w.source = ""
 	w.direct = make(map[string]struct{})
 	w.trees = w.trees[:0]
+	w.queuedTrees = make(map[string]*controlTree)
 	w.treeEntries = 0
 	w.discovery = nil
 	seed()
@@ -219,7 +223,9 @@ func (w *controlWalker) walkPass(seed func()) controlPass {
 	next := 0
 	for w.pass.truncated == "" {
 		for ; next < len(w.trees) && w.pass.truncated == ""; next++ {
-			tree := w.trees[next]
+			queued := w.trees[next]
+			queued.walked = true
+			tree := *queued
 			w.source = tree.source
 			w.list(tree.path, func(child string, d fs.DirEntry) bool {
 				w.treeEntries++
@@ -542,6 +548,12 @@ func (w *controlWalker) enqueueTree(e controlEntry, tree controlTree) {
 		w.direct[e.Path] = struct{}{}
 	}
 	if _, ok := w.coveredTrees[e.Path]; ok {
+		// A directory queued as a plain tree, such as the target of a symlink,
+		// takes the Git role when a Git scan names it before the walk reaches it.
+		if queued := w.queuedTrees[e.Path]; queued != nil && !queued.walked && queued.gitDir == "" && tree.gitDir != "" {
+			queued.gitDir, queued.worktree = tree.gitDir, tree.worktree
+			queued.fixed = queued.fixed || tree.fixed
+		}
 		return
 	}
 	w.coveredTrees[e.Path] = struct{}{}
@@ -549,7 +561,8 @@ func (w *controlWalker) enqueueTree(e controlEntry, tree controlTree) {
 	if tree.source == "" {
 		tree.source = w.source
 	}
-	w.trees = append(w.trees, tree)
+	w.queuedTrees[e.Path] = &tree
+	w.trees = append(w.trees, &tree)
 }
 
 // scanFixed monitors each fixed control path under dir as a whole. A Git marker
@@ -896,6 +909,10 @@ func volatileGitEntry(path string, mode fs.FileMode) bool {
 	}
 	if mode.IsRegular() {
 		switch path {
+		// Git holds objects/maintenance.lock while background maintenance runs,
+		// which a commit can start (builtin/gc.c, maintenance_run_tasks).
+		case "objects/maintenance.lock":
+			return true
 		case "HEAD", "index", "packed-refs", "FETCH_HEAD", "ORIG_HEAD", "COMMIT_EDITMSG",
 			"MERGE_HEAD", "MERGE_MSG", "MERGE_MODE", "MERGE_RR", "SQUASH_MSG", "AUTO_MERGE",
 			"CHERRY_PICK_HEAD", "REVERT_HEAD", "TAG_EDITMSG", "NOTES_EDITMSG", "gc.log", "gc.pid",
@@ -973,12 +990,12 @@ func compareControlPass(before, after controlPass) controlPassDiff {
 		if seen && (b.mode != a.mode || entryChanged(b.Entry, a.Entry)) {
 			diff.modified = append(diff.modified, path)
 		}
-		if !seen && complete && after.covers(before, path) && !withinExcluded(path, excluded) {
+		if !seen && complete && after.covers(before, path, excluded) && !withinExcluded(path, excluded) {
 			diff.removed = append(diff.removed, path)
 		}
 	}
 	for path := range after.entries {
-		if _, seen := before.entries[path]; !seen && complete && before.covers(after, path) && !withinExcluded(path, excluded) {
+		if _, seen := before.entries[path]; !seen && complete && before.covers(after, path, excluded) && !withinExcluded(path, excluded) {
 			diff.added = append(diff.added, path)
 		}
 	}
@@ -989,18 +1006,23 @@ func compareControlPass(before, after controlPass) controlPassDiff {
 // observe path, had the path been recorded as it was in the other pass: the
 // place the path names and, for one found through a reference, the contents of
 // the paths that referenced it. A pass that never examined a referencing
-// repository cannot show the reference, or what it names, to be gone.
-func (p controlPass) covers(recorded controlPass, path string) bool {
-	return p.coversPath(recorded, path, make(map[string]struct{}))
+// repository cannot show the reference, or what it names, to be gone, and one
+// that could not read a referencing path, at either endpoint, never saw what the
+// path named. excluded holds the paths unreadable at either endpoint.
+func (p controlPass) covers(recorded controlPass, path string, excluded map[string]struct{}) bool {
+	return p.coversPath(recorded, path, excluded, make(map[string]struct{}))
 }
 
-func (p controlPass) coversPath(recorded controlPass, path string, visited map[string]struct{}) bool {
+func (p controlPass) coversPath(recorded controlPass, path string, excluded, visited map[string]struct{}) bool {
 	if !p.discovered(path) {
 		return false
 	}
 	visited[path] = struct{}{}
 	for _, source := range recorded.sources[path] {
-		if _, done := visited[source]; !done && !p.coversPath(recorded, source, visited) {
+		if withinExcluded(source, excluded) {
+			return false
+		}
+		if _, done := visited[source]; !done && !p.coversPath(recorded, source, excluded, visited) {
 			return false
 		}
 	}

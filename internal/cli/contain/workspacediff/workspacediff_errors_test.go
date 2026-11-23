@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -167,5 +168,61 @@ func TestWriteJSONFailsClosedOnUnwritableDestination(t *testing.T) {
 				t.Fatalf("directory after failed write = %v, want exactly %v", names, tt.left)
 			}
 		})
+	}
+}
+
+// A cap of math.MaxInt64 must not overflow the extra byte that detects an
+// oversize file: a zero-length read would digest every file as empty and report
+// an edited control path as unchanged.
+func TestHashFileSafeMaximumCapDigestsContent(t *testing.T) {
+	dir := t.TempDir()
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	var digests []string
+	for _, content := range []string{"first", "second"} {
+		writeFile(t, filepath.Join(dir, "file"), content)
+		info, err := os.Lstat(filepath.Join(dir, "file"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		dev, ino, haveIDs := statIDs(info)
+		digest, oversize, err := hashFileSafe(snapshotFile{
+			root: root, relPath: "file", path: filepath.Join(dir, "file"), dev: dev, ino: ino, haveIDs: haveIDs,
+		}, math.MaxInt64)
+		if err != nil || oversize {
+			t.Fatalf("hashFileSafe(%q) = oversize:%t err:%v", content, oversize, err)
+		}
+		sum := sha256.Sum256([]byte(content))
+		if want := hex.EncodeToString(sum[:]); digest != want {
+			t.Fatalf("hashFileSafe(%q) digest = %s, want %s", content, digest, want)
+		}
+		digests = append(digests, digest)
+	}
+	if digests[0] == digests[1] {
+		t.Fatal("different contents must not share a digest")
+	}
+}
+
+func TestControlSurfaceMaximumCapReportsEdit(t *testing.T) {
+	root := t.TempDir()
+	writeControlFixture(t, root, ".mcp.json", "{}")
+	before, err := SnapshotControlSurface(root, math.MaxInt64, DefaultControlSurfaceBudget())
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeControlFixture(t, root, ".mcp.json", `{"servers":{}}`)
+	after, err := SnapshotControlSurface(root, math.MaxInt64, DefaultControlSurfaceBudget())
+	if err != nil {
+		t.Fatal(err)
+	}
+	diff, err := DiffControlSurface(before, after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !diff.Changed || len(diff.Modified) != 1 || diff.Modified[0] != ".mcp.json" {
+		t.Fatalf("an edit under the maximum cap must be reported, got %+v", diff)
 	}
 }

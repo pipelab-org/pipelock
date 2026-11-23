@@ -51,9 +51,15 @@ func newControlGit(t *testing.T) testGit {
 	return testGit{bin: bin, home: t.TempDir()}
 }
 
+// quietGitArgs stops Git from starting background maintenance. Recent Git runs
+// detached maintenance after a commit, holding objects/maintenance.lock and
+// pruning worktree metadata that lacks an index, which changes a fixture while a
+// test observes it.
+var quietGitArgs = []string{"-c", "gc.auto=0", "-c", "maintenance.auto=false"}
+
 func (g testGit) command(t *testing.T, dir string, args ...string) (string, error) {
 	t.Helper()
-	cmd := exec.CommandContext(t.Context(), g.bin, args...) // #nosec G204 -- Git and its arguments are chosen by the test.
+	cmd := exec.CommandContext(t.Context(), g.bin, append(slices.Clone(quietGitArgs), args...)...) // #nosec G204 -- Git and its arguments are chosen by the test.
 	cmd.Dir = dir
 	cmd.Env = []string{
 		"PATH=" + os.Getenv("PATH"),
@@ -169,6 +175,42 @@ func TestControlSurfaceRealGitBenignOperations(t *testing.T) {
 		g.run(t, root, "checkout", "-q", "topic")
 		unchanged(t, func() { g.run(t, root, "rebase", "main") })
 	})
+}
+
+// The real-Git fixtures must not race Git's own background maintenance, which
+// would add objects/maintenance.lock or prune worktree metadata mid-test.
+func TestControlSurfaceTestGitDisablesBackgroundMaintenance(t *testing.T) {
+	g := newControlGit(t)
+	root := t.TempDir()
+	g.init(t, root)
+	for key, want := range map[string]string{"gc.auto": "0", "maintenance.auto": "false"} {
+		out, err := g.command(t, root, "config", "--get", key)
+		if err != nil || strings.TrimSpace(out) != want {
+			t.Errorf("git config %s = %q (%v), want %q", key, strings.TrimSpace(out), err, want)
+		}
+	}
+}
+
+// Git holds objects/maintenance.lock while its maintenance runs, which a commit
+// can start in the background (builtin/gc.c, maintenance_run_tasks). The file is
+// transient bookkeeping, not repository configuration.
+func TestControlSurfaceMaintenanceLockIsVolatile(t *testing.T) {
+	g := newControlGit(t)
+	root := t.TempDir()
+	g.init(t, root)
+	g.commit(t, root, "tracked.txt")
+	before := controlSnapshot(t, root, DefaultControlSurfaceBudget())
+	writeControlFixture(t, root, ".git/objects/maintenance.lock", "")
+	after := controlSnapshot(t, root, DefaultControlSurfaceBudget())
+	if diff := controlDiff(t, before, after); diff.Changed || diff.Incomplete {
+		t.Fatalf("Git's maintenance lock must remain volatile: %+v", diff)
+	}
+	if err := os.Remove(filepath.Join(root, ".git", "objects", "maintenance.lock")); err != nil {
+		t.Fatal(err)
+	}
+	if diff := controlDiff(t, after, controlSnapshot(t, root, DefaultControlSurfaceBudget())); diff.Changed || diff.Incomplete {
+		t.Fatalf("releasing Git's maintenance lock must not be reported: %+v", diff)
+	}
 }
 
 func TestControlSurfaceRealGitReftable(t *testing.T) {
@@ -1076,8 +1118,12 @@ func TestControlSurfaceComparesAPathObservedByDifferentPassesAtEachEndpoint(t *t
 				if len(diff.Added) != 0 || len(diff.Removed) != 0 {
 					t.Errorf("a path observed at both endpoints is never added or removed: %+v", diff)
 				}
-				if got := slices.Equal(diff.Modified, []string{name}); got != tc.modified {
-					t.Errorf("modified = %t, want %t: %+v", got, tc.modified, diff)
+				want := []string{}
+				if tc.modified {
+					want = []string{name}
+				}
+				if !slices.Equal(diff.Modified, want) {
+					t.Errorf("modified = %q, want %q: %+v", diff.Modified, want, diff)
 				}
 			}
 		})

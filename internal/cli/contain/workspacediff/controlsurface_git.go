@@ -25,10 +25,21 @@ type gitConfigSource struct {
 func (w *controlWalker) scanGitPointer(entry controlEntry, prefix, base, worktree string) {
 	if path, inside := w.pointerTarget(entry, prefix, base); inside {
 		w.following(entry.Path, func() {
+			// Git resolves a symlink the pointer names to the directory behind
+			// it, which is the Git directory whose configuration is followed.
 			targetEntry := w.recordPath(path)
+			for hops := 0; targetEntry.Kind == KindSymlink; hops++ {
+				rel, ok := w.linkTarget(targetEntry)
+				if !ok || hops == maxConfigLinkHops {
+					w.unreadable(entry.Path, "Git directory symlink target could not be observed")
+					return
+				}
+				path = rel
+				targetEntry = w.recordPath(path)
+			}
 			if targetEntry.Kind == KindDir {
 				w.scanGitDir(path, worktree, false)
-			} else if targetEntry.Kind != KindSymlink {
+			} else {
 				w.unreadable(entry.Path, "Git directory target could not be observed")
 			}
 		})
@@ -249,7 +260,10 @@ func (w *controlWalker) readConfig(entry controlEntry) ([]byte, bool) {
 				w.unreadable(entry.Path, "Git config symlink target could not be observed")
 				return nil, false
 			}
-			next := w.recordPath(rel)
+			// The link names its target, so a snapshot that does not read the link
+			// has not observed it.
+			var next controlEntry
+			w.following(file.Path, func() { next = w.recordPath(rel) })
 			if next.Kind == "" {
 				if _, err := w.root.Lstat(rel); !errors.Is(err, fs.ErrNotExist) {
 					w.unreadable(entry.Path, "Git config symlink target could not be observed")
@@ -281,7 +295,7 @@ func (w *controlWalker) readObserved(entry controlEntry) ([]byte, bool) {
 	if !w.checkMount(entry.Path, entry.info, mnt, mntOK) {
 		return nil, false
 	}
-	data, err := io.ReadAll(io.LimitReader(file, entry.Size+1))
+	data, err := io.ReadAll(io.LimitReader(file, readLimit(entry.Size)))
 	if err != nil {
 		w.unreadable(entry.Path, fmt.Sprintf("read Git metadata: %v", err))
 		return nil, false

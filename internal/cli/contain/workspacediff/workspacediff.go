@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -299,7 +300,7 @@ func hashFileSafe(file snapshotFile, capBytes int64) (digest string, oversize bo
 	defer func() { _ = f.Close() }()
 
 	h := sha256.New()
-	n, err := io.Copy(h, io.LimitReader(f, capBytes+1))
+	n, err := io.Copy(h, io.LimitReader(f, readLimit(capBytes)))
 	if err != nil {
 		return "", false, fmt.Errorf("read %s: %w", file.path, err)
 	}
@@ -307,6 +308,16 @@ func hashFileSafe(file snapshotFile, capBytes int64) (digest string, oversize bo
 		return "", true, nil
 	}
 	return hex.EncodeToString(h.Sum(nil)), false, nil
+}
+
+// readLimit is how many bytes to read to learn whether a file exceeds limit: one
+// more than limit, which a limit of math.MaxInt64 cannot hold. No file is longer
+// than that, so reading limit bytes still cannot miss an excess byte.
+func readLimit(limit int64) int64 {
+	if limit == math.MaxInt64 {
+		return limit
+	}
+	return limit + 1
 }
 
 // snapshotFile names a regular file a walk observed, and what opening it must
