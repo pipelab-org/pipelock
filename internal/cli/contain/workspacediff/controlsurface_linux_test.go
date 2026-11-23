@@ -84,7 +84,7 @@ func denyAccess(t *testing.T, path string) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(path, mode) })
-	if f, err := os.Open(path); err == nil {
+	if f, err := os.Open(filepath.Clean(path)); err == nil {
 		_ = f.Close()
 		t.Skip("file permissions are not enforced for this user")
 	}
