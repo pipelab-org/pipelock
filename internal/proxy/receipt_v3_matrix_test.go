@@ -2447,3 +2447,42 @@ func TestV3SignedCardReceiptsFollowDelivery(t *testing.T) {
 		}
 	}
 }
+
+func TestV3InterceptCleanSSEFlushFailureLeavesDeliveryUnknown(t *testing.T) {
+	p, writer, dir, _ := newTestV3HTTPProxy(t, transportInterceptReceipt, true, nil, func(cfg *config.Config) {
+		cfg.FlightRecorder.RequireReceipts = true
+		cfg.ResponseScanning.Enabled = true
+		cfg.ResponseScanning.SSEStreaming.Enabled = true
+	})
+	const event = "data: {\"text\":\"hello\"}\n\n"
+	rt := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode:    http.StatusOK,
+			Header:        http.Header{"Content-Type": {"text/event-stream"}, "Content-Length": {strconv.Itoa(len(event))}},
+			ContentLength: int64(len(event)), Body: io.NopCloser(strings.NewReader(event)), Request: req,
+		}, nil
+	})
+	handler := newInterceptHandler(&InterceptContext{TargetHost: "api.vendor.example", TargetPort: "443", Config: p.CurrentConfig(), Scanner: p.ScannerPtr().Load(), Logger: p.logger, Metrics: p.metrics, Proxy: p}, rt)
+	out := &v3FirstSSEFlushFault{ResponseRecorder: httptest.NewRecorder()}
+	handler.ServeHTTP(out, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://api.vendor.example/sse", http.NoBody))
+	if out.flushes == 0 || out.Body.String() != event {
+		t.Fatalf("expected an attempted event flush, got %d flushes and %q", out.flushes, out.Body.String())
+	}
+	if err := writer.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	assertHandshakeOutcome(t, dir, boundaryDownstreamDelivery, "attempt_unknown")
+}
+
+type v3FirstSSEFlushFault struct {
+	*httptest.ResponseRecorder
+	flushes int
+}
+
+func (w *v3FirstSSEFlushFault) FlushError() error {
+	w.flushes++
+	if w.flushes == 1 {
+		return io.ErrClosedPipe
+	}
+	return nil
+}
