@@ -281,7 +281,7 @@ func (w *controlWalker) readObserved(entry controlEntry) ([]byte, bool) {
 	if !w.checkMount(entry.Path, entry.info, mnt, mntOK) {
 		return nil, false
 	}
-	data, err := io.ReadAll(io.LimitReader(file, entry.Size+1))
+	data, err := io.ReadAll(io.LimitReader(file, readLimit(entry.Size)))
 	if err != nil {
 		w.unreadable(entry.Path, fmt.Sprintf("read Git metadata: %v", err))
 		return nil, false
