@@ -4,7 +4,6 @@
 package scanner
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/hex"
@@ -193,69 +192,32 @@ func (s *Scanner) scanResponseBodyWithSuppress(ctx context.Context, body []byte,
 
 func (s *Scanner) scanResponseBodyUncached(ctx context.Context, body []byte, suppressTarget string, suppress []config.SuppressEntry) (out ResponseScanResult) {
 	defer func() { s.setInjectionAssessment(ctx, &out, false) }()
-	metadata, image, err := responseImageMetadata(body)
-	if !image {
-		if hasResponseImageSignature(body) {
-			result := s.ScanResponseWithSuppress(ctx, string(body), suppressTarget, suppress)
-			if !result.Clean {
-				// An unverified image-shaped body cannot safely be rewritten from
-				// a text scan view. Empty output makes strip callers fail closed.
-				result.TransformedContent = ""
-			}
-			return result
-		}
-		textual, classifyErr := isTextualResponseBody(ctx, body)
-		if classifyErr != nil {
-			return ResponseScanResult{Clean: false, ScanError: classifyErr.Error()}
-		}
-		if !textual {
-			decoded, decodedOK, decodeErr := decodeLikelyWideResponseBody(ctx, body)
-			if decodeErr != nil {
-				return ResponseScanResult{Clean: false, ScanError: decodeErr.Error()}
-			}
-			if decodedOK {
-				decodedResult := s.ScanResponseWithSuppress(ctx, decoded, suppressTarget, suppress)
-				if !decodedResult.Clean {
-					// A decoded view cannot safely replace the encoded body.
-					decodedResult.TransformedContent = ""
-					return decodedResult
-				}
-				rawResult := s.scanOpaqueResponseText(ctx, body, suppressTarget, suppress)
-				rawResult.InspectionIncomplete = rawResult.InspectionIncomplete || decodedResult.InspectionIncomplete
-				rawResult.WarnedMatches = append(decodedResult.WarnedMatches, rawResult.WarnedMatches...)
-				rawResult.SuppressedMatches = append(decodedResult.SuppressedMatches, rawResult.SuppressedMatches...)
-				rawResult.ObservedCoreMatches = append(decodedResult.ObservedCoreMatches, rawResult.ObservedCoreMatches...)
-				if decodedResult.StegoDensity > rawResult.StegoDensity {
-					rawResult.StegoDensity = decodedResult.StegoDensity
-				}
-				rawResult.StegoDetected = decodedResult.StegoDetected || rawResult.StegoDetected
-				// The decoded wording was assessed even when the raw bytes
-				// contain no separate wording view. Retain that coverage while
-				// giving raw-view failures and findings their usual precedence.
-				s.retainDecodedAssessment(ctx, &rawResult, decodedResult.Assessment)
-				return rawResult
-			}
-			return s.scanOpaqueResponseText(ctx, body, suppressTarget, suppress)
-		}
-		return s.scanTextualResponseBody(ctx, body, suppressTarget, suppress)
-	}
+	view, err := firstResponseBodyView(ctx, body)
 	if err != nil {
-		return ResponseScanResult{
-			Clean:     false,
-			ScanError: fmt.Sprintf("image metadata inspection failed: %v", err),
-		}
+		return ResponseScanResult{Clean: false, ScanError: err.Error()}
 	}
-	if len(metadata) == 0 {
+	switch view.Kind {
+	case bodyViewNone:
 		return ResponseScanResult{Clean: true}
+	case bodyViewOpaque:
+		return s.scanOpaqueResponseText(ctx, body, suppressTarget, suppress)
+	case bodyViewText:
+		return s.scanTextualResponseBody(ctx, body, view, suppressTarget, suppress)
+	case bodyViewWideUnicode:
+		decoded := s.scanResponseBodyView(ctx, view, suppressTarget, suppress)
+		if !decoded.Clean {
+			return decoded
+		}
+		raw := s.scanOpaqueResponseText(ctx, body, suppressTarget, suppress)
+		raw.InspectionIncomplete = raw.InspectionIncomplete || decoded.InspectionIncomplete
+		mergeResponseBodyEvidence(&raw, &decoded)
+		// The decoded wording was assessed even when the raw bytes contain
+		// no separate wording view. Raw failures and findings take priority.
+		s.retainDecodedAssessment(ctx, &raw, decoded.Assessment)
+		return raw
+	default:
+		return s.scanResponseBodyView(ctx, view, suppressTarget, suppress)
 	}
-	result := s.ScanResponseWithSuppress(ctx, string(metadata), suppressTarget, suppress)
-	if !result.Clean {
-		// A metadata-only scan cannot safely transform the complete image body.
-		// Leave this empty so strip callers fail closed instead of replacing the
-		// image with redacted metadata bytes.
-		result.TransformedContent = ""
-	}
-	return result
 }
 
 // retainDecodedAssessment carries completed decoded-view coverage without
@@ -269,86 +231,72 @@ func (s *Scanner) retainDecodedAssessment(ctx context.Context, raw *ResponseScan
 	s.setInjectionAssessment(ctx, raw, assessed)
 }
 
-func (s *Scanner) scanTextualResponseBody(ctx context.Context, body []byte, suppressTarget string, suppress []config.SuppressEntry) ResponseScanResult {
-	raw := string(body)
-	rawResult := s.ScanResponseWithSuppress(ctx, raw, suppressTarget, suppress)
-	if !rawResult.Clean || utf8.ValidString(raw) {
+func (s *Scanner) scanTextualResponseBody(ctx context.Context, body []byte, raw bodyInjectionView, suppressTarget string, suppress []config.SuppressEntry) ResponseScanResult {
+	rawResult := s.scanResponseBodyView(ctx, raw, suppressTarget, suppress)
+	if !rawResult.Clean {
+		return rawResult
+	}
+	separator := responseBodySeparatorView(body, raw.Text)
+	if separator.Kind == bodyViewNone {
 		return rawResult
 	}
 
-	separatorView := string(bytes.ToValidUTF8(body, []byte(" ")))
-	separatorResult := s.ScanResponseWithSuppress(ctx, separatorView, suppressTarget, suppress)
-	separatorResult.WarnedMatches = append(rawResult.WarnedMatches, separatorResult.WarnedMatches...)
-	separatorResult.SuppressedMatches = append(rawResult.SuppressedMatches, separatorResult.SuppressedMatches...)
-	separatorResult.ObservedCoreMatches = append(rawResult.ObservedCoreMatches, separatorResult.ObservedCoreMatches...)
-	if rawResult.StegoDensity > separatorResult.StegoDensity {
-		separatorResult.StegoDensity = rawResult.StegoDensity
-	}
-	separatorResult.StegoDetected = rawResult.StegoDetected || separatorResult.StegoDetected
-	if !separatorResult.Clean {
-		// A normalized separator view cannot safely transform the original bytes.
-		separatorResult.TransformedContent = ""
-	}
-	return separatorResult
+	result := s.scanResponseBodyView(ctx, separator, suppressTarget, suppress)
+	mergeResponseBodyEvidence(&result, &rawResult)
+	return result
 }
 
 func (s *Scanner) scanOpaqueResponseText(ctx context.Context, body []byte, suppressTarget string, suppress []config.SuppressEntry) ResponseScanResult {
-	views, extractErr := opaqueResponseTextView(ctx, body)
-	if extractErr != nil {
-		return ResponseScanResult{Clean: false, ScanError: extractErr.Error()}
-	}
-	if ctx != nil {
-		if err := ctx.Err(); err != nil {
-			return ResponseScanResult{Clean: false, ScanError: err.Error()}
-		}
-	}
-	if views.retained == "" && views.fragmented == "" && views.encoded == "" && views.decoded == "" {
-		return ResponseScanResult{Clean: true}
+	views, err := extractOpaqueResponseBodyViews(ctx, body)
+	if err != nil {
+		return ResponseScanResult{Clean: false, ScanError: err.Error()}
 	}
 	result := ResponseScanResult{Clean: true}
-	if views.retained != "" {
-		result = s.ScanResponseWithSuppress(ctx, views.retained, suppressTarget, suppress)
-		if !result.Clean {
-			result.TransformedContent = ""
-			return result
-		}
-	}
-	seenReconstructed := make(map[string]struct{}, 3)
-	for viewIndex, reconstructed := range []string{views.fragmented, views.encoded, views.decoded} {
-		if reconstructed == "" {
+	for _, view := range views {
+		if view.Kind == bodyViewNone {
 			continue
 		}
-		if _, seen := seenReconstructed[reconstructed]; seen {
-			continue
+		checked := s.scanResponseBodyView(ctx, view, suppressTarget, suppress)
+		if view.RequireFragmentBoundary {
+			checked.InspectionIncomplete = checked.InspectionIncomplete || result.InspectionIncomplete
+			mergeResponseBodyEvidence(&checked, &result)
 		}
-		seenReconstructed[reconstructed] = struct{}{}
-		var reconstructedResult ResponseScanResult
-		if viewIndex == 1 {
-			// The encoded chain is decode input only, never reconstructed prose.
-			reconstructedResult = s.scanResponseMatchesWithOptions(ctx, reconstructed, suppressTarget, suppress, responseScanOptions{decodeOnly: true}, nil)
-		} else {
-			reconstructedResult = s.scanResponseWithSuppress(ctx, reconstructed, suppressTarget, suppress, true)
-		}
-		reconstructedResult = requireFragmentBoundaryMatch(reconstructed, reconstructedResult)
-		reconstructedResult.InspectionIncomplete = result.InspectionIncomplete || reconstructedResult.InspectionIncomplete
-		reconstructedResult.WarnedMatches = append(result.WarnedMatches, reconstructedResult.WarnedMatches...)
-		reconstructedResult.SuppressedMatches = append(result.SuppressedMatches, reconstructedResult.SuppressedMatches...)
-		reconstructedResult.ObservedCoreMatches = append(result.ObservedCoreMatches, reconstructedResult.ObservedCoreMatches...)
-		if result.StegoDensity > reconstructedResult.StegoDensity {
-			reconstructedResult.StegoDensity = result.StegoDensity
-		}
-		reconstructedResult.StegoDetected = result.StegoDetected || reconstructedResult.StegoDetected
-		result = reconstructedResult
+		result = checked
 		if !result.Clean {
 			break
 		}
 	}
-	if !result.Clean {
-		// An extracted view cannot safely replace the complete binary body.
-		// Empty output makes strip and ask callers fail closed.
+	return result
+}
+
+func (s *Scanner) scanResponseBodyView(ctx context.Context, view bodyInjectionView, target string, suppress []config.SuppressEntry) ResponseScanResult {
+	var result ResponseScanResult
+	switch {
+	case view.DecodeOnly:
+		result = s.scanResponseMatchesWithOptions(ctx, view.Text, target, suppress, responseScanOptions{decodeOnly: true}, nil)
+	case view.RequireFragmentBoundary:
+		result = s.scanResponseWithSuppress(ctx, view.Text, target, suppress, true)
+	default:
+		result = s.ScanResponseWithSuppress(ctx, view.Text, target, suppress)
+	}
+	if view.RequireFragmentBoundary {
+		result = requireFragmentBoundaryMatch(view.Text, result)
+	}
+	if !view.CanTransform && !result.Clean {
+		// Extracted and normalized views cannot safely replace the original body.
 		result.TransformedContent = ""
 	}
 	return result
+}
+
+func mergeResponseBodyEvidence(result, previous *ResponseScanResult) {
+	result.WarnedMatches = append(previous.WarnedMatches, result.WarnedMatches...)
+	result.SuppressedMatches = append(previous.SuppressedMatches, result.SuppressedMatches...)
+	result.ObservedCoreMatches = append(previous.ObservedCoreMatches, result.ObservedCoreMatches...)
+	if previous.StegoDensity > result.StegoDensity {
+		result.StegoDensity = previous.StegoDensity
+	}
+	result.StegoDetected = previous.StegoDetected || result.StegoDetected
 }
 
 // requireFragmentBoundaryMatch limits the reconstructed view to findings that
@@ -2007,8 +1955,7 @@ func (s *Scanner) matchDecodedResponseViews(decoded, decodedViewLabel string, su
 	if matches := filterCoreResponsePass(normalized, "", passes.primary.match(normalized, root), decodedViewLabel, suppress); len(matches) > 0 {
 		return responseMatchSet{matches: matches, content: normalized}
 	}
-	spaced := normalize.ForMatchingSpaced(decoded)
-	if spaced != normalized {
+	if spaced, distinct := responseDecodeSpacedView(decoded, normalized); distinct {
 		if matches := filterCoreResponsePass(spaced, "", passes.primary.match(spaced, root.transformed(matchingSpaced, spaced)), spanViewLabel("invisible_spaced", decodedViewLabel), suppress); len(matches) > 0 {
 			return responseMatchSet{matches: matches, content: spaced}
 		}
