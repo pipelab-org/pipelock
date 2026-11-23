@@ -2982,3 +2982,43 @@ func TestMCPV3ListenerCancelledSendAbortsResponse(t *testing.T) {
 		t.Fatal("cancelled listener send has no terminal refusal")
 	}
 }
+
+func TestMCPV3ListenerAgentCardBufferedDelivery(t *testing.T) {
+	const cardRequest = `{"jsonrpc":"2.0","id":42,"method":"agent/getAuthenticatedExtendedCard"}`
+	const cardResponse = `{"jsonrpc":"2.0","id":42,"result":` + receiptCardBody + "}"
+	opts, writer, client := localMCPReceiptFixture(t, v3MCPMatrixRow{required: true}, deferred.SurfaceMCPHTTPListener)
+	a2a := config.Defaults().A2AScanning
+	a2a.Enabled, a2a.DetectCardDrift = true, true
+	opts.A2ACfg = &a2a
+	opts.CardBaseline = NewCardBaseline(8)
+	opts.A2ACardURL = "https://api.vendor.example/.well-known/agent-card.json"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, cardResponse)
+	}))
+	defer upstream.Close()
+	url, _ := startListenerProxyWithOpts(t, upstream.URL, opts)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, url, strings.NewReader(cardRequest))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil || resp.StatusCode != http.StatusOK || string(body) != cardResponse {
+		t.Fatalf("HTTP %d delivered %q: %v", resp.StatusCode, body, err)
+	}
+	testwait.For(t, time.Second, func() bool {
+		actions, err := decodeMCPMatrixActions(client.dir)
+		return err == nil && slices.ContainsFunc(actions, func(action v3.Action) bool {
+			return action.Layer == "a2a_card_drift" && action.Phase == "outcome" && action.OutcomeClass == "completed"
+		})
+	}, "card outcome")
+	if err := writer.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+}
