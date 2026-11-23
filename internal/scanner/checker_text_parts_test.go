@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/luckyPipewrench/pipelock/internal/checker"
 	"github.com/luckyPipewrench/pipelock/internal/checker/checkertest"
@@ -513,6 +514,168 @@ func TestCheckerQuotedPrintableKeepsOriginalCharacters(t *testing.T) {
 	}
 }
 
+func TestCheckerWideAndQuotedPrintableViewParity(t *testing.T) {
+	const surface = config.InjectionSurfaceHTTPResponse
+	const patternName = "Fixture phrase"
+	builtin := testResponseConfig()
+	builtin.ResponseScanning.Action = config.ActionBlock
+	builtin.ResponseScanning.Patterns = []config.ResponseScanPattern{{Name: patternName, Regex: "^\ufffd*" + checkerFixturePhrase + "$"}}
+	legacy := MustNew(builtin)
+	t.Cleanup(legacy.Close)
+	cfg := testResponseConfig()
+	srv := checkertest.New(t, "benign")
+	srv.Configure(cfg, surface, config.InjectionModeBlock)
+	s := MustNew(cfg)
+	t.Cleanup(s.Close)
+
+	utf32 := func(order binary.AppendByteOrder) []byte {
+		body := order.AppendUint32(nil, 0xfeff)
+		for i := range len(checkerFixturePhrase) {
+			body = order.AppendUint32(body, uint32(checkerFixturePhrase[i]))
+		}
+		return body
+	}
+	for _, fixture := range []struct {
+		name string
+		data []byte
+	}{
+		{"utf16le", encodeUTF16ResponseBody(checkerFixturePhrase, true, true)},
+		{"utf16be", encodeUTF16ResponseBody(checkerFixturePhrase, false, true)},
+		{"utf32le", utf32(binary.LittleEndian)},
+		{"utf32be", utf32(binary.BigEndian)},
+		{"quoted_printable", []byte("\xff" + strings.ReplaceAll(checkerFixturePhrase, " ", "=20") + "=FF=")},
+	} {
+		for _, carrier := range []struct {
+			name string
+			wrap func([]byte) string
+		}{
+			{"direct", func(data []byte) string { return string(data) }},
+			{"base64", base64.StdEncoding.EncodeToString},
+			{"hex", hex.EncodeToString},
+		} {
+			t.Run(fixture.name+"/"+carrier.name, func(t *testing.T) {
+				source := carrier.wrap(fixture.data)
+				result := legacy.ScanResponseBodyWithSuppress(t.Context(), []byte(source), "", nil)
+				at := slices.IndexFunc(result.Matches, func(match ResponseMatch) bool { return match.PatternName == patternName })
+				if result.Failed() || at < 0 {
+					t.Fatalf("scanner did not match the full fixture view: %+v", result)
+				}
+				parts, coverage := s.BuildInjectionTextParts(t.Context(), surface, source)
+				scannerView := result.Matches[at].MatchText
+				if !hasCheckerView(parts, scannerView) || !hasCheckerView(parts, checkerFixturePhrase) || coverage.Status != checker.Complete {
+					t.Fatalf("checker views %q, completeness %+v, want scanner view %q and exact phrase", checkerPartTexts(parts), coverage, scannerView)
+				}
+				for _, part := range parts {
+					if !utf8.ValidString(part.Text) {
+						t.Errorf("part %s contains invalid UTF-8", part.ID)
+					}
+				}
+				budget := checkerTextBuilder{ctx: t.Context()}
+				for _, part := range parts {
+					if part.Text == checkerFixturePhrase {
+						break
+					}
+					budget.limit += int64(len(part.Text))
+				}
+				budget.addTexts([]string{source})
+				if got := budget.completeness(nil); hasCheckerView(budget.parts, checkerFixturePhrase) || got.Status != checker.Partial || got.Reason != checker.ReasonOverBudget {
+					t.Fatalf("checker views %q, completeness %+v, want omitted phrase and partial coverage", checkerPartTexts(budget.parts), got)
+				}
+			})
+		}
+	}
+}
+
+// Matching removes NUL bytes, so wide text behind a prefix, or without a
+// byte-order mark, is one phrase to the scanner even when the decode is not
+// text as a whole. Those views must reach the checker like the marked ones.
+func TestCheckerWideTextBehindPrefixReachesChecker(t *testing.T) {
+	const surface = config.InjectionSurfaceHTTPResponse
+	const patternName = "Fixture phrase"
+	builtin := testResponseConfig()
+	builtin.ResponseScanning.Action = config.ActionBlock
+	builtin.ResponseScanning.Patterns = []config.ResponseScanPattern{{Name: patternName, Regex: checkerFixturePhrase}}
+	legacy := MustNew(builtin)
+	t.Cleanup(legacy.Close)
+	cfg := testResponseConfig()
+	srv := checkertest.New(t, "benign")
+	srv.Configure(cfg, surface, config.InjectionModeBlock)
+	s := MustNew(cfg)
+	t.Cleanup(s.Close)
+
+	wide := encodeUTF16ResponseBody(checkerFixturePhrase, true, false)
+	bom := encodeUTF16ResponseBody(checkerFixturePhrase, true, true)
+	for _, fixture := range []struct {
+		name string
+		data []byte
+	}{
+		{"whitespace_then_bom", append([]byte(" \n"), bom...)},
+		{"junk_then_bomless_utf16", append([]byte("\xff\x80\x81"), wide...)},
+		{"text_then_bom", append([]byte("abc "), bom...)},
+	} {
+		for _, carrier := range []struct {
+			name string
+			wrap func([]byte) string
+		}{
+			{"base64", base64.StdEncoding.EncodeToString},
+			{"hex", hex.EncodeToString},
+			{"query_percent", func(data []byte) string {
+				var out strings.Builder
+				out.WriteString("x=")
+				for _, c := range data {
+					fmt.Fprintf(&out, "%%%02X", c)
+				}
+				return out.String()
+			}},
+		} {
+			t.Run(fixture.name+"/"+carrier.name, func(t *testing.T) {
+				source := carrier.wrap(fixture.data)
+				result := legacy.ScanResponseBodyWithSuppress(t.Context(), []byte(source), "", nil)
+				if result.Failed() || !slices.ContainsFunc(result.Matches, func(match ResponseMatch) bool { return match.PatternName == patternName }) {
+					t.Fatalf("scanner did not match the decoded phrase: %+v", result)
+				}
+				parts, coverage := s.BuildInjectionTextParts(t.Context(), surface, source)
+				if !hasCheckerView(parts, checkerFixturePhrase) || coverage.Status != checker.Complete {
+					t.Fatalf("checker views %q, completeness %+v, want the exact phrase", checkerPartTexts(parts), coverage)
+				}
+			})
+		}
+	}
+}
+
+func TestCheckerOpaqueDecodeKeepsOnlyReadableRuns(t *testing.T) {
+	noise := strings.Repeat("\xff\x80\x81\x01", 32)
+	source := base64.StdEncoding.EncodeToString([]byte(noise + checkerFixturePhrase + noise))
+	parts := InjectionTextParts(source)
+	if got := checkerPartTexts(parts); !slices.Equal(got, []string{source, checkerFixturePhrase}) || parts[1].Representation != "response_decoded_runs/v1" {
+		t.Fatalf("opaque decode produced unexpected checker parts: %q", got)
+	}
+}
+
+func TestCheckerToolResultSizeBaseline(t *testing.T) {
+	const surface = config.InjectionSurfaceMCPToolResult
+	const size = 64 << 10
+	cfg := testResponseConfig()
+	srv := checkertest.New(t, "benign")
+	srv.Configure(cfg, surface, config.InjectionModeBlock)
+	s := MustNew(cfg)
+	t.Cleanup(s.Close)
+	fixture := fmt.Sprintf(`{"base64":%q,"hex":%q,"quoted_printable":%q,"text":"`,
+		base64.StdEncoding.EncodeToString([]byte(checkerFixturePhrase)),
+		hex.EncodeToString([]byte(checkerFixturePhrase)),
+		strings.ReplaceAll(checkerFixturePhrase, " ", "=20"))
+	fixture += strings.Repeat("x", size-len(fixture)-len(`"}`)) + `"}`
+	parts, _ := s.BuildInjectionTextParts(t.Context(), surface, fixture)
+	var submitted int
+	for _, part := range parts {
+		submitted += len(part.Text)
+	}
+	t.Logf("%d input bytes, %d parts, %d submitted bytes", len(fixture), len(parts), submitted)
+	if len(parts) > 32 || submitted > 8*size {
+		t.Fatalf("tool result exceeds baseline bounds: %d parts, %d submitted bytes", len(parts), submitted)
+	}
+}
+
 // A nested decode that no longer fits stops the build below a text encoding:
 // the view that fit stays, the wording inside the nested layer is not sent, and
 // the item says it is over budget.
@@ -537,5 +700,29 @@ func TestCheckerNestedDecodeBelowTextEncodingStopsAtBudget(t *testing.T) {
 	}
 	if got := b.completeness(nil); got.Status != checker.Partial || got.Reason != checker.ReasonOverBudget {
 		t.Fatalf("completeness = %+v", got)
+	}
+}
+
+// A verified image data URL inside wide text is split by NUL bytes, so the
+// first excision misses it; matching normalization then rebuilds it. The
+// rebuilt image must not reach the checker or spend its budget.
+func TestCheckerWideCarrierExcisesRebuiltImageDataURL(t *testing.T) {
+	imageURL := dataURLForPNGBytes(t, randomPNG(t, 21))
+	wide := encodeUTF16ResponseBody(checkerFixturePhrase+" "+imageURL, true, true)
+	cfg := testResponseConfig()
+	checkertest.New(t, "benign").Configure(cfg, config.InjectionSurfaceHTTPResponse, config.InjectionModeBlock)
+	s := MustNew(cfg)
+	t.Cleanup(s.Close)
+	for _, source := range []string{base64.StdEncoding.EncodeToString(wide), hex.EncodeToString(wide)} {
+		parts, coverage := s.BuildInjectionTextParts(t.Context(), config.InjectionSurfaceHTTPResponse, source)
+		for _, part := range parts {
+			if strings.Contains(part.Text, "data:image/") {
+				t.Fatalf("part %s carries the image data URL: %q", part.ID, part.Text)
+			}
+		}
+		phrase := slices.ContainsFunc(parts, func(part checker.Part) bool { return strings.Contains(part.Text, checkerFixturePhrase) })
+		if !phrase || coverage.Status != checker.Complete {
+			t.Fatalf("checker views %q, completeness %+v, want the phrase with complete coverage", checkerPartTexts(parts), coverage)
+		}
 	}
 }

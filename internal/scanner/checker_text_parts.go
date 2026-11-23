@@ -120,7 +120,8 @@ func (b *checkerTextBuilder) add(view bodyInjectionView) bool {
 	// Fragment reconstructions preserve the producer's synthetic newlines.
 	// Keep each reconstruction in its own part; a checker must not concatenate
 	// independent parts. Encoded-only sources supply decoded parts only.
-	text := strings.ToValidUTF8(exciseVerifiedImageDataURLs(view.Text), " ")
+	rawText := exciseVerifiedImageDataURLs(view.Text)
+	text := strings.ToValidUTF8(rawText, " ")
 	if text == "" {
 		return true
 	}
@@ -153,6 +154,9 @@ func (b *checkerTextBuilder) add(view bodyInjectionView) bool {
 
 	addMatching := func(text string, printableOnly bool) bool {
 		add := func(value, representation string) bool {
+			// Normalization can rebuild a verified image data URL whose
+			// characters were split by NUL bytes, so excise after it.
+			value = exciseVerifiedImageDataURLs(value)
 			return (printableOnly && !isPrintableText([]byte(value))) || appendPart(value, representation)
 		}
 		tags := normalize.DecodeTags(text)
@@ -160,6 +164,26 @@ func (b *checkerTextBuilder) add(view bodyInjectionView) bool {
 			add(normalize.ForMatching(text), "for_matching/v1") &&
 			add(normalize.ForMatchingSpaced(text), "for_matching_spaced/v1") &&
 			(tags == text || add(normalize.ForMatching(tags), "for_matching/v1"))
+	}
+	addWide := func(raw string, matchCarrierBytes bool) bool {
+		// Require a BOM here. The body decoder also guesses BOM-less
+		// encodings, which would reinterpret unrelated carrier bytes.
+		if !hasWideByteOrderMark(raw) {
+			return true
+		}
+		wide, ok, err := decodeLikelyWideResponseBody(b.ctx, []byte(raw))
+		if err != nil && b.ctx.Err() != nil {
+			b.reason = checker.ReasonCanceled
+			return false
+		}
+		if ok {
+			wide = exciseVerifiedImageDataURLs(wide)
+			if (isPrintableText([]byte(wide)) && !appendPart(wide, "response_decoded/v1")) || !addMatching(wide, true) {
+				return false
+			}
+		}
+		// The legacy carrier matcher normalizes the decoded bytes directly.
+		return !matchCarrierBytes || addMatching(raw, true)
 	}
 	representation := "original"
 	if view.RequireFragmentBoundary {
@@ -173,11 +197,14 @@ func (b *checkerTextBuilder) add(view bodyInjectionView) bool {
 			!appendPart(normalize.ForToolTextSpaced(text), "for_tool_text_spaced/v1")) {
 		return false
 	}
+	if !view.DecodeOnly && !addWide(rawText, false) {
+		return false
+	}
 	// The scanner opens a whole-content decode without a text gate, so wording
 	// buried in binary reaches its rules. A decode that is not text as a whole
 	// still contributes its readable runs, the same floor the opaque body view
 	// applies. Short coincidental decodes of ordinary words stay below it.
-	addReadableRuns := func(text string) bool {
+	addRuns := func(text string) bool {
 		views, err := opaqueResponseTextView(b.ctx, []byte(text))
 		if err != nil {
 			b.reason = checker.ReasonCanceled
@@ -186,7 +213,20 @@ func (b *checkerTextBuilder) add(view bodyInjectionView) bool {
 		runs := strings.ToValidUTF8(exciseVerifiedImageDataURLs(views.retained), " ")
 		return appendPart(runs, "response_decoded_runs/v1") && addMatching(runs, true)
 	}
+	addReadableRuns := func(text string) bool {
+		if !addRuns(text) {
+			return false
+		}
+		// Matching drops NUL bytes, so wording interleaved with them (wide
+		// text behind a prefix or without a byte-order mark) is one phrase to
+		// the scanner but breaks every run above. Read the runs again with
+		// the NULs removed; the same length floor applies.
+		return !strings.Contains(text, "\x00") || addRuns(strings.ReplaceAll(text, "\x00", ""))
+	}
 	addDecoded := func(raw string) bool {
+		if !addWide(raw, true) {
+			return false
+		}
 		if !utf8.ValidString(raw) {
 			textual, err := isTextualResponseBody(b.ctx, []byte(raw))
 			if err != nil {
@@ -213,7 +253,7 @@ func (b *checkerTextBuilder) add(view bodyInjectionView) bool {
 		legacyRoot = text
 	}
 	if view.DecodeOnly || view.RequireFragmentBoundary || hasEncodedRun(normalized) ||
-		hasTextEncoding(normalized) || hasQuotedPrintable(text) || normalize.ContainsTags(text) {
+		hasTextEncoding(normalized) || hasQuotedPrintable(rawText) || normalize.ContainsTags(text) {
 		used, candidates := 0, 0
 		legacy := newResponseDecodeMemo(nil, false, nil)
 		legacy.visitDecoded = func(decoded, _ string) bool {
@@ -231,8 +271,8 @@ func (b *checkerTextBuilder) add(view bodyInjectionView) bool {
 		}
 		if len(legacyRoot) <= maxDecodeTotalBytes {
 			legacy.recursiveMode(legacyRoot, 0, !view.RequireFragmentBoundary)
-			if !legacy.stopVisiting && !view.DecodeOnly && legacyRoot != text && hasQuotedPrintable(text) {
-				legacy.recursiveMode(text, 0, !view.RequireFragmentBoundary)
+			if !legacy.stopVisiting && !view.DecodeOnly && legacyRoot != rawText && hasQuotedPrintable(rawText) {
+				legacy.recursiveMode(rawText, 0, !view.RequireFragmentBoundary)
 			}
 		} else {
 			b.reason = checker.ReasonTruncated
@@ -266,4 +306,13 @@ func (b *checkerTextBuilder) add(view bodyInjectionView) bool {
 		b.reason = checker.ReasonTruncated
 	}
 	return true
+}
+
+// hasWideByteOrderMark reports whether raw starts with a UTF-16 or UTF-32
+// byte-order mark. FF FE also begins the UTF-32 little-endian mark.
+func hasWideByteOrderMark(raw string) bool {
+	if len(raw) >= 2 && ((raw[0] == 0xff && raw[1] == 0xfe) || (raw[0] == 0xfe && raw[1] == 0xff)) {
+		return true
+	}
+	return len(raw) >= 4 && raw[0] == 0 && raw[1] == 0 && raw[2] == 0xfe && raw[3] == 0xff
 }
