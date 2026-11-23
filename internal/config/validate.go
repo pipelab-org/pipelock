@@ -5465,17 +5465,28 @@ func (c *Config) ValidateReceiptV3() error {
 	switch {
 	case !fr.Enabled || fr.Dir == "" || fr.SigningKeyPath == "":
 		return errors.New("flight_recorder.receipt_format v3 requires flight_recorder.enabled, dir, and signing_key_path")
-	case fr.Anchor.RekorURL != "" || fr.Anchor.LocalLog != "" || c.flightRecorderAnchorHasExplicitSettings():
-		return errors.New("flight_recorder.anchor requires receipt_format: legacy")
-	case (fr.EvidenceHealth.Enabled != nil && *fr.EvidenceHealth.Enabled) ||
-		(fr.EvidenceHealth.Enabled == nil && (fr.EvidenceSelfAuditIntervalDuration() != DefaultEvidenceHealthSelfAuditInterval ||
-			fr.EvidenceMaxAnchorLagDuration() != DefaultEvidenceHealthMaxAnchorLag)):
-		return errors.New("flight_recorder.evidence_health requires receipt_format: legacy")
-	case (c.DashboardSnapshot.Enabled != nil && *c.DashboardSnapshot.Enabled) ||
-		(c.DashboardSnapshot.Enabled == nil && (c.DashboardSnapshot.Path != "" || c.DashboardSnapshot.IntervalDuration() != DefaultDashboardSnapshotInterval)):
-		return errors.New("dashboard_snapshot requires receipt_format: legacy")
 	case fr.ReceiptChainCount() > 1:
 		return errors.New("flight_recorder.receipt_format v3 requires at most one flight_recorder.receipt_chains chain")
+	default:
+		return c.validateReceiptV3Evidence()
+	}
+}
+
+func (c *Config) validateReceiptV3Evidence() error {
+	fr := c.FlightRecorder
+	switch {
+	case fr.AnchorConfigured() || c.flightRecorderAnchorHasExplicitSettings():
+		return errors.New("flight_recorder.anchor requires receipt_format: legacy")
+	case fr.EvidenceHealthEnabled() && (fr.EvidenceHealth.Enabled != nil ||
+		c.hasExplicitMappingSettings("flight_recorder", "evidence_health") ||
+		fr.EvidenceSelfAuditIntervalDuration() != DefaultEvidenceHealthSelfAuditInterval ||
+		fr.EvidenceMaxAnchorLagDuration() != DefaultEvidenceHealthMaxAnchorLag):
+		return errors.New("flight_recorder.evidence_health requires receipt_format: legacy")
+	case c.DashboardSnapshot.EnabledWithRecorderDir(fr.Dir) && (c.DashboardSnapshot.Enabled != nil ||
+		c.hasExplicitMappingSettings("dashboard_snapshot") ||
+		c.DashboardSnapshot.Path != "" ||
+		c.DashboardSnapshot.IntervalDuration() != DefaultDashboardSnapshotInterval):
+		return errors.New("dashboard_snapshot requires receipt_format: legacy")
 	default:
 		return nil
 	}
@@ -5684,6 +5695,10 @@ func (c *Config) validateFlightRecorderAnchor(warnings *[]Warning) error {
 }
 
 func (c *Config) flightRecorderAnchorHasExplicitSettings() bool {
+	return c.hasExplicitMappingSettings("flight_recorder", "anchor")
+}
+
+func (c *Config) hasExplicitMappingSettings(path ...string) bool {
 	if len(c.rawBytes) == 0 {
 		return false
 	}
@@ -5691,10 +5706,11 @@ func (c *Config) flightRecorderAnchorHasExplicitSettings() bool {
 	if err := yaml.Unmarshal(c.rawBytes, &root); err != nil || len(root.Content) == 0 {
 		return false
 	}
-	doc := root.Content[0]
-	flightRecorderNode := mappingValue(doc, "flight_recorder")
-	anchorNode := mappingValue(flightRecorderNode, "anchor")
-	return anchorNode != nil && anchorNode.Kind == yaml.MappingNode && len(anchorNode.Content) > 0
+	node := root.Content[0]
+	for _, field := range path {
+		node = mappingValue(node, field)
+	}
+	return node != nil && node.Kind == yaml.MappingNode && len(node.Content) > 0
 }
 
 func (c *Config) validateDashboardSnapshot() error {

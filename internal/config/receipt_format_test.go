@@ -27,6 +27,8 @@ func TestLoadReceiptFormat(t *testing.T) {
 		{name: "redirect action", fields: "  receipt_format: v3\n", other: "mcp_tool_policy:\n  action: redirect\n", wantErr: "does not yet support redirect rules"},
 		{name: "dashboard snapshot", fields: "  receipt_format: v3\n", other: "dashboard_snapshot:\n  enabled: true\n", wantErr: "dashboard_snapshot requires receipt_format: legacy"},
 		{name: "evidence health", fields: "  receipt_format: v3\n  evidence_health:\n    enabled: true\n", wantErr: "flight_recorder.evidence_health requires receipt_format: legacy"},
+		{name: "dashboard snapshot explicit defaults", fields: "  receipt_format: v3\n", other: "dashboard_snapshot:\n  interval: 10s\n", wantErr: "dashboard_snapshot requires receipt_format: legacy"},
+		{name: "evidence health explicit defaults", fields: "  receipt_format: v3\n  evidence_health:\n    self_audit_interval: 30s\n", wantErr: "flight_recorder.evidence_health requires receipt_format: legacy"},
 		{name: "anchor", fields: "  receipt_format: v3\n  anchor:\n    local_log: evidence.log\n", wantErr: "flight_recorder.anchor requires receipt_format: legacy"},
 		{name: "redirect rule", fields: "  receipt_format: v3\n", other: "mcp_tool_policy:\n  rules:\n    - action: redirect\n", wantErr: "does not yet support redirect rules"},
 	} {
