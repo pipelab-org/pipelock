@@ -285,6 +285,7 @@ func (in filesystemProfileInput) inaccessiblePaths() ([]string, error) {
 		return nil, fmt.Errorf("posture proof path: %w", err)
 	}
 	candidates := []string{
+		defaultControlAuditDir,
 		path.Join(configDir, "integrity"),
 		path.Join(configDir, "tls"),
 		path.Join(configDir, "keys", "flight-recorder-signing.key"),

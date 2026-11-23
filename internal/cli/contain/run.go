@@ -344,7 +344,7 @@ func runContainRun(
 	posture, err := env.emitPosture(runCfg, capsuleSigningKey, opts.postureOutput, env.probe, args)
 	if err != nil {
 		if len(beforeControls) > 0 {
-			_, _ = fmt.Fprintln(stdout, "workspace_control_surface=unavailable reason=launch_not_started")
+			printWorkspaceControlUnavailable(stdout, "launch_not_started")
 		}
 		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("%s posture capsule: %w", commandLabel, err))
 	}

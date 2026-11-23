@@ -38,8 +38,8 @@ Always tries every cleanup action — a partial uninstall left from a prior
 crashed run is still safe to call rollback on. Per-action failures are
 accumulated and reported, but the chain does not stop.
 
-By default, /etc/pipelock and /var/lib/pipelock are preserved (--keep-data
-defaults true). Users are removed by default; pass --keep-users to keep
+By default, /etc/pipelock, /var/lib/pipelock, and /var/lib/pipelock-contain
+are preserved (--keep-data defaults true). Users are removed by default; pass --keep-users to keep
 pipelock-proxy and pipelock-agent in place (useful when re-installing soon).
 
 Must be run as root.
@@ -63,7 +63,7 @@ Exit codes:
 	}
 
 	cmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "print the planned rollback actions without mutating state")
-	cmd.Flags().BoolVar(&opts.keepData, "keep-data", true, "preserve /etc/pipelock and /var/lib/pipelock (default true)")
+	cmd.Flags().BoolVar(&opts.keepData, "keep-data", true, "preserve configuration, proxy data, and workspace control baselines")
 	cmd.Flags().BoolVar(&opts.keepUsers, "keep-users", false, "preserve the pipelock-proxy and pipelock-agent users")
 	cmd.Flags().BoolVar(&opts.purgeUsers, "purge-users", false, "force user deletion even if --keep-users is set (sticky safety net)")
 
@@ -121,6 +121,7 @@ func rollbackActions(opts rollbackOpts) []step {
 		actionMaybeDeleteViewerUser(opts),
 		actionMaybeRemoveDir(opts, "config", func(e *installEnv) string { return e.configDir }),
 		actionMaybeRemoveDir(opts, "data", func(e *installEnv) string { return e.dataDir }),
+		actionMaybeRemoveDir(opts, "control-audit", func(e *installEnv) string { return e.controlAuditDir }),
 		// Revoke MUST execute (in reverse walk: first) before the agent
 		// user is deleted AND before the config dir removal wipes the
 		// inventory file. List position controls reverse-walk priority,
@@ -414,6 +415,9 @@ func actionMaybeRemoveDir(opts rollbackOpts, label string, pathFn func(*installE
 				return nil
 			}
 			path := pathFn(env)
+			if path == "" {
+				return nil
+			}
 			if label == "config" && env.preserveContainmentRecords {
 				return fmt.Errorf("left %s in place so a later attempt can find doorway records", path)
 			}
