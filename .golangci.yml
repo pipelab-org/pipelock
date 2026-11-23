@@ -43,6 +43,13 @@ linters:
       - path: internal/(proxy/reverse|playground/broker/server)\.go
         linters: [staticcheck]
         text: 'SA1019: \(net/http/httputil\.ReverseProxy\)\.Director '
+      # gobwas/ws v1.5.0 deprecated ReadFrame because it reads a whole
+      # peer-declared payload. These tests read frames their own fixtures
+      # wrote. Production code reads headers and bounds payloads itself, so a
+      # ReadFrame call outside a test still fails lint.
+      - path: internal/(proxy|mcp|wsutil)/.*_test\.go
+        linters: [staticcheck]
+        text: 'SA1019: github\.com/gobwas/ws\.ReadFrame is deprecated'
       - path: internal/proxy/proxy\.go
         linters: [gosec]
         text: "G704"
