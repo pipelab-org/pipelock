@@ -249,7 +249,10 @@ func (w *controlWalker) readConfig(entry controlEntry) ([]byte, bool) {
 				w.unreadable(entry.Path, "Git config symlink target could not be observed")
 				return nil, false
 			}
-			next := w.recordPath(rel)
+			// The link names its target, so a snapshot that does not read the link
+			// has not observed it.
+			var next controlEntry
+			w.following(file.Path, func() { next = w.recordPath(rel) })
 			if next.Kind == "" {
 				if _, err := w.root.Lstat(rel); !errors.Is(err, fs.ErrNotExist) {
 					w.unreadable(entry.Path, "Git config symlink target could not be observed")
