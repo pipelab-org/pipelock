@@ -356,7 +356,30 @@ func (w *controlWalker) followSymlink(link controlEntry) {
 	if err != nil || rel == "." || !filepath.IsLocal(rel) {
 		return
 	}
+	if !w.lexicalLinkTargetMatches(link, rel) {
+		w.unreadable(link.Path, "symlink target resolution is ambiguous")
+		return
+	}
 	w.queueTree(w.recordPath(rel), "", "")
+}
+
+// lexicalLinkTargetMatches reports whether cleaning ".." elements from a link
+// target names the same file the kernel resolves. A ".." after a symlinked
+// component walks out of that component's target, so the cleaned path would
+// observe the wrong place. Such a link is reported unreadable instead.
+func (w *controlWalker) lexicalLinkTargetMatches(link controlEntry, rel string) bool {
+	if !slices.Contains(strings.Split(filepath.ToSlash(link.Target), "/"), "..") {
+		return true
+	}
+	if filepath.IsAbs(link.Target) {
+		return false
+	}
+	resolved, err := w.root.Lstat(filepath.Dir(link.Path) + "/" + link.Target)
+	cleaned, cleanedErr := w.root.Lstat(rel)
+	if err != nil || cleanedErr != nil {
+		return errors.Is(err, fs.ErrNotExist) && errors.Is(cleanedErr, fs.ErrNotExist)
+	}
+	return os.SameFile(resolved, cleaned)
 }
 
 func (w *controlWalker) recheck(path string, info fs.FileInfo) {

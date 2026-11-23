@@ -249,3 +249,36 @@ func TestControlSurfaceFollowsInWorkspaceSymlinkTargets(t *testing.T) {
 		}
 	})
 }
+
+func TestControlSurfaceReportsAmbiguousDotDotLinkTargets(t *testing.T) {
+	root := t.TempDir()
+	writeControlFixture(t, root, "sub/keep", "keep")
+	writeControlFixture(t, root, "shared/cmds/run", "before")
+	writeControlFixture(t, root, "deep/inner/keep", "keep")
+	if err := os.MkdirAll(filepath.Join(root, ".claude"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../sub/../shared/cmds", filepath.Join(root, ".claude", "cmds")); err != nil {
+		t.Fatal(err)
+	}
+	before := controlSnapshot(t, root, DefaultControlSurfaceBudget())
+	if diff := controlDiff(t, before, before); diff.Incomplete {
+		t.Fatalf("a plain directory prefix resolves the same way lexically: %+v", diff)
+	}
+	// Replacing the prefix directory with a link makes the kernel resolve the
+	// target under deep/, where a lexical walk would keep observing shared/.
+	if err := os.RemoveAll(filepath.Join(root, "sub")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("deep/inner", filepath.Join(root, "sub")); err != nil {
+		t.Fatal(err)
+	}
+	writeControlFixture(t, root, "deep/shared/cmds/run", "planted")
+	after := controlSnapshot(t, root, DefaultControlSurfaceBudget())
+	diff := controlDiff(t, before, after)
+	if !diff.Incomplete || !strings.Contains(diff.IncompleteReason, "unreadable control paths") ||
+		len(diff.Unreadable) != 1 || diff.Unreadable[0].Path != filepath.FromSlash(".claude/cmds") ||
+		!strings.Contains(diff.Unreadable[0].Reason, "ambiguous") {
+		t.Fatalf("want an incomplete observation naming the ambiguous link: %+v", diff)
+	}
+}
