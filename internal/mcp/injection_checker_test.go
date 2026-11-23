@@ -188,6 +188,50 @@ func TestExternalCheckerToolResultOutcomes(t *testing.T) {
 	}
 }
 
+// Decoded views multiply the request: text that fits the limit on its own
+// still exceeds it once the URL and entity views are added. That must read as
+// an incomplete assessment on every surface, never as a clean one, and the
+// checker must not be called with a request it was told is too large.
+func TestExternalCheckerToolResultOverBudget(t *testing.T) {
+	text := strings.Repeat("x%20y&amp;z ", 40000)
+	if len(text) >= 1<<20 {
+		t.Fatal("fixture exceeds the request limit on its own")
+	}
+	payload, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0", "id": 1,
+		"result": map[string]any{"content": []map[string]any{{"type": "text", "text": text}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		name, mode string
+		clean      bool
+	}{
+		{"block", config.InjectionModeBlock, false},
+		{"warn", config.InjectionModeWarn, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newMockChecker(t, mockBenign)
+			sc, events := externalScanner(t, m.srv.URL+"/check", "", resultBinding(tt.mode))
+			v := ScanResponse(payload, sc)
+			if v.Clean != tt.clean || v.Assessment.Status != scanner.AssessmentIncomplete {
+				t.Fatalf("verdict = %+v", v)
+			}
+			if !tt.clean && (v.Action != config.ActionBlock || !strings.Contains(v.Error, string(checker.ReasonOverBudget))) {
+				t.Fatalf("blocked verdict = %+v", v)
+			}
+			got := events()
+			if len(got) != 1 || got[0].State != string(checker.StateIncomplete) || got[0].Reason != string(checker.ReasonOverBudget) {
+				t.Fatalf("events = %+v", got)
+			}
+			if m.requests.Load() != 0 {
+				t.Fatalf("checker called %d times for an over-budget item", m.requests.Load())
+			}
+		})
+	}
+}
+
 func TestExternalCheckerOffAndDLP(t *testing.T) {
 	m := newMockChecker(t, mockSuspicious)
 	sc, _ := externalScanner(t, m.srv.URL+"/check", "", resultBinding(config.InjectionModeOff))
