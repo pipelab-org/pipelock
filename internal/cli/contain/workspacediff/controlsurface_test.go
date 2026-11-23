@@ -981,21 +981,18 @@ func TestControlSurfaceWorktreeSlotMatchesPlainNestedProject(t *testing.T) {
 
 func TestControlSurfaceClassifiesPathsAcrossPasses(t *testing.T) {
 	root := t.TempDir()
-	info, err := os.Stat(root)
-	if err != nil {
-		t.Fatal(err)
-	}
 	const name = "settings"
 	old := controlEntry{mode: 0o600}
 	updated := controlEntry{mode: 0o644}
 	before := ControlSurfaceSnapshot{
-		root: root, rootInfo: info,
+		root:     root,
 		priority: controlPass{entries: map[string]controlEntry{name: old}},
 		nested:   controlPass{entries: map[string]controlEntry{name: old}},
 	}
 	after := ControlSurfaceSnapshot{
-		root: root, rootInfo: info,
-		nested: controlPass{entries: map[string]controlEntry{name: updated}},
+		root:     root,
+		priority: controlPass{entries: map[string]controlEntry{}},
+		nested:   controlPass{entries: map[string]controlEntry{name: updated}},
 	}
 	for _, diff := range []ControlSurfaceStatement{controlDiff(t, before, after), controlDiff(t, after, before)} {
 		if len(diff.Added) != 0 || len(diff.Removed) != 0 || !slices.Equal(diff.Modified, []string{name}) {
@@ -1052,10 +1049,6 @@ func TestControlSurfaceInfersNothingFromReferencesOfUnexaminedRepositories(t *te
 // added or removed, and dropping both would hide a modification.
 func TestControlSurfaceComparesAPathObservedByDifferentPassesAtEachEndpoint(t *testing.T) {
 	root := t.TempDir()
-	info, err := os.Stat(root)
-	if err != nil {
-		t.Fatal(err)
-	}
 	const name = "settings"
 	entry := func(digest string) controlEntry {
 		return controlEntry{Entry: Entry{Path: name, Kind: KindFile, Digest: digest}, mode: 0o600}
@@ -1071,12 +1064,13 @@ func TestControlSurfaceComparesAPathObservedByDifferentPassesAtEachEndpoint(t *t
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			before := ControlSurfaceSnapshot{
-				root: root, rootInfo: info,
+				root:     root,
 				priority: controlPass{entries: map[string]controlEntry{name: tc.before}},
 			}
 			after := ControlSurfaceSnapshot{
-				root: root, rootInfo: info,
-				nested: controlPass{entries: map[string]controlEntry{name: tc.after}},
+				root:     root,
+				priority: controlPass{entries: map[string]controlEntry{}},
+				nested:   controlPass{entries: map[string]controlEntry{name: tc.after}},
 			}
 			for _, diff := range []ControlSurfaceStatement{controlDiff(t, before, after), controlDiff(t, after, before)} {
 				if len(diff.Added) != 0 || len(diff.Removed) != 0 {

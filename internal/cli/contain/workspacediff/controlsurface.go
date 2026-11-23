@@ -937,7 +937,7 @@ func DiffControlSurface(before, after ControlSurfaceSnapshot) (ControlSurfaceSta
 	s.Removed = mergeControlPaths(s.Removed, unobservedControlPaths(priorityDiff.removed, observedAfter),
 		unobservedControlPaths(nestedDiff.removed, observedAfter))
 	s.Modified = mergeControlPaths(s.Modified, priorityDiff.modified, nestedDiff.modified)
-	if before.rootInfo != nil && after.rootInfo != nil && identityReason == "" {
+	if before.priority.entries != nil && after.priority.entries != nil && identityReason == "" {
 		s.Modified = mergeControlPaths(s.Modified, nil, modifiedAcrossPasses(
 			[]controlPass{before.priority, before.nested}, []controlPass{after.priority, after.nested}))
 	}
