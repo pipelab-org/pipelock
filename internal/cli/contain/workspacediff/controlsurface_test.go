@@ -1003,3 +1003,46 @@ func TestControlSurfaceClassifiesPathsAcrossPasses(t *testing.T) {
 		}
 	}
 }
+
+// A path found only through a nested repository's configuration, such as an
+// included file or a hook directory, is examined only when discovery reaches
+// that repository. A snapshot whose discovery missed it proves neither that the
+// path was added nor that it was removed.
+func TestControlSurfaceInfersNothingFromReferencesOfUnexaminedRepositories(t *testing.T) {
+	git := newControlGit(t)
+	root := t.TempDir()
+	git.init(t, root)
+	nested := filepath.Join(root, "x", "y", "a")
+	if err := os.MkdirAll(nested, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	git.init(t, nested)
+	git.run(t, nested, "config", "--local", "include.path", "../../../../shared.cfg")
+	git.run(t, nested, "config", "--local", "core.hooksPath", "../../../hk")
+	writeControlFixture(t, root, "shared.cfg", "[example]\n\tkey = value\n")
+	writeControlFixture(t, root, "hk/pre-commit", "before")
+	full := DefaultControlSurfaceBudget()
+	// Depth 2 lists x and y, but y's child a is never queued, so a's Git
+	// directory is not examined while the root's own directories are.
+	shallow := full
+	shallow.MaxNestedDepth = 2
+	complete := controlSnapshot(t, root, full)
+	writeControlFixture(t, root, "shared.cfg", "[example]\n\tkey = changed\n")
+	writeControlFixture(t, root, "hk/pre-commit", "changed")
+	changed := controlSnapshot(t, root, full)
+	diff := controlDiff(t, complete, changed)
+	expectControlPath(t, diff, "shared.cfg")
+	expectControlPath(t, diff, "hk/pre-commit")
+	cutOff := controlSnapshot(t, root, shallow)
+	for name, pair := range map[string][2]ControlSurfaceSnapshot{
+		"unexamined at end":   {complete, cutOff},
+		"unexamined at start": {cutOff, complete},
+	} {
+		t.Run(name, func(t *testing.T) {
+			diff := controlDiff(t, pair[0], pair[1])
+			if !diff.NestedDiscoveryPartial || diff.Incomplete || diff.Changed {
+				t.Fatalf("a repository that was not examined proves no change to what it references: %+v", diff)
+			}
+		})
+	}
+}

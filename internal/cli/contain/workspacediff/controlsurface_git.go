@@ -30,12 +30,14 @@ func (w *controlWalker) scanGitPointer(entry controlEntry, prefix, base, worktre
 		return
 	}
 	if path, inside := w.workspaceTarget(base, target); inside {
-		targetEntry := w.recordPath(path)
-		if targetEntry.Kind == KindDir {
-			w.scanGitDir(path, worktree)
-		} else if targetEntry.Kind != KindSymlink {
-			w.unreadable(entry.Path, "Git directory target could not be observed")
-		}
+		w.following(entry.Path, func() {
+			targetEntry := w.recordPath(path)
+			if targetEntry.Kind == KindDir {
+				w.scanGitDir(path, worktree)
+			} else if targetEntry.Kind != KindSymlink {
+				w.unreadable(entry.Path, "Git directory target could not be observed")
+			}
+		})
 	}
 }
 
@@ -56,6 +58,9 @@ func (w *controlWalker) scanGitConfig(entry controlEntry, gitDir, worktree strin
 	if !ok {
 		return
 	}
+	previous := w.source
+	w.source = entry.Path
+	defer func() { w.source = previous }()
 	if !scanGitConfig(string(data), func(section, key, value string) {
 		switch {
 		case section == "core" && key == "hookspath":
