@@ -80,8 +80,17 @@ func TestCheckAuditRoot(t *testing.T) {
 			t.Fatalf("check %q: %v", root, err)
 		}
 	}
-	if err := checkAuditRoot(alias); err == nil || !strings.Contains(err.Error(), "traverses a symbolic link") {
+	err = checkAuditRoot(alias)
+	// The operator needs the path that works, not just the refusal.
+	if err == nil || !strings.Contains(err.Error(), "through a symbolic link") || !strings.Contains(err.Error(), "pass "+shellQuote(canonical)) {
 		t.Fatalf("check %q: %v", alias, err)
+	}
+	// A symlinked ancestor is refused the same way as a symlinked root.
+	if err := os.Mkdir(filepath.Join(canonical, "child"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkAuditRoot(filepath.Join(alias, "child")); err == nil || !strings.Contains(err.Error(), "through a symbolic link") {
+		t.Fatalf("check below %q: %v", alias, err)
 	}
 }
 

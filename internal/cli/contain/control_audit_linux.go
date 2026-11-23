@@ -126,7 +126,7 @@ func checkAuditRoot(root string) error {
 		return fmt.Errorf("inspect workspace path %q: %w", root, err)
 	}
 	if resolved != root {
-		return fmt.Errorf("workspace path %q traverses a symbolic link; restore the recorded workspace path before retrying", root)
+		return fmt.Errorf("workspace path %q resolves to %q through a symbolic link; baselines are keyed by the path as given, so pass %s (the path sudo pipelock contain list-workspaces shows for a grant), or restore the layout the baseline was recorded under", root, resolved, shellQuote(resolved))
 	}
 	return nil
 }
