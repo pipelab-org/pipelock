@@ -978,3 +978,28 @@ func TestControlSurfaceWorktreeSlotMatchesPlainNestedProject(t *testing.T) {
 		}
 	}
 }
+
+func TestControlSurfaceClassifiesPathsAcrossPasses(t *testing.T) {
+	root := t.TempDir()
+	info, err := os.Stat(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const name = "settings"
+	old := controlEntry{mode: 0o600}
+	updated := controlEntry{mode: 0o644}
+	before := ControlSurfaceSnapshot{
+		root: root, rootInfo: info,
+		priority: controlPass{entries: map[string]controlEntry{name: old}},
+		nested:   controlPass{entries: map[string]controlEntry{name: old}},
+	}
+	after := ControlSurfaceSnapshot{
+		root: root, rootInfo: info,
+		nested: controlPass{entries: map[string]controlEntry{name: updated}},
+	}
+	for _, diff := range []ControlSurfaceStatement{controlDiff(t, before, after), controlDiff(t, after, before)} {
+		if len(diff.Added) != 0 || len(diff.Removed) != 0 || !slices.Equal(diff.Modified, []string{name}) {
+			t.Errorf("expected one modification, got %+v", diff)
+		}
+	}
+}

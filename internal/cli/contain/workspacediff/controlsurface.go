@@ -843,8 +843,14 @@ func DiffControlSurface(before, after ControlSurfaceSnapshot) (ControlSurfaceSta
 		priorityDiff = compareControlPass(before.priority, after.priority)
 		nestedDiff = compareControlPass(before.nested, after.nested)
 	}
-	s.Added = mergeControlPaths(s.Added, priorityDiff.added, nestedDiff.added)
-	s.Removed = mergeControlPaths(s.Removed, priorityDiff.removed, nestedDiff.removed)
+	// The passes classify independently, and a path can be recorded by both. It
+	// is added or removed only when no pass observed it at the other endpoint.
+	observedBefore := observedControlPaths(before.priority, before.nested)
+	observedAfter := observedControlPaths(after.priority, after.nested)
+	s.Added = mergeControlPaths(s.Added, unobservedControlPaths(priorityDiff.added, observedBefore),
+		unobservedControlPaths(nestedDiff.added, observedBefore))
+	s.Removed = mergeControlPaths(s.Removed, unobservedControlPaths(priorityDiff.removed, observedAfter),
+		unobservedControlPaths(nestedDiff.removed, observedAfter))
 	s.Modified = mergeControlPaths(s.Modified, priorityDiff.modified, nestedDiff.modified)
 	s.Unreadable = mergeUnreadable(
 		collectControlUnreadable(before.priority, before.nested),
@@ -898,6 +904,23 @@ func collectControlUnreadable(passes ...controlPass) []UnreadableEntry {
 		}
 	}
 	return entries
+}
+
+func observedControlPaths(passes ...controlPass) map[string]struct{} {
+	observed := make(map[string]struct{})
+	for _, pass := range passes {
+		for path := range pass.entries {
+			observed[path] = struct{}{}
+		}
+	}
+	return observed
+}
+
+func unobservedControlPaths(paths []string, observed map[string]struct{}) []string {
+	return slices.DeleteFunc(slices.Clone(paths), func(path string) bool {
+		_, seen := observed[path]
+		return seen
+	})
 }
 
 func mergeControlPaths(out, a, b []string) []string {
