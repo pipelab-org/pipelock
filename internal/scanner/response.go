@@ -521,7 +521,11 @@ func (s *Scanner) scanResponseWithSuppress(ctx context.Context, content, suppres
 func (s *Scanner) scanResponseWithSuppressMemo(ctx context.Context, content, suppressTarget string, suppress []config.SuppressEntry, forceEncodedDecode bool, memo *responseMatchMemo) (out ResponseScanResult) {
 	result := s.scanResponseMatches(ctx, content, suppressTarget, suppress, forceEncodedDecode, memo)
 	if result.Clean && !result.Failed() && len(result.WarnedMatches) == 0 && s.PromptInjectionModeFor(ctx) != config.ActionAllow {
-		result = s.scanAdditionalInjectionViews(ctx, content, suppressTarget, suppress, result)
+		var proof responseDeltaProof
+		if memo != nil && len(result.SuppressedMatches)+len(result.ObservedCoreMatches) == 0 {
+			proof = memo.deltaProof
+		}
+		result = s.scanAdditionalInjectionViewsWithProof(ctx, content, suppressTarget, suppress, result, proof)
 		s.setInjectionAssessment(ctx, &result, result.Assessment.Status != AssessmentNotAssessed)
 	}
 	if result.Clean || result.Failed() || (s.responseAction != config.ActionStrip && s.responseAction != config.ActionAsk) {
@@ -583,9 +587,14 @@ func (s *Scanner) scanResponseWithSuppressMemo(ctx context.Context, content, sup
 	candidate := rewritten.String()
 	// Detection only: a residual finding must not start another rewrite and
 	// must never be exposed to a caller as successfully stripped content.
-	checked := s.scanResponseMatches(ctx, candidate, suppressTarget, suppress, forceEncodedDecode, newResponseMatchMemo(len(candidate)))
+	candidateMemo := newResponseMatchMemo(len(candidate))
+	checked := s.scanResponseMatches(ctx, candidate, suppressTarget, suppress, forceEncodedDecode, candidateMemo)
 	if checked.Clean && !checked.Failed() && len(checked.WarnedMatches) == 0 {
-		checked = s.scanAdditionalInjectionViews(ctx, candidate, suppressTarget, suppress, checked)
+		var proof responseDeltaProof
+		if candidateMemo != nil && len(checked.SuppressedMatches)+len(checked.ObservedCoreMatches) == 0 {
+			proof = candidateMemo.deltaProof
+		}
+		checked = s.scanAdditionalInjectionViewsWithProof(ctx, candidate, suppressTarget, suppress, checked, proof)
 	}
 	result.InspectionIncomplete = result.InspectionIncomplete || checked.InspectionIncomplete
 	s.setInjectionAssessment(ctx, &result, true)
@@ -758,7 +767,7 @@ func (s *Scanner) scanResponseMatchesWithOptions(ctx context.Context, content, s
 	// content below would be a no-op (nothing left to replace) and silently
 	// disable the pass - see scanCoreResponse, which reassembles from `original`.
 	preStripContent := content
-	content = normalize.ForMatching(content)
+	content = memo.normalize(content, matchingPrimary)
 
 	// Primary: run response patterns whose keywords appear in content.
 	// Pre-filter checks are per-pass: each normalized variant gets its
@@ -779,7 +788,7 @@ func (s *Scanner) scanResponseMatchesWithOptions(ctx context.Context, content, s
 	// have no other surviving defense because the opt-space pass only relaxes
 	// trailing \s+, not literal spaces inside the alternation.
 	if len(matches) == 0 && memo.outboundError() == nil {
-		spaced := normalize.ForMatchingSpaced(preStripContent)
+		spaced := memo.normalize(preStripContent, matchingSpaced)
 		if spaced != content {
 			matches = filterSuppressed(withResponseSpans(filterDefensiveCredentialSolicitationMatches(spaced, memo.matchTransformed(s.responsePreFilter, s.responsePatterns, spaced, s.responseMatchingLiterals, matchingSpaced)), ViewInvisibleSpaced))
 			if len(matches) > 0 {
@@ -791,7 +800,7 @@ func (s *Scanner) scanResponseMatchesWithOptions(ctx context.Context, content, s
 	// Tertiary: leetspeak normalization. Pre-filter runs on the LEETED
 	// content, catching keywords that emerge after digit-to-letter conversion.
 	if len(matches) == 0 && memo.outboundError() == nil {
-		leeted := normalize.Leetspeak(content)
+		leeted := memo.normalize(content, matchingLeet)
 		if leeted != content {
 			matches = filterSuppressed(withResponseSpans(filterDefensiveCredentialSolicitationMatches(leeted, memo.matchTransformed(s.responsePreFilter, s.responsePatterns, leeted, s.responseMatchingLiterals, matchingLeet)), ViewLeetspeak))
 		}
@@ -810,7 +819,7 @@ func (s *Scanner) scanResponseMatchesWithOptions(ctx context.Context, content, s
 	// near-miss words like "instroctions" that don't match "instructions".
 	// Folding all vowels to 'a' in both content and patterns makes them match.
 	if len(matches) == 0 && len(s.responseVowelFoldPatterns) > 0 && memo.outboundError() == nil {
-		folded := normalize.FoldVowels(content)
+		folded := memo.normalize(content, matchingVowel)
 		if folded != content {
 			matches = filterSuppressed(withResponseSpans(filterDefensiveCredentialSolicitationMatches(folded, memo.matchTransformed(s.responseVowelFoldPreFilter, s.responseVowelFoldPatterns, folded, s.responseMatchingLiterals, matchingVowel)), ViewVowelFold))
 		}
@@ -1179,31 +1188,69 @@ func matchPatternsPreFilteredWithMemo(pf *responsePreFilter, patterns []*compile
 	if pf == nil {
 		return matchPatternsAgainst(patterns, content)
 	}
-	indices := pf.patternsToCheckWithMemo(content, view)
+	if view == nil {
+		view = &responsePreFilterView{}
+	}
+	chains := pf.sparseDeltaRanges(content, view, patterns)
+	indices := pf.patternsToCheckWithMemo(content, view, patterns, chains)
 	if len(indices) == 0 {
 		return nil
+	}
+	chains = pf.chainRanges(content, view, patterns, indices, chains)
+	if len(chains) != 0 {
+		indices = slices.DeleteFunc(indices, func(i int) bool {
+			windows, complete := chains.patternWindows(patterns[i])
+			return complete && len(windows) == 0
+		})
+		if len(indices) == 0 {
+			return nil
+		}
 	}
 	// Large bodies spend most of their time in independent regexp engines.
 	// Keep each pattern's result in its original slot so match order, pass
 	// precedence, and suppression behavior are identical to the serial path.
 	match := matchResponsePattern
-	if view != nil {
-		switch {
-		case view.outboundMatch != nil:
-			match = view.outboundMatch
-		case view.positions != nil && view.positions.ready && view.positions.hits != nil && len(pf.windows) != 0:
-			// The prefilter finished indexing before any worker starts.
-			// Each worker reads the same immutable literal coordinates.
-			match = func(p *compiledPattern, text string) []ResponseMatch {
-				plan := pf.windows[p.re]
-				if plan == nil || p.responseMemoRegexp != p.re || hasExternalTransferCompanions(p) {
-					return matchResponsePattern(p, text)
+	switch {
+	case view.outboundMatch != nil:
+		match = view.outboundMatch
+	case len(content) >= regexpWindowMinText && len(pf.windows) != 0:
+		// Chain and delta windows do not need the whole-view window index.
+		// Prepare that index only when a remaining plan can use it.
+		if fallback := pf.windowFallbackIndices(patterns, indices, chains); len(fallback) != 0 {
+			match = pf.windowMatcher(content, view, patterns, fallback)
+		}
+	}
+	if delta := view.delta; delta != nil && view.outboundMatch == nil && len(pf.deltaWidths) != 0 {
+		full := match
+		match = func(p *compiledPattern, text string) []ResponseMatch {
+			if plan, ok := pf.deltaWidths[p.re]; ok && p.responseMemoRegexp == p.re && !hasExternalTransferCompanions(p) {
+				if result, handled := delta.matchPlanned(p, text, plan); handled {
+					return result
 				}
+			}
+			return full(p, text)
+		}
+	}
+	if len(chains) > 0 {
+		fallback := match
+		match = func(p *compiledPattern, text string) []ResponseMatch {
+			if ranges, ok := chains.patternWindows(p); ok {
 				if !responsePatternCanMatch(p, text) {
 					return nil
 				}
-				return responseMatchesAt(p, text, plan.findAllWithPositions(p.re, p.re, text, text, view.positions))
+				return responseMatchesAt(p, text, matchResponseChainWindows(p.re, text, ranges, view.positions, false))
 			}
+			if hasExternalTransferCompanions(p) && responsePatternCanMatch(p, text) {
+				locations := responsePatternMatchLocationsWith(p, text, func(re *regexp.Regexp, captures bool) [][]int {
+					ranges, ok := chains[responseChainKey{p, re}]
+					if ok {
+						return matchResponseChainWindows(re, text, ranges, view.positions, captures)
+					}
+					return responseRegexpLocations(re, text, captures)
+				})
+				return responseMatchesAt(p, text, locations)
+			}
+			return fallback(p, text)
 		}
 	}
 	workers := min(runtime.GOMAXPROCS(0), len(indices))

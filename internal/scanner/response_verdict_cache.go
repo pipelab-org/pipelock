@@ -8,15 +8,20 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"hash"
+	"slices"
 	"sync"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
 const (
-	responseVerdictMaxEntries = 64
-	responseVerdictMaxBytes   = 16 << 20
+	// A page with roughly 150 assets can fit even with dozens of scripts
+	// in the 0.5-1.2 MiB range. Entries retain digests and clean verdicts
+	// only. The source-byte budget and per-response limit bound admission.
+	responseVerdictMaxEntries = 256
+	responseVerdictMaxBytes   = 128 << 20
 	responseVerdictMaxBody    = 4 << 20
+	responseVerdictMaxFlights = 64
 )
 
 type responseVerdictKey struct {
@@ -82,6 +87,12 @@ func (c *responseVerdictCache) put(key responseVerdictKey, size int, result Resp
 		len(result.WarnedMatches) != 0 || len(result.SuppressedMatches) != 0 || len(result.ObservedCoreMatches) != 0 || result.TransformedContent != "" {
 		return
 	}
+	// Keep empty evidence slices empty without retaining their backing arrays.
+	// Clone preserves the distinction between nil and a non-nil empty slice.
+	result.Matches = slices.Clone(result.Matches)
+	result.WarnedMatches = slices.Clone(result.WarnedMatches)
+	result.SuppressedMatches = slices.Clone(result.SuppressedMatches)
+	result.ObservedCoreMatches = slices.Clone(result.ObservedCoreMatches)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.entries == nil {
@@ -148,7 +159,7 @@ func (c *responseVerdictCache) beginFlight(key responseVerdictKey) (*responseVer
 	if flight := c.flights[key]; flight != nil {
 		return flight, false
 	}
-	if len(c.flights) >= responseVerdictMaxEntries {
+	if len(c.flights) >= responseVerdictMaxFlights {
 		return nil, false
 	}
 	if c.flights == nil {

@@ -25,7 +25,10 @@ type responsePreFilter struct {
 	prefixes        []*responseSuffixProof
 	companionProofs [][]*responseSuffixProof
 	windows         map[*regexp.Regexp]*regexpWindowPlan
+	chains          map[*regexp.Regexp]*responseLiteralChain
+	chainLiterals   []string
 	windowAnchors   []string
+	deltaWidths     map[*regexp.Regexp]responseDeltaWidth
 
 	// alwaysRun holds indices of patterns with no extractable keyword gate.
 	// A separate negative proof can still exclude these patterns.
@@ -35,11 +38,15 @@ type responsePreFilter struct {
 // A view is owned by one sequential response scan and keyed by exact input
 // bytes in its memo. It shares the gate's derived text across pattern groups.
 type responsePreFilterView struct {
-	outboundMatch    func(*compiledPattern, string) []ResponseMatch
-	folded, distance string
-	literals         responseLiteralMemo
-	ready            bool
-	positions        *matchingView
+	outboundMatch  func(*compiledPattern, string) []ResponseMatch
+	delta          *responseDeltaView
+	folded         string
+	literals       responseLiteralMemo
+	ready          bool
+	positions      *matchingView
+	buffers        *responseMatchingBuffers
+	maxWindowRun   int
+	windowRunReady bool
 }
 
 // newResponsePreFilter builds a pre-filter from response patterns.
@@ -62,7 +69,18 @@ func newResponsePreFilter(patterns []*compiledPattern) *responsePreFilter {
 				pf.gates[i] = responseLiteralGate(tree)
 				pf.proofs[i] = newResponseSuffixProof(p.re)
 				if p.responseMemoRegexp != nil && p.responseMemoRegexp == p.re {
-					if plan := newRegexpWindowPlan(p.re, tree); plan != nil && len(plan.anchors) != 0 {
+					pf.addChain(p.re, tree)
+					if width, ok := newResponseDeltaWidth(tree); ok {
+						if pf.deltaWidths == nil {
+							pf.deltaWidths = make(map[*regexp.Regexp]responseDeltaWidth)
+						}
+						pf.deltaWidths[p.re] = width
+					}
+					plan := newResponseRegexpWindowPlan(p.re, tree)
+					if plan == nil {
+						plan = newRegexpWindowPlan(p.re, tree)
+					}
+					if plan != nil && len(plan.anchors) != 0 {
 						if pf.windows == nil {
 							pf.windows = make(map[*regexp.Regexp]*regexpWindowPlan)
 						}
@@ -77,6 +95,9 @@ func newResponsePreFilter(patterns []*compiledPattern) *responsePreFilter {
 			if p.responseMemoRegexp != nil && p.responseMemoRegexp == p.re {
 				for _, re := range externalTransferExpressions(p.re) {
 					pf.companionProofs[i] = append(pf.companionProofs[i], newResponsePrefixProof(re))
+					if tree, err := syntax.Parse(re.String(), syntax.Perl); err == nil {
+						pf.addChain(re, tree)
+					}
 				}
 			}
 		}
@@ -88,45 +109,53 @@ func newResponsePreFilter(patterns []*compiledPattern) *responsePreFilter {
 	return pf
 }
 
+func (pf *responsePreFilter) addChain(re *regexp.Regexp, tree *syntax.Regexp) {
+	if pf.chains[re] != nil {
+		return
+	}
+	if chain := newResponseLiteralChain(tree); chain != nil {
+		if pf.chains == nil {
+			pf.chains = make(map[*regexp.Regexp]*responseLiteralChain)
+		}
+		pf.chains[re] = chain
+		pf.chainLiterals = append(pf.chainLiterals, chain.literals()...)
+	}
+}
+
 // patternsToCheck returns pattern indices not excluded by gates or proofs.
 // Returns nil when no patterns need to run.
 func (pf *responsePreFilter) patternsToCheck(content string) []int {
-	return pf.patternsToCheckWithMemo(content, nil)
+	return pf.patternsToCheckWithMemo(content, nil, nil, nil)
 }
 
-func (pf *responsePreFilter) patternsToCheckWithMemo(content string, cached *responsePreFilterView) []int {
+func (pf *responsePreFilter) patternsToCheckWithMemo(content string, cached *responsePreFilterView, patterns []*compiledPattern, chains responseChainRanges) []int {
 	if cached == nil {
 		cached = &responsePreFilterView{}
 	}
-	if !cached.ready {
-		cached.folded = responseSimpleFold(content)
-		cached.distance = responseDistanceText(cached.folded)
-		cached.ready = true
-	}
-	if cached.literals == nil && len(content) >= responseMemoMinBytes && len(content) <= responseMemoMaxBytes {
-		cached.literals = make(responseLiteralMemo)
-	}
-	folded, distanceText, literals := cached.folded, cached.distance, cached.literals
-	// Rebuilt per call on the stack: a pass over the text costs less than
-	// retaining two filters on every cached view.
 	var pairs responseGatePairs
-	if view := cached.positions; view != nil && view.isASCII() {
-		// For ASCII text, simple-folded and raw text have identical byte
-		// coordinates. The gate verifies exact case in its selected text.
-		view.index()
-		if view.hits != nil {
-			pairs.positions = view
-		}
-	}
-	if pairs.positions == nil {
-		pairs.raw.add(content)
-		pairs.fold.add(folded)
-	}
+	gateReady := false
+	identical := cached.outboundMatch == nil && cached.delta != nil && len(cached.delta.edits) == 0
 	var view *responseFoldView
 	var forward *responseFoldView
 	hits := make([]int, 0, len(pf.gates))
 	for i, gate := range pf.gates {
-		if gate != nil && !gate.matchesWithPairs(content, folded, distanceText, literals, &pairs) {
+		if identical && cached.delta.isKnown(patterns[i]) {
+			continue
+		}
+		if chains != nil {
+			if windows, complete := chains.patternWindows(patterns[i]); complete {
+				if len(windows) != 0 {
+					hits = append(hits, i)
+				}
+				continue
+			}
+		}
+		if !gateReady {
+			pairs = cached.prepareLegacy(content)
+			gateReady = true
+		}
+		folded, literals := cached.folded, cached.literals
+		if gate != nil && !gate.matchesWithPairs(content, folded, "", literals, &pairs) {
 			continue
 		}
 		if len(content) >= responseMemoMinBytes && len(content) <= responseMemoMaxBytes && i < len(pf.prefixes) && pf.prefixes[i] != nil {
@@ -169,6 +198,39 @@ func (pf *responsePreFilter) patternsToCheckWithMemo(content string, cached *res
 		hits = append(hits, i)
 	}
 	return hits
+}
+
+func (view *responsePreFilterView) prepareLegacy(content string) responseGatePairs {
+	if !view.ready {
+		view.folded = responseSimpleFold(content)
+		view.ready = true
+	}
+	if view.literals == nil && len(content) >= responseMemoMinBytes && len(content) <= responseMemoMaxBytes {
+		view.literals = make(responseLiteralMemo)
+	}
+	// Rebuilt per call on the stack: a pass over the text costs less than
+	// retaining two filters on every cached view.
+	var pairs responseGatePairs
+	if positions := view.positions; positions != nil && positions.isASCII() {
+		pairs.positions = positions
+	}
+	// A missing pair rules out a literal without a substring search.
+	// Only build the index after repeated queries pass the pair filter.
+	if pairs.positions == nil || pairs.positions.hits == nil {
+		pairs.raw.add(content)
+		pairs.fold.add(view.folded)
+		pairs.pairsReady = true
+		pairs.densePairs = pairs.positions != nil && responseGatePairsDense(&pairs.fold)
+	}
+	return pairs
+}
+
+func responseChainWindowBytes(windows []regexpWindowRange) int {
+	bytes := 0
+	for _, window := range windows {
+		bytes += window.end - window.start
+	}
+	return bytes
 }
 
 // hasEncodedRun checks whether content contains a contiguous run of
@@ -244,13 +306,20 @@ func responseMatchingProgram(filters ...*responsePreFilter) *matchingLiterals {
 			collect(child)
 		}
 	}
+	// Reserve index capacity in filter order. Each filter puts its gating
+	// and window literals ahead of its full chain anchors.
 	for _, filter := range filters {
 		if filter != nil {
 			literals = append(literals, filter.windowAnchors...)
 			for _, gate := range filter.gates {
 				collect(gate)
 			}
+			literals = append(literals, filter.chainLiterals...)
 		}
 	}
-	return newMatchingLiterals(literals)
+	program := newMatchingLiterals(literals)
+	if program != nil {
+		program.response = true
+	}
+	return program
 }

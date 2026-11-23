@@ -6,6 +6,8 @@ package scanner
 import (
 	"strconv"
 	"strings"
+
+	"github.com/luckyPipewrench/pipelock/internal/normalize"
 )
 
 // responseMatchMemo reuses only proven empty pattern results within one response
@@ -25,6 +27,13 @@ type responseMatchMemo struct {
 	bytes         int
 	entries       int
 	matchingRoot  *matchingView
+	chainWindows  *responseChainWindowMemo
+	buffers       *responseMatchingBuffers
+	normalized    [matchingVowel + 1]responseNormalizedView
+	deltaParent   *responseDeltaParent
+	deltaProof    responseDeltaProof
+	deltaViews    [matchingVowel + 1]*responseDeltaView
+	deltaReady    [matchingVowel + 1]bool
 }
 
 func (m *responseMatchMemo) outboundError() error {
@@ -32,6 +41,75 @@ func (m *responseMatchMemo) outboundError() error {
 		return nil
 	}
 	return m.outboundErr()
+}
+
+// releaseMatchingViews drops every view borrowing the walk's scratch buffers.
+// Only negative pattern proofs can outlive this call. Call it after the
+// matcher joins its workers and before the next memo can index into the buffers.
+func (m *responseMatchMemo) releaseMatchingViews() {
+	if m != nil && m.buffers != nil {
+		m.matchingRoot = nil
+		m.buffers = nil
+	}
+}
+
+type responseNormalizedView struct {
+	source, text string
+	ready        bool
+}
+
+// Core and configured passes consume the same normalization of the same
+// bytes. Keep one result per transform within their shared scan.
+func (m *responseMatchMemo) normalize(text string, kind matchingTransform) string {
+	if m == nil {
+		return normalizeResponseMatchingView(text, kind)
+	}
+	view := &m.normalized[kind]
+	if view.ready && view.source == text {
+		return view.text
+	}
+	var normalized string
+	var mapped bool
+	if kind == matchingLeet || kind == matchingVowel {
+		normalized, mapped = m.normalizeDelta(text, kind)
+	}
+	if !mapped {
+		normalized = normalizeResponseMatchingView(text, kind)
+	}
+	*view = responseNormalizedView{text, normalized, true}
+	// A no-op pass can reuse the exact-byte proof from an earlier pass.
+	// Each lookup still requires the identical pattern and literal gate.
+	m.deltaProof[kind] = m.views[normalized]
+	return view.text
+}
+
+func (m *responseMatchMemo) normalizeDelta(text string, kind matchingTransform) (string, bool) {
+	primary := m.deltaViews[matchingPrimary]
+	if primary == nil || m.normalized[matchingPrimary].text != text || len(m.deltaParent.proof[kind]) == 0 {
+		return "", false
+	}
+	parent := m.deltaParent.matchingText(kind)
+	mapped, ok := mapResponseNormalizedEdits(kind, text, parent, primary)
+	if ok {
+		m.deltaViews[kind] = newResponseDeltaView(m.deltaParent.proof[kind], parent, primary.edits)
+		m.deltaReady[kind] = true
+	}
+	return mapped, ok
+}
+
+func normalizeResponseMatchingView(text string, kind matchingTransform) string {
+	switch kind {
+	case matchingPrimary:
+		return normalize.ForMatching(text)
+	case matchingSpaced:
+		return normalize.ForMatchingSpaced(text)
+	case matchingLeet:
+		return normalize.Leetspeak(text)
+	case matchingVowel:
+		return normalize.FoldVowels(text)
+	default:
+		return text
+	}
 }
 
 type responseNegativeKey struct {
@@ -89,14 +167,33 @@ func (m *responseMatchMemo) matchingView(kind matchingTransform, text string, pr
 }
 
 func (m *responseMatchMemo) matchTransformed(pf *responsePreFilter, patterns []*compiledPattern, content string, program *matchingLiterals, kind matchingTransform) []ResponseMatch {
-	return m.matchPositioned(pf, patterns, content, m.matchingView(kind, content, program))
+	var delta *responseDeltaView
+	if m != nil && m.deltaParent != nil {
+		if !m.deltaReady[kind] {
+			m.deltaViews[kind] = m.deltaParent.view(kind, content)
+			m.deltaReady[kind] = true
+		}
+		delta = m.deltaViews[kind]
+	}
+	positions := m.matchingView(kind, content, program)
+	if positions != nil {
+		positions.responseChainWindows = m.chainWindows
+		if m.buffers != nil {
+			positions.responseBuffers = &m.buffers.views[kind]
+		}
+	}
+	result := m.matchPositioned(pf, patterns, content, positions, delta)
+	if m != nil {
+		m.deltaProof[kind] = m.views[content]
+	}
+	return result
 }
 
 func (m *responseMatchMemo) match(pf *responsePreFilter, patterns []*compiledPattern, content string) []ResponseMatch {
-	return m.matchPositioned(pf, patterns, content, nil)
+	return m.matchPositioned(pf, patterns, content, nil, nil)
 }
 
-func (m *responseMatchMemo) matchPositioned(pf *responsePreFilter, patterns []*compiledPattern, content string, positions *matchingView) []ResponseMatch {
+func (m *responseMatchMemo) matchPositioned(pf *responsePreFilter, patterns []*compiledPattern, content string, positions *matchingView, delta *responseDeltaView) []ResponseMatch {
 	if m.outboundError() != nil {
 		return nil
 	}
@@ -110,7 +207,7 @@ func (m *responseMatchMemo) matchPositioned(pf *responsePreFilter, patterns []*c
 	if len(known) > 0 {
 		remaining = make([]*compiledPattern, 0, len(patterns))
 		if pf != nil {
-			remainingFilter = &responsePreFilter{windows: pf.windows}
+			remainingFilter = &responsePreFilter{windows: pf.windows, chains: pf.chains, deltaWidths: pf.deltaWidths}
 		}
 		for i, p := range patterns {
 			key, eligible := responseNegativePatternKey(p)
@@ -152,8 +249,12 @@ func (m *responseMatchMemo) matchPositioned(pf *responsePreFilter, patterns []*c
 		view = &responsePreFilterView{literals: literals, outboundMatch: m.outboundMatch}
 	}
 	view.positions = positions
+	view.delta = delta
+	view.buffers = m.buffers
 	result := matchPatternsPreFilteredWithMemo(remainingFilter, remaining, content, view)
 	view.positions = nil
+	view.delta = nil
+	view.buffers = nil
 	if m.outboundError() != nil {
 		return nil
 	}
@@ -175,11 +276,11 @@ func (m *responseMatchMemo) matchPositioned(pf *responsePreFilter, patterns []*c
 		m.filterViews = make(map[string]*responsePreFilterView)
 	}
 	if !retained {
-		size := len(view.folded) + len(view.distance)
+		size := len(view.folded)
 		if m.derivedBytes+size <= responseMemoMaxBytes {
 			m.derivedBytes += size
 		} else {
-			view.folded, view.distance, view.ready = "", "", false
+			view.folded, view.ready = "", false
 		}
 	}
 	m.filterViews[content] = view

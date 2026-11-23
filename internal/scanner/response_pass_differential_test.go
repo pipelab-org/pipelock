@@ -83,12 +83,13 @@ func TestResponsePassRandomGrammarPipeline(t *testing.T) {
 			continue
 		}
 		pf := newResponsePreFilter(patterns)
+		program := responseMatchingProgram(pf)
 		for range 8 {
 			content := responsePassBody(rnd, trees)
 			memo := newResponseMatchMemo(len(content))
 			want := matchPatternsAgainst(patterns, content)
-			first := memo.match(pf, patterns, content)
-			again := memo.match(pf, patterns, content)
+			first := memo.matchTransformed(pf, patterns, content, program, matchingPrimary)
+			again := memo.matchTransformed(pf, patterns, content, program, matchingPrimary)
 			checks++
 			if len(want) > 0 {
 				positives++

@@ -89,6 +89,22 @@
       "target": "FuzzShannonEntropy"
     },
     {
+      "package": "./internal/scanner",
+      "target": "FuzzResponseDeltaMatchParity"
+    },
+    {
+      "package": "./internal/scanner",
+      "target": "FuzzResponseNormalizedDeltaParity"
+    },
+    {
+      "package": "./internal/scanner",
+      "target": "FuzzResponseRegexpWindowSpans"
+    },
+    {
+      "package": "./internal/scanner",
+      "target": "FuzzResponseLiteralChainParity"
+    },
+    {
       "package": "./internal/seedprotect",
       "target": "FuzzDetect"
     },

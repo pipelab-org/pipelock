@@ -112,11 +112,11 @@ func TestInjectionDecodeOutboundLogicalWorkLimit(t *testing.T) {
 	if !control.Clean || control.Failed() || control.InspectionIncomplete {
 		t.Fatalf("normal outbound budget refused the control: %+v", control)
 	}
-	inbound := sc.scanAdditionalInjectionViewsWithin(t.Context(), text, "", nil, start, 1)
+	inbound := sc.walkAdditionalInjectionViews(t.Context(), text, "", nil, start, injectionWalkOptions{outboundWorkLimit: 1})
 	if !inbound.Clean || inbound.Failed() || inbound.InspectionIncomplete {
 		t.Fatalf("outbound logical limit affected the inbound walk: %+v", inbound)
 	}
-	limited := sc.scanAdditionalInjectionViewsWithin(outbound, text, "", nil, start, 1)
+	limited := sc.walkAdditionalInjectionViews(outbound, text, "", nil, start, injectionWalkOptions{outboundWorkLimit: 1})
 	if limited.Clean || !limited.InspectionIncomplete || limited.ScanError != injectionDecodeLimitReason {
 		t.Fatalf("outbound work limit was reported as complete: %+v", limited)
 	}
