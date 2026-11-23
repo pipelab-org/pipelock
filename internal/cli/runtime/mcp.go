@@ -1405,13 +1405,6 @@ Key-free evidence capture:
 					if err != nil {
 						return fmt.Errorf("open v3 receipt writer: %w", err)
 					}
-					defer func() {
-						heartbeatCancel()
-						if closeErr := receiptWriter.Close(context.WithoutCancel(cmd.Context()), nil); closeErr != nil {
-							runErr = errors.Join(runErr, fmt.Errorf("close v3 receipt writer: %w", closeErr))
-						}
-					}()
-					cmd.PrintErrln("  Receipts: v3 stream opened")
 				} else if cfg.FlightRecorder.ReceiptChainCount() > 1 {
 					var groupErr error
 					receiptGroup, groupErr = buildMCPReceiptGroup(template, cfg.FlightRecorder.ReceiptChainCount())
@@ -1476,6 +1469,15 @@ Key-free evidence capture:
 			}
 			if cfg.FlightRecorder.RequireReceipts && !useV3 && !receiptEmitterReady(receiptEmitter) {
 				return fmt.Errorf("flight_recorder.require_receipts is enabled but no healthy signed receipt emitter is active: set flight_recorder.enabled, flight_recorder.dir, and flight_recorder.signing_key_path (run 'pipelock init'), fix any receipt-chain resume error, or disable require_receipts")
+			}
+			if receiptWriter != nil {
+				defer func() {
+					heartbeatCancel()
+					if closeErr := receiptWriter.Close(context.WithoutCancel(cmd.Context()), nil); closeErr != nil {
+						runErr = errors.Join(runErr, fmt.Errorf("close v3 receipt writer: %w", closeErr))
+					}
+				}()
+				cmd.PrintErrln("  Receipts: v3 stream opened")
 			}
 			capacity := receiptEmitter.NativeCapacity()
 			var capacityWG sync.WaitGroup
