@@ -168,6 +168,8 @@ type controlTree struct {
 	fixed    bool
 	// source is the path whose contents referenced this tree, if any.
 	source string
+	// walked is set once the walk has listed the tree.
+	walked bool
 }
 
 type controlWalker struct {
@@ -182,7 +184,8 @@ type controlWalker struct {
 	pass         controlPass
 	entryCount   int
 	pathBytes    int64
-	trees        []controlTree
+	trees        []*controlTree
+	queuedTrees  map[string]*controlTree
 	treeEntries  int
 	coveredTrees map[string]struct{}
 	// worktreeSlots are agent worktree checkouts found inside fixed control
@@ -208,6 +211,7 @@ func (w *controlWalker) walkPass(seed func()) controlPass {
 	w.source = ""
 	w.direct = make(map[string]struct{})
 	w.trees = w.trees[:0]
+	w.queuedTrees = make(map[string]*controlTree)
 	w.treeEntries = 0
 	w.discovery = nil
 	seed()
@@ -221,7 +225,9 @@ func (w *controlWalker) walkPass(seed func()) controlPass {
 	next := 0
 	for w.pass.truncated == "" {
 		for ; next < len(w.trees) && w.pass.truncated == ""; next++ {
-			tree := w.trees[next]
+			queued := w.trees[next]
+			queued.walked = true
+			tree := *queued
 			w.source = tree.source
 			w.list(tree.path, func(child string, d fs.DirEntry) bool {
 				w.treeEntries++
@@ -544,6 +550,12 @@ func (w *controlWalker) enqueueTree(e controlEntry, tree controlTree) {
 		w.direct[e.Path] = struct{}{}
 	}
 	if _, ok := w.coveredTrees[e.Path]; ok {
+		// A directory queued as a plain tree, such as the target of a symlink,
+		// takes the Git role when a Git scan names it before the walk reaches it.
+		if queued := w.queuedTrees[e.Path]; queued != nil && !queued.walked && queued.gitDir == "" && tree.gitDir != "" {
+			queued.gitDir, queued.worktree = tree.gitDir, tree.worktree
+			queued.fixed = queued.fixed || tree.fixed
+		}
 		return
 	}
 	w.coveredTrees[e.Path] = struct{}{}
@@ -551,7 +563,8 @@ func (w *controlWalker) enqueueTree(e controlEntry, tree controlTree) {
 	if tree.source == "" {
 		tree.source = w.source
 	}
-	w.trees = append(w.trees, tree)
+	w.queuedTrees[e.Path] = &tree
+	w.trees = append(w.trees, &tree)
 }
 
 // scanFixed monitors each fixed control path under dir as a whole. A Git marker

@@ -11,6 +11,17 @@ import (
 	"testing"
 )
 
+func symlinkFixture(t *testing.T, root, target, name string) {
+	t.Helper()
+	path := filepath.Join(root, filepath.FromSlash(name))
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, path); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // A Git configuration that is a symlink has its target recorded because the link
 // names it. A snapshot that never examined the repository holding the link does
 // not know whether the target exists, so it cannot show it removed.
@@ -109,4 +120,62 @@ func TestControlSurfaceInfersNothingFromAnUnreadableConfigsReferences(t *testing
 			}
 		})
 	}
+}
+
+// Git resolves a gitfile that names a symlink to the directory behind it, so the
+// directory is the repository's Git directory: its configuration's hook paths and
+// includes are followed, and its volatile files stay out of the report.
+func TestControlSurfaceFollowsASymlinkedGitDirectoryPointer(t *testing.T) {
+	prepare := func(t *testing.T, root string, link func()) {
+		t.Helper()
+		writeControlFixture(t, root, ".git", "gitdir: meta\n")
+		writeControlFixture(t, root, "real/HEAD", "ref: refs/heads/main\n")
+		writeControlFixture(t, root, "real/config", "[core]\n\thooksPath = ../hk\n")
+		writeControlFixture(t, root, "hk/pre-commit", "before")
+		link()
+	}
+	for _, tc := range []struct {
+		name string
+		link func(t *testing.T, root string)
+	}{
+		{"one link", func(t *testing.T, root string) { symlinkFixture(t, root, "real", "meta") }},
+		{"link chain", func(t *testing.T, root string) {
+			symlinkFixture(t, root, "real", "hop")
+			symlinkFixture(t, root, "hop", "meta")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			prepare(t, root, func() { tc.link(t, root) })
+			budget := DefaultControlSurfaceBudget()
+			before := controlSnapshot(t, root, budget)
+			writeControlFixture(t, root, "hk/pre-commit", "changed")
+			expectControlPath(t, controlDiff(t, before, controlSnapshot(t, root, budget)), "hk/pre-commit")
+		})
+	}
+	t.Run("volatile files stay volatile behind the link", func(t *testing.T) {
+		root := t.TempDir()
+		prepare(t, root, func() { symlinkFixture(t, root, "real", "meta") })
+		budget := DefaultControlSurfaceBudget()
+		before := controlSnapshot(t, root, budget)
+		writeControlFixture(t, root, "real/HEAD", "ref: refs/heads/other\n")
+		writeControlFixture(t, root, "real/index", "index")
+		if diff := controlDiff(t, before, controlSnapshot(t, root, budget)); diff.Changed || diff.Incomplete {
+			t.Fatalf("Git's own bookkeeping behind a symlinked Git directory must stay volatile: %+v", diff)
+		}
+	})
+	t.Run("a target outside the workspace cannot be observed", func(t *testing.T) {
+		root := t.TempDir()
+		writeControlFixture(t, root, ".git", "gitdir: meta\n")
+		symlinkFixture(t, root, t.TempDir(), "meta")
+		budget := DefaultControlSurfaceBudget()
+		diff := controlDiff(t, controlSnapshot(t, root, budget), controlSnapshot(t, root, budget))
+		var named bool
+		for _, entry := range diff.Unreadable {
+			named = named || entry.Path == ".git"
+		}
+		if !diff.Incomplete || !named {
+			t.Fatalf("an unresolvable Git directory pointer must be reported unreadable: %+v", diff)
+		}
+	})
 }
