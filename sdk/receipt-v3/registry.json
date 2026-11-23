@@ -82,6 +82,18 @@
     ]
   },
   "emit_attribution": {
+    "internal/mcp/receipt_v3.go/(*mcpV3ReplyWriter).admit/Admit/d930c207f6adb938": {
+      "when": "Before releasing an MCP reply without an existing admission token.",
+      "fields": "Uses the MCP reply decision and its parent action ID. The adapter supplies tool classification, sanitized target, policy snapshot, caller identity when verified, and available decision attribution."
+    },
+    "internal/mcp/receipt_v3.go/(*mcpV3ReplyWriter).admit/AdmitDenialDelivery/953cadd13264d9c4": {
+      "when": "Before delivering an MCP denial after the send was refused.",
+      "fields": "Uses the MCP reply decision and its parent action ID. The adapter supplies tool classification, sanitized target, policy snapshot, caller identity when verified, and available decision attribution."
+    },
+    "internal/mcp/receipt_v3.go/(MCPProxyOpts).refuseV3Reply/Refuse/f61b9bc1f2181314": {
+      "when": "When MCP withholds the downstream reply.",
+      "fields": "Uses the MCP reply decision and its parent action ID. The adapter supplies tool classification, sanitized target, policy snapshot, caller identity when verified, and available decision attribution."
+    },
     "internal/cli/runtime/mcp.go/recoverDeferredActions/EmitDeferredResolutionReceipt/1085a3de444e8017": {
       "fields": "`phase` is resolution. `hold` carries the original defer id as `hold.id` and records `hold.resolution_policy` and `hold.resolution_source`. The original hold carries `hold.policy` and any `hold.parent`. Set `hold.correction:true` when a later block replaces an allow. `session` is the authority session id and original id, omitted when empty. `taint` records authority user-broad, decision allow, and reason `defer_resolution`. An `ask` resolution requires the retained `approval_api` channel and `observed:true`. Omit `ask` for other resolution verdicts. `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision. `caller.authn` is `none`.",
       "when": "When `recoverDeferredActions` selects this receipt call"
@@ -1581,6 +1593,10 @@
     "tools/gen-shadow-example/main.go/run/EmitBatch/7f91898363de41f6": "This tool generates example or test evidence outside the launch profile."
   },
   "emit_forwarders": {
+    "internal/mcp/receipt_v3.go/(MCPProxyOpts).admitV3Effect/Admit/08f2bf06b46e00c1": "The shared receipt adapter forwards the boundary and decision attribution supplied by the producer to the v3 effect gate.",
+    "internal/proxy/receipt_v3.go/(*Proxy).admitEffect/Admit/620d94a6c5568b96": "The shared receipt adapter forwards the boundary and decision attribution supplied by the producer to the v3 effect gate.",
+    "internal/proxy/receipt_v3.go/(*Proxy).admitEffect/AdmitBatch/7d591e25e2cda537": "The shared receipt adapter forwards the boundary and decision attribution supplied by the producer to the v3 effect gate.",
+    "internal/proxy/receipt_v3.go/(*Proxy).refuseEffect/Refuse/cbf479d62807c8c1": "The shared receipt adapter forwards the boundary and decision attribution supplied by the producer to the v3 effect gate.",
     "internal/cli/runtime/dlp_warn_emit.go/emitDLPWarn/EmitDLPWarning/93492e0a1b6236dc": "Uses the scanner warning context. Effect attribution belongs to the enclosing mediation decision.",
     "internal/cli/runtime/mcp.go/mcpProxyCmdWithListenerTimeout/emitDLPWarn/2629976f919e4606": "Uses the scanner warning context. Effect attribution belongs to the enclosing mediation decision.",
     "internal/cli/runtime/mcp_sandbox_bridge.go/startMCPSandboxBridge/emitDLPWarn/6d2a21c2abaeb1f5": "Uses the scanner warning context. Effect attribution belongs to the enclosing mediation decision.",
@@ -1741,6 +1757,9 @@
     "internal/proxy/reverse.go/(*ReverseProxyHandler).modifyResponse/emitReverseReceipt/7fb3aa66db57510f": "Forwards the SSE callback's selected response decision to the existing reverse response receipt helper when v3 receipt effects are disabled."
   },
   "emit_sites": {
+    "internal/mcp/receipt_v3.go/(*mcpV3ReplyWriter).admit/Admit/d930c207f6adb938": "downstream_delivery",
+    "internal/mcp/receipt_v3.go/(*mcpV3ReplyWriter).admit/AdmitDenialDelivery/953cadd13264d9c4": "downstream_delivery",
+    "internal/mcp/receipt_v3.go/(MCPProxyOpts).refuseV3Reply/Refuse/f61b9bc1f2181314": "downstream_delivery",
     "internal/cli/runtime/mcp.go/recoverDeferredActions/EmitDeferredResolutionReceipt/1085a3de444e8017": "approval_prompt",
     "internal/mcp/defer_resolution.go/(*deferredReceiptSettlement).commitRelease/settleResult/fe65a6480ec69bdd": "upstream_send",
     "internal/mcp/defer_resolution.go/(*deferredReceiptSettlement).commitRelease/emitMCPToolReceipt/9527a1f960a23f9e": "upstream_send",
