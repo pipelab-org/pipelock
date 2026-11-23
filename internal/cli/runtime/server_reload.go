@@ -149,7 +149,13 @@ func (s *Server) executeReloadLocked(newCfg *config.Config, restoringPriorPolicy
 	default:
 	}
 	oldCfg := s.proxy.CurrentConfig()
-	if oldCfg != nil && oldCfg.FlightRecorder.EffectiveReceiptFormat() != newCfg.FlightRecorder.EffectiveReceiptFormat() {
+	liveFormat := config.ReceiptFormatLegacy
+	if s.receiptWriter != nil {
+		liveFormat = config.ReceiptFormatV3
+	}
+	// An omitted format inherits the active directory format. Directory changes
+	// are handled separately as restart-bound recorder settings.
+	if format := newCfg.FlightRecorder.ReceiptFormat; format != "" && format != liveFormat {
 		return errors.New("flight_recorder.receipt_format changed; restart required")
 	}
 	if s.receiptWriter != nil {
@@ -337,6 +343,7 @@ func (s *Server) executeReloadLocked(newCfg *config.Config, restoringPriorPolicy
 		// requires a signed flight recorder - still validates after the apply.
 		oldFR := oldCfg.FlightRecorder
 		newFR := newCfg.FlightRecorder
+		oldFR.ReceiptFormat = newFR.ReceiptFormat
 		oldFR.RequireReceipts = newFR.RequireReceipts
 		oldFR.EvidenceHealth.SelfAuditInterval = newFR.EvidenceHealth.SelfAuditInterval
 		oldFR.EvidenceHealth.MaxAnchorLag = newFR.EvidenceHealth.MaxAnchorLag

@@ -120,8 +120,6 @@ func serverReceiptSurfaces(cfg *config.Config, hasMCPListener, reverseFlag bool)
 func checkV3ReloadCoverage(oldCfg, newCfg *config.Config, hasMCPListener, reverseFlag bool) error {
 	oldFR, newFR := oldCfg.FlightRecorder, newCfg.FlightRecorder
 	switch {
-	case oldFR.EffectiveReceiptFormat() != newFR.EffectiveReceiptFormat():
-		return errors.New("flight_recorder.receipt_format changed; restart required")
 	case oldFR.RequireReceipts != newFR.RequireReceipts:
 		return errors.New("flight_recorder.require_receipts changed; restart required")
 	case oldFR.Redact != newFR.Redact:

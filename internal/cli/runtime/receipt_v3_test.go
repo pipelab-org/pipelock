@@ -58,6 +58,8 @@ func TestRuntimeReceiptV3Reload(t *testing.T) {
 		name, old, new, wantErr string
 	}{
 		{name: "unchanged"},
+		{name: "omit v3 format", old: "  receipt_format: v3\n"},
+		{name: "restore explicit v3", old: "receipt_format: v3", new: "receipt_format: v3"},
 		{name: "format", old: "receipt_format: v3", new: "receipt_format: legacy", wantErr: "receipt_format changed; restart required"},
 		{name: "coverage", old: "require_receipts: true", new: "require_receipts: false", wantErr: "require_receipts changed; restart required"},
 	} {
@@ -112,6 +114,39 @@ func TestRuntimeReceiptV3Reload(t *testing.T) {
 			t.Fatalf("legacy format after cutover = %v, %v", selected, err)
 		}
 	}
+	omitted := strings.Replace(body, "  receipt_format: v3\n", "", 1)
+	restarted, err := NewServer(ServerOpts{
+		ConfigFile: writeServerTestConfig(t, omitted), Stdout: &syncBuffer{}, Stderr: &syncBuffer{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(restarted.cleanup)
+	if restarted.receiptWriter == nil {
+		t.Fatal("expected directory-selected v3 writer")
+	}
+	for _, tc := range []struct {
+		name, candidate, wantErr string
+	}{
+		{"unchanged", omitted, ""},
+		{"reject legacy", omitted + "  receipt_format: legacy\n", "receipt_format changed; restart required"},
+		{"accept explicit v3", body, ""},
+		{"return to omitted", omitted, ""},
+	} {
+		t.Run("directory selected/"+tc.name, func(t *testing.T) {
+			cfg, err := config.LoadBytes([]byte(tc.candidate))
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = restarted.Reload(cfg)
+			if tc.wantErr == "" && err != nil || tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)) {
+				t.Fatalf("reload error = %v, want %q", err, tc.wantErr)
+			}
+		})
+	}
+	if err := restarted.closeReceiptV3(); err != nil {
+		t.Fatal(err)
+	}
 	root, err := os.OpenRoot(evidence)
 	if err != nil {
 		t.Fatal(err)
@@ -138,7 +173,8 @@ func TestRuntimeReceiptV3Reload(t *testing.T) {
 
 func TestRuntimeReceiptReloadLegacyDefault(t *testing.T) {
 	body := "defer:\n  enabled: false\nflight_recorder:\n  enabled: false\n"
-	s, err := NewServer(ServerOpts{ConfigFile: writeServerTestConfig(t, body), Stdout: &syncBuffer{}, Stderr: &syncBuffer{}})
+	stderr := &syncBuffer{}
+	s, err := NewServer(ServerOpts{ConfigFile: writeServerTestConfig(t, body), Stdout: &syncBuffer{}, Stderr: stderr})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,6 +190,9 @@ func TestRuntimeReceiptReloadLegacyDefault(t *testing.T) {
 		if err := s.Reload(cfg); err != nil {
 			t.Fatalf("reload %q: %v", suffix, err)
 		}
+	}
+	if strings.Contains(stderr.String(), "flight_recorder settings changed") {
+		t.Fatalf("no-op receipt format reload emitted restart warning: %s", stderr.String())
 	}
 }
 
