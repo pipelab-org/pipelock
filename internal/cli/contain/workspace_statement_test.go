@@ -849,11 +849,20 @@ func TestRunContainRun_SignedStatementNeverPassesWithControlFindings(t *testing.
 		{
 			name: "incomplete observation",
 			activity: func(workspace string) error {
-				return os.MkdirAll(filepath.Join(workspace, "a", "b", "c", "d", "e", "f", "g"), 0o750)
+				return os.MkdirAll(filepath.Join(workspace, ".claude", strings.Repeat("d/", 33)), 0o750)
 			},
 			wantStatus: "workspace_control_surface=incomplete",
 			wantLine:   workspaceStatementIncompleteLine,
 			wantMarker: "[WARN] signed workspace change statement is INCOMPLETE",
+		},
+		{
+			name: "partial nested discovery",
+			activity: func(workspace string) error {
+				return os.MkdirAll(filepath.Join(workspace, strings.Repeat("d/", 70)), 0o750)
+			},
+			wantStatus: "workspace_control_surface=clean",
+			wantLine:   "nested=partial",
+			wantMarker: "[WARN] workspace nested control discovery is PARTIAL",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

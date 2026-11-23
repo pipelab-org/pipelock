@@ -1793,14 +1793,30 @@ func TestPostureVerify_WorkspaceStatementCompleteness(t *testing.T) {
 }
 
 func TestPostureVerify_WorkspaceControlSurface(t *testing.T) {
+	partial := workspacediff.ControlSurfaceStatement{NestedDiscoveryPartial: true, NestedDiscoveryReason: "nested depth limit"}
+	partialAndChanged := partial
+	partialAndChanged.Changed = true
+	partialAndChanged.Modified = []string{".envrc"}
+	incomplete := workspacediff.ControlSurfaceStatement{Incomplete: true, IncompleteReason: "root limit"}
 	for _, tc := range []struct {
-		name        string
-		observation workspacediff.ControlSurfaceStatement
-		allow       bool
-		status      string
-		fail        bool
+		name         string
+		observation  workspacediff.ControlSurfaceStatement
+		allow        bool
+		allowPartial bool
+		status       string
+		fail         bool
 	}{
 		{name: "clean", status: "clean"},
+		{name: "partial", observation: partial, status: "clean", fail: true},
+		{name: "partial allowed", observation: partial, status: "clean", allowPartial: true},
+		{name: "changes flag cannot allow partial", observation: partial, status: "clean", allow: true, fail: true},
+		{name: "partial and changed with only changes allowed", observation: partialAndChanged, status: "changed", allow: true, fail: true},
+		{name: "partial and changed with only partial allowed", observation: partialAndChanged, status: "changed", allowPartial: true, fail: true},
+		{name: "partial and changed with both allowed", observation: partialAndChanged, status: "changed", allow: true, allowPartial: true},
+		{name: "incomplete with partial allowed", observation: incomplete, status: "incomplete", allowPartial: true, fail: true},
+		{name: "incomplete with both allowed", observation: incomplete, status: "incomplete", allow: true, allowPartial: true, fail: true},
+		{name: "partial without reason", observation: workspacediff.ControlSurfaceStatement{NestedDiscoveryPartial: true}, status: "incomplete", allowPartial: true, fail: true},
+		{name: "reason without partial", observation: workspacediff.ControlSurfaceStatement{NestedDiscoveryReason: "nested depth limit"}, status: "incomplete", allowPartial: true, fail: true},
 		{name: "changed", observation: workspacediff.ControlSurfaceStatement{Changed: true, Modified: []string{".envrc"}}, status: "changed", fail: true},
 		{name: "changed allowed", observation: workspacediff.ControlSurfaceStatement{Changed: true, Modified: []string{".envrc"}}, status: "changed", allow: true},
 		{name: "incomplete", observation: workspacediff.ControlSurfaceStatement{Incomplete: true, IncompleteReason: "nested limit"}, status: "incomplete", fail: true},
@@ -1820,6 +1836,9 @@ func TestPostureVerify_WorkspaceControlSurface(t *testing.T) {
 			if tc.allow {
 				args = append(args, "--allow-control-surface-changes")
 			}
+			if tc.allowPartial {
+				args = append(args, "--allow-partial-nested-discovery")
+			}
 			for _, jsonMode := range []bool{true, false} {
 				var out bytes.Buffer
 				cmd := rootCmd()
@@ -1837,6 +1856,7 @@ func TestPostureVerify_WorkspaceControlSurface(t *testing.T) {
 				}
 				if !jsonMode {
 					if !strings.Contains(out.String(), "control_surface_status="+tc.status) ||
+						(tc.observation.NestedDiscoveryPartial && !strings.Contains(out.String(), "Workspace nested control discovery: partial:")) ||
 						(len(tc.observation.Paths()) > 0 && !strings.Contains(out.String(), ".envrc")) {
 						t.Fatalf("text output omitted control evidence:\n%s", out.String())
 					}
@@ -1845,10 +1865,12 @@ func TestPostureVerify_WorkspaceControlSurface(t *testing.T) {
 				var got struct {
 					Passed             bool `json:"passed"`
 					WorkspaceStatement struct {
-						Bound   bool     `json:"bound"`
-						Status  string   `json:"control_surface_status"`
-						Changed bool     `json:"control_surface_changed"`
-						Paths   []string `json:"control_surface_paths"`
+						Bound         bool     `json:"bound"`
+						Status        string   `json:"control_surface_status"`
+						Changed       bool     `json:"control_surface_changed"`
+						Paths         []string `json:"control_surface_paths"`
+						NestedPartial bool     `json:"control_surface_nested_discovery_partial"`
+						NestedReason  string   `json:"control_surface_nested_discovery_reason"`
 					} `json:"workspace_statement"`
 				}
 				if err := json.Unmarshal(out.Bytes(), &got); err != nil {
@@ -1857,6 +1879,8 @@ func TestPostureVerify_WorkspaceControlSurface(t *testing.T) {
 				ws := got.WorkspaceStatement
 				wantChanged := tc.observation.Changed || len(tc.observation.Paths()) > 0
 				if !ws.Bound || got.Passed == tc.fail || ws.Status != tc.status || ws.Changed != wantChanged ||
+					ws.NestedPartial != tc.observation.NestedDiscoveryPartial ||
+					(ws.NestedPartial && !strings.Contains(ws.NestedReason, tc.observation.NestedDiscoveryReason)) ||
 					(len(tc.observation.Paths()) > 0 && !slices.Contains(ws.Paths, filepath.Join(statement.Root, ".envrc"))) {
 					t.Fatalf("unexpected verifier output:\n%s", out.String())
 				}

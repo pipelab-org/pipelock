@@ -48,7 +48,7 @@ func (w *controlWalker) scanGitConfig(entry controlEntry, gitDir, worktree strin
 		return
 	}
 	if len(w.seenConfig) == w.budget.MaxControlEntries {
-		w.truncate("Git config reference limit exceeded")
+		w.truncate(entry.Path, "Git config reference limit exceeded")
 		return
 	}
 	w.seenConfig[source] = struct{}{}

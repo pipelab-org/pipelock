@@ -56,10 +56,13 @@ func printWorkspaceControls(w io.Writer, results map[string]workspacediff.Contro
 	if len(results) == 0 {
 		return ""
 	}
-	var paths, reasons []string
+	var paths, reasons, nestedReasons []string
 	for root, result := range results {
 		for _, path := range result.Paths() {
 			paths = append(paths, filepath.Join(root, path))
+		}
+		if result.NestedDiscoveryPartial {
+			nestedReasons = append(nestedReasons, fmt.Sprintf("%s: %s", root, result.NestedDiscoveryReason))
 		}
 		if result.Incomplete {
 			reasons = append(reasons, fmt.Sprintf("%s: %s", root, result.IncompleteReason))
@@ -77,7 +80,16 @@ func printWorkspaceControls(w io.Writer, results map[string]workspacediff.Contro
 		status = "incomplete"
 		_, _ = fmt.Fprintf(w, "  [WARN] workspace control surface observation is INCOMPLETE: %q\n", reasons)
 	}
-	_, _ = fmt.Fprintf(w, "workspace_control_surface=%s changed=%t paths=%q reason=%q\n",
-		status, len(paths) > 0, paths, strings.Join(reasons, "; "))
+	nested := "complete"
+	if len(nestedReasons) > 0 {
+		nested = "partial"
+		slices.Sort(nestedReasons)
+		_, _ = fmt.Fprintf(w, "  [WARN] workspace nested control discovery is PARTIAL: %q\n", nestedReasons)
+	}
+	_, _ = fmt.Fprintf(w, "workspace_control_surface=%s changed=%t paths=%q reason=%q nested=%s nested_reason=%q\n",
+		status, len(paths) > 0, paths, strings.Join(reasons, "; "), nested, strings.Join(nestedReasons, "; "))
+	if status == "clean" && nested == "partial" {
+		return "partial"
+	}
 	return status
 }

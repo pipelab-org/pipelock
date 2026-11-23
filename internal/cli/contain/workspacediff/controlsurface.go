@@ -31,7 +31,7 @@ type ControlSurfaceBudget struct {
 func DefaultControlSurfaceBudget() ControlSurfaceBudget {
 	return ControlSurfaceBudget{
 		MaxControlEntries: 16_384, MaxControlPathBytes: 8 << 20, MaxControlDepth: 32,
-		MaxNestedDirs: 4_096, MaxNestedDepth: 6,
+		MaxNestedDirs: 200_000, MaxNestedDepth: 64,
 	}
 }
 
@@ -47,9 +47,11 @@ type controlEntry struct {
 }
 
 type controlPass struct {
-	entries    map[string]controlEntry
-	unreadable map[string]string
-	truncated  string
+	entries        map[string]controlEntry
+	unreadable     map[string]string
+	truncated      string
+	undiscovered   map[string]struct{}
+	discoveryLimit string
 }
 
 // ControlSurfaceSnapshot is an in-memory observation of the monitored paths
@@ -68,14 +70,16 @@ type ControlSurfaceSnapshot struct {
 // ControlSurfaceStatement names changes to observed workspace control paths.
 // Paths are relative to the containing workspace statement's root.
 type ControlSurfaceStatement struct {
-	Changed          bool              `json:"changed"`
-	Incomplete       bool              `json:"incomplete"`
-	IncompleteReason string            `json:"incomplete_reason,omitempty"`
-	Added            []string          `json:"added"`
-	Removed          []string          `json:"removed"`
-	Modified         []string          `json:"modified"`
-	Unreadable       []UnreadableEntry `json:"unreadable"`
-	Counts           Counts            `json:"counts"`
+	Changed                bool              `json:"changed"`
+	Incomplete             bool              `json:"incomplete"`
+	IncompleteReason       string            `json:"incomplete_reason,omitempty"`
+	NestedDiscoveryPartial bool              `json:"nested_discovery_partial,omitempty"`
+	NestedDiscoveryReason  string            `json:"nested_discovery_reason,omitempty"`
+	Added                  []string          `json:"added"`
+	Removed                []string          `json:"removed"`
+	Modified               []string          `json:"modified"`
+	Unreadable             []UnreadableEntry `json:"unreadable"`
+	Counts                 Counts            `json:"counts"`
 }
 
 // Paths returns the sorted union of the observed changed paths.
@@ -90,7 +94,7 @@ func (s ControlSurfaceStatement) Paths() []string {
 
 // SnapshotControlSurface observes root Git metadata and fixed control paths
 // first, then searches for nested repositories and nested fixed paths. It
-// does not invoke Git or follow symlinks.
+// does not invoke Git or follow symlinks outside the workspace.
 func SnapshotControlSurface(root string, capBytes int64, budget ControlSurfaceBudget) (ControlSurfaceSnapshot, error) {
 	if capBytes <= 0 || budget.MaxControlEntries <= 0 || budget.MaxControlPathBytes <= 0 ||
 		budget.MaxControlDepth <= 0 || budget.MaxNestedDirs <= 0 || budget.MaxNestedDepth <= 0 {
@@ -136,9 +140,7 @@ func SnapshotControlSurface(root string, capBytes int64, budget ControlSurfaceBu
 		}
 		w.scanFixed(".")
 	})
-	var discoveryLimit string
-	snap.nested = w.walkPass(func() { discoveryLimit = w.discoverNested() })
-	snap.nested.truncated = joinIncompleteReasons(discoveryLimit, snap.nested.truncated)
+	snap.nested = w.walkPass(w.discoverNested)
 	if w.deviceOnly {
 		snap.problem = "mount boundary check unavailable (device-only)"
 	}
@@ -154,6 +156,7 @@ type controlTree struct {
 	path     string
 	gitDir   string
 	worktree string
+	fixed    bool
 }
 
 type controlWalker struct {
@@ -190,7 +193,7 @@ func (w *controlWalker) walkPass(seed func()) controlPass {
 		w.list(tree.path, func(child string, d fs.DirEntry) bool {
 			w.treeEntries++
 			if w.treeEntries > w.budget.MaxControlEntries {
-				w.truncate("control directory entry limit exceeded")
+				w.truncate(child, "control directory entry limit exceeded")
 				return false
 			}
 			w.scanTreeChild(tree, child, d)
@@ -200,9 +203,9 @@ func (w *controlWalker) walkPass(seed func()) controlPass {
 	return w.pass
 }
 
-func (w *controlWalker) truncate(reason string) {
+func (w *controlWalker) truncate(path, reason string) {
 	if w.pass.truncated == "" {
-		w.pass.truncated = reason
+		w.pass.truncated = fmt.Sprintf("%s at %q", reason, path)
 	}
 }
 
@@ -211,7 +214,7 @@ func (w *controlWalker) unreadable(path, reason string) {
 		return
 	}
 	if len(w.pass.unreadable) == w.budget.MaxControlEntries {
-		w.truncate("control unreadable path limit exceeded")
+		w.truncate(path, "control unreadable path limit exceeded")
 		return
 	}
 	w.pass.unreadable[path] = reason
@@ -282,15 +285,15 @@ func (w *controlWalker) record(path string, info fs.FileInfo) controlEntry {
 		return controlEntry{}
 	}
 	if w.entryCount == w.budget.MaxControlEntries {
-		w.truncate("control entry limit exceeded")
+		w.truncate(path, "control entry limit exceeded")
 		return controlEntry{}
 	}
 	if int64(len(path)) > w.budget.MaxControlPathBytes-w.pathBytes {
-		w.truncate("control path-bytes limit exceeded")
+		w.truncate(path, "control path-bytes limit exceeded")
 		return controlEntry{}
 	}
 	if 1+strings.Count(path, string(filepath.Separator)) > w.budget.MaxControlDepth {
-		w.truncate("control depth limit exceeded")
+		w.truncate(path, "control depth limit exceeded")
 		return controlEntry{}
 	}
 	w.entryCount++
@@ -430,6 +433,10 @@ func (w *controlWalker) list(path string, visit func(string, fs.DirEntry) bool) 
 }
 
 func (w *controlWalker) queueTree(e controlEntry, gitDir, worktree string) {
+	w.enqueueTree(e, controlTree{gitDir: gitDir, worktree: worktree})
+}
+
+func (w *controlWalker) enqueueTree(e controlEntry, tree controlTree) {
 	if e.Kind != KindDir {
 		return
 	}
@@ -437,32 +444,50 @@ func (w *controlWalker) queueTree(e controlEntry, gitDir, worktree string) {
 		return
 	}
 	w.coveredTrees[e.Path] = struct{}{}
-	w.trees = append(w.trees, controlTree{path: e.Path, gitDir: gitDir, worktree: worktree})
+	tree.path = e.Path
+	w.trees = append(w.trees, tree)
 }
 
 func (w *controlWalker) scanFixed(dir string) {
 	for _, name := range fixedControlPaths {
 		path := filepath.Join(dir, name)
 		if info := w.lookup(path); info != nil {
-			w.queueTree(w.record(path, info), "", "")
+			w.scanFixedChild(path, info)
 		}
 	}
 }
 
-func (w *controlWalker) scanGitMarker(dir string) {
+// A checkout inside a fixed control tree has its own control paths.
+func (w *controlWalker) scanFixedChild(path string, info fs.FileInfo) {
+	e := w.record(path, info)
+	if e.Kind == KindDir {
+		if w.bareRepository(path) {
+			w.scanGitDir(path, path)
+			return
+		}
+		if w.scanGitMarker(path) {
+			w.scanFixed(path)
+			return
+		}
+	}
+	w.enqueueTree(e, controlTree{fixed: true})
+}
+
+func (w *controlWalker) scanGitMarker(dir string) bool {
 	path := filepath.Join(dir, ".git")
 	info := w.lookup(path)
 	if info == nil {
-		return
+		return false
 	}
 	if info.IsDir() {
 		w.scanGitDir(path, dir)
-		return
+		return true
 	}
 	e := w.record(path, info)
 	if e.Kind == KindFile {
 		w.scanGitPointer(e, "gitdir: ", dir, dir)
 	}
+	return e.Kind == KindFile
 }
 
 func (w *controlWalker) scanGitDir(dir, worktree string) {
@@ -524,6 +549,10 @@ func (w *controlWalker) scanTreeChild(tree controlTree, path string, listed fs.D
 			return
 		}
 	}
+	if tree.fixed {
+		w.scanFixedChild(path, info)
+		return
+	}
 	e := w.record(path, info)
 	w.queueTree(e, tree.gitDir, tree.worktree)
 }
@@ -550,16 +579,15 @@ func (w *controlWalker) bareRepository(path string) bool {
 	return (config != nil && config.Mode().IsRegular()) || (refs != nil && refs.IsDir())
 }
 
-func (w *controlWalker) discoverNested() string {
+func (w *controlWalker) discoverNested() {
 	type directory struct {
 		path  string
 		depth int
 	}
 	queue := []directory{{path: "."}}
-	// Bound wide, flat directories too. MaxNestedDirs bounds the queue and
-	// this derived limit bounds the number of directory entries read from it.
-	var listed int64
-	var limit string
+	w.pass.undiscovered = make(map[string]struct{})
+	// Bound both queue storage and the cost of listing wide directories.
+	listed := 0
 	for i := 0; i < len(queue) && w.pass.truncated == ""; i++ {
 		dir := queue[i]
 		if _, covered := w.coveredTrees[dir.path]; covered {
@@ -574,34 +602,62 @@ func (w *controlWalker) discoverNested() string {
 			w.scanFixed(dir.path)
 		}
 		w.list(dir.path, func(child string, d fs.DirEntry) bool {
-			listed++
-			if (listed-1)/64 >= int64(w.budget.MaxNestedDirs) {
-				limit = "nested directory entry limit exceeded"
+			if listed == w.budget.MaxNestedDirs {
+				w.skipDiscovery(dir.path, "nested directory entry limit exceeded")
 				return false
 			}
+			listed++
 			if !d.IsDir() {
 				return true
 			}
 			if _, covered := w.coveredTrees[child]; covered {
 				return true
 			}
-			if dir.depth >= w.budget.MaxNestedDepth || len(queue) >= w.budget.MaxNestedDirs {
-				if limit == "" {
-					limit = "nested directory count or depth limit exceeded"
-				}
+			if dir.depth >= w.budget.MaxNestedDepth {
+				w.skipDiscovery(child, "nested directory depth limit exceeded")
+				return true
+			}
+			if len(queue) >= w.budget.MaxNestedDirs {
+				w.skipDiscovery(child, "nested directory count limit exceeded")
 				return true
 			}
 			queue = append(queue, directory{path: child, depth: dir.depth + 1})
 			return true
 		})
+		if listed == w.budget.MaxNestedDirs {
+			for _, pending := range queue[i+1:] {
+				w.skipDiscovery(pending.path, "nested directory entry limit exceeded")
+			}
+			break
+		}
 	}
-	return limit
+}
+
+func (w *controlWalker) skipDiscovery(path, reason string) {
+	w.pass.undiscovered[path] = struct{}{}
+	if w.pass.discoveryLimit == "" {
+		w.pass.discoveryLimit = fmt.Sprintf("%s at %q", reason, path)
+	}
+}
+
+func (p controlPass) discovered(path string) bool {
+	for {
+		if _, skipped := p.undiscovered[path]; skipped {
+			return false
+		}
+		if path == "." {
+			return true
+		}
+		path = filepath.Dir(path)
+	}
 }
 
 func volatileGitEntry(path string, mode fs.FileMode) bool {
 	if mode.IsDir() {
 		switch path {
-		case "objects/pack", "objects/info/commit-graphs", "refs", "logs", "reftable", "rr-cache":
+		// Git LFS stores content by object ID under lfs/objects.
+		// https://github.com/git-lfs/git-lfs/blob/main/docs/spec.md
+		case "lfs/objects", "objects/pack", "objects/info/commit-graphs", "refs", "logs", "reftable", "rr-cache":
 			return true
 		}
 		digits, objectShard := strings.CutPrefix(path, "objects/")
@@ -660,7 +716,10 @@ func DiffControlSurface(before, after ControlSurfaceSnapshot) (ControlSurfaceSta
 		unreadableReason = "unreadable control paths"
 	}
 	s.IncompleteReason = joinIncompleteReasons(before.problem, after.problem, identityReason, unreadableReason,
-		before.priority.truncated, after.priority.truncated, before.nested.truncated, after.nested.truncated)
+		before.priority.truncated, after.priority.truncated)
+	s.NestedDiscoveryReason = joinIncompleteReasons(before.nested.discoveryLimit, after.nested.discoveryLimit,
+		before.nested.truncated, after.nested.truncated)
+	s.NestedDiscoveryPartial = s.NestedDiscoveryReason != ""
 	s.Incomplete = s.IncompleteReason != ""
 	return s, nil
 }
@@ -678,12 +737,12 @@ func compareControlPass(before, after controlPass) controlPassDiff {
 		if seen && (b.mode != a.mode || entryChanged(b.Entry, a.Entry)) {
 			diff.modified = append(diff.modified, path)
 		}
-		if !seen && complete && !withinExcluded(path, excluded) {
+		if !seen && complete && after.discovered(path) && !withinExcluded(path, excluded) {
 			diff.removed = append(diff.removed, path)
 		}
 	}
 	for path := range after.entries {
-		if _, seen := before.entries[path]; !seen && complete && !withinExcluded(path, excluded) {
+		if _, seen := before.entries[path]; !seen && complete && before.discovered(path) && !withinExcluded(path, excluded) {
 			diff.added = append(diff.added, path)
 		}
 	}

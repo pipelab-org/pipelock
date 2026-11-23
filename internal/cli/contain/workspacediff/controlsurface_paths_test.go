@@ -85,13 +85,13 @@ func TestControlSurfaceSubmoduleConfigTargetBeforeDiscovery(t *testing.T) {
 	writeControlFixture(t, root, target, "after")
 	after := controlSnapshot(t, root, budget)
 	diff := controlDiff(t, before, after)
-	if !diff.Changed || !diff.Incomplete || !slices.Contains(diff.Modified, filepath.FromSlash(target)) {
+	if !diff.Changed || diff.Incomplete || !diff.NestedDiscoveryPartial || !slices.Contains(diff.Modified, filepath.FromSlash(target)) {
 		t.Fatalf("priority Git scan did not report the submodule worktree target: %+v", diff)
 	}
 }
 
 func TestControlSurfaceNeverExcludesVolatileSymlinks(t *testing.T) {
-	for _, rel := range []string{".git/objects/pack", ".git/refs", ".git/HEAD"} {
+	for _, rel := range []string{".git/objects/pack", ".git/refs", ".git/HEAD", ".git/lfs/objects"} {
 		t.Run(rel, func(t *testing.T) {
 			root := t.TempDir()
 			name := filepath.FromSlash(rel)
@@ -126,7 +126,7 @@ func TestControlSurfaceKeepsObservedChangesWhenTruncated(t *testing.T) {
 		wantAdded bool
 	}{
 		{"priority", func(b *ControlSurfaceBudget) { b.MaxControlEntries = 3 }, "control entry limit", false},
-		{"nested", func(b *ControlSurfaceBudget) { b.MaxNestedDirs = 1 }, "nested directory count", true},
+		{"nested", func(b *ControlSurfaceBudget) { b.MaxNestedDirs = 1 }, "nested directory", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -142,7 +142,8 @@ func TestControlSurfaceKeepsObservedChangesWhenTruncated(t *testing.T) {
 			writeControlFixture(t, root, ".envrc", "inert fixture")
 			after := controlSnapshot(t, root, budget)
 			diff := controlDiff(t, before, after)
-			if !diff.Changed || !diff.Incomplete || !strings.Contains(diff.IncompleteReason, tc.reason) ||
+			reason := diff.IncompleteReason + diff.NestedDiscoveryReason
+			if !diff.Changed || diff.Incomplete == tc.wantAdded || diff.NestedDiscoveryPartial != tc.wantAdded || !strings.Contains(reason, tc.reason) ||
 				!slices.Contains(diff.Modified, filepath.FromSlash(configPath)) {
 				t.Fatalf("want incomplete observation with config modification: %+v", diff)
 			}

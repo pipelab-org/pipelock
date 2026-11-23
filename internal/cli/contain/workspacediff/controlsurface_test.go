@@ -4,6 +4,7 @@
 package workspacediff
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"os/exec"
@@ -352,4 +353,114 @@ func TestControlSurfaceIndependentWorkspaceBudget(t *testing.T) {
 		t.Fatalf("whole tree should suppress paths on budget exhaustion: %+v", full)
 	}
 	expectControlPath(t, controlDiff(t, before, after), hook)
+}
+
+func TestControlSurfaceDeepDiscoveryPreservesFindings(t *testing.T) {
+	git := newControlGit(t)
+	root := t.TempDir()
+	git.init(t, root)
+	nested := filepath.Join(root, "nested")
+	if err := os.Mkdir(nested, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	git.init(t, nested)
+	const hook = ".git/hooks/example"
+	writeControlFixture(t, root, hook, "before")
+	writeControlFixture(t, nested, hook, "before")
+	budget := DefaultControlSurfaceBudget()
+	before := controlSnapshot(t, root, budget)
+	if err := os.MkdirAll(filepath.Join(root, strings.Repeat("d/", 8)), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	shallow := controlSnapshot(t, root, budget)
+	if diff := controlDiff(t, before, shallow); diff.Changed || diff.Incomplete || diff.NestedDiscoveryPartial {
+		t.Fatalf("eight benign levels must be clean: %+v", diff)
+	}
+	if err := os.MkdirAll(filepath.Join(root, strings.Repeat("d/", 70)), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	deep := controlSnapshot(t, root, budget)
+	if diff := controlDiff(t, shallow, deep); diff.Changed || diff.Incomplete || !diff.NestedDiscoveryPartial ||
+		!strings.Contains(diff.NestedDiscoveryReason, "depth limit exceeded at") {
+		t.Fatalf("seventy benign levels must only make discovery partial: %+v", diff)
+	}
+	writeControlFixture(t, root, hook, "changed")
+	writeControlFixture(t, nested, hook, "changed")
+	writeControlFixture(t, nested, ".git/hooks/new", "new")
+	diff := controlDiff(t, deep, controlSnapshot(t, root, budget))
+	expectControlPath(t, diff, hook)
+	expectControlPath(t, diff, "nested/"+hook)
+	expectControlPath(t, diff, "nested/.git/hooks/new")
+	if !diff.NestedDiscoveryPartial {
+		t.Fatalf("missing nested discovery limit: %+v", diff)
+	}
+}
+
+func TestControlSurfaceGitLFSObjects(t *testing.T) {
+	root := t.TempDir()
+	git := newControlGit(t)
+	git.init(t, root)
+	budget := DefaultControlSurfaceBudget()
+	const source = "asset.bin"
+	object := strings.Repeat("x", testControlCap+1)
+	var addObject func(string)
+	objectPath := func(content string) string {
+		id := fmt.Sprintf("%x", sha256.Sum256([]byte(content)))
+		return ".git/lfs/objects/" + id[:2] + "/" + id[2:4] + "/" + id
+	}
+	if _, err := git.command(t, root, "lfs", "version"); err == nil {
+		git.run(t, root, "lfs", "install", "--local", "--skip-smudge")
+		git.run(t, root, "lfs", "track", source)
+		addObject = func(content string) {
+			writeControlFixture(t, root, source, content)
+			git.run(t, root, "add", "--", source)
+		}
+	} else {
+		t.Log("Git LFS unavailable, using its documented local store layout")
+		addObject = func(content string) {
+			writeControlFixture(t, root, objectPath(content), content)
+		}
+	}
+	addObject(object)
+	if info, err := os.Stat(filepath.Join(root, filepath.FromSlash(objectPath(object)))); err != nil || info.Size() != int64(len(object)) {
+		t.Fatalf("missing large LFS object: %v", err)
+	}
+	before := controlSnapshot(t, root, budget)
+	addObject(strings.Repeat("y", testControlCap+1))
+	after := controlSnapshot(t, root, budget)
+	if diff := controlDiff(t, before, after); diff.Changed || diff.Incomplete {
+		t.Fatalf("LFS object storage must remain volatile: %+v", diff)
+	}
+	writeControlFixture(t, root, ".git/lfs/example", "fixture")
+	expectControlPath(t, controlDiff(t, after, controlSnapshot(t, root, budget)), ".git/lfs/example")
+}
+
+func TestControlSurfaceGitCheckoutInsideFixedTree(t *testing.T) {
+	git := newControlGit(t)
+	root := t.TempDir()
+	git.init(t, root)
+	git.commit(t, root, "source.txt")
+	const checkout = ".claude/worktrees/example"
+	dir := filepath.Join(root, filepath.FromSlash(checkout))
+	git.run(t, root, "worktree", "add", "-qb", "example", dir)
+	const hook = ".git/hooks/example"
+	writeControlFixture(t, root, hook, "before")
+	budget := DefaultControlSurfaceBudget()
+	budget.MaxControlEntries = 256
+	for i := range budget.MaxControlEntries + 1 {
+		writeControlFixture(t, dir, fmt.Sprintf("source/%d.txt", i), "source")
+	}
+	before := controlSnapshot(t, root, budget)
+	writeControlFixture(t, dir, "source.txt", strings.Repeat("x", testControlCap+1))
+	after := controlSnapshot(t, root, budget)
+	if diff := controlDiff(t, before, after); diff.Changed || diff.Incomplete || diff.NestedDiscoveryPartial {
+		t.Fatalf("ordinary checkout content must stay outside the control surface: %+v", diff)
+	}
+	git.run(t, dir, "config", "extensions.worktreeConfig", "true")
+	git.run(t, dir, "config", "--worktree", "core.hooksPath", ".hooks")
+	writeControlFixture(t, dir, ".hooks/example", "before")
+	withConfig := controlSnapshot(t, root, budget)
+	expectControlPath(t, controlDiff(t, after, withConfig), ".git/worktrees/example/config.worktree")
+	writeControlFixture(t, dir, ".hooks/example", "changed")
+	expectControlPath(t, controlDiff(t, withConfig, controlSnapshot(t, root, budget)), checkout+"/.hooks/example")
 }
