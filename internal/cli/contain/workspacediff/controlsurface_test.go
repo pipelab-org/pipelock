@@ -1122,3 +1122,32 @@ func TestControlSurfaceReportsRemovalOfADirectlyMonitoredPathAlsoReferenced(t *t
 		t.Fatalf("a deleted control file in an examined directory must be reported: %+v", diff)
 	}
 }
+
+// A fixed control directory is monitored whole, including a bare repository
+// inside it. Git's volatile-file filter applies to a repository's own metadata
+// elsewhere, but here refs and the other files Git rewrites are part of a
+// directory the agent configuration lives in.
+func TestControlSurfaceBareRepositoryInsideFixedDirectoryIsMonitoredWhole(t *testing.T) {
+	for _, tc := range []struct{ name, bare, edit string }{
+		{"refs", ".claude/cache", "refs/heads/planted"},
+		{"info refs", ".claude/cache", "info/refs"},
+		{"head", ".claude/cache", "HEAD"},
+		{"at the fixed directory", ".claude", "refs/heads/planted"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			git := newControlGit(t)
+			root := t.TempDir()
+			git.init(t, root)
+			dir := filepath.Join(root, filepath.FromSlash(tc.bare))
+			if err := os.MkdirAll(dir, 0o750); err != nil {
+				t.Fatal(err)
+			}
+			git.run(t, dir, "init", "-q", "--bare", ".")
+			writeControlFixture(t, dir, tc.edit, "ref: refs/heads/before\n")
+			budget := DefaultControlSurfaceBudget()
+			before := controlSnapshot(t, root, budget)
+			writeControlFixture(t, dir, tc.edit, "ref: refs/heads/changed\n")
+			expectControlPath(t, controlDiff(t, before, controlSnapshot(t, root, budget)), tc.bare+"/"+tc.edit)
+		})
+	}
+}

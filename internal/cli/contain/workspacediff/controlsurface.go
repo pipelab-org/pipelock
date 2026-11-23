@@ -145,7 +145,7 @@ func SnapshotControlSurface(root string, capBytes int64, budget ControlSurfaceBu
 	snap.priority = w.walkPass(func() {
 		w.scanGitMarker(".")
 		if w.bareRepository(".") {
-			w.scanGitDir(".", ".")
+			w.scanGitDir(".", ".", false)
 		}
 		w.scanFixed(".")
 	})
@@ -545,7 +545,7 @@ func (w *controlWalker) scanFixed(dir string) {
 			e := w.record(path, info)
 			if e.Kind == KindDir {
 				if w.bareRepository(path) {
-					w.scanGitDir(path, path)
+					w.scanGitDir(path, path, true)
 				} else {
 					w.scanGitMarker(path)
 				}
@@ -563,7 +563,7 @@ func (w *controlWalker) scanFixedChild(path string, info fs.FileInfo) {
 	e := w.record(path, info)
 	if e.Kind == KindDir {
 		if w.bareRepository(path) {
-			w.scanGitDir(path, path)
+			w.scanGitDir(path, path, true)
 			return
 		}
 		if w.scanGitMarker(path) && agentWorktreeSlot(path) {
@@ -602,7 +602,7 @@ func (w *controlWalker) scanGitMarker(dir string) bool {
 		return false
 	}
 	if info.IsDir() {
-		w.scanGitDir(path, dir)
+		w.scanGitDir(path, dir, false)
 		return true
 	}
 	e := w.record(path, info)
@@ -612,7 +612,11 @@ func (w *controlWalker) scanGitMarker(dir string) bool {
 	return e.Kind == KindFile
 }
 
-func (w *controlWalker) scanGitDir(dir, worktree string) {
+// scanGitDir observes a Git directory and what its configuration names. fixed
+// says the directory is inside a fixed control tree, which is monitored whole:
+// Git's volatile-file filter is for repository metadata elsewhere and must not
+// hide files from a tree the filter's list does not describe.
+func (w *controlWalker) scanGitDir(dir, worktree string, fixed bool) {
 	source := gitConfigSource{path: dir, worktree: worktree}
 	if _, seen := w.seenGitDirs[source]; seen {
 		return
@@ -632,7 +636,7 @@ func (w *controlWalker) scanGitDir(dir, worktree string) {
 			worktree, _ = w.workspaceTarget(config.Path, dir, value)
 		}
 	}
-	w.queueTree(e, dir, worktree)
+	w.enqueueTree(e, controlTree{gitDir: dir, worktree: worktree, fixed: fixed})
 	for _, config := range configs {
 		w.scanGitConfig(config, dir, worktree)
 	}
@@ -641,7 +645,7 @@ func (w *controlWalker) scanGitDir(dir, worktree string) {
 	}
 	for _, name := range []string{"hooks", "info", "objects/info", "modules", "worktrees"} {
 		child := w.recordPath(filepath.Join(dir, filepath.FromSlash(name)))
-		w.queueTree(child, dir, worktree)
+		w.enqueueTree(child, controlTree{gitDir: dir, worktree: worktree, fixed: fixed})
 	}
 }
 
@@ -659,7 +663,7 @@ func (w *controlWalker) scanTreeChild(tree controlTree, path string, listed fs.D
 	if tree.gitDir != "" {
 		rel, _ := filepath.Rel(tree.gitDir, path)
 		rel = filepath.ToSlash(rel)
-		if volatileGitEntry(rel, info.Mode()) {
+		if !tree.fixed && volatileGitEntry(rel, info.Mode()) {
 			return
 		}
 		if info.IsDir() && w.gitMetadataChild(path, rel) {
@@ -667,7 +671,7 @@ func (w *controlWalker) scanTreeChild(tree controlTree, path string, listed fs.D
 			if strings.HasPrefix(rel, "worktrees/") {
 				worktree = w.linkedWorktree(path)
 			}
-			w.scanGitDir(path, worktree)
+			w.scanGitDir(path, worktree, tree.fixed)
 			return
 		}
 	}
@@ -772,7 +776,7 @@ func (d *nestedDiscovery) run() {
 		}
 		if dir.depth > 0 && !dir.slot {
 			if w.bareRepository(dir.path) {
-				w.scanGitDir(dir.path, dir.path)
+				w.scanGitDir(dir.path, dir.path, false)
 				continue
 			}
 			w.scanGitMarker(dir.path)

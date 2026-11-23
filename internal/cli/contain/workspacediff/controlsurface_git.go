@@ -36,7 +36,7 @@ func (w *controlWalker) scanGitPointer(entry controlEntry, prefix, base, worktre
 		w.following(entry.Path, func() {
 			targetEntry := w.recordPath(path)
 			if targetEntry.Kind == KindDir {
-				w.scanGitDir(path, worktree)
+				w.scanGitDir(path, worktree, false)
 			} else if targetEntry.Kind != KindSymlink {
 				w.unreadable(entry.Path, "Git directory target could not be observed")
 			}
