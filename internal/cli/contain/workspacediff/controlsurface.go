@@ -598,7 +598,7 @@ func (w *controlWalker) scanGitDir(dir, worktree string) {
 	for _, config := range configs {
 		if value, set := w.configuredWorktree(config); set {
 			// An outside working tree has no relative paths to inspect.
-			worktree, _ = w.workspaceTarget(dir, value)
+			worktree, _ = w.workspaceTarget(config.Path, dir, value)
 		}
 	}
 	w.queueTree(e, dir, worktree)

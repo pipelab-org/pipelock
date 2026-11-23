@@ -6,9 +6,12 @@ package workspacediff
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -29,7 +32,7 @@ func (w *controlWalker) scanGitPointer(entry controlEntry, prefix, base, worktre
 		w.unreadable(entry.Path, "invalid Git directory pointer")
 		return
 	}
-	if path, inside := w.workspaceTarget(base, target); inside {
+	if path, inside := w.workspaceTarget(entry.Path, base, target); inside {
 		w.following(entry.Path, func() {
 			targetEntry := w.recordPath(path)
 			if targetEntry.Kind == KindDir {
@@ -67,18 +70,18 @@ func (w *controlWalker) scanGitConfig(entry controlEntry, gitDir, worktree strin
 			// Push hooks run in the Git directory, while other hooks run
 			// in the working tree (or the Git directory for a bare repo).
 			for _, base := range []string{worktree, gitDir} {
-				if path, inside := w.workspaceTarget(base, value); inside {
+				if path, inside := w.workspaceTarget(entry.Path, base, value); inside {
 					w.queueTree(w.recordPath(path), "", "")
 				}
 			}
 		case section == "core" && key == "fsmonitor":
 			if !gitBoolean(value) {
-				if path, inside := w.workspaceTarget(worktree, value); inside {
+				if path, inside := w.workspaceTarget(entry.Path, worktree, value); inside {
 					w.recordPath(path)
 				}
 			}
 		case (section == "include" || strings.HasPrefix(section, "includeif.")) && key == "path":
-			if path, inside := w.workspaceTarget(filepath.Dir(entry.Path), value); inside {
+			if path, inside := w.workspaceTarget(entry.Path, filepath.Dir(entry.Path), value); inside {
 				w.scanGitConfig(w.recordPath(path), gitDir, worktree)
 			}
 		}
@@ -105,20 +108,69 @@ func (w *controlWalker) configuredWorktree(entry controlEntry) (value string, se
 
 // Config paths are relative to Git's working directory for hooks and
 // fsmonitor, or to the including file for includes. Resolve literal paths
-// lexically first so no external repository or config is opened.
-func (w *controlWalker) workspaceTarget(base, value string) (string, bool) {
+// without opening any external repository or config. Git resolves a path one
+// component at a time, so a ".." after a symlinked component leaves that
+// component's target; when cleaning the path lexically would name a different
+// place, the path cannot be observed and source, the file that named it, is
+// reported unreadable.
+func (w *controlWalker) workspaceTarget(source, base, value string) (string, bool) {
 	if value == "" || strings.ContainsRune(value, 0) ||
 		strings.HasPrefix(value, "~") || strings.HasPrefix(value, "%(prefix)/") {
 		return "", false
 	}
+	joined := value
 	if !filepath.IsAbs(value) {
 		if base == "" {
 			return "", false
 		}
-		value = filepath.Join(w.rootPath, base, value)
+		joined = filepath.Join(w.rootPath, base, value)
 	}
-	rel, err := filepath.Rel(w.rootPath, filepath.Clean(value))
-	return rel, err == nil && filepath.IsLocal(rel)
+	rel, err := filepath.Rel(w.rootPath, filepath.Clean(joined))
+	if err != nil || !filepath.IsLocal(rel) {
+		return "", false
+	}
+	if slices.Contains(strings.Split(filepath.ToSlash(value), "/"), "..") && !w.resolvesLexically(base, value) {
+		w.unreadable(source, "configured path resolution is ambiguous")
+		return "", false
+	}
+	return rel, true
+}
+
+// resolvesLexically reports whether every ".." in value follows a plain
+// directory, whose parent is then the lexical parent. A ".." after a symlink,
+// or after a component that cannot be inspected, is not a place cleaning finds.
+func (w *controlWalker) resolvesLexically(base, value string) bool {
+	var stack []string
+	rest := value
+	if filepath.IsAbs(value) {
+		var inside bool
+		if rest, inside = strings.CutPrefix(value, w.rootPath+string(filepath.Separator)); !inside {
+			return false
+		}
+	} else {
+		stack = slices.DeleteFunc(strings.Split(filepath.ToSlash(base), "/"), func(part string) bool {
+			return part == "" || part == "."
+		})
+	}
+	for part := range strings.SplitSeq(filepath.ToSlash(rest), "/") {
+		switch part {
+		case "", ".":
+		case "..":
+			if len(stack) == 0 {
+				return false
+			}
+			// A component that does not exist now has no target to leave. If it
+			// becomes a symlink, the next snapshot finds that and is ambiguous.
+			info, err := w.root.Lstat(strings.Join(stack, "/"))
+			if err != nil && !errors.Is(err, fs.ErrNotExist) || err == nil && !info.IsDir() {
+				return false
+			}
+			stack = stack[:len(stack)-1]
+		default:
+			stack = append(stack, part)
+		}
+	}
+	return true
 }
 
 // A linked worktree records the path to its .git file in its metadata.
@@ -126,7 +178,7 @@ func (w *controlWalker) linkedWorktree(gitDir string) string {
 	entry := w.recordPath(filepath.Join(gitDir, "gitdir"))
 	if entry.Kind == KindFile {
 		if data, ok := w.readObserved(entry); ok {
-			if target, inside := w.workspaceTarget(gitDir, strings.TrimRight(string(data), "\r\n")); inside {
+			if target, inside := w.workspaceTarget(entry.Path, gitDir, strings.TrimRight(string(data), "\r\n")); inside {
 				return filepath.Dir(target)
 			}
 		}
