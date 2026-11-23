@@ -1522,10 +1522,11 @@ Rules:
   `allow_loopback_http: true`. Checker calls never use proxy environment
   variables, never follow redirects, and refuse cloud metadata and
   link-local addresses.
-- Each checker gets one item per MCP response or `tools/list` (one part per
-  tool, with findings attributed by part). Parts carry the original text plus
-  a decoded Unicode-tag view and a normalized view where they differ; base64
-  and hex decoded views are not sent yet.
+- Each checker gets one item per MCP response or `tools/list`. Description
+  findings are attributed to tools by part ID. Buffered text parts include
+  distinct Unicode-normalized and decoded text views, including base64 and hex.
+  Each part is an independent view. If decoding reaches an inspection limit
+  or the complete request exceeds the byte limit, assessment is incomplete.
 - Outcomes that are not a complete benign assessment, watch results and
   dropped watch calls are logged as `injection_checker` events, with no
   content and no provider text. A known-answer self-test runs against every

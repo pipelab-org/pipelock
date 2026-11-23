@@ -104,8 +104,14 @@ func (j *Jev) Check(ctx context.Context, item Item, policy Policy) Assessment {
 	if item.Kind != KindText {
 		return failure(StatusNotChecked, ReasonUnsupported)
 	}
+	if item.Completeness != nil && item.Completeness.Status == Partial && item.Completeness.Reason == ReasonOverBudget {
+		return overBudget()
+	}
 	if !validItem(item) {
 		return failure(StatusInvalid, ReasonMalformed)
+	}
+	if item.SubmittedBytes > policy.MaxRequestBytes {
+		return overBudget()
 	}
 	if !j.keySet {
 		return failure(StatusNotChecked, ReasonUnavailable)
@@ -128,7 +134,7 @@ func (j *Jev) Check(ctx context.Context, item Item, policy Policy) Assessment {
 		return failure(StatusInvalid, ReasonMalformed)
 	}
 	if int64(len(body)) > policy.MaxRequestBytes {
-		return failure(StatusNotChecked, ReasonOverBudget)
+		return overBudget()
 	}
 	data, fail := j.client.post(ctx, body, policy.MaxResponseBytes)
 	if fail != nil {

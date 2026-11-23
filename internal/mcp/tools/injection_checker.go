@@ -45,8 +45,12 @@ func assessToolDescriptions(ctx context.Context, sc *scanner.Scanner, prescans [
 		}
 		id := toolPartPrefix + strconv.Itoa(i)
 		parts = append(parts, checker.Part{ID: id, Role: "tool_description", Representation: "original", Text: pre.text})
-		if tags := normalize.DecodeTags(pre.text); tags != pre.text {
+		tags := normalize.DecodeTags(pre.text)
+		if tags != pre.text {
 			parts = append(parts, checker.Part{ID: id + ":tags", Role: "decoded_view", Representation: "unicode_tags/v1", Text: tags})
+		}
+		if text := normalize.ForMatching(tags); text != tags && text != pre.text {
+			parts = append(parts, checker.Part{ID: id + ":normalized", Role: "decoded_view", Representation: "for_matching/v1", Text: text})
 		}
 	}
 	if len(parts) == 0 {

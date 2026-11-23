@@ -230,6 +230,12 @@ func failure(status Status, reason Reason) Assessment {
 	return Assessment{State: state, Status: status, Reason: reason}
 }
 
+// overBudget reports a locally incomplete assessment when the request cannot
+// be sent within the configured limit.
+func overBudget() Assessment {
+	return Assessment{State: StateIncomplete, Status: StatusNotChecked, Reason: ReasonOverBudget}
+}
+
 func validReason(r Reason) bool {
 	switch r {
 	case ReasonUnavailable, ReasonTimeout, ReasonCanceled, ReasonRefused, ReasonUnsupported,

@@ -278,7 +278,7 @@ func TestBufferedInjectionExtractionFailure(t *testing.T) {
 
 func TestBufferedInjectionCorruptMetadata(t *testing.T) {
 	body := pngWithMetadata(t, "zTXt", []byte("Comment\x00\x00broken"))
-	if _, err := bufferedBodyInjectionTexts(t.Context(), body); err == nil {
+	if _, err := extractResponseBodyViews(t.Context(), body); err == nil {
 		t.Fatal("corrupt compressed metadata treated as empty content")
 	}
 }
@@ -364,7 +364,7 @@ func TestBufferedInjectionInvalidUTF8(t *testing.T) {
 
 func TestInjectionTextPartsInvalidUTF8(t *testing.T) {
 	parts := InjectionTextParts("", "a"+string([]byte{0xff, 0xfe})+"b", "ｈｅｌｌｏ"+string([]byte{0xff})+"world")
-	if len(parts) != 3 || parts[0].Text != "a b" || parts[1].Text != "ｈｅｌｌｏ world" || parts[2].Text != "hello world" {
+	if !hasCheckerView(parts, "a b") || !hasCheckerView(parts, "ｈｅｌｌｏ world") || !hasCheckerView(parts, "hello world") {
 		t.Fatalf("unexpected cleaned parts: %+v", parts)
 	}
 }

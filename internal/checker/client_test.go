@@ -227,8 +227,8 @@ func TestNoCall(t *testing.T) {
 		{name: "action", item: func(i *Item) { i.Kind = KindAction }, state: StateNotAssessed, reason: ReasonUnsupported},
 		{name: "image", item: func(i *Item) { i.Kind = KindImage }, state: StateNotAssessed, reason: ReasonUnsupported},
 		{name: "malformed", item: func(i *Item) { i.Completeness = nil }, state: StateNotAssessed, reason: ReasonMalformed},
-		{name: "content_budget", policy: func(p *Policy) { p.MaxRequestBytes = 4 }, state: StateNotAssessed, reason: ReasonOverBudget},
-		{name: "envelope_budget", policy: func(p *Policy) { p.MaxRequestBytes = 10 }, state: StateNotAssessed, reason: ReasonOverBudget},
+		{name: "content_budget", policy: func(p *Policy) { p.MaxRequestBytes = 4 }, state: StateIncomplete, reason: ReasonOverBudget},
+		{name: "envelope_budget", policy: func(p *Policy) { p.MaxRequestBytes = 10 }, state: StateIncomplete, reason: ReasonOverBudget},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

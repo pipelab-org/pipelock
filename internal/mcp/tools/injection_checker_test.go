@@ -111,6 +111,26 @@ func TestDescriptionCheckerReadsDecodedTags(t *testing.T) {
 	}
 }
 
+func TestDescriptionCheckerReadsNormalizedDescription(t *testing.T) {
+	const phrase = "violet teacups"
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	srv := checkertest.NewMatching(t, phrase)
+	srv.Configure(cfg, config.InjectionSurfaceMCPToolDescription, config.InjectionModeBlock)
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	wide := strings.Map(func(r rune) rune {
+		if r >= '!' && r <= '~' {
+			return r + 0xfee0
+		}
+		return r
+	}, phrase)
+	checked, ok := assessToolDescriptions(t.Context(), sc, []toolPrescan{{text: "Lists files."}, {text: wide}})
+	if !ok || checked.flags(0) || !checked.flags(1) {
+		t.Fatalf("normalized part did not identify the second tool: %+v", checked)
+	}
+}
+
 func TestDescriptionCheckerUncitedFindingFlagsEveryTool(t *testing.T) {
 	m := checkertest.NewMockServer(t, checkertest.BehaviorUncited)
 	sc := descriptionCheckerScanner(t, m.URL, config.InjectionModeBlock)
