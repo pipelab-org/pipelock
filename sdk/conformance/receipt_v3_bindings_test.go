@@ -38,7 +38,8 @@ var receiptEmissionCalls = strings.Fields(
 		"emitV2Receipt emitV2 emitRequiredV2 emitGroupV2Receipt emitDLPWarn EmitDLPWarning " +
 		"EmitSessionOpen EmitSessionClose EmitHeartbeat EmitTranscriptRoot prepareNativeAEL " +
 		"BuildProxyDecisionReceipt BuildProxyDecisionWithSpansReceipt BuildSecretEgressDecisionReceipt " +
-		"SignReceipt EmitBatch RecordPrescanned buildReceipt")
+		"SignReceipt EmitBatch RecordPrescanned buildReceipt confirmMCPCardAcceptance confirmV3ResponseDecision " +
+		"confirmV3CardAcceptance sseFindingDelivery legacySSEFindingConfirmer recordEffectRefusal")
 
 type receiptProducerAttribution struct {
 	Fields string `json:"fields"`
