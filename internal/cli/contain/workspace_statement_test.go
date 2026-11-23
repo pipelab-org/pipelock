@@ -828,3 +828,82 @@ func TestEmitContainRunWorkspaceStatementRefusesUnwritableOutput(t *testing.T) {
 		t.Fatal("expected statement emission to fail when its output directory cannot create the atomic file")
 	}
 }
+
+func TestRunContainRun_SignedStatementNeverPassesWithControlFindings(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		activity   func(workspace string) error
+		wantStatus string
+		wantLine   string
+		wantMarker string
+	}{
+		{
+			name: "changed control path",
+			activity: func(workspace string) error {
+				return os.WriteFile(filepath.Join(workspace, ".envrc"), []byte("fixture"), 0o600)
+			},
+			wantStatus: "workspace_control_surface=changed",
+			wantLine:   workspaceStatementWrittenLine,
+			wantMarker: "Signed workspace change statement:",
+		},
+		{
+			name: "incomplete observation",
+			activity: func(workspace string) error {
+				return os.MkdirAll(filepath.Join(workspace, "a", "b", "c", "d", "e", "f", "g"), 0o750)
+			},
+			wantStatus: "workspace_control_surface=incomplete",
+			wantLine:   workspaceStatementIncompleteLine,
+			wantMarker: "[WARN] signed workspace change statement is INCOMPLETE",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := allPassEnv(t)
+			workspace := t.TempDir()
+			invBody := workspaceInvBody(t, workspace)
+			baseReadFile := env.readFile
+			env.readFile = func(path string) ([]byte, error) {
+				if path == env.workspaceInvPath {
+					return invBody, nil
+				}
+				return baseReadFile(path)
+			}
+			postureDir := t.TempDir()
+			configPath, _ := writeContainConfigWithSigningKey(t, t.TempDir())
+			agentExit := errors.New("example tool exited with status 3")
+			runEnv := containRunEnv{
+				probe:      env,
+				loadConfig: func(f string) (*config.Config, error) { return config.Load(f) },
+				launch: func(context.Context, *probeEnv, []string, io.Reader, io.Writer, io.Writer) error {
+					if err := tc.activity(workspace); err != nil {
+						return err
+					}
+					return agentExit
+				},
+				emitPosture: func(_ *config.Config, _ ed25519.PrivateKey, outputDir string, _ *probeEnv, _ []string) (postureEmission, error) {
+					path := filepath.Join(outputDir, "proof.json")
+					if err := os.MkdirAll(outputDir, 0o750); err != nil {
+						return postureEmission{}, err
+					}
+					if err := os.WriteFile(path, []byte("signed-posture-capsule-bytes"), 0o600); err != nil {
+						return postureEmission{}, err
+					}
+					return testPostureEmission(path, nil)
+				},
+			}
+			var stdout bytes.Buffer
+			err := runContainRun(t.Context(), strings.NewReader(""), &stdout, io.Discard, runEnv,
+				containRunOptions{configFile: configPath, postureOutput: postureDir, workspaceDiffCapBytes: 1 << 20}, []string{"claude"})
+			if !errors.Is(err, agentExit) {
+				t.Fatalf("launch exit = %v, want the tool's own status", err)
+			}
+			out := stdout.String()
+			if strings.Contains(out, "device-only") {
+				t.Skip("mount IDs are required for a complete control-surface observation")
+			}
+			if strings.Contains(out, "[PASS] signed workspace change statement") ||
+				!strings.Contains(out, tc.wantStatus) || !strings.Contains(out, tc.wantLine) || !strings.Contains(out, tc.wantMarker) {
+				t.Fatalf("control finding must be reported without a PASS line:\n%s", out)
+			}
+		})
+	}
+}
