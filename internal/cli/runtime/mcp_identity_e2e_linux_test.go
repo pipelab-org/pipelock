@@ -169,7 +169,9 @@ func startIdentityE2EServer(t *testing.T, o identityE2EServerOpts) *identityE2ES
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestIdentityE2EHelperProcess$") // #nosec G204 G702 -- test re-execs its own binary with a fixed run filter
-	env := append(os.Environ(), e2eHelperEnv+"=1")
+	// The loopback helper needs only fixture inputs. Inherited loader and CA
+	// settings can make its environment disagree with the test registration.
+	env := []string{e2eHelperEnv + "=1"}
 	if o.Hold != "" {
 		env = append(env, e2eHoldEnv+"="+o.Hold)
 	}
