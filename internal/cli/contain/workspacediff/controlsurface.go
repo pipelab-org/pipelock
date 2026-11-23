@@ -887,6 +887,10 @@ func DiffControlSurface(before, after ControlSurfaceSnapshot) (ControlSurfaceSta
 	s.Removed = mergeControlPaths(s.Removed, unobservedControlPaths(priorityDiff.removed, observedAfter),
 		unobservedControlPaths(nestedDiff.removed, observedAfter))
 	s.Modified = mergeControlPaths(s.Modified, priorityDiff.modified, nestedDiff.modified)
+	if before.rootInfo != nil && after.rootInfo != nil && identityReason == "" {
+		s.Modified = mergeControlPaths(s.Modified, nil, modifiedAcrossPasses(
+			[]controlPass{before.priority, before.nested}, []controlPass{after.priority, after.nested}))
+	}
 	s.Unreadable = mergeUnreadable(
 		collectControlUnreadable(before.priority, before.nested),
 		collectControlUnreadable(after.priority, after.nested),
@@ -961,6 +965,22 @@ func collectControlUnreadable(passes ...controlPass) []UnreadableEntry {
 		}
 	}
 	return entries
+}
+
+// modifiedAcrossPasses compares a path that different passes recorded at the two
+// endpoints, which neither pass could compare on its own.
+func modifiedAcrossPasses(before, after []controlPass) []string {
+	var modified []string
+	for _, b := range before {
+		for path, be := range b.entries {
+			for _, a := range after {
+				if ae, seen := a.entries[path]; seen && (be.mode != ae.mode || entryChanged(be.Entry, ae.Entry)) {
+					modified = append(modified, path)
+				}
+			}
+		}
+	}
+	return modified
 }
 
 func observedControlPaths(passes ...controlPass) map[string]struct{} {

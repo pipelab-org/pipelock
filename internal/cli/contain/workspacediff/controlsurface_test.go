@@ -1046,3 +1046,46 @@ func TestControlSurfaceInfersNothingFromReferencesOfUnexaminedRepositories(t *te
 		})
 	}
 }
+
+// A path can be recorded by the root pass at one endpoint and by the nested
+// pass at the other. Neither pass compared it, so each would report it as
+// added or removed, and dropping both would hide a modification.
+func TestControlSurfaceComparesAPathObservedByDifferentPassesAtEachEndpoint(t *testing.T) {
+	root := t.TempDir()
+	info, err := os.Stat(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const name = "settings"
+	entry := func(digest string) controlEntry {
+		return controlEntry{Entry: Entry{Path: name, Kind: KindFile, Digest: digest}, mode: 0o600}
+	}
+	for _, tc := range []struct {
+		name     string
+		before   controlEntry
+		after    controlEntry
+		modified bool
+	}{
+		{"content changed", entry("old"), entry("new"), true},
+		{"content unchanged", entry("same"), entry("same"), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			before := ControlSurfaceSnapshot{
+				root: root, rootInfo: info,
+				priority: controlPass{entries: map[string]controlEntry{name: tc.before}},
+			}
+			after := ControlSurfaceSnapshot{
+				root: root, rootInfo: info,
+				nested: controlPass{entries: map[string]controlEntry{name: tc.after}},
+			}
+			for _, diff := range []ControlSurfaceStatement{controlDiff(t, before, after), controlDiff(t, after, before)} {
+				if len(diff.Added) != 0 || len(diff.Removed) != 0 {
+					t.Errorf("a path observed at both endpoints is never added or removed: %+v", diff)
+				}
+				if got := slices.Equal(diff.Modified, []string{name}); got != tc.modified {
+					t.Errorf("modified = %t, want %t: %+v", got, tc.modified, diff)
+				}
+			}
+		})
+	}
+}
