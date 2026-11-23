@@ -456,7 +456,11 @@ func TestMCPV3RefusesDeferredRequestsAndNotifications(t *testing.T) {
 				surface = deferred.SurfaceMCPHTTPListener
 			}
 			writer, writerOpts := openMCPV3RegressionWriter(t, surface)
-			opts := nativeDeferredOptions(t, nil).WithV3ReceiptWriter(writer)
+			opts := nativeDeferredOptions(t, nil)
+			// This fixture exercises refusal, independent of the native
+			// capacity fixture's short finalization budget.
+			opts.ListenerShutdownTimeout = 0
+			opts = opts.WithV3ReceiptWriter(writer)
 			opts.Transport = surface
 			journal := filepath.Join(t.TempDir(), "journal.jsonl")
 			opts.DeferManager = deferred.NewManager(deferred.Config{Enabled: true, Timeout: time.Minute, JournalPath: journal})
@@ -464,6 +468,7 @@ func TestMCPV3RefusesDeferredRequestsAndNotifications(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(4*time.Second))
 			defer cancel()
 			var out strings.Builder
+			var proxyLog lockedHTTPBuffer
 			input := strings.NewReader(heldNativeCall + "\n" + notification + "\n")
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if surface != deferred.SurfaceMCPWS {
@@ -488,19 +493,19 @@ func TestMCPV3RefusesDeferredRequestsAndNotifications(t *testing.T) {
 				seen := filepath.Join(t.TempDir(), "upstream")
 				args := []string{"sh", "-c", "cat > \"$1\"", "peer", seen}
 				if name == "stdio" {
-					err = RunProxy(ctx, input, &out, io.Discard, args, opts)
+					err = RunProxy(ctx, input, &out, &proxyLog, args, opts)
 				} else {
 					child := exec.CommandContext(ctx, "sh", "-c", "cat > upstream")
 					child.Dir = filepath.Dir(seen)
-					err = runProxyWithSandbox(ctx, child, child.Start, input, &out, io.Discard, opts)
+					err = runProxyWithSandbox(ctx, child, child.Start, input, &out, &proxyLog, opts)
 				}
 				if bytes, err := os.ReadFile(filepath.Clean(seen)); err != nil || len(bytes) != 0 {
 					t.Fatalf("upstream received %q (%v)", bytes, err)
 				}
 			case "WebSocket":
-				err = RunWSProxy(ctx, input, &out, io.Discard, wsURL(srv), opts)
+				err = RunWSProxy(ctx, input, &out, &proxyLog, wsURL(srv), opts)
 			case "HTTP bridge":
-				err = RunHTTPProxy(ctx, input, &out, io.Discard, srv.URL, nil, opts)
+				err = RunHTTPProxy(ctx, input, &out, &proxyLog, srv.URL, nil, opts)
 			case "HTTP listener":
 				url, _ := startListenerProxyWithOpts(t, srv.URL, opts)
 				for _, msg := range []string{heldNativeCall, notification} {
@@ -539,7 +544,7 @@ func TestMCPV3RefusesDeferredRequestsAndNotifications(t *testing.T) {
 				}
 			}
 			if !slices.Equal(refused, []string{"1", ""}) {
-				t.Fatalf("signed refusals = %v", refused)
+				t.Fatalf("signed refusals = %v, proxy log = %q", refused, proxyLog.String())
 			}
 		})
 	}

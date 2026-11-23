@@ -2438,6 +2438,17 @@ func TestMCPV3WebSocketDuplicatePendingIDRefusesSecondSend(t *testing.T) {
 	}
 }
 
+type sandboxDrainTestInput struct {
+	*io.PipeReader
+	closed chan struct{}
+}
+
+func (r sandboxDrainTestInput) Close() error {
+	err := r.PipeReader.Close()
+	close(r.closed)
+	return err
+}
+
 func TestMCPV3SandboxDrainsNotificationAfterCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
@@ -2448,7 +2459,6 @@ func TestMCPV3SandboxDrainsNotificationAfterCancellation(t *testing.T) {
 	writerOpts := mcpMatrixWriterOptions(t, v3MCPMatrixRow{required: true}, transportMCPStdio, nil, func(count int) {
 		if count == 2 {
 			close(entered)
-			cancel()
 			<-release
 		}
 	})
@@ -2472,21 +2482,44 @@ func TestMCPV3SandboxDrainsNotificationAfterCancellation(t *testing.T) {
 			Rules: []config.ToolPolicyRule{{Name: "deny-echo", ToolPattern: "^echo$", Action: config.ActionBlock}},
 		}),
 	}.WithV3ReceiptWriter(writer)
+	reader, feed := io.Pipe()
+	defer func() { _ = reader.Close(); _ = feed.Close() }()
+	input := sandboxDrainTestInput{PipeReader: reader, closed: make(chan struct{})}
+	opts.sessionExitForTest = &sessionExitTestHooks{grace: testwait.Deadline(5 * time.Second)}
 	notification := strings.Replace(heldNativeCall, `"id":1,`, "", 1)
+	fed := make(chan error, 1)
+	go func() {
+		_, err := io.WriteString(feed, notification+"\n")
+		fed <- err
+	}()
 	done := make(chan error, 1)
 	go func() {
 		child := exec.CommandContext(deadline, "cat")
-		done <- runProxyWithSandbox(ctx, child, child.Start, strings.NewReader(notification+"\n"), io.Discard, io.Discard, opts)
+		done <- runProxyWithSandbox(ctx, child, child.Start, input, io.Discard, io.Discard, opts)
 	}()
+	select {
+	case err := <-fed:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-deadline.Done():
+		t.Fatal("sandbox did not read the notification")
+	}
 	select {
 	case <-entered:
 	case <-deadline.Done():
 		t.Fatal("notification refusal never reached the drainer")
 	}
+
+	// Cancel after scanning handed the refusal to the drainer. Keep intake
+	// open until the runner closes it while entering shutdown.
+	cancel()
 	select {
+	case <-input.closed:
 	case err := <-done:
-		t.Fatalf("sandbox returned before the notification refusal settled: %v", err)
-	case <-time.After(testwait.Deadline(2 * time.Second)):
+		t.Fatalf("sandbox returned before stopping intake: %v", err)
+	case <-deadline.Done():
+		t.Fatal("sandbox did not stop intake after cancellation")
 	}
 	close(release)
 	select {
