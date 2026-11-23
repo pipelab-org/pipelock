@@ -184,7 +184,7 @@ sudo pipelock contain audit-workspace --record --replace --workspace /srv/projec
 Use `--agent-user USER` in place of `--workspace PATH` to process every
 grant for that user, including expired grants still in the inventory. Both
 modes require root. Use the canonical workspace path. If a workspace path
-traverses a symbolic link, the audit refuses it. An existing baseline requires `--record --replace`;
+traverses a symbolic link or contains `..`, the command refuses it. An existing baseline requires `--record --replace`;
 the command prints the observed differences before replacement. An incomplete
 observation is saved as incomplete when no baseline exists, and continues to
 fail audits until replaced with a usable observation. It never replaces a

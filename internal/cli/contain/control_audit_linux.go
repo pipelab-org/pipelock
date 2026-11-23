@@ -109,6 +109,12 @@ func (env controlAuditEnv) roots(opts controlAuditOptions) ([]string, error) {
 	}
 	// The lexical grant path is the baseline key. Resolving a caller's
 	// selector here could silently select a different workspace's baseline.
+	// Cleaning also drops a ".." together with the component before it, and
+	// after a symbolic link the kernel leaves the link's target instead, so a
+	// path spelled that way would audit a workspace other than the one named.
+	if slices.Contains(strings.Split(filepath.ToSlash(opts.workspace), "/"), "..") {
+		return nil, fmt.Errorf("workspace path %q contains \"..\", which names a different directory when a link precedes it; pass the path without it", opts.workspace)
+	}
 	abs, err := filepath.Abs(opts.workspace)
 	if err != nil {
 		return nil, err

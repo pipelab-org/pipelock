@@ -714,3 +714,30 @@ func TestCheckAuditRootErrorsEscapeAgentChosenPaths(t *testing.T) {
 		t.Fatalf("inspection failure reached the terminal unescaped: %q", err)
 	}
 }
+
+// Cleaning "link/../proj" lexically names a different directory than the kernel
+// does when link is a symbolic link. A workspace selector that spells the path
+// that way must be refused rather than audited as the cleaned path, or a clean
+// result for one workspace reads as the answer about another.
+func TestControlAuditRefusesDotDotInWorkspaceSelector(t *testing.T) {
+	env, parent := controlAuditFixture(t)
+	proj := filepath.Join(parent, "proj")
+	other := filepath.Join(parent, "elsewhere", "proj")
+	for _, dir := range []string{proj, other} {
+		writeAuditFixture(t, dir, ".envrc", "same")
+	}
+	if err := os.Symlink(filepath.Join(parent, "elsewhere", "sub"), filepath.Join(parent, "link")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(parent, "elsewhere", "sub"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = runAuditFixture(t, env, controlAuditOptions{workspace: proj, record: true}, 0)
+	spelled := filepath.Join(parent, "link") + "/../proj"
+	for _, record := range []bool{false, true} {
+		out, err := runAuditFixture(t, env, controlAuditOptions{workspace: spelled, record: record}, 1)
+		if !strings.Contains(err.Error(), `".."`) || strings.Contains(out, "workspace_control_surface=clean") {
+			t.Fatalf("record=%t: selector with .. was accepted: %v\n%s", record, err, out)
+		}
+	}
+}
