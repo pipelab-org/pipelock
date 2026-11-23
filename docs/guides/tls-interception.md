@@ -40,7 +40,7 @@ EOF
 pipelock run --config pipelock.yaml
 ```
 
-`pipelock sandbox` and `pipelock guard` also use `tls_interception` for HTTPS traffic through their proxy. They load the CA before launching the workload and stop if the CA can't be loaded. Restart the command after changing the TLS interception settings or CA files.
+`pipelock sandbox` and `pipelock guard` also use `tls_interception` for HTTPS traffic through their proxy. They load the CA before launching the workload and stop if the CA can't be loaded. The workload must trust that CA, as in [Step 2](#step-2-trust-the-ca), or its HTTPS clients reject the intercepted certificates. Restart the command after changing the TLS interception settings or CA files.
 
 ## Step 1: Generate the CA
 
