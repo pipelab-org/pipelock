@@ -1089,3 +1089,36 @@ func TestControlSurfaceComparesAPathObservedByDifferentPassesAtEachEndpoint(t *t
 		})
 	}
 }
+
+// A fixed control path that discovery reaches on its own stays covered even when
+// a repository also references it. Discovery visits the referencing repository
+// first here, so the reference is how the path was first recorded. A snapshot
+// that never examined that repository still examined the path's directory, so
+// deleting the file is reported.
+func TestControlSurfaceReportsRemovalOfADirectlyMonitoredPathAlsoReferenced(t *testing.T) {
+	git := newControlGit(t)
+	root := t.TempDir()
+	git.init(t, root)
+	// The repository's long name cannot be queued under the cut-off snapshot's
+	// path budget, while the directories leading to the target can.
+	nested := filepath.Join(root, "x", strings.Repeat("r", 40))
+	if err := os.MkdirAll(nested, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	git.init(t, nested)
+	git.run(t, nested, "config", "--local", "include.path", "../../../m/n/o/.mcp.json")
+	const target = "m/n/o/.mcp.json"
+	writeControlFixture(t, root, target, "[example]\n\tkey = before\n")
+	full := DefaultControlSurfaceBudget()
+	narrow := full
+	narrow.MaxNestedPathBytes = 16
+	complete := controlSnapshot(t, root, full)
+	if err := os.Remove(filepath.Join(root, filepath.FromSlash(target))); err != nil {
+		t.Fatal(err)
+	}
+	cutOff := controlSnapshot(t, root, narrow)
+	diff := controlDiff(t, complete, cutOff)
+	if !diff.NestedDiscoveryPartial || !slices.Contains(diff.Removed, filepath.FromSlash(target)) {
+		t.Fatalf("a deleted control file in an examined directory must be reported: %+v", diff)
+	}
+}

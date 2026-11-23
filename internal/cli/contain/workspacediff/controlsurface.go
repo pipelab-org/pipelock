@@ -195,6 +195,9 @@ type controlWalker struct {
 	// source is the path whose contents the walker is following, so what it
 	// records or queues can be traced back to it.
 	source string
+	// direct holds the paths, and the trees whose whole content, that discovery
+	// reached on its own rather than through a reference.
+	direct map[string]struct{}
 }
 
 func (w *controlWalker) walkPass(seed func()) controlPass {
@@ -203,6 +206,7 @@ func (w *controlWalker) walkPass(seed func()) controlPass {
 		sources: make(map[string][]string),
 	}
 	w.source = ""
+	w.direct = make(map[string]struct{})
 	w.trees = w.trees[:0]
 	w.treeEntries = 0
 	w.discovery = nil
@@ -235,7 +239,26 @@ func (w *controlWalker) walkPass(seed func()) controlPass {
 		}
 		w.discovery.run()
 	}
+	w.dropSourcesOfDirectPaths()
 	return w.pass
+}
+
+// dropSourcesOfDirectPaths forgets the references behind a path that discovery
+// also reached on its own, in whatever order the two happened. A reference may
+// be the first way a path was recorded, but it is not what makes the path
+// observable, so a snapshot that never followed the reference still covers it.
+func (w *controlWalker) dropSourcesOfDirectPaths() {
+	for path := range w.pass.sources {
+		for p := path; ; p = filepath.Dir(p) {
+			if _, direct := w.direct[p]; direct {
+				delete(w.pass.sources, path)
+				break
+			}
+			if p == "." {
+				break
+			}
+		}
+	}
 }
 
 func (w *controlWalker) truncate(path, reason string) {
@@ -310,6 +333,7 @@ func (w *controlWalker) recordPath(path string) controlEntry {
 }
 
 func (w *controlWalker) record(path string, info fs.FileInfo) controlEntry {
+	w.noteSource(path)
 	if existing, ok := w.pass.entries[path]; ok {
 		if !os.SameFile(existing.info, info) {
 			w.unreadable(path, "identity changed during observation")
@@ -370,7 +394,6 @@ func (w *controlWalker) record(path string, info fs.FileInfo) controlEntry {
 	}
 	w.recheck(path, info)
 	w.pass.entries[path] = e
-	w.noteSource(path)
 	if e.Kind == KindSymlink {
 		w.followSymlink(e)
 	}
@@ -378,9 +401,14 @@ func (w *controlWalker) record(path string, info fs.FileInfo) controlEntry {
 }
 
 // noteSource remembers the reference being followed as the reason path was
-// observed, unless the path is that reference.
+// observed, unless the path is that reference. Observing a path with no
+// reference to follow means discovery reached it on its own.
 func (w *controlWalker) noteSource(path string) {
-	if w.source != "" && w.source != path && !slices.Contains(w.pass.sources[path], w.source) {
+	if w.source == "" {
+		w.direct[path] = struct{}{}
+		return
+	}
+	if w.source != path && !slices.Contains(w.pass.sources[path], w.source) {
 		w.pass.sources[path] = append(w.pass.sources[path], w.source)
 	}
 }
@@ -491,6 +519,9 @@ func (w *controlWalker) queueTree(e controlEntry, gitDir, worktree string) {
 func (w *controlWalker) enqueueTree(e controlEntry, tree controlTree) {
 	if e.Kind != KindDir {
 		return
+	}
+	if w.source == "" && tree.source == "" {
+		w.direct[e.Path] = struct{}{}
 	}
 	if _, ok := w.coveredTrees[e.Path]; ok {
 		return
