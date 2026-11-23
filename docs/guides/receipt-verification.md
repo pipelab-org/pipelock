@@ -1016,7 +1016,9 @@ Set `flight_recorder.receipt_format: v3` in the configuration for
 `pipelock run` or `pipelock mcp proxy`. Enable the flight recorder, set
 `flight_recorder.dir` and `flight_recorder.signing_key_path`, and use a
 single receipt chain. Restart after changing the format or v3 coverage
-settings. V3 currently refuses deferred holds and MCP tool policy redirect rules.
+settings. V3 does not support deferred holds, MCP tool policy redirect rules,
+`dashboard_snapshot`, `flight_recorder.evidence_health`, or
+`flight_recorder.anchor`.
 Remove defer and redirect rules and disable `defer.enabled` before switching.
 
 Receipt v3 records an intent before forwarding each complete WebSocket message (and each ping/pong) and an outcome after writing it. In this release each record is flushed to disk in turn, including when require_receipts is false. That is two disk syncs per WebSocket message on one shared writer, roughly 100-500 messages per second in total across the process on typical SSD or cloud storage, and HTTP, MCP and WebSocket traffic share that limit. Keep receipt_format: legacy for high-rate WebSocket workloads until shared flushing lands.
