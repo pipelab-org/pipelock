@@ -381,6 +381,10 @@ func runPrimitiveVerifyInstall(cfg *config.Config, evidenceDir, configFile strin
 	if pErr != nil {
 		return fmt.Errorf("verify-install creating proxy: %w", pErr)
 	}
+	defer p.Close()
+	if err := p.LoadCertCache(&verifyCfg); err != nil {
+		return err
+	}
 
 	proxyLn, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {

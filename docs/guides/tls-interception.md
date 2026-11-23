@@ -13,7 +13,7 @@ An HTTPS request through a CONNECT tunnel is encrypted end to end, so with inter
 
 This is expected behavior, not a bypass: tunnel-level controls still apply, but HTTPS content visibility does not exist unless Pipelock terminates TLS. Plaintext HTTP through the forward proxy is unaffected (its full URL and body are visible, so all scanners apply).
 
-When the forward proxy accepts CONNECT tunnels and interception is off, Pipelock prints a startup and hot-reload advisory so the coverage gap is never silent:
+When the forward proxy accepts CONNECT tunnels and interception is off, `pipelock run` prints this advisory at startup and on hot reload:
 
 ```text
 WARNING: tls_interception: TLS interception is disabled while the forward proxy accepts CONNECT tunnels. HTTPS traffic is not decrypted, so content scanning (request_body_scanning, response_scanning, path/query entropy, and body DLP) does not inspect HTTPS request paths, bodies, or responses. Pipelock still enforces controls that evaluate from CONNECT metadata or tunnel accounting (destination allowlist/blocklist, SSRF on the CONNECT host, rate limits, data budget, CONNECT handshake-header DLP, kill switch, and receipt gates); request_policy and contract rules that match inner HTTPS method, path, query, headers, or body require tls_interception. Enable tls_interception (and distribute its CA) to scan HTTPS content, or accept tunnel-level-only visibility for HTTPS content as a deliberate posture.
@@ -39,6 +39,8 @@ EOF
 # 4. Run
 pipelock run --config pipelock.yaml
 ```
+
+`pipelock sandbox` and `pipelock guard` also use `tls_interception` for HTTPS traffic through their proxy. They load the CA before launching the workload and stop if the CA can't be loaded. Restart the command after changing the TLS interception settings or CA files.
 
 ## Step 1: Generate the CA
 
