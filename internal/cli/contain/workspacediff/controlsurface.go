@@ -450,15 +450,20 @@ func (w *controlWalker) enqueueTree(e controlEntry, tree controlTree) {
 }
 
 // scanFixed monitors each fixed control path under dir as a whole. A Git marker
-// inside one, such as a submodule or a standalone repository for the agent
-// configuration, adds Git metadata checks but never narrows the scan to them.
+// inside one, such as a submodule, a standalone repository or a bare repository
+// for the agent configuration, adds Git metadata checks but never narrows the
+// scan to them.
 func (w *controlWalker) scanFixed(dir string) {
 	for _, name := range fixedControlPaths {
 		path := filepath.Join(dir, name)
 		if info := w.lookup(path); info != nil {
 			e := w.record(path, info)
 			if e.Kind == KindDir {
-				w.scanGitMarker(path)
+				if w.bareRepository(path) {
+					w.scanGitDir(path, path)
+				} else {
+					w.scanGitMarker(path)
+				}
 			}
 			w.enqueueTree(e, controlTree{fixed: true})
 		}

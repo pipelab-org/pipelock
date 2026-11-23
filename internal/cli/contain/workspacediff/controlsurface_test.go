@@ -566,3 +566,23 @@ func TestControlPassDiscoveredCoversOnlyWhatWasExamined(t *testing.T) {
 		}
 	}
 }
+
+// A bare repository can sit at a fixed path, for example a repository
+// initialized inside the agent configuration directory. Its configuration
+// still names hook directories that run when Git is used there.
+func TestControlSurfaceBareRepositoryAtFixedPathFollowsItsConfig(t *testing.T) {
+	git := newControlGit(t)
+	root := t.TempDir()
+	git.init(t, root)
+	bare := filepath.Join(root, ".claude")
+	if err := os.Mkdir(bare, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	git.run(t, bare, "init", "-q", "--bare", ".")
+	git.run(t, bare, "config", "core.hooksPath", "../tools/hooks")
+	writeControlFixture(t, root, "tools/hooks/pre-commit", "before")
+	budget := DefaultControlSurfaceBudget()
+	before := controlSnapshot(t, root, budget)
+	writeControlFixture(t, root, "tools/hooks/pre-commit", "changed")
+	expectControlPath(t, controlDiff(t, before, controlSnapshot(t, root, budget)), "tools/hooks/pre-commit")
+}
