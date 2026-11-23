@@ -71,3 +71,106 @@ func TestGenericSSEFindingConfirmation(t *testing.T) {
 		}
 	}
 }
+
+type sseFindingFlushProbe struct {
+	legacy   int
+	observed int
+	err      error
+}
+
+func (p *sseFindingFlushProbe) Flush() { p.legacy++ }
+
+func (p *sseFindingFlushProbe) FlushError() error {
+	p.observed++
+	return p.err
+}
+
+func TestGenericSSEObservesFlushOnlyForWrappedFinding(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	const marker = "POLICY_MARKER"
+	cfg.ResponseScanning.Patterns = []config.ResponseScanPattern{{Name: "response marker", Regex: marker}}
+	sc := scanner.MustNew(cfg)
+	defer sc.Close()
+	streamCfg := enabledSSECfg()
+	streamCfg.Action = config.ActionWarn
+
+	const clean = "data: hello\n\n"
+	const warned = "data: " + marker + "\n\n"
+	flushErr := errors.New("downstream flush failed")
+	for _, tc := range []struct {
+		name       string
+		wrap       bool
+		err        error
+		wantLegacy int
+		wantBody   string
+	}{
+		{name: "legacy ignores an error-capable flusher", wantLegacy: 3, wantBody: clean + warned + clean},
+		{name: "v3 observes successful warning flush", wrap: true, wantLegacy: 2, wantBody: clean + warned + clean},
+		{name: "v3 stops after failed warning flush", wrap: true, err: flushErr, wantLegacy: 1, wantBody: clean + warned},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			probe := &sseFindingFlushProbe{err: flushErr}
+			var opts GenericSSEScanOptions
+			if tc.wrap {
+				probe.err = tc.err
+				opts.DeliverFinding = func(finding error, deliver func() (bool, error)) error {
+					if !errors.Is(finding, ErrSSEStreamFinding) {
+						t.Fatalf("delivery wrapper got %v, want a finding", finding)
+					}
+					if out.String() != clean {
+						t.Fatalf("wrapper called after warning was written: %q", out.String())
+					}
+					observed, err := deliver()
+					if observed != (tc.err == nil) || !errors.Is(err, tc.err) {
+						t.Fatalf("delivery = (%t, %v), want (%t, %v)", observed, err, tc.err == nil, tc.err)
+					}
+					return err
+				}
+			}
+			err := ScanGenericSSEStreamWithOptions(t.Context(), strings.NewReader(clean+warned+clean), &out, probe, sc, streamCfg, opts)
+			if !errors.Is(err, tc.err) || out.String() != tc.wantBody {
+				t.Fatalf("stream = (%q, %v), want (%q, %v)", out.String(), err, tc.wantBody, tc.err)
+			}
+			wantObserved := 0
+			if tc.wrap {
+				wantObserved = 1
+			}
+			if probe.legacy != tc.wantLegacy || probe.observed != wantObserved {
+				t.Fatalf("flush calls: legacy=%d observed=%d", probe.legacy, probe.observed)
+			}
+		})
+	}
+}
+
+type sseWriteFailure struct{ err error }
+
+func (w sseWriteFailure) Write([]byte) (int, error) { return 0, w.err }
+
+func TestSSEStopsOnDownstreamWriteFailure(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	sc := scanner.MustNew(cfg)
+	defer sc.Close()
+	for _, transport := range []string{"generic", "A2A"} {
+		t.Run(transport, func(t *testing.T) {
+			body := strings.NewReader("data: {\"text\":\"hello\"}\n\n")
+			writeErr := errors.New("downstream writer closed")
+			writer := sseWriteFailure{err: writeErr}
+			probe := &sseFindingFlushProbe{}
+			var err error
+			if transport == "A2A" {
+				err = ScanA2AStream(t.Context(), body, writer, probe, sc, enabledA2ACfg())
+			} else {
+				err = ScanGenericSSEStreamWithOptions(t.Context(), body, writer, probe, sc, enabledSSECfg(), GenericSSEScanOptions{})
+			}
+			if !errors.Is(err, writeErr) {
+				t.Fatalf("stream error = %v, want %v", err, writeErr)
+			}
+			if probe.legacy != 0 || probe.observed != 0 {
+				t.Fatalf("flushed after a failed write: legacy=%d observed=%d", probe.legacy, probe.observed)
+			}
+		})
+	}
+}

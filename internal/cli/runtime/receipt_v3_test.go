@@ -13,6 +13,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -75,6 +76,19 @@ func TestRuntimeReceiptV3Reload(t *testing.T) {
 			}
 		})
 	}
+	t.Run("validate direct reload candidate", func(t *testing.T) {
+		cfg, err := config.LoadBytes([]byte(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg.Defer.Enabled = true
+		if err := s.Reload(cfg); err == nil || !strings.Contains(err.Error(), "deferred holds") {
+			t.Fatalf("reload with deferred holds = %v", err)
+		}
+		if s.receiptWriter != writer {
+			t.Fatal("rejected reload replaced the live writer")
+		}
+	})
 	if err := s.closeReceiptV3(); err != nil {
 		t.Fatal(err)
 	}
@@ -143,6 +157,8 @@ func TestRuntimeReceiptReloadLegacyDefault(t *testing.T) {
 	}
 }
 
+var errReceiptFixtureWrite = errors.New("receipt storage write failed")
+
 type heartbeatFaultFile struct {
 	*os.File
 	writes int
@@ -151,9 +167,27 @@ type heartbeatFaultFile struct {
 func (f *heartbeatFaultFile) Write(p []byte) (int, error) {
 	f.writes++
 	if f.writes == 2 {
-		return 0, errors.New("heartbeat storage failure")
+		return 0, errReceiptFixtureWrite
 	}
 	return f.File.Write(p)
+}
+
+func openReceiptWithWriteFault(ctx context.Context, cfg *config.Config, key ed25519.PrivateKey, opts runtimeReceiptStreamOptions, heartbeat time.Duration) (*v3.StreamWriter, error) {
+	first := true
+	return v3.OpenStreamWriter(ctx, v3.StreamWriterOptions{
+		Dir: cfg.FlightRecorder.Dir, SigningKey: key, PolicyHash: v3.Digest(nil),
+		Identity:  v3.Writer{Instance: "example", Product: "Pipelock", Version: "3"},
+		Coverage:  v3.Coverage{ReceiptsRequired: true, Surfaces: opts.surfaces, RedactionRuleset: v3.Ruleset{ID: "example", Version: "1", Hash: v3.Digest(nil)}},
+		Heartbeat: heartbeat, OnHeartbeatError: opts.onHeartbeatError,
+		CreateTempFile: func(dir, pattern string) (v3.StreamFile, error) {
+			file, err := os.CreateTemp(dir, pattern)
+			if err != nil || !first {
+				return file, err
+			}
+			first = false
+			return &heartbeatFaultFile{File: file}, nil
+		},
+	})
 }
 
 func TestStandaloneMCPV3RequiredHeartbeatFailure(t *testing.T) {
@@ -168,21 +202,7 @@ func TestStandaloneMCPV3RequiredHeartbeatFailure(t *testing.T) {
 	}
 	body := fmt.Sprintf("defer:\n  enabled: false\nflight_recorder:\n  enabled: true\n  dir: %q\n  signing_key_path: %q\n  receipt_format: v3\n  require_receipts: true\n", evidence, keyPath)
 	open := func(ctx context.Context, cfg *config.Config, key ed25519.PrivateKey, _ *recorder.Recorder, _ posturebinding.Result, opts runtimeReceiptStreamOptions) (*v3.StreamWriter, error) {
-		first := true
-		return v3.OpenStreamWriter(ctx, v3.StreamWriterOptions{
-			Dir: cfg.FlightRecorder.Dir, SigningKey: key, PolicyHash: v3.Digest(nil),
-			Identity:  v3.Writer{Instance: "example", Product: "Pipelock", Version: "3"},
-			Coverage:  v3.Coverage{ReceiptsRequired: true, Surfaces: opts.surfaces, RedactionRuleset: v3.Ruleset{ID: "example", Version: "1", Hash: v3.Digest(nil)}},
-			Heartbeat: time.Second, OnHeartbeatError: opts.onHeartbeatError,
-			CreateTempFile: func(dir, pattern string) (v3.StreamFile, error) {
-				file, err := os.CreateTemp(dir, pattern)
-				if err != nil || !first {
-					return file, err
-				}
-				first = false
-				return &heartbeatFaultFile{File: file}, nil
-			},
-		})
+		return openReceiptWithWriteFault(ctx, cfg, key, opts, time.Second)
 	}
 	cmd := mcpProxyCmdWithReceiptWriter(audit.NewWithStream, 0, open)
 	cmd.SetArgs([]string{"--config", writeServerTestConfig(t, body), "--listen", serverTestEphemeralListen, "--upstream", serverTestUpstreamURL})
@@ -201,13 +221,18 @@ func TestStandaloneMCPV3RequiresWriter(t *testing.T) {
 		name, surface, want string
 		args                []string
 		openErr             error
+		sandbox             bool
 	}{
 		{name: "missing", surface: deferred.SurfaceMCPHTTPListener, want: "no v3 receipt writer is active", args: []string{"--listen", serverTestEphemeralListen, "--upstream", serverTestUpstreamURL}},
 		{name: "HTTP upstream", surface: deferred.SurfaceMCPHTTPUpstream, args: []string{"--upstream", serverTestUpstreamURL}, openErr: errors.New("stream unavailable")},
 		{name: "WebSocket upstream", surface: deferred.SurfaceMCPWS, args: []string{"--upstream", "ws://api.vendor.example/mcp"}, openErr: errors.New("stream unavailable")},
 		{name: "stdio", surface: deferred.SurfaceMCPStdio, args: []string{"--", "example-mcp"}, openErr: errors.New("stream unavailable")},
+		{name: "sandboxed stdio", surface: deferred.SurfaceMCPStdio, args: []string{"--sandbox", "--", "example-mcp"}, openErr: errors.New("stream unavailable"), sandbox: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.sandbox && runtime.GOOS != "linux" {
+				t.Skip("sandbox receipt surfaces require Linux")
+			}
 			_, key, err := signing.GenerateKeyPair()
 			if err != nil {
 				t.Fatal(err)
@@ -218,8 +243,12 @@ func TestStandaloneMCPV3RequiresWriter(t *testing.T) {
 			}
 			yaml := fmt.Sprintf("defer:\n  enabled: false\nflight_recorder:\n  enabled: true\n  dir: %q\n  signing_key_path: %q\n  receipt_format: v3\n  require_receipts: true\n", t.TempDir(), keyPath)
 			open := func(ctx context.Context, _ *config.Config, _ ed25519.PrivateKey, _ *recorder.Recorder, _ posturebinding.Result, opts runtimeReceiptStreamOptions) (*v3.StreamWriter, error) {
-				if !slices.Equal(opts.surfaces, []string{tc.surface}) {
-					t.Fatalf("receipt surfaces = %v, want %q", opts.surfaces, tc.surface)
+				want := []string{tc.surface}
+				if tc.sandbox {
+					want = append(want, "connect", "forward")
+				}
+				if !slices.Equal(opts.surfaces, want) {
+					t.Fatalf("receipt surfaces = %v, want %v", opts.surfaces, want)
 				}
 				opts.onHeartbeatError(nil)
 				if ctx.Err() != nil {
@@ -356,5 +385,25 @@ func TestServerV3RefusesInvalidEvidenceDirectory(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestRuntimeV3CloseReportsStorageFailure(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.FlightRecorder.Dir = t.TempDir()
+	_, key, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer, err := openReceiptWithWriteFault(t.Context(), cfg, key, runtimeReceiptStreamOptions{surfaces: []string{"fetch"}}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{receiptWriter: writer}
+	if err := s.closeReceiptV3(); !errors.Is(err, errReceiptFixtureWrite) {
+		t.Fatalf("close error = %v, want storage failure", err)
+	}
+	if s.receiptWriter != nil {
+		t.Fatal("server retained a closed receipt writer")
 	}
 }

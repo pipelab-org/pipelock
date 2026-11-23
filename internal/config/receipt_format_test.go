@@ -54,3 +54,26 @@ func TestLoadReceiptFormat(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateReceiptV3RequiresRecorder(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		remove func(*FlightRecorder)
+	}{
+		{"enabled", func(fr *FlightRecorder) { fr.Enabled = false }},
+		{"directory", func(fr *FlightRecorder) { fr.Dir = "" }},
+		{"signing key", func(fr *FlightRecorder) { fr.SigningKeyPath = "" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.Defer.Enabled = false
+			cfg.FlightRecorder.Enabled = true
+			cfg.FlightRecorder.Dir = t.TempDir()
+			cfg.FlightRecorder.SigningKeyPath = "signer.key"
+			tc.remove(&cfg.FlightRecorder)
+			if err := cfg.ValidateReceiptV3(); err == nil || !strings.Contains(err.Error(), "requires flight_recorder.enabled, dir, and signing_key_path") {
+				t.Fatalf("ValidateReceiptV3 error = %v", err)
+			}
+		})
+	}
+}

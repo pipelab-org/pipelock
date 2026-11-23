@@ -2243,3 +2243,93 @@ func TestV3RequestPolicyReceiptRecordsRefusal(t *testing.T) {
 		})
 	}
 }
+
+type v3SSEFlushFaultRecorder struct {
+	*httptest.ResponseRecorder
+	flushErr error
+	flushes  int
+}
+
+func (w *v3SSEFlushFaultRecorder) FlushError() error {
+	w.flushes++
+	return w.flushErr
+}
+
+func TestV3SSEFindingFailedFlushRemainsUnconfirmed(t *testing.T) {
+	p, writer, dir, _ := newTestV3HTTPProxy(t, TransportForward, true, nil, func(cfg *config.Config) {
+		cfg.FlightRecorder.RequireReceipts = true
+		cfg.ResponseScanning.Enabled = true
+		cfg.ResponseScanning.Patterns = []config.ResponseScanPattern{{Name: "response marker", Regex: "POLICY_MARKER"}}
+		cfg.ResponseScanning.SSEStreaming.Enabled = true
+		cfg.ResponseScanning.SSEStreaming.Action = config.ActionWarn
+	})
+	cfg := p.CurrentConfig()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://api.vendor.example", http.NoBody)
+	opts := receipt.EmitOpts{ActionID: receipt.NewActionID(), Verdict: config.ActionAllow, Transport: TransportForward, Method: req.Method, Target: req.URL.String()}
+	flushErr := errors.New("downstream connection closed")
+	out := &v3SSEFlushFaultRecorder{ResponseRecorder: httptest.NewRecorder(), flushErr: flushErr}
+	w, finish := p.startReceiptDelivery(out, req, cfg, opts)
+	defer finish()
+	w.WriteHeader(http.StatusOK)
+	opts.ParentActionID = opts.ActionID
+	observations := 0
+	err := DispatchSSEScan(req.Context(), strings.NewReader("data: {\"text\":\"POLICY_MARKER\"}\n\n"), w, w.(http.Flusher), p.ScannerPtr().Load(), SSEDispatchOptions{
+		GenericSSE: &cfg.ResponseScanning.SSEStreaming,
+		Generic:    mcp.GenericSSEScanOptions{DeliverFinding: p.sseFindingDelivery(req.Context(), cfg, opts)},
+		OnDelivery: func() { observations++ },
+	})
+	if !errors.Is(err, flushErr) || out.flushes != 1 || observations < 2 {
+		t.Fatalf("stream error = %v, flushes = %d, observations = %d", err, out.flushes, observations)
+	}
+	finish()
+	if err := writer.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	actions := readV3TransportActions(t, dir)
+	if !slices.ContainsFunc(actions, func(action v3.Action) bool {
+		return action.Layer == LayerSSEStream && action.Verdict == config.ActionWarn &&
+			action.Phase == "outcome" && action.OutcomeClass == "attempt_unknown"
+	}) {
+		t.Fatalf("missing unconfirmed SSE warning outcome: %+v", actions)
+	}
+}
+
+func TestV3ConfirmedAgentCardSignatureReceipt(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		fault func(string, string) (v3.StreamFile, error)
+	}{
+		{name: "confirmed"},
+		{name: "unavailable", fault: v3FirstAppendFault(true)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p, writer, dir, _ := newTestV3HTTPProxy(t, TransportForward, true, tc.fault)
+			cfg := p.CurrentConfig()
+			opts := receipt.EmitOpts{
+				ActionID: receipt.NewActionID(), Verdict: config.ActionAllow, Transport: TransportForward,
+				Method: http.MethodGet, Target: "https://api.vendor.example" + agentCardPath,
+			}
+			const signerID = "example-signer"
+			err := p.confirmV3CardAcceptance(t.Context(), cfg, opts, mcp.AgentCardScanResult{
+				SignatureVerified: true, SignatureKeyID: signerID,
+			})
+			if tc.fault != nil {
+				if err == nil {
+					t.Fatal("accepted an Agent Card signature without its required receipt")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := writer.Close(t.Context(), nil); err != nil {
+				t.Fatal(err)
+			}
+			actions := readV3TransportActions(t, dir)
+			if len(actions) != 2 || actions[1].Layer != scannerLabelA2ACardSignature ||
+				actions[1].Phase != "outcome" || actions[1].OutcomeClass != "completed" {
+				t.Fatalf("expected only the signature receipt pair, got %+v", actions)
+			}
+		})
+	}
+}
