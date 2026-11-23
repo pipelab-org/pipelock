@@ -2209,9 +2209,21 @@ func assertMCPV3LegacyOutcomePattern(t *testing.T, dir, pattern string) {
 }
 
 func TestMCPV3WebSocketCancellationAfterBindSettlesLegacyOutcome(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("v3=%t", enabled), func(t *testing.T) {
+			checkMCPV3WebSocketCancellationAfterBind(t, enabled)
+		})
+	}
+}
+
+func checkMCPV3WebSocketCancellationAfterBind(t *testing.T, enabled bool) {
+	t.Helper()
 	opts, writer, observer := localMCPReceiptFixture(t, v3MCPMatrixRow{required: true}, deferred.SurfaceMCPWS)
 	emitter, _, dir, _ := newReceiptTestHarness(t)
 	opts.ReceiptEmitter = emitter
+	if !enabled {
+		opts.receiptEffects = mcpReceiptEffects{}
+	}
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	opts.afterWSBindForTest = cancel
@@ -2232,6 +2244,17 @@ func TestMCPV3WebSocketCancellationAfterBindSettlesLegacyOutcome(t *testing.T) {
 	defer upstream.Close()
 	if err := RunWSProxy(ctx, strings.NewReader(jsonToolsCallEcho+"\n"), io.Discard, io.Discard, wsURL(upstream), opts); err != nil {
 		t.Fatal(err)
+	}
+	if !enabled {
+		for _, signed := range readActionReceipts(t, dir) {
+			if signed.ActionRecord.DecisionPhase == receipt.DecisionPhaseOutcome {
+				t.Fatalf("legacy cancellation recorded an outcome: %s", signed.ActionRecord.Pattern)
+			}
+		}
+		if reached.Load() {
+			t.Fatal("cancelled legacy send reached upstream")
+		}
+		return
 	}
 	assertMCPV3LegacyOutcomePattern(t, dir, "status=cancelled bytes=unknown reason=stream_cancelled")
 	actions := localMCPReceiptActions(t, writer, observer.dir)

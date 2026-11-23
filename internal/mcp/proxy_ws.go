@@ -478,6 +478,10 @@ func RunWSProxy(
 		}
 		if bindErr != nil || innerCtx.Err() != nil {
 			inputOpts.finishV3Send(innerCtx, safeLogW, effect, false)
+			if effect == nil {
+				tracker.removeOwnedOutcome(frame.ID, registration)
+				continue
+			}
 			outcome, tracked := tracker.takeOwnedOutcome(frame.ID, registration)
 			if bindErr != nil {
 				if !tracked {
