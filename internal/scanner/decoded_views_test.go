@@ -132,3 +132,21 @@ func TestResponseDecodeStepOutcomes(t *testing.T) {
 		t.Fatalf("canceled step produced %+v, outcome = %+v", views, outcome)
 	}
 }
+
+// A carrier that overflows the byte budget ends the walk once that carrier is
+// finished, as the earlier collector did. A later carrier that would still fit
+// is not admitted, so the truncation always covers the remaining carriers.
+func TestResponseDecodeStepStopsAfterOverflowingCarrier(t *testing.T) {
+	carrier := func(word string, decodedBytes int) (encoded, decoded string) {
+		decoded = strings.Repeat(word+" ", decodedBytes/(len(word)+1))
+		return base64.StdEncoding.EncodeToString([]byte(decoded)), decoded
+	}
+	// Two carriers exceed the budget together; the third would fit alone.
+	first, firstText := carrier("alpha", maxDecodeTotalBytes*5/8)
+	second, _ := carrier("bravo", maxDecodeTotalBytes*5/8)
+	third, _ := carrier("charlie", 64)
+	views, outcome := expandResponseDecodeStep(t.Context(), "!"+first+"!"+second+"!"+third, responseDecodeStepOptions{})
+	if !outcome.Truncated || len(views) != 1 || views[0].text != firstText {
+		t.Fatalf("collected %d views, outcome = %+v, want only the first carrier", len(views), outcome)
+	}
+}
