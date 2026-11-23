@@ -476,3 +476,160 @@ func TestControlSurfaceReadsASymlinkedConfigWhoseFinalComponentIsMissing(t *test
 			".git/config", "Git config symlink target could not be observed")
 	})
 }
+
+// The kernel resolves a symlink target literally. A target spelled like a Git
+// home or installation path is an ordinary directory name there, so an edit to
+// what it names is still an edit to a control path.
+func TestControlSurfaceFollowsASymlinkTargetSpelledLikeAGitPath(t *testing.T) {
+	for _, target := range []string{"~settings/envrc", "~/envrc", "%(prefix)/envrc"} {
+		t.Run(target, func(t *testing.T) {
+			root := t.TempDir()
+			writeControlFixture(t, root, filepath.FromSlash(target), "before")
+			symlinkFixture(t, root, target, ".envrc")
+			budget := DefaultControlSurfaceBudget()
+			before := controlSnapshot(t, root, budget)
+			if diff := controlDiff(t, before, controlSnapshot(t, root, budget)); diff.Changed || diff.Incomplete {
+				t.Fatalf("an unchanged workspace must read clean and complete: %+v", diff)
+			}
+			writeControlFixture(t, root, filepath.FromSlash(target), "after")
+			expectControlPath(t, controlDiff(t, before, controlSnapshot(t, root, budget)), target)
+		})
+	}
+	t.Run("a Git value spelled that way still names no workspace place", func(t *testing.T) {
+		w := newTestWalker(t, t.TempDir())
+		for _, value := range []string{"~settings/envrc", "~/envrc", "%(prefix)/envrc"} {
+			if got, inside := w.workspaceTarget("source", ".", value); inside {
+				t.Fatalf("workspaceTarget(%q) = %q, want no workspace place", value, got)
+			}
+		}
+	})
+	t.Run("a NUL in a link target stays invalid", func(t *testing.T) {
+		w := newTestWalker(t, t.TempDir())
+		if _, res := w.resolveWorkspacePath("source", ".", "a\x00b"); res == pathResolved {
+			t.Fatal("a NUL byte cannot name a path")
+		}
+	})
+}
+
+// A trailing slash, or a trailing "." component, makes the kernel require a
+// directory at the end of the path. A regular file there fails the lookup with
+// ENOTDIR, so the path names nothing to observe.
+func TestControlWalkerRequiresADirectoryForATrailingSlash(t *testing.T) {
+	root := t.TempDir()
+	writeControlFixture(t, root, "plain/keep", "x")
+	writeControlFixture(t, root, "file", "x")
+	symlinkFixture(t, root, "plain", "todir")
+	symlinkFixture(t, root, "file", "tofile")
+	for _, tc := range []struct {
+		name, value string
+		want        string
+		res         pathResolution
+		kernelOK    bool
+	}{
+		{"a file by name", "file", "file", pathResolved, true},
+		{"a file with a trailing slash", "file/", "", pathBlocked, false},
+		{"a file with a trailing dot", "file/.", "", pathBlocked, false},
+		{"a file with a trailing slash after a dot", "file/./", "", pathBlocked, false},
+		{"a file with doubled trailing slashes", "file//", "", pathBlocked, false},
+		{"a link to a file with a trailing slash", "tofile/", "", pathBlocked, false},
+		{"a link to a file with a trailing dot", "tofile/.", "", pathBlocked, false},
+		{"a link to a file by name is left for the caller", "tofile", "tofile", pathResolved, true},
+		{"a directory by name", "plain", "plain", pathResolved, true},
+		{"a directory with a trailing slash", "plain/", "plain", pathResolved, true},
+		{"a directory with a trailing dot", "plain/.", "plain", pathResolved, true},
+		{"a link to a directory with a trailing slash", "todir/", "plain", pathResolved, true},
+		{"a link to a directory with a trailing dot", "todir/.", "plain", pathResolved, true},
+		{"a missing name with a trailing slash", "later/", "later", pathResolved, false},
+		{"a file behind dot-dot", "file/..", "", pathBlocked, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// The value is joined as text: filepath.Join would clean the trailing
+			// slash away, which is the part under test.
+			if _, err := os.Stat(root + "/" + tc.value); (err == nil) != tc.kernelOK {
+				t.Fatalf("the kernel resolves %q: err = %v, want ok = %t", tc.value, err, tc.kernelOK)
+			}
+			w := newTestWalker(t, root)
+			got, res := w.resolveWorkspacePath("source", ".", tc.value)
+			if res != tc.res || (res == pathResolved && filepath.ToSlash(got) != tc.want) {
+				t.Fatalf("resolve(%q) = %q, %v, want %q, %v", tc.value, got, res, tc.want, tc.res)
+			}
+		})
+	}
+}
+
+// A path Git cannot open because it needs a directory where a file stands is
+// ignored by Git, so what the file says is not configuration. Reading it as an
+// include would watch the places it names, which Git never uses.
+func TestControlSurfaceIgnoresAnIncludeThatNeedsADirectory(t *testing.T) {
+	for _, include := range []string{"../shared.cfg/", "../shared.cfg/."} {
+		t.Run(include, func(t *testing.T) {
+			git := newControlGit(t)
+			root := t.TempDir()
+			git.init(t, root)
+			writeControlFixture(t, root, "shared.cfg", "[core]\n\thooksPath = decoy-hooks\n")
+			writeControlHook(t, root, "decoy-hooks/pre-commit", "decoy")
+			git.run(t, root, "config", "--local", "include.path", include)
+			if out, err := git.command(t, root, "config", "--includes", "--get", "core.hooksPath"); err == nil {
+				t.Fatalf("Git reads core.hooksPath = %q through %q, want no value", out, include)
+			}
+			budget := DefaultControlSurfaceBudget()
+			before := controlSnapshot(t, root, budget)
+			writeControlFixture(t, root, "decoy-hooks/pre-commit", "#!/bin/sh\necho changed\n")
+			if diff := controlDiff(t, before, controlSnapshot(t, root, budget)); slices.Contains(diff.Paths(), filepath.FromSlash("decoy-hooks/pre-commit")) {
+				t.Fatalf("Git does not read the include, so its hooks path must not be watched: %+v", diff)
+			}
+		})
+	}
+	t.Run("the same include naming a directory is read", func(t *testing.T) {
+		git := newControlGit(t)
+		root := t.TempDir()
+		git.init(t, root)
+		writeControlFixture(t, root, "shared/keep", "keep")
+		git.run(t, root, "config", "--local", "include.path", "../shared/")
+		budget := DefaultControlSurfaceBudget()
+		before := controlSnapshot(t, root, budget)
+		writeControlFixture(t, root, "shared/keep", "changed")
+		if diff := controlDiff(t, before, controlSnapshot(t, root, budget)); diff.Incomplete {
+			t.Fatalf("a directory include must still resolve: %+v", diff)
+		}
+	})
+}
+
+// A control symlink whose target needs a directory where a file stands does not
+// resolve, as the kernel finds it.
+func TestControlWalkerReportsALinkTargetThatNeedsADirectoryAsBlocked(t *testing.T) {
+	root := t.TempDir()
+	writeControlFixture(t, root, "notes", "x")
+	writeControlFixture(t, root, "dir/keep", "x")
+	for _, tc := range []struct {
+		target string
+		res    pathResolution
+	}{
+		{"notes/", pathBlocked}, {"notes/.", pathBlocked}, {"dir/", pathResolved}, {"dir/.", pathResolved},
+	} {
+		t.Run(tc.target, func(t *testing.T) {
+			w := newTestWalker(t, root)
+			link := controlEntry{Entry: Entry{Path: ".envrc", Kind: KindSymlink, Target: tc.target}}
+			if rel, res := w.resolveLinkTarget(link); res != tc.res {
+				t.Fatalf("resolveLinkTarget(%q) = %q, %v, want %v", tc.target, rel, res, tc.res)
+			}
+		})
+	}
+}
+
+// Git reads a pointer file's path literally, so a gitfile naming "~meta" points
+// at the in-workspace directory of that name, and the configuration there is
+// followed like any other Git directory's.
+func TestControlSurfaceFollowsAGitfilePointerSpelledWithATilde(t *testing.T) {
+	root := t.TempDir()
+	writeControlFixture(t, root, ".git", "gitdir: ~meta\n")
+	writeControlFixture(t, root, filepath.Join("~meta", "config"), "[core]\n\thooksPath = hk\n")
+	writeControlFixture(t, root, filepath.Join("hk", "pre-commit"), "before")
+	budget := DefaultControlSurfaceBudget()
+	before := controlSnapshot(t, root, budget)
+	if diff := controlDiff(t, before, controlSnapshot(t, root, budget)); diff.Changed || diff.Incomplete {
+		t.Fatalf("an unchanged workspace must read clean and complete: %+v", diff)
+	}
+	writeControlFixture(t, root, filepath.Join("hk", "pre-commit"), "after")
+	expectControlPath(t, controlDiff(t, before, controlSnapshot(t, root, budget)), "hk/pre-commit")
+}

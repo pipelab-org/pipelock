@@ -22,14 +22,24 @@ type gitConfigSource struct {
 }
 
 func (w *controlWalker) scanGitPointer(entry controlEntry, prefix, base, worktree string) {
-	if path, inside := w.pointerTarget(entry, prefix, base); inside {
+	path, res := w.pointerTarget(entry, prefix, base)
+	switch res {
+	case pathMissing, pathBlocked:
+		// A Git directory a pointer names has to be there to be scanned. A path
+		// through a missing directory or a regular file leads to none, the same
+		// as a missing last component: the pointer is not observed. This differs
+		// from a config include, where a missing file is no configuration.
+		w.unreadable(entry.Path, "Git directory target could not be observed")
+	case pathResolved:
 		w.following(entry.Path, func() {
 			// Git resolves a symlink the pointer names to the directory behind
 			// it, which is the Git directory whose configuration is followed.
+			// hops counts the links already followed: a 41st link is refused,
+			// the 40th is followed (see maxConfigLinkHops).
 			targetEntry := w.recordPath(path)
 			for hops := 0; targetEntry.Kind == KindSymlink; hops++ {
-				rel, res := w.resolveLinkTarget(targetEntry)
-				if res != pathResolved || hops == maxConfigLinkHops {
+				rel, linkRes := w.resolveLinkTarget(targetEntry)
+				if linkRes != pathResolved || hops == maxConfigLinkHops {
 					w.unreadable(entry.Path, "Git directory symlink target could not be observed")
 					return
 				}
@@ -46,18 +56,21 @@ func (w *controlWalker) scanGitPointer(entry controlEntry, prefix, base, worktre
 }
 
 // pointerTarget reads the Git directory a pointer file names, relative to base,
-// and reports it when it lies inside the workspace.
-func (w *controlWalker) pointerTarget(entry controlEntry, prefix, base string) (string, bool) {
+// and resolves it. The pointer is reported unreadable when it cannot be read or
+// is not a pointer, which resolves as pathUnobservable. Git reads a pointer
+// file's path literally: a leading "~" is a directory name, not a home
+// directory, so the configuration-value filter does not apply here.
+func (w *controlWalker) pointerTarget(entry controlEntry, prefix, base string) (string, pathResolution) {
 	data, ok := w.readObserved(entry)
 	if !ok {
-		return "", false
+		return "", pathUnobservable
 	}
 	target, valid := strings.CutPrefix(strings.TrimRight(string(data), "\r\n"), prefix)
 	if !valid || target == "" || strings.ContainsRune(target, 0) {
 		w.unreadable(entry.Path, "invalid Git directory pointer")
-		return "", false
+		return "", pathUnobservable
 	}
-	return w.workspaceTarget(entry.Path, base, target)
+	return w.resolveWorkspacePath(entry.Path, base, target)
 }
 
 // linkedWorktreeOfProject reports whether slot is a linked worktree of the
@@ -76,8 +89,8 @@ func (w *controlWalker) linkedWorktreeOfProject(slot string) bool {
 	if info := w.lookup(ownGit); info == nil || !info.IsDir() {
 		return false
 	}
-	metadata, inside := w.pointerTarget(gitFile, "gitdir: ", slot)
-	if !inside || filepath.Base(filepath.Dir(metadata)) != "worktrees" || filepath.Dir(filepath.Dir(metadata)) != ownGit {
+	metadata, res := w.pointerTarget(gitFile, "gitdir: ", slot)
+	if res != pathResolved || filepath.Base(filepath.Dir(metadata)) != "worktrees" || filepath.Dir(filepath.Dir(metadata)) != ownGit {
 		return false
 	}
 	back := w.recordPath(filepath.Join(metadata, "gitdir"))
@@ -88,8 +101,8 @@ func (w *controlWalker) linkedWorktreeOfProject(slot string) bool {
 	if !ok {
 		return false
 	}
-	target, inside := w.workspaceTarget(back.Path, metadata, strings.TrimRight(string(data), "\r\n"))
-	return inside && target == gitFile.Path
+	target, res := w.resolveWorkspacePath(back.Path, metadata, strings.TrimRight(string(data), "\r\n"))
+	return res == pathResolved && target == gitFile.Path
 }
 
 func (w *controlWalker) scanGitConfig(entry controlEntry, gitDir, worktree string) {
@@ -156,10 +169,24 @@ func (w *controlWalker) configuredWorktree(entry controlEntry) (value string, se
 
 // workspaceTarget resolves a path named in Git metadata to the workspace place
 // Git finds, or reports that it names none this walk observes. See
-// resolveWorkspacePath.
+// resolveWorkspacePath. Git expands a leading "~" to a home directory and
+// "%(prefix)/" to its installation, so a value spelled that way names a place
+// outside the workspace whatever the workspace holds. That expansion belongs to
+// Git metadata alone: a symlink target is a literal path to the kernel, and is
+// resolved without it.
 func (w *controlWalker) workspaceTarget(source, base, value string) (string, bool) {
-	rel, res := w.resolveWorkspacePath(source, base, value)
+	rel, res := w.gitValueTarget(source, base, value)
 	return rel, res == pathResolved
+}
+
+// gitValueTarget resolves a path value read from Git configuration, keeping what
+// resolveWorkspacePath found for a caller that tells a missing place from one
+// outside the workspace.
+func (w *controlWalker) gitValueTarget(source, base, value string) (string, pathResolution) {
+	if strings.HasPrefix(value, "~") || strings.HasPrefix(value, "%(prefix)/") {
+		return "", pathOutside
+	}
+	return w.resolveWorkspacePath(source, base, value)
 }
 
 // A linked worktree records the path to its .git file in its metadata.
@@ -167,7 +194,7 @@ func (w *controlWalker) linkedWorktree(gitDir string) string {
 	entry := w.recordPath(filepath.Join(gitDir, "gitdir"))
 	if entry.Kind == KindFile {
 		if data, ok := w.readObserved(entry); ok {
-			if target, inside := w.workspaceTarget(entry.Path, gitDir, strings.TrimRight(string(data), "\r\n")); inside {
+			if target, res := w.resolveWorkspacePath(entry.Path, gitDir, strings.TrimRight(string(data), "\r\n")); res == pathResolved {
 				return filepath.Dir(target)
 			}
 		}
@@ -175,7 +202,11 @@ func (w *controlWalker) linkedWorktree(gitDir string) string {
 	return ""
 }
 
-// maxConfigLinkHops matches the kernel's limit on symlinks in one resolution.
+// maxConfigLinkHops matches the kernel's limit on symlinks in one resolution:
+// a lookup follows 40 and refuses the 41st. Every loop that follows links here
+// counts them the same way. It rejects a link when maxConfigLinkHops have
+// already been followed, never merely because that many were, so the target of
+// the 40th link is still inspected.
 const maxConfigLinkHops = 40
 
 // readConfig reads a Git config file. Git reads through a symlink, so a link
@@ -186,11 +217,15 @@ const maxConfigLinkHops = 40
 // it is created.
 func (w *controlWalker) readConfig(entry controlEntry) ([]byte, bool) {
 	file := entry
-	for range maxConfigLinkHops {
+	for followed := 0; ; followed++ {
 		switch file.Kind {
 		case KindFile:
 			return w.readObserved(file)
 		case KindSymlink:
+			if followed == maxConfigLinkHops {
+				w.unreadable(entry.Path, "Git config symlink chain is too long")
+				return nil, false
+			}
 			rel, res := w.resolveLinkTarget(file)
 			switch res {
 			case pathResolved:
@@ -217,8 +252,6 @@ func (w *controlWalker) readConfig(entry controlEntry) ([]byte, bool) {
 			return nil, false
 		}
 	}
-	w.unreadable(entry.Path, "Git config symlink chain is too long")
-	return nil, false
 }
 
 func (w *controlWalker) readObserved(entry controlEntry) ([]byte, bool) {

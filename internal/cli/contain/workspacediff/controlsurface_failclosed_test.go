@@ -54,6 +54,22 @@ func TestControlSurfaceReportsUnreadableGitMetadata(t *testing.T) {
 		{"gitfile naming a missing path", func(t *testing.T, root string) {
 			writeControlFixture(t, root, ".git", "gitdir: missing\n")
 		}, ".git", "Git directory target could not be observed"},
+		{"gitfile naming a path below a missing directory", func(t *testing.T, root string) {
+			writeControlFixture(t, root, ".git", "gitdir: missing/subdir\n")
+		}, ".git", "Git directory target could not be observed"},
+		{"gitfile naming a path below a regular file", func(t *testing.T, root string) {
+			writeControlFixture(t, root, ".git", "gitdir: notadir/subdir\n")
+			writeControlFixture(t, root, "notadir", "file")
+		}, ".git", "Git directory target could not be observed"},
+		{"commondir naming a path below a missing directory", func(t *testing.T, root string) {
+			writeControlFixture(t, root, ".git/HEAD", "ref: refs/heads/main\n")
+			writeControlFixture(t, root, ".git/commondir", "../missing/subdir\n")
+		}, ".git/commondir", "Git directory target could not be observed"},
+		{"commondir naming a path below a regular file", func(t *testing.T, root string) {
+			writeControlFixture(t, root, ".git/HEAD", "ref: refs/heads/main\n")
+			writeControlFixture(t, root, ".git/commondir", "../notadir/subdir\n")
+			writeControlFixture(t, root, "notadir", "file")
+		}, ".git/commondir", "Git directory target could not be observed"},
 		{"gitfile naming a link to a missing path", func(t *testing.T, root string) {
 			writeControlFixture(t, root, ".git", "gitdir: meta\n")
 			symlinkFixture(t, root, "missing", "meta")
