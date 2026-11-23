@@ -110,20 +110,35 @@ func (b *checkerTextBuilder) add(view bodyInjectionView) bool {
 	if !view.DecodeOnly && (!appendPart(text, representation) || !addMatching(text, false)) {
 		return false
 	}
-	addDecoded := func(text string) bool {
-		if !utf8.ValidString(text) {
-			textual, err := isTextualResponseBody(b.ctx, []byte(text))
+	// The scanner opens a whole-content decode without a text gate, so wording
+	// buried in binary reaches its rules. A decode that is not text as a whole
+	// still contributes its readable runs, the same floor the opaque body view
+	// applies. Short coincidental decodes of ordinary words stay below it.
+	addReadableRuns := func(text string) bool {
+		views, err := opaqueResponseTextView(b.ctx, []byte(text))
+		if err != nil {
+			b.reason = checker.ReasonCanceled
+			return false
+		}
+		runs := strings.ToValidUTF8(exciseVerifiedImageDataURLs(views.retained), " ")
+		return appendPart(runs, "response_decoded_runs/v1") && addMatching(runs, true)
+	}
+	addDecoded := func(raw string) bool {
+		if !utf8.ValidString(raw) {
+			textual, err := isTextualResponseBody(b.ctx, []byte(raw))
 			if err != nil {
 				b.reason = checker.ReasonCanceled
 				return false
 			}
 			if !textual {
-				return true
+				return addReadableRuns(raw)
 			}
 		}
-		text = strings.ToValidUTF8(exciseVerifiedImageDataURLs(text), " ")
-		return (!isPrintableText([]byte(text)) || appendPart(text, "response_decoded/v1")) &&
-			addMatching(text, true)
+		text := strings.ToValidUTF8(exciseVerifiedImageDataURLs(raw), " ")
+		if !isPrintableText([]byte(text)) {
+			return addReadableRuns(raw) && addMatching(text, true)
+		}
+		return appendPart(text, "response_decoded/v1") && addMatching(text, true)
 	}
 
 	// The historical depth-first pass starts from normalized text, with
