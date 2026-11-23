@@ -88,13 +88,12 @@ func auditSelector(opts controlAuditOptions) string {
 }
 
 func (env controlAuditEnv) roots(opts controlAuditOptions) ([]string, error) {
-	paths := []string{opts.workspace}
+	var paths []string
 	if opts.agentUser != "" {
 		inv, err := loadWorkspaceInventoryFrom(env.readInventory, env.inventory)
 		if err != nil {
 			return nil, err
 		}
-		paths = nil
 		for _, grant := range grantsForAgent(inv.Workspaces, opts.agentUser) {
 			if !filepath.IsAbs(grant.Path) || filepath.Clean(grant.Path) != grant.Path {
 				return nil, fmt.Errorf("invalid workspace grant path %q", grant.Path)
@@ -107,23 +106,29 @@ func (env controlAuditEnv) roots(opts controlAuditOptions) ([]string, error) {
 		slices.Sort(paths)
 		return slices.Compact(paths), nil
 	}
-	for i, path := range paths {
-		abs, err := filepath.Abs(path)
-		if err != nil {
-			return nil, err
-		}
-		resolved, err := filepath.EvalSymlinks(abs)
-		if errors.Is(err, os.ErrNotExist) {
-			// Inventory paths are canonical when granted. A removed root must
-			// still be audited against its saved baseline.
-			resolved = abs
-		} else if err != nil {
-			return nil, err
-		}
-		paths[i] = resolved
+	// The lexical grant path is the baseline key. Resolving a caller's
+	// selector here could silently select a different workspace's baseline.
+	abs, err := filepath.Abs(opts.workspace)
+	if err != nil {
+		return nil, err
 	}
-	slices.Sort(paths)
-	return slices.Compact(paths), nil
+	return []string{abs}, nil
+}
+
+// Check the grant path without changing the baseline key. A missing root
+// is left to the snapshotter so it can be reported as incomplete.
+func checkAuditRoot(root string) error {
+	resolved, err := filepath.EvalSymlinks(root)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect workspace path %q: %w", root, err)
+	}
+	if resolved != root {
+		return fmt.Errorf("workspace path %q traverses a symbolic link; restore the recorded workspace path before retrying", root)
+	}
+	return nil
 }
 
 func (env controlAuditEnv) record(w io.Writer, dir *os.File, roots []string, replace bool) error {
@@ -142,6 +147,9 @@ func (env controlAuditEnv) record(w io.Writer, dir *os.File, roots []string, rep
 		capBytes := int64(defaultWorkspaceDiffCapBytes)
 		if existing {
 			capBytes = old.CapBytes()
+		}
+		if err := checkAuditRoot(root); err != nil {
+			return err
 		}
 		current, err := workspacediff.SnapshotControlSurface(root, capBytes, env.budget)
 		if err != nil {
@@ -210,10 +218,15 @@ func (env controlAuditEnv) record(w io.Writer, dir *os.File, roots []string, rep
 func (env controlAuditEnv) audit(w io.Writer, dir *os.File, roots []string, opts controlAuditOptions) error {
 	results := make([]controlAuditResult, 0, len(roots))
 	blocked := false
+	var auditErrors []error
 	for _, root := range roots {
 		result, err := env.auditOne(dir, root, opts)
 		if err != nil {
-			return err
+			auditErrors = append(auditErrors, err)
+			results = append(results, controlAuditResult{
+				Workspace: root, Status: workspaceControlUnavailable, Reason: "audit_error", Remedy: err.Error(),
+			})
+			continue
 		}
 		blocked = blocked || auditResultBlocked(result, opts)
 		results = append(results, result)
@@ -228,13 +241,18 @@ func (env controlAuditEnv) audit(w io.Writer, dir *os.File, roots []string, opts
 			if result.ControlSurfaceStatement != nil {
 				printWorkspaceControls(w, map[string]workspacediff.ControlSurfaceStatement{result.Workspace: *result.ControlSurfaceStatement})
 			} else {
-				_, _ = fmt.Fprintln(w, "  [WARN] workspace control baseline is missing")
+				if result.Reason == "missing_baseline" {
+					_, _ = fmt.Fprintln(w, "  [WARN] workspace control baseline is missing")
+				}
 				printWorkspaceControlUnavailable(w, result.Reason)
 			}
 			if result.Remedy != "" {
 				_, _ = fmt.Fprintln(w, result.Remedy)
 			}
 		}
+	}
+	if err := errors.Join(auditErrors...); err != nil {
+		return err
 	}
 	if blocked {
 		return cliutil.ExitCodeError(cliutil.ExitConfig, errors.New("workspace control surface audit did not pass"))
@@ -243,6 +261,9 @@ func (env controlAuditEnv) audit(w io.Writer, dir *os.File, roots []string, opts
 }
 
 func (env controlAuditEnv) auditOne(dir *os.File, root string, opts controlAuditOptions) (controlAuditResult, error) {
+	if err := checkAuditRoot(root); err != nil {
+		return controlAuditResult{}, err
+	}
 	if dir == nil {
 		return missingControlBaseline(root), nil
 	}
@@ -264,7 +285,7 @@ func (env controlAuditEnv) auditOne(dir *os.File, root string, opts controlAudit
 	result := controlAuditResult{Workspace: root, Status: workspaceControlStatus(diff.Changed, diff.Incomplete, diff.NestedDiscoveryPartial), ControlSurfaceStatement: &diff}
 	if diff.Incomplete || diff.Changed || diff.NestedDiscoveryPartial {
 		result.Remedy = "After reviewing the findings, resolve any observation issue and run " + recordRemedy(root, true)
-		if !diff.Incomplete {
+		if !diff.Incomplete && auditResultBlocked(result, opts) {
 			flags := []string{}
 			if diff.Changed || opts.allowChanges {
 				flags = append(flags, "--allow-control-surface-changes")

@@ -62,6 +62,29 @@ func writeAuditFixture(t *testing.T, dir, name, contents string) {
 	}
 }
 
+func TestCheckAuditRoot(t *testing.T) {
+	parent, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonical := filepath.Join(parent, "canonical")
+	if err := os.Mkdir(canonical, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(parent, "alias")
+	if err := os.Symlink(canonical, alias); err != nil {
+		t.Fatal(err)
+	}
+	for _, root := range []string{canonical, filepath.Join(parent, "missing")} {
+		if err := checkAuditRoot(root); err != nil {
+			t.Fatalf("check %q: %v", root, err)
+		}
+	}
+	if err := checkAuditRoot(alias); err == nil || !strings.Contains(err.Error(), "traverses a symbolic link") {
+		t.Fatalf("check %q: %v", alias, err)
+	}
+}
+
 func TestControlAuditMissingBaseline(t *testing.T) {
 	env, root := controlAuditFixture(t)
 	out, _ := runAuditFixture(t, env, controlAuditOptions{workspace: root}, 2)
@@ -137,6 +160,9 @@ func TestControlAuditExitMatrix(t *testing.T) {
 					if len(results) != 1 || results[0].Status != tc.wantStatus || (want != 0 && results[0].Remedy == "") {
 						t.Fatalf("unexpected JSON audit result: %s", out)
 					}
+					if want == 0 && strings.Contains(results[0].Remedy, " or rerun with ") {
+						t.Fatalf("already accepted findings have an allow remedy: %s", out)
+					}
 				})
 			}
 		})
@@ -172,6 +198,35 @@ func TestControlAuditAgentIncludesExpiredGrants(t *testing.T) {
 	if !strings.Contains(out, filepath.Join(expired, ".envrc")) ||
 		strings.Count(out, "workspace_control_surface=") != 2 {
 		t.Fatalf("unexpected agent inventory audit: %s", out)
+	}
+}
+
+func TestControlAuditAgentReportsResultsWithInvalidBaseline(t *testing.T) {
+	env, parent := controlAuditFixture(t)
+	invalid := filepath.Join(parent, "a")
+	changed := filepath.Join(parent, "b")
+	const agent = "pipelock-agent"
+	inv := workspaceInventory{Workspaces: []workspaceGrant{
+		{Path: invalid, AgentUser: agent},
+		{Path: changed, AgentUser: agent},
+	}}
+	env.readInventory = func(string) ([]byte, error) { return json.Marshal(inv) }
+	for _, root := range []string{invalid, changed} {
+		writeAuditFixture(t, root, ".envrc", "before")
+	}
+	_, _ = runAuditFixture(t, env, controlAuditOptions{agentUser: agent, record: true}, 0)
+	writeAuditFixture(t, env.store.path, controlBaselineFilename(invalid), "{}")
+	writeAuditFixture(t, changed, ".envrc", "after")
+
+	for _, jsonOutput := range []bool{false, true} {
+		out, err := runAuditFixture(t, env, controlAuditOptions{agentUser: agent, json: jsonOutput}, 1)
+		if !strings.Contains(err.Error(), invalid) || !strings.Contains(out, "audit_error") ||
+			!strings.Contains(out, ".envrc") || !strings.Contains(out, "changed") {
+			t.Fatalf("missing batch results: %v\n%s", err, out)
+		}
+		if jsonOutput && !json.Valid([]byte(out)) {
+			t.Fatalf("invalid JSON: %s", out)
+		}
 	}
 }
 
