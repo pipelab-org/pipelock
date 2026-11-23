@@ -1124,8 +1124,12 @@ func TestControlSurfaceComparesAPathObservedByDifferentPassesAtEachEndpoint(t *t
 				if len(diff.Added) != 0 || len(diff.Removed) != 0 {
 					t.Errorf("a path observed at both endpoints is never added or removed: %+v", diff)
 				}
-				if got := slices.Equal(diff.Modified, []string{name}); got != tc.modified {
-					t.Errorf("modified = %t, want %t: %+v", got, tc.modified, diff)
+				want := []string{}
+				if tc.modified {
+					want = []string{name}
+				}
+				if !slices.Equal(diff.Modified, want) {
+					t.Errorf("modified = %q, want %q: %+v", diff.Modified, want, diff)
 				}
 			}
 		})
