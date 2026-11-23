@@ -8,9 +8,12 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/checker"
@@ -295,6 +298,95 @@ func TestDescriptionsWithheldRules(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := descriptionsWithheld(tc.sc, tc.a); got != tc.want {
 				t.Fatalf("descriptionsWithheld = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// A header-contracts-only listener collects structural inventory and applies
+// no wording rules: the description checker is not consulted and nothing is
+// assessed, flagged or recorded, even for an obvious injection.
+func TestScanToolDefsHeaderContractsOnlySkipsDescriptionChecker(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	srv := checkertest.New(t, "finding")
+	srv.Configure(cfg, config.InjectionSurfaceMCPToolDescription, config.InjectionModeBlock)
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	baseline := NewToolBaseline()
+	matches, observations, capacityExceeded, epochChanged, assessment, diagnostic := scanToolDefsAssessed(
+		t.Context(), []ToolDef{{Name: "poisoned", Description: checkertest.Directive}}, sc,
+		&ToolScanConfig{Action: config.ActionBlock, DetectDrift: true, Baseline: baseline, HeaderContractsOnly: true},
+	)
+	if len(matches) != 0 || len(observations) != 0 || capacityExceeded || epochChanged || diagnostic != "" {
+		t.Fatalf("header-contracts-only scan produced results: matches=%v observations=%v capacity=%v epoch=%v diagnostic=%q", matches, observations, capacityExceeded, epochChanged, diagnostic)
+	}
+	if assessment.Checker != scanner.InjectionCheckerBasic || assessment.Status != scanner.AssessmentNotAssessed {
+		t.Fatalf("assessment = %+v, want the not-assessed built-in default", assessment)
+	}
+	if len(srv.Items()) != 0 {
+		t.Fatal("header-contracts-only scan consulted the description checker")
+	}
+	baseline.mu.Lock()
+	defer baseline.mu.Unlock()
+	if len(baseline.hashes) != 0 {
+		t.Fatalf("header-contracts-only scan recorded definitions: %v", baseline.hashes)
+	}
+}
+
+// A drift reset that lands while the description checker is still deciding
+// must not let the list through or promote its definitions: the scan stops at
+// the first definition evaluated against the new epoch.
+func TestDescriptionCheckerEpochResetDuringAssessment(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		mode      string
+		wantLimit string
+	}{
+		// Block mode withholds first: the checker's own result no longer
+		// covers every description once the scan stopped early.
+		{name: "block", mode: config.InjectionModeBlock, wantLimit: ResourceLimitInjectionChecker},
+		{name: "warn", mode: config.InjectionModeWarn, wantLimit: "tool_definition_baseline_reset"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			baseline := NewToolBaseline()
+			epoch := baseline.DriftEpoch()
+			var requests atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests.Add(1)
+				var req checker.Request
+				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+					http.Error(w, "bad request", http.StatusBadRequest)
+					return
+				}
+				var item checker.Item
+				if err := json.Unmarshal(req.Item, &item); err != nil {
+					http.Error(w, "bad item", http.StatusBadRequest)
+					return
+				}
+				// The reset arrives after the response began and before any
+				// definition is evaluated against the baseline.
+				baseline.ResetDriftState()
+				_ = json.NewEncoder(w).Encode(checker.Response{
+					Version: checker.Version, RequestID: req.ID, ItemID: item.ID, InputBinding: req.InputBinding,
+					Revision: checkertest.MockRevision, Completeness: &checker.Completeness{Status: checker.Complete},
+					Status: checker.StatusAssessed, Classification: checker.Benign,
+				})
+			}))
+			t.Cleanup(srv.Close)
+			sc := descriptionCheckerScanner(t, srv.URL, tc.mode)
+			got := ScanTools(checkerToolsList(t, "Reads a file.", "Writes a file."), sc,
+				&ToolScanConfig{Action: config.ActionWarn, DetectDrift: true, Baseline: baseline, ExpectedDriftEpoch: &epoch})
+			if requests.Load() != 1 {
+				t.Fatalf("checker saw %d requests, want one per tools/list", requests.Load())
+			}
+			if got.Clean || got.ResourceLimit != tc.wantLimit || got.Assessment.Status != scanner.AssessmentIncomplete {
+				t.Fatalf("list after mid-scan reset: clean=%v limit=%q assessment=%+v", got.Clean, got.ResourceLimit, got.Assessment)
+			}
+			baseline.mu.Lock()
+			defer baseline.mu.Unlock()
+			if len(baseline.hashes) != 0 {
+				t.Fatalf("stale scan promoted definitions into the new epoch: %v", baseline.hashes)
 			}
 		})
 	}
