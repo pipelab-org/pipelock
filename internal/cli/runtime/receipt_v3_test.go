@@ -252,6 +252,42 @@ func TestRuntimeReceiptReloadLegacyDefault(t *testing.T) {
 	}
 }
 
+func TestRuntimeReceiptReloadLegacyEvidenceHealth(t *testing.T) {
+	const enabled = "  evidence_health:\n    enabled: true\n"
+	const disabled = "  evidence_health:\n    enabled: false\n"
+	for _, tc := range []struct {
+		name, old, updated string
+		warn               bool
+	}{
+		{"omitted to default", "", enabled, false},
+		{"default to omitted", enabled, "", false},
+		{"explicit change", enabled, disabled, true},
+		{"explicit no change", disabled, disabled, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := fmt.Sprintf("flight_recorder:\n  enabled: true\n  sign_checkpoints: false\n  dir: %q\n", t.TempDir())
+			stderr := &syncBuffer{}
+			s, err := NewServer(ServerOpts{ConfigFile: writeServerTestConfig(t, body+tc.old), Stdout: &syncBuffer{}, Stderr: stderr})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(s.cleanup)
+			cfg, err := config.LoadBytes([]byte(body + tc.updated))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := s.Reload(cfg); err != nil {
+				t.Fatal(err)
+			}
+			const evidenceWarning = "flight_recorder.evidence_health.enabled changed"
+			log := stderr.String()
+			if strings.Contains(log, evidenceWarning) != tc.warn || strings.Contains(log, "flight_recorder settings changed") {
+				t.Fatalf("restart warning wanted = %v, logs: %s", tc.warn, log)
+			}
+		})
+	}
+}
+
 func TestRuntimeReceiptV3IncompleteDrain(t *testing.T) {
 	evidence := t.TempDir()
 	keyPath := filepath.Join(t.TempDir(), "signer.key")

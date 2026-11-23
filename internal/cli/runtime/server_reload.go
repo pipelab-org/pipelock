@@ -344,7 +344,10 @@ func (s *Server) executeReloadLocked(newCfg *config.Config, restoringPriorPolicy
 		oldFR.EvidenceHealth.SelfAuditInterval = newFR.EvidenceHealth.SelfAuditInterval
 		oldFR.EvidenceHealth.MaxAnchorLag = newFR.EvidenceHealth.MaxAnchorLag
 		oldFR.Anchor = newFR.Anchor
-		if !reflect.DeepEqual(oldFR, newFR) {
+		evidenceHealthChanged := oldFR.EvidenceHealthEnabled() != newFR.EvidenceHealthEnabled()
+		oldFR.EvidenceHealth.Enabled = nil
+		newFR.EvidenceHealth.Enabled = nil
+		if evidenceHealthChanged || !reflect.DeepEqual(oldFR, newFR) {
 			if oldCfg.FlightRecorder.ReceiptChainCount() != newCfg.FlightRecorder.ReceiptChainCount() {
 				liveChains := oldCfg.FlightRecorder.ReceiptChainCount()
 				_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: flight_recorder.receipt_chains changed; restart required; continuing with %d\n", liveChains)
@@ -353,7 +356,7 @@ func (s *Server) executeReloadLocked(newCfg *config.Config, restoringPriorPolicy
 			} else if oldCfg.FlightRecorder.SigningKeyPath != newCfg.FlightRecorder.SigningKeyPath {
 				_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: flight_recorder.signing_key_path changed from %q to %q — receipt chain cannot rotate at runtime, ignoring (restart required)\n",
 					oldCfg.FlightRecorder.SigningKeyPath, newCfg.FlightRecorder.SigningKeyPath)
-			} else if !boolPtrEqual(oldCfg.FlightRecorder.EvidenceHealth.Enabled, newCfg.FlightRecorder.EvidenceHealth.Enabled) {
+			} else if oldFR.Enabled == newFR.Enabled && evidenceHealthChanged {
 				_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: flight_recorder.evidence_health.enabled changed — evidence health loop is built at startup and cannot rebind at runtime, ignoring (restart required)\n")
 			} else {
 				_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: flight_recorder settings changed — recorder is built at startup and cannot rebind at runtime, ignoring (restart required)\n")
@@ -866,13 +869,6 @@ func cleanDropsWithoutBundleErrors(drops []bundleCoverageDrop, result *rules.Loa
 		clean = append(clean, drop)
 	}
 	return clean
-}
-
-func boolPtrEqual(a, b *bool) bool {
-	if a == nil || b == nil {
-		return a == b
-	}
-	return *a == *b
 }
 
 func reloadRuntimeModeLabel(mode config.RuntimeMode) string {
