@@ -448,7 +448,7 @@ func RunWSProxy(
 			tracker.removeOwnedOutcome(frame.ID, registration)
 			decision.Outcome.settle(safeLogW, inputOpts, mcpOutcomeStatusBlocked, -1, "receipt_admission_failed")
 			logMCPV3Error(safeLogW, err)
-			_ = inputOpts.writeV3SendDenial(safeLogW, transport.NewStdioWriter(safeClientOut), frame, effect)
+			_ = inputOpts.writeV3SendDenial(safeLogW, transport.NewStdioWriter(safeClientOut), frame, effect, err)
 			continue
 		}
 		if innerCtx.Err() != nil {

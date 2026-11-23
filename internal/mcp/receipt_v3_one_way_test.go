@@ -566,8 +566,12 @@ func TestMCPV3BridgeDiscoverySettlesNonOKRoundTrip(t *testing.T) {
 		if err != nil {
 			t.Error(err)
 		}
-		observed <- mcpWireObservation{
+		select {
+		case observed <- mcpWireObservation{
 			message: body, before: before, boundary: mcpUpstreamSendBoundary, requestID: canonicalID(frame.ID), outcome: "completed",
+		}:
+		default:
+			t.Error("unexpected extra private discovery request")
 		}
 		w.WriteHeader(http.StatusBadGateway)
 	}))

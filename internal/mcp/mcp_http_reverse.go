@@ -1056,7 +1056,7 @@ func RunHTTPListenerProxy(
 			logMCPV3Error(safeLogW, err)
 			clearReplySession()
 			effect.opts.WarnContext = effect.ctx
-			if deliveryErr := effect.opts.writeV3SendDenial(safeLogW, w, frame, effect.refusedSend); deliveryErr != nil {
+			if deliveryErr := effect.opts.writeV3SendDenial(safeLogW, w, frame, effect.refusedSend, err); deliveryErr != nil {
 				_ = httpstream.Abort(r.Context(), deliveryErr)
 				return
 			}
@@ -2293,7 +2293,7 @@ func RunHTTPListenerProxy(
 				return
 			}
 		}
-		if effect.send != nil && effect.ctx.Err() != nil {
+		if abortCancelledMCPListenerSend(r.Context(), &effect) {
 			return
 		}
 		var wroteReply func() bool
@@ -2771,6 +2771,19 @@ func RunHTTPListenerProxy(
 		return fmt.Errorf("MCP HTTP listener: %w", serveErr)
 	}
 	return nil
+}
+
+// A cancelled send must not leave net/http to synthesize an empty success.
+func abortCancelledMCPListenerSend(ctx context.Context, effect *mcpV3NetworkExchange) bool {
+	if effect.send == nil {
+		return false
+	}
+	err := effect.ctx.Err()
+	if err == nil {
+		return false
+	}
+	_ = httpstream.Abort(ctx, err)
+	return true
 }
 
 func withListenerWriteDeadline(w http.ResponseWriter, write func()) {

@@ -336,11 +336,7 @@ func runProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, start func()
 	// hung sandboxed upstream fails closed instead of hanging the agent.
 	serverReader := fwdOpts.withResponseTimeout(transport.NewStdioReader(serverOut))
 	_, scanErr := ForwardScanned(serverReader, safeClientOut, safeLogW, tracker, fwdOpts)
-	select {
-	case err := <-replyFailed:
-		scanErr = err
-	default:
-	}
+	scanErr = stdioReplyFailure(scanErr, replyFailed)
 	if opts.outputForwardDoneForTest != nil {
 		opts.outputForwardDoneForTest()
 	}
@@ -412,18 +408,25 @@ func runProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, start func()
 		interruptNativeOutput(clientOut)
 		logAsync(safeLogW, "pipelock: timed out waiting for sandboxed MCP input drain\n")
 	}
-	if timedOut {
-		if drained || !opts.receiptEffects.enabled {
+	scanErr = stdioReplyFailure(scanErr, replyFailed)
+	if errors.Is(scanErr, transport.ErrResponseTimeout) {
+		switch {
+		case !opts.receiptEffects.enabled:
 			emitPendingTimeoutResponses(safeClientOut, safeLogW, tracker, fwdOpts)
-		} else {
+		case drained && drainCtx.Err() == nil:
+			stop := context.AfterFunc(drainCtx, func() { interruptNativeOutput(clientOut) })
+			fwdOpts.WarnContext = drainCtx
+			emitPendingTimeoutResponses(safeClientOut, safeLogW, tracker, fwdOpts)
+			stop()
+		default:
 			emitPendingIncompleteOutcomes(safeLogW, tracker, fwdOpts, "response_timeout")
 		}
-	} else if replyAdmissionFailed {
-		emitPendingIncompleteOutcomes(safeLogW, tracker, fwdOpts, "receipt_admission_failed")
-	} else if downstreamWriteFailed && opts.receiptEffects.enabled {
-		emitPendingIncompleteOutcomes(safeLogW, tracker, fwdOpts, "downstream_write_failed")
 	} else {
-		emitPendingIncompleteOutcomes(safeLogW, tracker, fwdOpts, "upstream_closed")
+		reason := stdioIncompleteReason(scanErr, "upstream_closed")
+		if reason == "upstream_closed" && downstreamWriteFailed && opts.receiptEffects.enabled {
+			reason = "downstream_write_failed"
+		}
+		emitPendingIncompleteOutcomes(safeLogW, tracker, fwdOpts, reason)
 	}
 
 	if err := opts.nativeCapacityStopError(); err != nil {
