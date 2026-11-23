@@ -102,7 +102,7 @@ func TestUpstreamClientErrorWriteState(t *testing.T) {
 			}
 			w := httptest.NewRecorder()
 			reply := upstreamClientError{status: http.StatusUnauthorized, header: http.Header{"Www-Authenticate": {upstreamStatusChallenge}}, body: []byte("refusal")}
-			ok, reason, detail := reply.writeIfActive(w, state, opts)
+			ok, _, reason, detail := reply.writeIfActive(w, state, opts)
 			if name != "escalated" && detail != "" {
 				t.Fatalf("non-adaptive gate returned detail: %q", detail)
 			}

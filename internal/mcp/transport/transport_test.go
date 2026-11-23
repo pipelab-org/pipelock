@@ -225,3 +225,13 @@ func TestStdioReader_OversizedMessage(t *testing.T) {
 		t.Error("oversized message should return a read error, not EOF")
 	}
 }
+
+type shortCountWriter struct{}
+
+func (shortCountWriter) Write(p []byte) (int, error) { return max(len(p)-1, 0), nil }
+
+func TestStdioWriter_RejectsShortWriteWithoutError(t *testing.T) {
+	if err := NewStdioWriter(shortCountWriter{}).WriteMessage([]byte("{}")); !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("short frame write returned %v", err)
+	}
+}

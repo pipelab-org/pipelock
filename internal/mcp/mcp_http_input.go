@@ -32,6 +32,7 @@ type httpInputDecision struct {
 	ForwardMessage []byte
 	Outcome        TrackedRequestOutcome
 	admission      receipt.EmitOpts
+	v3Evidence     receipt.EmitOpts
 	taskFrame      MCPFrame
 	taskTaint      taintDecision
 }
@@ -128,6 +129,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	// downstream gates (DoW, taint) see the redacted args while
 	// ID / Method / ToolCallName stay stable.
 	frame := ParseMCPFrame(msg)
+	v3DeferRefused := false
 	baselineIdentity := mcpFrameBaselineIdentity(frame)
 	defer func() {
 		if result.Blocked != nil && result.Blocked.SyntheticResponse != nil {
@@ -135,6 +137,11 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			result.Blocked = nil
 		}
 		if result.Blocked != nil {
+			if opts.receiptEffects.enabled {
+				result.Blocked.v3Evidence = result.v3Evidence
+				result.Blocked.v3RefusalErr = opts.refuseV3Reply(opts.warnContext(), mcpV3ReplyEvidence(result.v3Evidence))
+				result.Blocked.v3RefusalSigned = result.Blocked.v3RefusalErr == nil
+			}
 			result.Blocked = inputMCPDenial(opts, denialAudit, result.Blocked)
 		}
 	}()
@@ -247,6 +254,18 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		if result.Blocked == nil && result.Deferred == nil && emitVerdict == config.ActionAllow && isPairedMCPMethod(mcpMethod) {
 			result.Outcome.Method = mcpMethod
 			receiptOpts.Outcome = &result.Outcome
+		}
+		if opts.receiptEffects.enabled {
+			result.v3Evidence = opts.withReceiptPolicyHash(receiptOpts.receiptOptions())
+			result.v3Evidence.RequestID = canonicalID(frame.ID)
+			result.v3Evidence.Method = frame.Method
+			result.v3Evidence.Target = firstNonEmpty(result.v3Evidence.Target, firstNonEmpty(frame.ToolCallName, frame.Method))
+			if result.Blocked != nil {
+				result.v3Evidence.ActionID, result.v3Evidence.ParentActionID = "", ""
+			}
+		}
+		if v3DeferRefused {
+			return
 		}
 		if err := emitMCPToolReceipt(receiptOpts); err != nil && requiredReceipt && result.Blocked == nil {
 			result.Outcome.Receipt.Layer = "receipt_emission"
@@ -1037,6 +1056,15 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		}
 		return result
 	case config.ActionRedirect:
+		if opts.receiptEffects.enabled {
+			denialAudit = mcpInputGateBlockAudit(scanner.AuditMCPRedirect, mcpV3RedirectRefusal, audit.BlockClassProtective)
+			receiptVerdict = config.ActionBlock
+			result.Blocked = &BlockedRequest{
+				ID: verdict.ID, IsNotification: isNotification,
+				LogMessage: mcpV3RedirectRefusal, ErrorCode: -32002, ErrorMessage: mcpV3RedirectRefusal,
+			}
+			return result
+		}
 		if reason := mcpTaskReleaseRefusal(opts, frame, taintEval, true); reason != "" {
 			refusalReason := taintEval.recordTaskReleaseRefusal(reason)
 			receiptLayer, receiptPattern, receiptSeverity = mcpReceiptLayerTaint, refusalReason, taintReceiptSeverity(taintEval)
@@ -1228,6 +1256,16 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		result.Blocked = br
 		return result
 	case config.ActionDefer:
+		if opts.receiptEffects.enabled {
+			v3DeferRefused = true
+			denialAudit = mcpInputGateBlockAudit(scanner.AuditMCPDefer, mcpV3DeferRefusal, audit.BlockClassConfigMismatch)
+			receiptVerdict = config.ActionBlock
+			result.Blocked = &BlockedRequest{
+				ID: verdict.ID, IsNotification: isNotification,
+				LogMessage: mcpV3DeferRefusal, ErrorCode: -32002, ErrorMessage: mcpV3DeferRefusal,
+			}
+			return result
+		}
 		manager := opts.deferManager()
 		if err := deferred.ValidateAction(opts.Transport, config.ActionDefer); err != nil {
 			denialAudit = mcpInputGateBlockAudit(scanner.AuditMCPDefer, mcpDeferUnsupportedReason, audit.BlockClassConfigMismatch)

@@ -8,14 +8,23 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
+	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/deferred"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/session"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 type listenerStateBoundedStore struct {
@@ -502,4 +511,149 @@ func TestMCPListenerClientState_CommitLinearizesWithRevoke(t *testing.T) {
 			t.Fatal("state was not revoked after commit completed")
 		}
 	})
+}
+
+type syntheticWriteStallListener struct {
+	net.Listener
+	stalled chan time.Duration
+}
+
+func (l syntheticWriteStallListener) Accept() (net.Conn, error) {
+	conn, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	return &syntheticWriteStallConn{Conn: conn, stalled: l.stalled}, nil
+}
+
+type syntheticWriteStallConn struct {
+	net.Conn
+	deadline atomic.Int64
+	stalled  chan time.Duration
+}
+
+func (c *syntheticWriteStallConn) SetWriteDeadline(deadline time.Time) error {
+	if deadline.IsZero() {
+		c.deadline.Store(0)
+	} else {
+		c.deadline.Store(deadline.UnixNano())
+	}
+	return c.Conn.SetWriteDeadline(deadline)
+}
+
+func (c *syntheticWriteStallConn) Write(p []byte) (int, error) {
+	deadline := c.deadline.Load()
+	if deadline == 0 {
+		return c.Conn.Write(p)
+	}
+	select {
+	case c.stalled <- time.Until(time.Unix(0, deadline)):
+	default:
+	}
+	// Shorten the observed listener deadline to keep the test fast.
+	timer := time.NewTimer(20 * time.Millisecond)
+	defer timer.Stop()
+	<-timer.C
+	return 0, os.ErrDeadlineExceeded
+}
+
+func TestListenerSyntheticReplyWriteDeadline(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Error("redirect request reached upstream")
+	}))
+	defer upstream.Close()
+	listener := syntheticWriteStallListener{
+		Listener: newListenerProxyTestListener(t),
+		stalled:  make(chan time.Duration, 1),
+	}
+	opts := MCPProxyOpts{
+		Scanner: testInputScanner(t),
+		PolicyCfg: policy.New(config.MCPToolPolicy{
+			Enabled: true, Action: config.ActionWarn,
+			RedirectProfiles: map[string]config.RedirectProfile{
+				"fixture": {
+					// Exceed the HTTP writer's buffer so Write reaches the connection.
+					Exec:   []string{"sh", "-c", `head -c 8192 /dev/zero | tr '\000' x`},
+					Reason: "audited operation",
+				},
+			},
+			Rules: []config.ToolPolicyRule{{Name: "redirect", ToolPattern: "^echo$", Action: config.ActionRedirect, RedirectProfile: "fixture"}},
+		}),
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- RunHTTPListenerProxy(ctx, listener, upstream.URL, io.Discard, opts) }()
+	defer func() {
+		cancel()
+		waitForListenerProxyStop(t, done)
+	}()
+	url := "http://" + listener.Addr().String()
+	waitForHTTPHealth(t, url)
+	requestCtx, stopRequest := context.WithTimeout(t.Context(), testwait.Deadline(2*time.Second))
+	defer stopRequest()
+	req, err := http.NewRequestWithContext(requestCtx, http.MethodPost, url, strings.NewReader(cleanToolsCallRequest))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err == nil {
+		_, err = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+	}
+	if err == nil || requestCtx.Err() != nil {
+		t.Fatalf("synthetic write error = %v, request context = %v", err, requestCtx.Err())
+	}
+	select {
+	case remaining := <-listener.stalled:
+		if remaining <= 0 || remaining > listenerDownstreamWriteTimeout {
+			t.Fatalf("unexpected listener deadline: %v", remaining)
+		}
+	default:
+		t.Fatal("synthetic write did not observe a listener deadline")
+	}
+}
+
+func TestListenerEmptyPostAcknowledgementWriteDeadline(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer upstream.Close()
+	listener := syntheticWriteStallListener{
+		Listener: newListenerProxyTestListener(t),
+		stalled:  make(chan time.Duration, 1),
+	}
+	opts, _, _ := localMCPReceiptFixture(t, v3MCPMatrixRow{required: true}, deferred.SurfaceMCPHTTPListener)
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- RunHTTPListenerProxy(ctx, listener, upstream.URL, io.Discard, opts) }()
+	defer func() {
+		cancel()
+		waitForListenerProxyStop(t, done)
+	}()
+	url := "http://" + listener.Addr().String()
+	waitForHTTPHealth(t, url)
+	requestCtx, stopRequest := context.WithTimeout(ctx, testwait.Deadline(2*time.Second))
+	defer stopRequest()
+	req, err := http.NewRequestWithContext(requestCtx, http.MethodPost, url, strings.NewReader(cleanToolsCallRequest))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err == nil {
+		_ = resp.Body.Close()
+		t.Fatalf("stalled acknowledgement reached the client with status %d", resp.StatusCode)
+	}
+	if requestCtx.Err() != nil {
+		t.Fatalf("acknowledgement was interrupted by the request context: %v", requestCtx.Err())
+	}
+	select {
+	case remaining := <-listener.stalled:
+		if remaining <= 0 || remaining > listenerDownstreamWriteTimeout {
+			t.Fatalf("unexpected listener deadline: %v", remaining)
+		}
+	default:
+		t.Fatal("acknowledgement write did not observe a listener deadline")
+	}
 }

@@ -692,6 +692,12 @@ func TestHTTPClient_OpenGETStream_405(t *testing.T) {
 	if !strings.Contains(err.Error(), "405") {
 		t.Errorf("error should mention 405, got: %v", err)
 	}
+
+	observations := 0
+	reader, err := c.OpenObservedGETStream(t.Context(), func() { observations++ })
+	if reader != nil || !errors.Is(err, ErrStreamNotSupported) || observations != 1 {
+		t.Fatalf("observed 405: reader=%v error=%v observations=%d", reader, err, observations)
+	}
 }
 
 func TestHTTPClient_OpenGETStream_ErrorOmitsBody(t *testing.T) {
@@ -1786,5 +1792,32 @@ func TestHTTPClient_GETStreamCarriesPipelockToken(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("GET stream never reached the server")
+	}
+}
+
+func TestHTTPClient_ObservesMessageRoundTrip(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(server.Close)
+	client := NewHTTPClient(server.URL, nil)
+	for _, closed := range []bool{false, true} {
+		if closed {
+			server.Close()
+		}
+		var calls int
+		var observed error
+		r, err := client.SendMessageWithOptions(t.Context(), []byte(`{"jsonrpc":"2.0","method":"notifications/initialized"}`), HTTPMessageOptions{
+			ObserveRoundTrip: func(err error) {
+				calls++
+				observed = err
+			},
+		})
+		if r != nil {
+			drain(t, r)
+		}
+		if calls != 1 || (observed != nil) != closed || (err != nil) != closed {
+			t.Fatalf("closed=%t: callback calls=%d error=%v, send error=%v", closed, calls, observed, err)
+		}
 	}
 }

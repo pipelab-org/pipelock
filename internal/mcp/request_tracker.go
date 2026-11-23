@@ -127,7 +127,7 @@ func (t *RequestTracker) TrackOutcome(id json.RawMessage, outcome TrackedRequest
 }
 
 func (t *RequestTracker) trackOutcome(id json.RawMessage, outcome TrackedRequestOutcome) *requestRegistration {
-	registration, _ := t.registerOutcome(id, outcome)
+	registration, _, _ := t.registerOutcome(id, outcome)
 	return registration
 }
 
@@ -136,13 +136,13 @@ type unattributedOutcome struct {
 	reason  string
 }
 
-func (t *RequestTracker) registerOutcome(id json.RawMessage, outcome TrackedRequestOutcome) (*requestRegistration, []unattributedOutcome) {
+func (t *RequestTracker) registerOutcome(id json.RawMessage, outcome TrackedRequestOutcome) (*requestRegistration, []unattributedOutcome, string) {
 	if t == nil {
-		return nil, nil
+		return nil, nil, ""
 	}
 	key := canonicalID(id)
 	if key == "" {
-		return nil, nil
+		return nil, nil, ""
 	}
 
 	t.mu.Lock()
@@ -156,7 +156,7 @@ func (t *RequestTracker) registerOutcome(id json.RawMessage, outcome TrackedRequ
 	}
 	if prior, exists := t.pending[key]; exists {
 		if prior.outcome.ownsNativeLease || outcome.ownsNativeLease {
-			return nil, nil
+			return nil, nil, ""
 		}
 		// A response to a duplicate outstanding ID has no unique owner.
 		if prior.outcome.handle != nil || outcome.handle != nil {
@@ -167,25 +167,27 @@ func (t *RequestTracker) registerOutcome(id json.RawMessage, outcome TrackedRequ
 			prior.outcome.handle = nil
 			t.pending[key] = prior
 		}
-		return nil, unowned
+		return nil, unowned, ""
 	}
 
 	_, ambiguous := t.ambiguousIDs[key]
 	if outcome.ownsNativeLease && (ambiguous || t.ambiguityLimitReached) {
-		return nil, nil
+		return nil, nil, ""
 	}
 
 	// Evict oldest if at capacity.
+	var evictedKey string
 	if len(t.pending) >= maxTrackedRequests {
 		oldest := t.order[0]
 		evicted := t.pending[oldest].outcome
 		_, remembered := t.ambiguousIDs[oldest]
 		if evicted.ownsNativeLease || (outcome.ownsNativeLease && !remembered && len(t.ambiguousIDs) >= maxTrackedRequests) {
-			return nil, nil
+			return nil, nil, ""
 		}
 		t.markAmbiguous(oldest)
 		retire(evicted, "request_tracker_capacity")
 		delete(t.pending, oldest)
+		evictedKey = oldest
 		t.order = t.order[1:]
 	}
 
@@ -198,7 +200,7 @@ func (t *RequestTracker) registerOutcome(id json.RawMessage, outcome TrackedRequ
 	t.pending[key] = trackedRequest{registration: registration, outcome: outcome}
 	t.order = append(t.order, key)
 	t.seeded = true
-	return registration, unowned
+	return registration, unowned, evictedKey
 }
 
 // markAmbiguous requires t.mu and bounds the ambiguity history.
