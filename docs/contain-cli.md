@@ -9,6 +9,7 @@ The subcommands are:
 | `install` | Create users, systemd unit, nftables rules, wrappers, sudoers entry, CA bundle, runtime contract | yes (root only) |
 | `upgrade` | Download, verify, replace, re-pin integrity, restart, and verify in one fail-closed command | yes (root only) |
 | `run` | Verify the containment boundary, emit a signed posture capsule, then launch a registered tool as `pipelock-agent` | writes proof + starts process |
+| `audit-workspace` | Compare workspace control paths with a host-local baseline | only with `--record` (root only) |
 | `verify` | Read-only probes that report pass / fail / skip for the invariants below | no |
 | `doctor` | Live self-test that proves common tooling reaches the internet *through* the proxy, with per-check remediation | no |
 | `rollback` | Idempotently undo `install`. Restores the prior state and removes wrappers, users, unit, rules | yes (root only) |
@@ -21,7 +22,7 @@ The subcommands are:
 | `view` | Open a local VNC socket onto the contained display for the configured viewer operator | starts a relay (no persistent state) |
 | `reload-nft-rules` | Reconcile loopback/published-service nftables units and namespace forwarders from the current config without a full reinstall | yes (root only) |
 
-Each mutating subcommand accepts `--dry-run` to print the planned actions without touching state.
+The mutating subcommands other than `upgrade` and `audit-workspace` accept `--dry-run` to print the planned actions without touching state.
 
 ## Why a separate user model
 
@@ -167,6 +168,61 @@ Exit codes:
 - **2**, usage/precondition error, such as not running as root, an invalid tool name, or an invalid port.
 
 Remaining operator responsibilities: register tools with `contain add-tool`, grant workspace ACLs with `contain grant-workspace`, keep the Pipelock service running as `pipelock-proxy`, and keep host-level setuid/sudo policy tight. The built-in sudo canary catches direct `pipelock-agent -> root` sudo access; it is not a full filesystem audit of every possible setuid helper on the host.
+
+## `pipelock contain audit-workspace`
+
+Record a trusted workspace on the Linux host before starting an agent. Audit
+the same workspace after use. Review any listed paths before replacing the
+baseline.
+
+```bash
+sudo pipelock contain audit-workspace --record --workspace /srv/project
+sudo pipelock contain audit-workspace --workspace /srv/project
+sudo pipelock contain audit-workspace --record --replace --workspace /srv/project
+```
+
+Use `--agent-user USER` in place of `--workspace PATH` to process every
+grant for that user, including expired grants still in the inventory. Both
+modes require root. An existing baseline requires `--record --replace`;
+the command prints the observed differences before replacement. An incomplete
+observation is saved as incomplete and continues to fail audits until replaced
+with a usable observation.
+
+Audits use the saved per-file digest cap. They print the same warnings and
+`workspace_control_surface=clean|changed|partial|incomplete|unavailable`
+status line as `contain run`, with one result per workspace. A missing
+baseline reports `unavailable`. For machine output, `--json` emits an array
+with `workspace` and `workspace_control_surface` for each result. Observed
+results also include `changed`, `incomplete`, `added`, `removed`,
+`modified`, `unreadable`, and `counts`, plus
+`incomplete_reason`, `nested_discovery_partial`, and
+`nested_discovery_reason` when applicable. Findings include a `remedy`.
+Missing baselines include a `reason`.
+
+```text
+Exit codes:
+  0  Clean, or all findings are allowed by the supplied flags.
+  1  Integrity, I/O, or usage error.
+  2  Unaccepted changes, unaccepted partial discovery, incomplete observation,
+     or missing baseline.
+```
+
+In audit mode, `--allow-control-surface-changes` accepts observed changes
+and `--allow-partial-nested-discovery` accepts partial nested discovery.
+An audit with both findings requires both flags. Neither flag accepts an
+incomplete observation. After a reboot or workspace root identity or mount
+change, review the workspace before recording a replacement.
+
+Baselines are stored in `/var/lib/pipelock-contain/control-audit/`. The
+directories are owned by root with mode `0700`, and the files by root with
+mode `0600`. The store is hidden by enforce-mode filesystem confinement
+when present. Rollback preserves it by default and removes it when invoked
+with `--keep-data=false`.
+
+This command detects changes. It does not prevent them, and the `plk-*`
+launchers do not run it automatically. Baselines are unsigned and host-local.
+They cannot be verified offline as signed attestations. A compromised root
+account can alter them and is outside this check's threat model.
 
 ## `pipelock contain install`
 
