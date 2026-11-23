@@ -58,24 +58,28 @@ func TestResponsePassSampleParity(t *testing.T) {
 	t.Logf("complete body parity: clean=%t findings=%d", got.Clean, len(got.Matches))
 }
 
-// The parity check runs once per response action as its own top-level test:
-// the whole-view reference scan is slow under the race detector, and four
-// actions in one test exceed the per-test CI ceiling.
+// The parity check runs once per response action as its own top-level test.
+// The whole-view reference scan of the padded variant dominates the cost, so
+// under the race detector each action compares the padded variant on its own
+// quarter of the corpus; together the four tests still cover every entry, and
+// every action still compares every unpadded entry.
 func TestResponsePassNormalizationParityBlock(t *testing.T) {
-	responsePassNormalizationParity(t, config.ActionBlock)
+	responsePassNormalizationParity(t, config.ActionBlock, 0)
 }
 
 func TestResponsePassNormalizationParityWarn(t *testing.T) {
-	responsePassNormalizationParity(t, config.ActionWarn)
+	responsePassNormalizationParity(t, config.ActionWarn, 1)
 }
 
 func TestResponsePassNormalizationParityStrip(t *testing.T) {
-	responsePassNormalizationParity(t, config.ActionStrip)
+	responsePassNormalizationParity(t, config.ActionStrip, 2)
 }
 
 func TestResponsePassNormalizationParityAsk(t *testing.T) {
-	responsePassNormalizationParity(t, config.ActionAsk)
+	responsePassNormalizationParity(t, config.ActionAsk, 3)
 }
+
+const responsePassNormalizationActions = 4
 
 func responsePassNormalizationCorpus(t *testing.T) []string {
 	t.Helper()
@@ -112,7 +116,7 @@ func responsePassNormalizationCorpus(t *testing.T) []string {
 	return corpus
 }
 
-func responsePassNormalizationParity(t *testing.T, action string) {
+func responsePassNormalizationParity(t *testing.T, action string, slot int) {
 	corpus := responsePassNormalizationCorpus(t)
 	cfg := config.Defaults()
 	cfg.Internal = nil
@@ -125,7 +129,11 @@ func responsePassNormalizationParity(t *testing.T, action string) {
 	responsePassReference(reference)
 	sawSuppressed, sawObserved, sawBlocked := false, false, false
 	for i, text := range corpus {
-		for _, padded := range []string{text, strings.Repeat("ordinary; ", 420) + "\n" + text} {
+		variants := []string{text}
+		if !raceEnabled || i%responsePassNormalizationActions == slot {
+			variants = append(variants, strings.Repeat("ordinary; ", 420)+"\n"+text)
+		}
+		for _, padded := range variants {
 			suppress := []config.SuppressEntry{{Rule: "Fixture Marker", Path: "https://docs.vendor.example/fixture", Reason: "synthetic comparison"}}
 			want := reference.ScanResponseWithSuppress(t.Context(), padded, "https://docs.vendor.example/fixture", suppress)
 			got := optimized.ScanResponseWithSuppress(t.Context(), padded, "https://docs.vendor.example/fixture", suppress)
