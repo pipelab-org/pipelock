@@ -4,8 +4,10 @@
 package proxy
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"regexp"
 	"slices"
@@ -196,6 +198,12 @@ type SessionState struct {
 	runtimeOverrides []session.TrustOverride
 	taskSubject      string
 	taskPermissions  []session.TaskPermission
+	// heldExposure is the latest observation of each response still being
+	// delivered. BeginNewTask re-applies it under the same lock that clears
+	// risk, so no policy snapshot sees a new task without the exposure of a
+	// response that is still reaching the client.
+	heldExposure map[uint64]heldResponseExposure
+	heldSeq      uint64
 
 	// recentEvents is a bounded ring buffer of notable events (blocks,
 	// anomalies, airlock transitions). Read by the operator admin API to
@@ -1366,9 +1374,47 @@ func (s *SessionState) ObserveRisk(observation session.RiskObservation) {
 	s.risk.Observe(observation)
 }
 
+// heldResponseExposure is a delivering response's latest observation and the
+// order in which the session recorded it.
+type heldResponseExposure struct {
+	seq         uint64
+	observation session.RiskObservation
+}
+
+// holdResponseExposure records a response's observation and keeps it for
+// the response's delivery lifetime, until releaseResponseExposure.
+func (s *SessionState) holdResponseExposure(id uint64, observation session.RiskObservation) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.risk.Observe(observation)
+	if s.heldExposure == nil {
+		s.heldExposure = make(map[uint64]heldResponseExposure)
+	}
+	s.heldSeq++
+	s.heldExposure[id] = heldResponseExposure{seq: s.heldSeq, observation: observation}
+	s.lastActivity = time.Now()
+}
+
+// releaseResponseExposure ends a response's hold. Recorded risk stays.
+func (s *SessionState) releaseResponseExposure(id uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.heldExposure, id)
+	s.lastActivity = time.Now()
+}
+
 // BeginNewTask rotates the current task boundary and clears taint-only state.
+// Exposure held by responses still being delivered carries into the new task.
 // Adaptive enforcement state remains intact.
 func (s *SessionState) BeginNewTask(label string) (prev, current session.TaskContext, clearedOverrides int) {
+	prev, current, clearedOverrides, _ = s.beginNewTask(label)
+	return prev, current, clearedOverrides
+}
+
+// beginNewTask is BeginNewTask that also reports, from the same locked step,
+// whether exposure held by responses still being delivered was carried into
+// the new task, in which case taint was not cleared.
+func (s *SessionState) beginNewTask(label string) (prev, current session.TaskContext, clearedOverrides int, retained bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -1380,6 +1426,15 @@ func (s *SessionState) BeginNewTask(label string) (prev, current session.TaskCon
 	s.task = newTaskContext(label, now)
 	s.taskPermissions = nil
 	s.risk = session.SessionRisk{}
+	// Replay in recording order so the most recent source and the security
+	// origin match what the session reported before the rotation.
+	held := slices.SortedFunc(maps.Values(s.heldExposure), func(a, b heldResponseExposure) int {
+		return cmp.Compare(a.seq, b.seq)
+	})
+	for _, h := range held {
+		s.risk.Observe(h.observation)
+	}
+	retained = len(held) > 0
 
 	if len(s.runtimeOverrides) > 0 {
 		kept := s.runtimeOverrides[:0]
@@ -1397,7 +1452,7 @@ func (s *SessionState) BeginNewTask(label string) (prev, current session.TaskCon
 	// its task boundary rotated via the admin API.
 	s.lastActivity = now
 
-	return prev, s.task, clearedOverrides
+	return prev, s.task, clearedOverrides, retained
 }
 
 // AddRuntimeTrustOverride stores a session-scoped trust override. Task-scoped
@@ -1714,6 +1769,10 @@ type SessionManager struct {
 	// beforeEvictRecheck lets tests change a candidate between selection and
 	// the locked recheck. Nil in production.
 	beforeEvictRecheck func(*SessionState)
+
+	// beforeIdleRemoval lets tests observe idle cleanup between its
+	// eligibility decision and the removal. Nil in production.
+	beforeIdleRemoval func(*SessionState)
 }
 
 // SessionManagerOptions configures optional SessionManager behavior.
@@ -2870,10 +2929,17 @@ func (sm *SessionManager) withMutableIdentitySession(key string, mutate func(*Se
 //   - found=true, err=ErrInvocationReset: session exists but is not resettable
 //   - found=true, err=nil: rotation succeeded
 func (sm *SessionManager) BeginNewTask(key, label string) (prev, current session.TaskContext, clearedOverrides int, found bool, err error) {
-	found, err = sm.withMutableIdentitySession(key, func(sess *SessionState) {
-		prev, current, clearedOverrides = sess.BeginNewTask(label)
-	})
+	prev, current, clearedOverrides, _, found, err = sm.beginNewTask(key, label)
 	return prev, current, clearedOverrides, found, err
+}
+
+// beginNewTask is BeginNewTask that also reports whether exposure held by
+// responses still being delivered was carried into the new task.
+func (sm *SessionManager) beginNewTask(key, label string) (prev, current session.TaskContext, clearedOverrides int, retained, found bool, err error) {
+	found, err = sm.withMutableIdentitySession(key, func(sess *SessionState) {
+		prev, current, clearedOverrides, retained = sess.beginNewTask(label)
+	})
+	return prev, current, clearedOverrides, retained, found, err
 }
 
 // AddRuntimeTrustOverride binds and stores a task-scoped trust override on an
@@ -3111,23 +3177,26 @@ func (sm *SessionManager) cleanup() {
 		idle := sess.lastActivity.Before(cutoff)
 		escLevel := sess.escalationLevel
 		quarantined := sess.hasActiveAirlockLocked()
+		delivering := len(sess.heldExposure) > 0
+		// Keep the eligibility check and removal atomic with the first
+		// exposure hold, as capacity eviction does. Quarantined sessions
+		// are also exempt so idle expiry cannot discard enforcement.
+		evict := idle && !quarantined && !delivering
+		if evict {
+			if sm.beforeIdleRemoval != nil {
+				sm.beforeIdleRemoval(sess)
+			}
+			delete(sm.sessions, key)
+		}
 		sess.mu.Unlock()
 
-		// Airlock sessions are exempt from idle eviction. A session in
-		// quarantine must not be evicted or it would escape enforcement.
-		// Empty string is the zero value (equivalent to "none").
-		if quarantined {
-			continue
-		}
-
-		if idle {
+		if evict {
 			if escLevel > 0 {
 				if sm.metrics != nil {
 					sm.metrics.SetAdaptiveSessionLevel(session.EscalationLabel(escLevel), -1)
 				}
 			}
 			evictedSessions = append(evictedSessions, sess)
-			delete(sm.sessions, key)
 		}
 	}
 
@@ -3378,7 +3447,7 @@ func (sm *SessionManager) Delete(key string) {
 // consumer ignores them otherwise, and the de-escalation sweep stops, so a
 // residual level would hold capacity that nothing enforces. Caller holds s.mu.
 func (s *SessionState) hasCapacityProtectionLocked(adaptiveEnabled bool) bool {
-	if s.hasActiveAirlockLocked() || s.atBlockAll || s.risk.HasPolicyTaint() {
+	if s.hasActiveAirlockLocked() || s.atBlockAll || s.risk.HasPolicyTaint() || len(s.heldExposure) > 0 {
 		return true
 	}
 	if adaptiveEnabled && s.escalationLevel > 0 {

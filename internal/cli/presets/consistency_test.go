@@ -244,6 +244,7 @@ func presetDLPPatternMatchesBuiltIn(got, want config.DLPPattern) bool {
 func raisedToCritical(want config.DLPPattern) config.DLPPattern {
 	want.Severity = config.SeverityCritical
 	want.CredentialURLWhitespaceGrammar = false
+	want.BuiltInCreditCard = false
 	want.CredentialAudienceHosts = nil
 	want.CredentialAudienceAuthorizationOnly = false
 	want.CredentialAudienceCarrierMask = 0

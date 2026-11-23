@@ -358,6 +358,46 @@ func TestSessionAPI_HandleTask_Success(t *testing.T) {
 	}
 }
 
+// A response still being delivered keeps its exposure across the rotation, so
+// the API must not report the taint as cleared.
+func TestSessionAPI_HandleTask_ReportsRetainedExposure(t *testing.T) {
+	for _, held := range []bool{false, true} {
+		t.Run(map[bool]string{false: "nothing_held", true: "response_held"}[held], func(t *testing.T) {
+			sm, cleanup := setupSessionAPITestManager(t)
+			defer cleanup()
+			sess := sm.GetOrCreate("agent-a|10.0.0.1")
+			cfg := config.Defaults()
+			cfg.Taint.Enabled = true
+			observe, release := httpResponseFindingObserver(sess, cfg, "https://untrusted.vendor.example/stream", "text/event-stream", "forward_response")
+			observe(nil)
+			if !held {
+				release()
+			}
+			defer release()
+			handler := newTestSessionAPIHandler(t, sm)
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/sessions/agent-a%7C10.0.0.1/task", strings.NewReader(`{"label":"new task"}`))
+			req.Header.Set("Authorization", "Bearer "+testSessionAPIToken)
+			w := httptest.NewRecorder()
+			handler.HandleTask(w, req)
+			if w.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+			}
+			var resp struct {
+				TaintCleared bool `json:"taint_cleared"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if resp.TaintCleared == held {
+				t.Fatalf("taint_cleared=%v with held=%v", resp.TaintCleared, held)
+			}
+			if got := sess.RiskSnapshot().Level != session.TaintTrusted; got != held {
+				t.Fatalf("risk retained=%v want %v: %+v", got, held, sess.RiskSnapshot())
+			}
+		})
+	}
+}
+
 func TestSessionAPI_HandleTrust_Success(t *testing.T) {
 	sm, cleanup := setupSessionAPITestManager(t)
 	defer cleanup()

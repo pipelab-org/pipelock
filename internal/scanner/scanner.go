@@ -505,6 +505,10 @@ type compiledPattern struct {
 	// cardPrefixRetry marks the canonical card rule with its luhn validator.
 	// Its failed greedy hits retry shorter candidates (jsonnumber.AcceptedCardEnd).
 	cardPrefixRetry bool
+	// builtInCreditCard carries loader-verified built-in provenance for the
+	// shipped Credit Card Number rule so operator-configured rules with
+	// identical fields never receive numeric card-join relief.
+	builtInCreditCard bool
 	// wifOverlapRetry is restricted to the canonical, fixed-width WIF grammar.
 	wifOverlapRetry bool
 	// validateAt judges a candidate in the view it was found in, with the view
@@ -513,7 +517,11 @@ type compiledPattern struct {
 	// validateJoined judges a candidate found in the whitespace-joined view,
 	// where source is the view before joining and offsets maps each joined byte
 	// to its source offset. It only ever narrows: it runs after validate.
-	validateJoined                      func(joined string, start, end int, source string, offsets []int) bool
+	validateJoined func(joined string, start, end int, source string, offsets []int) bool
+	// skipSpan, when set on a per-call shallow copy via
+	// matchSpanWithDecodesFiltered, suppresses one relieved span and keeps
+	// iterating so any later unrelieved span in the same view still blocks.
+	skipSpan                            func(start, end int) bool
 	exemptDomains                       []string // domains where this pattern is skipped (wildcard supported)
 	core                                bool     // name belongs to the immutable floor: exemptDomains is never honored
 	credentialAudienceHosts             []string // compiled built-ins only; empty means no audience exception
@@ -557,13 +565,21 @@ func (p *compiledPattern) accepts(view string, start, end int) bool {
 	if p.validateAt != nil && !p.validateAt(view, start, end) {
 		return false
 	}
-	if p.keywords == nil {
-		return true
+	if p.keywords != nil {
+		var ok bool
+		if p.keywordContext != nil {
+			ok = p.keywordContext.matches(p.keywords, view, start, end)
+		} else {
+			ok = p.keywords.Matches(view, start, end)
+		}
+		if !ok {
+			return false
+		}
 	}
-	if p.keywordContext != nil {
-		return p.keywordContext.matches(p.keywords, view, start, end)
+	if p.skipSpan != nil && p.skipSpan(start, end) {
+		return false
 	}
-	return p.keywords.Matches(view, start, end)
+	return true
 }
 
 // acceptedSpan returns the finding span of one regex hit. For every pattern
@@ -788,6 +804,7 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 			cp.validate = fn
 			cp.genericCard = p.Validator == config.ValidatorLuhn
 			cp.cardPrefixRetry = RetriesCardPrefixes(p)
+			cp.builtInCreditCard = p.BuiltInCreditCard && cp.cardPrefixRetry
 			cp.wifOverlapRetry = RetriesWIFOverlaps(p)
 		}
 		if cp.validate == nil {
@@ -1687,6 +1704,7 @@ func (s *Scanner) scan(ctx context.Context, rawURL string, options scanOptions, 
 	// Prevents secret exfiltration via DNS queries for domains like
 	// "sk-ant-xxxx.evil.com" where the subdomain encodes a secret.
 	decodes.issuedQueryJoin, decodes.issuedPathSeam = issuerJoinedViewsIssued(ctx, parsed)
+	decodes.issuedNumericCardJoin, decodes.issuedNumericRawParts = issuerNumericCardJoinState(ctx, parsed)
 	dlpResult, dlpWarns := s.checkDLPWithDecodesAt(scanURL, &decodes, now)
 	dlpWarns = deduplicateWarnMatches(dlpWarns)
 	dlpResult.WarnMatches = dlpWarns
@@ -3980,7 +3998,16 @@ func (s *Scanner) checkDLPWithDecodesAt(parsed *url.URL, decodes *decodingMemo, 
 		}
 		for _, idx := range s.dlpPreFilter.patternsToCheck(cleaned) {
 			p := s.dlpPatterns[idx]
-			if start, end, ok := p.matchSpanWithDecodes(cleaned, proseSource, decodes); ok {
+			var skipSpan func(start, end int) bool
+			if decodes != nil && decodes.issuedNumericCardJoin != nil {
+				switch target.viewLabel {
+				case dlpViewLabel("query_concat"):
+					skipSpan = numericCardJoinSkipSpan(p, decodes.issuedNumericRawParts, cleaned, parsed.Hostname(), decodes)
+				case dlpViewLabel("path_query_concat"):
+					skipSpan = numericCardJoinPathQuerySkipSpan(p, decodes.issuedNumericRawParts, parsed.RawQuery, target.text, cleaned, parsed.Hostname(), decodes)
+				}
+			}
+			if start, end, ok := p.matchSpanWithDecodesFiltered(cleaned, proseSource, decodes, skipSpan); ok {
 				if allow, allowed := s.credentialAudienceAllowsAt(p, parsed.String(), s.urlDLPAudienceSurface(p, parsed, &queryLessMemo), now); allowed {
 					credentialAudienceAllows = append(credentialAudienceAllows, allow)
 					continue
@@ -4374,7 +4401,7 @@ func (s *Scanner) checkDLPCombinations(values []string, n, size int, hostname, t
 			decodes.keywordURL.targets = append(decodes.keywordURL.targets, candidates...)
 		}
 
-		for _, candidate := range candidates {
+		for candIdx, candidate := range candidates {
 			cleaned := normalize.ForDLP(candidate.text)
 
 			for _, idx := range s.dlpPreFilter.patternsToCheck(cleaned) {
@@ -4382,7 +4409,17 @@ func (s *Scanner) checkDLPCombinations(values []string, n, size int, hostname, t
 					source = joinQuerySubsequence(values, indices, true)
 				}
 				p := s.dlpPatterns[idx]
-				if start, end, ok := p.matchSpanWithDecodes(cleaned, source, decodes); ok {
+				var skipSpan func(start, end int) bool
+				if candIdx == 0 && candidate.viewLabel == dlpViewLabel("query_subsequence") &&
+					decodes != nil && decodes.issuedNumericCardJoin != nil && len(decodes.issuedNumericRawParts) >= n &&
+					p.builtInCreditCard && p.keywords == nil && !p.exemptsHost(hostname) {
+					subRawParts := make([]string, len(indices))
+					for i, partIdx := range indices {
+						subRawParts[i] = decodes.issuedNumericRawParts[partIdx]
+					}
+					skipSpan = numericCardJoinSkipSpan(p, subRawParts, cleaned, hostname, decodes)
+				}
+				if start, end, ok := p.matchSpanWithDecodesFiltered(cleaned, source, decodes, skipSpan); ok {
 					// The reassembled candidate is a token the URL-wide check never
 					// saw, so it must itself be a grant for this host.
 					surface := s.urlDLPAudienceSurfaceForTarget(p, target, memo)

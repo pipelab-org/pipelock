@@ -686,6 +686,9 @@ func newInterceptHandler(
 	taintCache := &interceptTaintConfigCache{}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r = ic.Proxy.withReceiptEvidence(r)
+		// Registered first so it runs last; see responseExposureHolds.
+		exposureHolds := &responseExposureHolds{}
+		defer exposureHolds.finish()
 		requestContext := *ic
 		ic := &requestContext
 		ic.taintConfigCache = taintCache
@@ -858,34 +861,9 @@ func newInterceptHandler(
 			return
 		}
 
-		// Airlock classification of the inner request method. Read the
-		// DESTINATION-SCOPED tier of the adaptive session the airlock
-		// writer raised, via airlockTierForScope - the scoped read that fetch,
-		// forward, opaque CONNECT, and WebSocket already use - NOT the
-		// session-wide Airlock().Tier(). AirlockForScope returns a distinct
-		// per-destination state, so a normal scoped drain leaves the global
-		// tier at none; reading the global tier here would admit every
-		// intercepted inner request under a scoped quarantine (fail-open).
-		if interceptSess, ok := ic.Recorder.(*SessionState); ok && interceptSess != nil {
-			tier := airlockTierForScope(interceptSess, adaptiveScopeForHost(ic.TargetHost))
-			if tier != config.AirlockTierNone {
-				allowed, reason := ClassifyRequestAction(tier, r, TransportConnect, true)
-				if !allowed {
-					ic.Logger.LogAirlockDeny(interceptSess.key, tier, TransportConnect, r.Method, ic.ClientIP, ic.RequestID)
-					ic.Metrics.RecordAirlockDenial(tier, TransportConnect, r.Method)
-					ic.Metrics.RecordTLSRequestBlocked("airlock")
-					writeBlockedError(w,
-						blockInfoFor(blockreason.AirlockActive, "").WithRequestID(ic.RequestID),
-						"airlock: "+reason+"; "+airlockBlockDetail(adaptiveAudit{ic.Logger, ic.ClientIP, ic.RequestID}, interceptSess, ic.Config, interceptAdaptiveScope(ic), tier), http.StatusForbidden)
-					return
-				}
-			}
-		}
-
 		// Build shared audit context AFTER URL reconstruction so actx.URL
 		// contains the full intercepted URL, not just the origin-form path.
 		actx := newHTTPAuditContext(r.Context(), ic.Logger, httpAuditEvent{Method: r.Method, TargetURL: r.URL.String(), ClientIP: ic.ClientIP, RequestID: ic.RequestID, Agent: ic.Agent})
-		initInterceptTaint(ic, r)
 
 		// Track whether any finding occurred (URL, body DLP, or response scan).
 		// RecordClean is only applied when the request was fully clean so that
@@ -934,6 +912,8 @@ func newInterceptHandler(
 		if ic.KillSwitch != nil {
 			d := ic.KillSwitch.IsActiveForIP(ic.ClientIP)
 			if d.Active {
+				// Keep the taint evidence on the denial without reading the body.
+				initInterceptTaint(ic, r)
 				// Evaluate the contract gate purely so the kill-switch
 				// receipt carries any active-contract context (policy
 				// sources, contract hash, generation). The runtime
@@ -956,6 +936,35 @@ func newInterceptHandler(
 				return
 			}
 		}
+		// Settle an empty unknown-length HTTP/2 body before taint classifies it.
+		r = settleUnknownLengthBody(r, unknownLengthBodyWait)
+
+		// Airlock classification of the inner request method. Read the
+		// DESTINATION-SCOPED tier of the adaptive session the airlock
+		// writer raised, via airlockTierForScope - the scoped read that fetch,
+		// forward, opaque CONNECT, and WebSocket already use - NOT the
+		// session-wide Airlock().Tier(). AirlockForScope returns a distinct
+		// per-destination state, so a normal scoped drain leaves the global
+		// tier at none; reading the global tier here would admit every
+		// intercepted inner request under a scoped quarantine (fail-open).
+		if interceptSess, ok := ic.Recorder.(*SessionState); ok && interceptSess != nil {
+			tier := airlockTierForScope(interceptSess, adaptiveScopeForHost(ic.TargetHost))
+			if tier != config.AirlockTierNone {
+				allowed, reason := ClassifyRequestAction(tier, r, TransportConnect, true)
+				if !allowed {
+					ic.Logger.LogAirlockDeny(interceptSess.key, tier, TransportConnect, r.Method, ic.ClientIP, ic.RequestID)
+					ic.Metrics.RecordAirlockDenial(tier, TransportConnect, r.Method)
+					ic.Metrics.RecordTLSRequestBlocked("airlock")
+					writeBlockedError(w,
+						blockInfoFor(blockreason.AirlockActive, "").WithRequestID(ic.RequestID),
+						"airlock: "+reason+"; "+airlockBlockDetail(adaptiveAudit{ic.Logger, ic.ClientIP, ic.RequestID}, interceptSess, ic.Config, interceptAdaptiveScope(ic), tier), http.StatusForbidden)
+					return
+				}
+			}
+		}
+
+		initInterceptTaint(ic, r)
+
 		interceptScanCtx := scanner.WithDLPWarnContext(r.Context(), scanner.DLPWarnContext{
 			Method: r.Method, URL: targetURL, Target: target,
 			ClientIP: ic.ClientIP, RequestID: ic.RequestID,
@@ -971,6 +980,11 @@ func newInterceptHandler(
 		// replayRelieved marks a URL allowed only through replay evidence; the
 		// evidence must still be current when the request is sent.
 		replayRelieved := false
+		// numericReliefSets holds each value set that earned numeric card-join
+		// relief; every set must still be issued when the request is sent.
+		var numericReliefSets [][]string
+		numericReliefSession := ""
+		numericRelieved := false
 		urlResult := ic.Scanner.ScanWithReservation(interceptScanCtx, targetURL, ic.RateReservation)
 		// Count the selected scan once, as soon as the issuer rescan below has
 		// settled it. A streamed response keeps this handler open until the
@@ -1104,6 +1118,7 @@ func newInterceptHandler(
 					return true
 				})
 				joinedUsed := false
+				numericCardJoinUsed := false
 				if joinedDLPFinding {
 					allowCtx = scanner.WithIssuerJoinedViewAllowance(allowCtx, func(escapedPath string, _ url.Values) (bool, bool) {
 						// The current generation must still vouch for the exact URL.
@@ -1114,6 +1129,17 @@ func newInterceptHandler(
 						}
 						joinedUsed = true
 						return true, true
+					})
+					allowCtx = scanner.WithIssuerNumericCardJoinAllowance(allowCtx, func(values []string) bool {
+						// Require TrustedForIdentity grade and the live evidence
+						// generation, matching issuerServerIDStore.
+						if !ic.issuerServerIDStore().numericIDsIssued(session, r.URL, values) {
+							return false
+						}
+						numericCardJoinUsed = true
+						numericReliefSets = append(numericReliefSets, append([]string(nil), values...))
+						numericReliefSession = session
+						return true
 					})
 				}
 				var replayUsed bool
@@ -1127,12 +1153,16 @@ func newInterceptHandler(
 				if issuedUsed {
 					allowKind = issuerQueryIssuedRedirect
 				}
-				if allowed || joinedUsed || replayUsed {
+				if allowed || joinedUsed || replayUsed || numericCardJoinUsed {
 					urlResult = rescanned
 					if rescanned.Allowed {
 						var kinds []issuerQueryKind
 						if joinedUsed {
 							kinds = append(kinds, issuerQueryJoinedView)
+						}
+						if numericCardJoinUsed {
+							kinds = append(kinds, issuerQueryNumericCardJoin)
+							numericRelieved = true
 						}
 						if allowed {
 							kinds = append(kinds, allowKind)
@@ -2492,6 +2522,17 @@ func newInterceptHandler(
 			emitBlockedPostRoundTripOutcome(http.StatusForbidden, issuerQueryReplayStaleLayer)
 			return
 		}
+		// The same holds for numeric card-join evidence: a reload or identity
+		// downgrade can retire the server-first store after the rescan.
+		if numericRelieved && !numericReliefCurrent(ic.issuerServerIDStore(), numericReliefSession, r.URL, numericReliefSets) {
+			ic.Proxy.refuseAdmittedEffect(r.Context(), allowReceipt, upstreamEffect)
+			ic.Logger.LogBlocked(actx, issuerNumericCardJoinStaleLayer, "numeric card-join evidence revoked before send")
+			writeBlockedError(w,
+				blockInfoFor(blockreason.DLPMatch, issuerNumericCardJoinStaleLayer).WithRequestID(ic.RequestID),
+				"blocked: numeric card-join evidence revoked before send", http.StatusForbidden)
+			emitBlockedPostRoundTripOutcome(http.StatusForbidden, issuerNumericCardJoinStaleLayer)
+			return
+		}
 		resp, err := interceptUpstream.RoundTrip(r.WithContext(httptrace.WithClientTrace(r.Context(), &httptrace.ClientTrace{
 			GotConn: func(httptrace.GotConnInfo) {
 				connAt.CompareAndSwap(0, int64(time.Since(base))+1)
@@ -2574,8 +2615,9 @@ func newInterceptHandler(
 		var responseFindingKinds []session.HostileFindingKind
 		responseTaintType := responseTaintContentType(resp.Header)
 		responseTaintURL := r.URL.String()
-		observeResponseFindings := httpResponseFindingObserver(ic.taintRecorder, ic.taintConfig, responseTaintURL, responseTaintType, "forward_response")
+		observeResponseFindings, releaseResponseExposure := httpResponseFindingObserver(ic.taintRecorder, ic.taintConfig, responseTaintURL, responseTaintType, "forward_response")
 		observeResponseFindings(nil)
+		exposureHolds.add(releaseResponseExposure)
 		defer func() { observeResponseFindings(responseFindingKinds) }()
 		stripUpstreamPipelockNamespace(resp)
 		if !applyFullResponsePolicy(nil, resp) {
@@ -2646,6 +2688,9 @@ func newInterceptHandler(
 				IsA2A:           isA2A,
 				A2A:             &ic.Config.A2AScanning,
 				GenericSSE:      &ic.Config.ResponseScanning.SSEStreaming,
+				// A task can rotate while the stream stays open. Re-record the
+				// stream for events delivered under the new task.
+				OnDelivery: func() { observeResponseFindings(nil) },
 				Generic: mcp.GenericSSEScanOptions{
 					Target:             targetURL,
 					Suppress:           ic.Config.Suppress,

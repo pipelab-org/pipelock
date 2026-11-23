@@ -5607,6 +5607,9 @@ func serveUntilShutdown(ctx context.Context, serve func() error, shutdown func()
 // handleFetch processes URL fetch requests.
 func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	r = p.withReceiptEvidence(r)
+	// Registered first so it runs last; see responseExposureHolds.
+	exposureHolds := &responseExposureHolds{}
+	defer exposureHolds.finish()
 	start := time.Now()
 
 	clientIP, requestID := requestMeta(r)
@@ -6899,8 +6902,9 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 
 	var responseFindingKinds []session.HostileFindingKind
 	responseTaintType := responseTaintContentType(resp.Header)
-	observeResponseFindings := httpResponseFindingObserver(fetchRec, cfg, resp.Request.URL.String(), responseTaintType, "fetch_response")
+	observeResponseFindings, releaseResponseExposure := httpResponseFindingObserver(fetchRec, cfg, resp.Request.URL.String(), responseTaintType, "fetch_response")
 	observeResponseFindings(nil)
+	exposureHolds.add(releaseResponseExposure)
 	defer func() { observeResponseFindings(responseFindingKinds) }()
 
 	// Limit response body size: use the tighter of max_response_mb and the

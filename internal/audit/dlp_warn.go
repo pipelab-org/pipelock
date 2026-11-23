@@ -14,11 +14,12 @@ const (
 	EventDLPWarn EventType = eventcatalog.EventDLPWarn
 	// EventDLPCredentialAudienceAllow records the narrow compiled-in exception
 	// for a provider credential sent to its declared audience.
-	EventDLPCredentialAudienceAllow EventType = eventcatalog.EventDLPCredentialAudienceAllow // #nosec G101 -- audit event identifier, not credential material
-	EventDLPIssuerCookieAllow       EventType = eventcatalog.EventDLPIssuerCookieAllow       // #nosec G101 -- audit event identifier, not credential material
-	EventIssuerQueryAllow           EventType = eventcatalog.EventIssuerQueryAllow
-	EventIssuerQueryReplayAllow     EventType = eventcatalog.EventIssuerQueryReplayAllow
-	EventDLPIssuerJoinedViewAllow   EventType = eventcatalog.EventDLPIssuerJoinedViewAllow
+	EventDLPCredentialAudienceAllow    EventType = eventcatalog.EventDLPCredentialAudienceAllow // #nosec G101 -- audit event identifier, not credential material
+	EventDLPIssuerCookieAllow          EventType = eventcatalog.EventDLPIssuerCookieAllow       // #nosec G101 -- audit event identifier, not credential material
+	EventIssuerQueryAllow              EventType = eventcatalog.EventIssuerQueryAllow
+	EventIssuerQueryReplayAllow        EventType = eventcatalog.EventIssuerQueryReplayAllow
+	EventDLPIssuerJoinedViewAllow      EventType = eventcatalog.EventDLPIssuerJoinedViewAllow
+	EventDLPIssuerNumericCardJoinAllow EventType = eventcatalog.EventDLPIssuerNumericCardJoinAllow
 )
 
 // LogDLPWarn emits an audit event for a DLP pattern match in warn mode.
@@ -71,6 +72,26 @@ func (l *Logger) LogDLPIssuerJoinedViewAllow(ctx LogContext, destination string)
 	e.msg("joined query DLP views skipped for exact issued URL")
 	if l.emitter != nil {
 		l.emitEvent(string(EventDLPIssuerJoinedViewAllow), e.fields)
+	}
+}
+
+// LogDLPIssuerNumericCardJoinAllow records that URL DLP relieved a built-in
+// Credit Card Number match on a raw joined query view because every
+// contributing query value was a server-first 8-14 digit numeric ID issued by
+// the destination origin. It never records query parameters or values.
+func (l *Logger) LogDLPIssuerNumericCardJoinAllow(ctx LogContext, destination string) {
+	e := newLogEntry(l.zl.Info(), EventDLPIssuerNumericCardJoinAllow).
+		str("surface", "url_query_joined").
+		str("destination", destination).
+		str("mitre_technique", TechniqueForScanner(scannerpkg.ScannerDLP)).
+		str("method", ctx.Method()).
+		optStr("client_ip", ctx.ClientIP()).
+		optStr("request_id", ctx.RequestID()).
+		correlationField(ctx.Correlation()).
+		agentField(ctx.Agent(), ctx.AgentAuth())
+	e.msg("joined query Credit Card Number match relieved for server-issued numeric IDs")
+	if l.emitter != nil {
+		l.emitEvent(string(EventDLPIssuerNumericCardJoinAllow), e.fields)
 	}
 }
 

@@ -133,8 +133,14 @@ type issuerQueryStore struct {
 	// ids retains exact origin-bound proofs independently of learning history.
 	// Each entry points to its permanent destination bucket so cache pressure
 	// cannot evict a frozen destination's irreplaceable proofs.
-	ids  map[string]*issuerIDCache
-	used map[string]time.Time
+	ids map[string]*issuerIDCache
+	// numericLedger is the separate process-lifetime sent-history ledger for
+	// 8-14 digit numeric tokens, carried across positive generations with its
+	// own lock and budgets so numeric traffic never freezes server_issued_id.
+	numericLedger  *issuerNumericLedger
+	numericRetired bool
+	numericIDs     map[string]*issuerNumericCache
+	used           map[string]time.Time
 }
 
 func newIssuerQueryStore() *issuerQueryStore {
@@ -149,12 +155,17 @@ func newIssuerQueryStoreWithReader(reader io.Reader) *issuerQueryStore {
 	if _, err := io.ReadFull(reader, ledger.key[:]); err != nil {
 		ledger.disabled = true
 	}
-	return newIssuerQueryGeneration(ledger)
+	numericLedger := newIssuerNumericLedger(reader)
+	if ledger.disabled {
+		numericLedger.disabled = true
+	}
+	return newIssuerQueryGeneration(ledger, numericLedger)
 }
 
-func newIssuerQueryGeneration(ledger *issuerIDLedger) *issuerQueryStore {
+func newIssuerQueryGeneration(ledger *issuerIDLedger, numericLedger *issuerNumericLedger) *issuerQueryStore {
 	return &issuerQueryStore{
 		issuerIDLedger: ledger,
+		numericLedger:  numericLedger,
 		sessions:       make(map[string][]issuerQueryEntry),
 		redirects:      make(map[string][][32]byte),
 		paths:          make(map[string][][32]byte),
@@ -164,6 +175,7 @@ func newIssuerQueryGeneration(ledger *issuerIDLedger) *issuerQueryStore {
 		documents:      make(map[string][][32]byte),
 		locations:      make(map[string][]issuedLocationEntry),
 		ids:            make(map[string]*issuerIDCache),
+		numericIDs:     make(map[string]*issuerNumericCache),
 		used:           make(map[string]time.Time),
 	}
 }
@@ -172,10 +184,15 @@ func newIssuerQueryGeneration(ledger *issuerIDLedger) *issuerQueryStore {
 // same ledger. Retiring under the shared lock orders it against every record
 // and mint already in progress on s.
 func (s *issuerQueryStore) nextGeneration() *issuerQueryStore {
-	next := newIssuerQueryGeneration(s.issuerIDLedger)
+	next := newIssuerQueryGeneration(s.issuerIDLedger, s.numericLedger)
 	s.mu.Lock()
 	s.retired = true
 	s.mu.Unlock()
+	if s.numericLedger != nil {
+		s.numericLedger.mu.Lock()
+		s.numericRetired = true
+		s.numericLedger.mu.Unlock()
+	}
 	return next
 }
 
@@ -729,6 +746,7 @@ func recordDeliveredIssuerQueryProof(ic *InterceptContext, response *http.Respon
 	// derived one never does, so a grant cannot be passed to a third origin.
 	resourceRemaining := issuerCookieMaxSetCookies
 	mintResources := proof.cleanEnforced && !proof.derived
+	mintNumericIDs := idStore != nil && proof.cleanEnforced && !proof.derived
 	// base is what a relative reference resolves against: the response URL,
 	// or an HTML document's own <base href> when it names the same origin.
 	base := response.Request.URL
@@ -876,12 +894,12 @@ func recordDeliveredIssuerQueryProof(ic *InterceptContext, response *http.Respon
 		return
 	}
 	if mediaType == "text/html" || mediaType == "application/xhtml+xml" {
-		if store == nil {
+		if store == nil && !mintNumericIDs {
 			return
 		}
 		// The agent received a document from this origin, so a later request
 		// may name it as the page it is embedded in.
-		if !proof.derived {
+		if store != nil && !proof.derived {
 			store.rememberDocument(session, response.Request.URL, time.Now())
 		}
 		if mediaType == "application/xhtml+xml" || !asciiTransparentDocument(body, response.Header.Get("Content-Type")) {
@@ -890,6 +908,12 @@ func recordDeliveredIssuerQueryProof(ic *InterceptContext, response *http.Respon
 			// encoding that does not keep ASCII markup as-is (UTF-16, or one
 			// with shift states such as ISO-2022-JP) it may decode different
 			// URLs, so such a document issues no link at all.
+			return
+		}
+		if mintNumericIDs {
+			idStore.mintNumericIDs(session, response.Request.URL, extractHTMLNumericIDs(body, issuerNumericIDMaxPerResponse))
+		}
+		if store == nil {
 			return
 		}
 		resourceLimit := 0
@@ -928,14 +952,46 @@ func recordDeliveredIssuerQueryProof(ic *InterceptContext, response *http.Respon
 	if mediaType != "application/json" && !strings.HasSuffix(mediaType, "+json") {
 		return
 	}
-	walkIssuerJSONStringValues(body, func(value string) bool {
+	var numericValues []string
+	var numericSeen map[string]struct{}
+	if mintNumericIDs {
+		numericSeen = make(map[string]struct{})
+	}
+	addNumeric := func(run string) {
+		if len(numericValues) >= issuerNumericIDMaxPerResponse {
+			return
+		}
+		if _, dup := numericSeen[run]; dup {
+			return
+		}
+		numericSeen[run] = struct{}{}
+		numericValues = append(numericValues, run)
+	}
+	walkIssuerJSONValues(body, func(value string) bool {
 		observe(value, false, false)
 		if !proof.derived && idRemaining > 0 && issuerServerIDShaped(value) && issuerServerIDIntroducible(value) {
 			idStore.mintServerID(session, response.Request.URL, value, time.Now())
 			idRemaining--
 		}
-		return remaining > 0 || idRemaining > 0
+		if mintNumericIDs && len(numericValues) < issuerNumericIDMaxPerResponse {
+			issuerNumericRuns(value, func(run string) bool {
+				addNumeric(run)
+				return len(numericValues) < issuerNumericIDMaxPerResponse
+			})
+		}
+		return remaining > 0 || idRemaining > 0 || (mintNumericIDs && len(numericValues) < issuerNumericIDMaxPerResponse)
+	}, func(num json.Number) bool {
+		if mintNumericIDs && len(numericValues) < issuerNumericIDMaxPerResponse {
+			raw := string(num)
+			if isIssuedNumericValue(raw) {
+				addNumeric(raw)
+			}
+		}
+		return remaining > 0 || idRemaining > 0 || (mintNumericIDs && len(numericValues) < issuerNumericIDMaxPerResponse)
 	})
+	if mintNumericIDs && len(numericValues) > 0 {
+		idStore.mintNumericIDs(session, response.Request.URL, numericValues)
+	}
 }
 
 func issuerPathReference(value string, candidate *url.URL, linkAttr bool) bool {
@@ -953,9 +1009,15 @@ func issuerLocationReference(response *http.Response) (string, bool) {
 	return "", false
 }
 
-// walkIssuerJSONStringValues visits only values in a complete valid JSON body.
+// walkIssuerJSONStringValues visits only string values in a complete valid JSON body.
 // Returning false stops the walk when the consumer's existing budget is spent.
 func walkIssuerJSONStringValues(body []byte, visit func(string) bool) {
+	walkIssuerJSONValues(body, visit, nil)
+}
+
+// walkIssuerJSONValues visits string and number values in a complete valid JSON
+// body (skipping object keys). Returning false from either visitor stops early.
+func walkIssuerJSONValues(body []byte, visitString func(string) bool, visitNumber func(json.Number) bool) {
 	// Walk the JSON as a token stream rather than decoding it into generic
 	// maps and slices, which would cost several times the body size on every
 	// intercepted JSON response. json.Valid keeps the old rule that a body
@@ -963,11 +1025,12 @@ func walkIssuerJSONStringValues(body []byte, visit func(string) bool) {
 	if !json.Valid(body) {
 		return
 	}
-	// Only string VALUES issue links. An object key is not a value the
+	// Only VALUES issue links or IDs. An object key is not a value the
 	// server handed out, so keys are skipped. Each open container records
 	// whether it is an object and, if so, whether its next string is a key.
 	type jsonLevel struct{ object, expectKey bool }
 	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
 	var levels []jsonLevel
 	// valueDone marks the current object's pending value as consumed, so
 	// its next string is a key again.
@@ -998,7 +1061,12 @@ func walkIssuerJSONStringValues(body []byte, visit func(string) bool) {
 				levels[n-1].expectKey = false
 				continue
 			}
-			if !visit(t) {
+			if visitString != nil && !visitString(t) {
+				return
+			}
+			valueDone()
+		case json.Number:
+			if visitNumber != nil && !visitNumber(t) {
 				return
 			}
 			valueDone()
@@ -1105,6 +1173,8 @@ func (p *Proxy) recordIssuerQueryAllow(cfg *config.Config, ctx audit.LogContext,
 		layer = issuerJoinedViewReceiptKey
 	case issuerQueryReplay:
 		layer = issuerQueryReplayReceiptKey
+	case issuerQueryNumericCardJoin:
+		layer = issuerNumericCardJoinReceiptKey
 	}
 	if p.logger != nil {
 		host := strings.ToLower(parsed.Hostname())
@@ -1113,13 +1183,15 @@ func (p *Proxy) recordIssuerQueryAllow(cfg *config.Config, ctx audit.LogContext,
 			p.logger.LogDLPIssuerJoinedViewAllow(ctx, host)
 		case issuerQueryReplay:
 			p.logger.LogIssuerQueryReplayAllow(ctx, host)
+		case issuerQueryNumericCardJoin:
+			p.logger.LogDLPIssuerNumericCardJoinAllow(ctx, host)
 		default:
 			p.logger.LogIssuerQueryAllow(ctx, host)
 		}
 	}
 	switch kind {
 	case issuerQueryObserved, issuerQueryIssuedRedirect, issuerQueryOAuthRedirect, issuerQueryPageOrigin,
-		issuerQueryServerID, issuerQueryResourcePath, issuerQueryJoinedView, issuerQueryReplay:
+		issuerQueryServerID, issuerQueryResourcePath, issuerQueryJoinedView, issuerQueryReplay, issuerQueryNumericCardJoin:
 	default:
 		kind = issuerQueryObserved
 	}

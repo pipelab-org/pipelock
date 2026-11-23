@@ -61,6 +61,38 @@ type SSEDispatchOptions struct {
 	A2A             *config.A2AScanning
 	GenericSSE      *config.GenericSSEScanning
 	Generic         mcp.GenericSSEScanOptions
+	// OnDelivery, when set, runs before and after client writes and flushes
+	// on whichever scanner runs (A2A, generic, or pass-through). Transports
+	// use it to record exposure under the task current at each check. It runs
+	// on the scanning goroutine and must be cheap: the response observer
+	// suppresses repeats.
+	OnDelivery func()
+}
+
+// sseDeliveryWriter records the current task's exposure on both sides of a write.
+type sseDeliveryWriter struct {
+	w       io.Writer
+	observe func()
+}
+
+func (d sseDeliveryWriter) Write(p []byte) (int, error) {
+	d.observe()
+	n, err := d.w.Write(p)
+	d.observe()
+	return n, err
+}
+
+// sseDeliveryFlusher checks on both sides of the flush that releases buffered
+// bytes to the client.
+type sseDeliveryFlusher struct {
+	f       http.Flusher
+	observe func()
+}
+
+func (d sseDeliveryFlusher) Flush() {
+	d.observe()
+	d.f.Flush()
+	d.observe()
 }
 
 const nativeSSEFindingRecords = 2
@@ -108,6 +140,12 @@ func DispatchSSEScan(
 	sc *scanner.Scanner,
 	opts SSEDispatchOptions,
 ) error {
+	if opts.OnDelivery != nil {
+		w = sseDeliveryWriter{w: w, observe: opts.OnDelivery}
+		if flusher != nil {
+			flusher = sseDeliveryFlusher{f: flusher, observe: opts.OnDelivery}
+		}
+	}
 	var err error
 	if opts.IsA2A {
 		err = mcp.ScanA2AStreamWithOptions(ctx, body, w, flusher, sc, mcp.A2AStreamOptions{Config: opts.A2A, Warning: opts.Generic})

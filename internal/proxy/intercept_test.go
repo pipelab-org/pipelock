@@ -874,20 +874,21 @@ type interceptRequestOptions struct {
 	// TargetHost and UpstreamRT let tests preserve the production authority
 	// while routing the socket to a local TLS server. Empty values retain the
 	// historical httptest-server behavior.
-	TargetHost string
-	TargetPort string
-	UpstreamRT http.RoundTripper
-	Cache      *certgen.CertCache
-	Pool       *x509.CertPool
-	Config     *config.Config
-	Scanner    *scanner.Scanner
-	Logger     *audit.Logger
-	Metrics    *metrics.Metrics
-	Request    *http.Request
-	Recorder   session.Recorder
-	Proxy      *Proxy
-	Agent      string
-	ActorAuth  envelope.ActorAuth
+	TargetHost    string
+	TargetPort    string
+	UpstreamRT    http.RoundTripper
+	Cache         *certgen.CertCache
+	Pool          *x509.CertPool
+	Config        *config.Config
+	Scanner       *scanner.Scanner
+	Logger        *audit.Logger
+	Metrics       *metrics.Metrics
+	Request       *http.Request
+	Recorder      session.Recorder
+	Proxy         *Proxy
+	Agent         string
+	ActorAuth     envelope.ActorAuth
+	IssuerRuntime *issuerCookieRuntime
 }
 
 // interceptAndRequestWithRecorder is like interceptAndRequest but accepts a
@@ -915,20 +916,21 @@ func interceptAndRequestWithRecorder(t *testing.T, opts interceptRequestOptions)
 	t.Cleanup(cancel)
 	go func() {
 		_ = interceptTunnel(ctx, proxyConn, &InterceptContext{
-			TargetHost: host,
-			TargetPort: port,
-			Config:     opts.Config,
-			Scanner:    opts.Scanner,
-			CertCache:  opts.Cache,
-			Logger:     opts.Logger,
-			Metrics:    opts.Metrics,
-			ClientIP:   "10.0.0.1",
-			RequestID:  "test-req-1",
-			UpstreamRT: upstreamRT,
-			Recorder:   opts.Recorder,
-			Proxy:      opts.Proxy,
-			Agent:      opts.Agent,
-			ActorAuth:  opts.ActorAuth,
+			TargetHost:    host,
+			TargetPort:    port,
+			Config:        opts.Config,
+			Scanner:       opts.Scanner,
+			CertCache:     opts.Cache,
+			Logger:        opts.Logger,
+			Metrics:       opts.Metrics,
+			ClientIP:      "10.0.0.1",
+			RequestID:     "test-req-1",
+			UpstreamRT:    upstreamRT,
+			Recorder:      opts.Recorder,
+			Proxy:         opts.Proxy,
+			Agent:         opts.Agent,
+			ActorAuth:     opts.ActorAuth,
+			IssuerRuntime: opts.IssuerRuntime,
 		})
 	}()
 

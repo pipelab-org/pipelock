@@ -1379,6 +1379,12 @@ type DLPPattern struct {
 	// CredentialURLWhitespaceGrammar is set only by the built-in default
 	// registry. It is runtime provenance, not an operator-facing setting.
 	CredentialURLWhitespaceGrammar bool `yaml:"-"`
+	// BuiltInCreditCard is set only by the built-in default registry and
+	// restored by the loader for exact unmodified copies when defaults are
+	// included (so shipped YAML presets retain it while explicit
+	// include_defaults: false configs and operator-constructed rules do not).
+	// It is runtime provenance, not an operator-facing setting.
+	BuiltInCreditCard bool `yaml:"-" json:"-"`
 }
 
 // AddressProtection configures crypto address poisoning detection.
