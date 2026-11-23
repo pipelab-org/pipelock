@@ -30,6 +30,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/door"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 const (
@@ -334,6 +335,50 @@ func TestHTTPListener_DoorPrincipalIsolation(t *testing.T) {
 				t.Fatalf("calls %d want 2", calls.Load())
 			}
 		})
+	}
+}
+
+func TestHTTPListener_DoorReceiptCaller(t *testing.T) {
+	fixture := newDoorFixture(t, config.MCPDoorJWT)
+	opts, writer, observer := localMCPReceiptFixture(t, v3MCPMatrixRow{required: true}, "mcp_http_listener")
+	opts.ListenerDoor = fixture.verifier
+	opts.ListenerAllowedOrigins = []string{doorTestOrigin}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}`)
+	}))
+	defer upstream.Close()
+	base, _ := startListenerProxyWithOpts(t, upstream.URL, opts)
+	for _, subject := range []string{"a", "b"} {
+		resp := doorRPC(t, base, http.MethodPost, fixture.token(subject), principalControlToolsList(1), nil)
+		_, err := io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+		if err != nil || resp.StatusCode != http.StatusOK {
+			t.Fatalf("subject %s: response status = %d, read error = %v", subject, resp.StatusCode, err)
+		}
+	}
+	testwait.For(t, time.Second, func() bool {
+		actions, err := decodeMCPMatrixActions(observer.dir)
+		return err == nil && len(actions) >= 8
+	}, "both exchanges settled")
+	actions := localMCPReceiptActions(t, writer, observer.dir)
+	principals := make(map[string]string)
+	counts := make(map[string]int)
+	for _, action := range actions {
+		caller := action.Caller
+		if caller.Authn != "mcp_door_verified" || caller.Issuer != doorTestIssuer ||
+			caller.Resource != doorTestResource || caller.ClientID != "cloud" ||
+			action.Principal == "local" || action.Principal == "" {
+			t.Errorf("incorrect verified caller for %s/%s: %+v", action.EffectBoundary, action.Phase, caller)
+		}
+		if prior, ok := principals[caller.Subject]; ok && prior != action.Principal {
+			t.Errorf("subject %s used inconsistent principals", caller.Subject)
+		}
+		principals[caller.Subject] = action.Principal
+		counts[caller.Subject]++
+	}
+	if len(actions) != 8 || counts["a"] != 4 || counts["b"] != 4 || principals["a"] == principals["b"] {
+		t.Fatalf("expected four receipts per subject and distinct principals, got %v and %v", counts, principals)
 	}
 }
 

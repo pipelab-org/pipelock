@@ -45,11 +45,18 @@ import (
 // should log it but not report it to error tracking services.
 var ErrSubprocessExit = errors.New("subprocess exited")
 
+var errMCPDownstreamFrameWrite = errors.New("MCP downstream frame write failed")
+
+func newMCPClientWriter(out io.Writer, opts MCPProxyOpts) *syncWriter {
+	return &syncWriter{w: out, requireFullMessage: opts.receiptEffects.enabled}
+}
+
 // syncWriter wraps an io.Writer with a mutex to make concurrent writes safe.
 // Used in RunProxy where multiple goroutines write to clientOut and logW.
 type syncWriter struct {
-	mu sync.Mutex
-	w  io.Writer
+	mu                 sync.Mutex
+	w                  io.Writer
+	requireFullMessage bool
 }
 
 // Compile-time assertion: syncWriter implements transport.MessageWriter.
@@ -73,8 +80,13 @@ func (sw *syncWriter) WriteMessage(msg []byte) error {
 	buf := make([]byte, len(msg)+1)
 	copy(buf, msg)
 	buf[len(msg)] = '\n'
-	if _, err := sw.w.Write(buf); err != nil {
+	if n, err := sw.w.Write(buf); err != nil {
+		if sw.requireFullMessage {
+			return fmt.Errorf("%w: %w", errMCPDownstreamFrameWrite, err)
+		}
 		return fmt.Errorf("writing message: %w", err)
+	} else if sw.requireFullMessage && n != len(buf) {
+		return fmt.Errorf("%w: %w", errMCPDownstreamFrameWrite, io.ErrShortWrite)
 	}
 	return nil
 }
@@ -97,17 +109,62 @@ func drainStderr(stderrDone <-chan struct{}, serverErr io.Closer, grace time.Dur
 	}
 }
 
+// stdioLocalReplyFailure reports a withheld reply and wakes both sides of
+// forwarding so the session owner can tear down the subprocess before Wait.
+func stdioLocalReplyFailure(clientIn io.Reader, serverIn, serverOut io.Closer, sessionExit *sessionExitState, killChild func() bool) (func(error), <-chan error) {
+	failed := make(chan error, 1)
+	var once sync.Once
+	return func(err error) {
+		once.Do(func() {
+			failed <- err
+			sessionExit.begin()
+			_ = serverOut.Close()
+			killChild()
+			_ = serverIn.Close()
+			if closer, ok := clientIn.(io.Closer); ok {
+				_ = closer.Close()
+			}
+		})
+	}, failed
+}
+
+func waitMCPInputDrain(ctx context.Context, inputDone, blockedDone <-chan struct{}) bool {
+	for _, done := range []<-chan struct{}{inputDone, blockedDone} {
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return false
+		}
+	}
+	return true
+}
+
 func emitPendingTimeoutResponses(writer transport.MessageWriter, logW io.Writer, tracker *RequestTracker, opts MCPProxyOpts) {
 	if tracker == nil {
 		return
 	}
 	for _, pending := range tracker.DrainPendingOutcomes() {
-		resp := timeoutErrorResponse(pending.ID)
-		if wErr := writer.WriteMessage(resp); wErr != nil {
-			_, _ = fmt.Fprintf(logW, "pipelock: failed to send timeout response: %v\n", wErr)
-		}
-		pending.Outcome.settle(logW, opts, "error", int64(len(resp)), "response_timeout")
+		reply := opts.localV3ReplyWriter(writer, logW, opts.pendingV3Send(pending.ID))
+		emitMCPTimeoutReply(reply, logW, pending.ID, pending.Outcome, opts)
 	}
+}
+
+func emitMCPTimeoutReply(writer transport.MessageWriter, logW io.Writer, id json.RawMessage, outcome TrackedRequestOutcome, opts MCPProxyOpts) {
+	resp := timeoutErrorResponse(id)
+	size := int64(len(resp))
+	var writeErr error
+	if opts.receiptEffects.enabled {
+		writeErr = writeMCPDenial(opts, mcpResponseInspectionBlockAudit("response_timeout"), writer, resp)
+		if writeErr != nil {
+			size = -1
+		}
+	} else {
+		writeErr = deliverMCPDeniedMessage(writer, resp)
+	}
+	if writeErr != nil {
+		_, _ = fmt.Fprintf(logW, "pipelock: failed to send timeout response: %v\n", writeErr)
+	}
+	outcome.settle(logW, opts, "error", size, "response_timeout")
 }
 
 func emitPendingIncompleteOutcomes(logW io.Writer, tracker *RequestTracker, opts MCPProxyOpts, reason string) {
@@ -226,6 +283,9 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		// A warning summary still needs the response's reservation.
 		finishWarnings()
 		finishWarnings = func() {}
+		if reply, ok := writer.(*mcpV3ReplyWriter); ok {
+			logMCPV3Error(logW, reply.writeDeniedMessage(nil))
+		}
 		if responsePending {
 			if outcomeStatus == "" {
 				outcomeStatus, outcomeReason, outcomeSize = "incomplete", "response_not_delivered", -1
@@ -243,8 +303,36 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 	}
 	defer finishMessage()
 
+	baseWriter := writer
+	writeEarlyDenial := func(descriptor mcpDenialAudit, frame MCPFrame, outbound []byte, reason string) error {
+		denialWriter := writer
+		id := attributableMCPResponseID(frame.Raw)
+		var outcome TrackedRequestOutcome
+		var correlated bool
+		recordV3 := opts.receiptEffects.enabled && opts.responseDropped == nil
+		if recordV3 {
+			if !isRPCNotification(id) {
+				outcome, correlated = tracker.Consume(id)
+			}
+			denialWriter = earlyMCPV3ResponseWriter(opts, baseWriter, frame, logW, correlated)
+		}
+		if err := writeMCPDenial(opts, descriptor, denialWriter, outbound); err != nil {
+			if correlated {
+				outcome.settle(logW, opts, "incomplete", -1, "response_not_delivered")
+			}
+			return err
+		}
+		if !recordV3 && !isRPCNotification(id) {
+			outcome, correlated = tracker.Consume(id)
+		}
+		if correlated {
+			outcome.recordResponseOutcome(logW, opts, mcpOutcomeStatusBlocked, int64(len(outbound)), reason)
+		}
+		return nil
+	}
 	for {
 		finishMessage()
+		writer = baseWriter
 		opts.WarnContext = baseWarnContext
 		opts.nativeAdmission = streamAdmission
 		line, err := reader.ReadMessage()
@@ -297,7 +385,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		lineNum++
 		var denialAudit mcpDenialAudit
 		if err := opts.checkServerIdentity(); err != nil {
-			dropMCPDenial(opts, mcpIdentityMcpResponseDenialAudit(), "response")
+			dropEarlyMCPResponse(opts, mcpIdentityMcpResponseDenialAudit(), baseWriter, frame, logW)
 			return foundInjection, &mcpFinalizedDenialError{err: err}
 		}
 
@@ -319,6 +407,11 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			}
 			opts.nativeAdmission = selected
 			opts.WarnContext, finishWarnings = opts.nativeWarningContext(baseWarnContext, selected)
+		}
+		if opts.v3Session != nil {
+			writer = opts.localV3ReplyWriter(baseWriter, logW, nil)
+		} else if stream, ok := baseWriter.(*mcpV3NetworkStreamWriter); ok {
+			writer = stream.localReplyWriter()
 		}
 		// Key rejection must precede tracker consumption, adaptive recovery,
 		// tool drift promotion, inventory reservations and taint observations.
@@ -344,7 +437,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				denialAudit = mcpKillMcpResponseDenialAudit()
 				rpcID := frame.ID
 				if rpcID == nil {
-					dropMCPDenial(opts, denialAudit, "response")
+					dropEarlyMCPResponse(opts, denialAudit, baseWriter, frame, logW)
 					// Notification: drop silently (no response possible).
 					_, _ = fmt.Fprintf(logW, "pipelock: response line %d: kill switch dropped notification (source=%s)\n",
 						lineNum, d.Source)
@@ -353,10 +446,9 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				_, _ = fmt.Fprintf(logW, "pipelock: response line %d: kill switch denied (source=%s)\n",
 					lineNum, d.Source)
 				resp := killswitch.ErrorResponse(rpcID, d.Message)
-				if wErr := writeMCPDenial(opts, denialAudit, writer, resp); wErr != nil {
+				if wErr := writeEarlyDenial(denialAudit, frame, resp, "kill_switch"); wErr != nil {
 					return foundInjection, fmt.Errorf("writing kill switch response: %w", wErr)
 				}
-				settleMCPResponseDenial(frame.Raw, resp, logW, tracker, opts, "kill_switch")
 				continue
 			}
 		}
@@ -408,14 +500,13 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			// Notifications (no ID) must not receive a response per JSON-RPC spec.
 			// Drop them silently instead of writing an error.
 			if rpcID == nil {
-				dropMCPDenial(opts, denialAudit, "response")
+				dropEarlyMCPResponse(opts, denialAudit, baseWriter, frame, logW)
 				continue
 			}
 			resp := blockSessionDenyResponse(rpcID, mcpAdaptiveBlockMessage(rec, adaptiveCfg, "session_deny", logW))
-			if wErr := writeMCPDenial(opts, denialAudit, writer, resp); wErr != nil {
+			if wErr := writeEarlyDenial(denialAudit, frame, resp, "session_deny"); wErr != nil {
 				return foundInjection, fmt.Errorf("writing session deny: %w", wErr)
 			}
-			settleMCPResponseDenial(frame.Raw, resp, logW, tracker, opts, "session_deny")
 			continue
 		}
 
@@ -425,7 +516,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		// frame: WebSocket and SSE can preserve leading whitespace that
 		// a raw first-byte check would miss.
 		if frame.IsBatch {
-			dropMCPDenial(opts, mcpBatchResponseDenialAudit(), "response")
+			dropEarlyMCPResponse(opts, mcpBatchResponseDenialAudit(), baseWriter, frame, logW)
 			_, _ = fmt.Fprintf(logW, "pipelock: line %d: blocked batch JSON-RPC message (not supported by MCP)\n", lineNum)
 			continue
 		}
@@ -439,6 +530,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		// (concurrent goroutines). The window is not exploitable: before any
 		// client request, no valid request ID exists to hijack.
 		var trackedMethod string
+		var correlated bool
 		if tracker != nil && tracker.Seeded() && isResponse(line) {
 			rpcID := frame.ID
 			// Once a request has been tracked, every result/error envelope must
@@ -455,15 +547,14 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				continue
 			}
 			if rpcID != nil {
-				var valid bool
-				trackedOutcome, valid = tracker.Consume(rpcID)
-				if valid {
+				trackedOutcome, correlated = tracker.Consume(rpcID)
+				if correlated {
 					trackedMethod = trackedOutcome.Method
 					if trackedOutcome.ownsNativeLease {
 						opts.nativeAdmission = trackedOutcome.Receipt
 					}
 				}
-				if !valid {
+				if !correlated {
 					_, _ = fmt.Fprintf(logW, "pipelock: line %d: confused deputy: unsolicited response ID %s\n",
 						lineNum, string(rpcID))
 					blockID := rpcID
@@ -478,6 +569,17 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					continue
 				}
 				responsePending = !opts.listenerOwnsResponseOutcome
+			}
+		}
+
+		switch stream := baseWriter.(type) {
+		case *mcpV3NetworkStreamWriter:
+			writer = stream.messageWriter(line, frame, correlated)
+		default:
+			if opts.v3Session != nil && isResponse(line) && !correlated {
+				writer = mcpV3WithheldWriter{}
+			} else {
+				writer = opts.v3ResponseWriter(baseWarnContext, logW, baseWriter, line, frame)
 			}
 		}
 
@@ -1372,14 +1474,30 @@ func attributableMCPResponseID(raw []byte) json.RawMessage {
 	return fields["id"]
 }
 
-func settleMCPResponseDenial(raw, outbound []byte, logW io.Writer, tracker *RequestTracker, opts MCPProxyOpts, reason string) {
-	id := attributableMCPResponseID(raw)
-	if isRPCNotification(id) {
-		return
+func dropEarlyMCPResponse(opts MCPProxyOpts, descriptor mcpDenialAudit, base transport.MessageWriter, frame MCPFrame, logW io.Writer) {
+	dropMCPDenial(opts, descriptor, "response")
+	// The buffered listener records its refusal when it commits the HTTP response.
+	if opts.receiptEffects.enabled && opts.responseDropped == nil {
+		reply := earlyMCPV3ResponseWriter(opts, base, frame, logW, false)
+		logMCPV3Error(logW, reply.writeDeniedMessage(nil))
 	}
-	if outcome, ok := tracker.Consume(id); ok {
-		outcome.recordResponseOutcome(logW, opts, mcpOutcomeStatusBlocked, int64(len(outbound)), reason)
+}
+
+func earlyMCPV3ResponseWriter(opts MCPProxyOpts, base transport.MessageWriter, frame MCPFrame, logW io.Writer, correlated bool) *mcpV3ReplyWriter {
+	if stream, ok := base.(*mcpV3NetworkStreamWriter); ok {
+		return stream.messageWriter(frame.Raw, frame, correlated)
 	}
+	if correlated {
+		if x := opts.takeV3Send(frame.ID); x != nil {
+			logMCPV3Error(logW, confirmMCPV3Effect(opts.warnContext(), x.token, true))
+			return &mcpV3ReplyWriter{base: base, opts: opts, log: logW, request: x.request}
+		}
+	}
+	request := receipt.EmitOpts{
+		RequestID: canonicalID(frame.ID), Method: frame.Method,
+		Target: firstNonEmpty(frame.Method, "mcp://event"), Transport: opts.Transport,
+	}
+	return &mcpV3ReplyWriter{base: base, opts: opts, log: logW, request: request}
 }
 
 func emitRejectedResponseOutcome(raw, outbound []byte, logW io.Writer, tracker *RequestTracker, opts MCPProxyOpts) {
@@ -1940,7 +2058,7 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	// Wrap shared writers in mutex adapters. Multiple goroutines write to
 	// clientOut (blocked request drainer + response scanner) and logW
 	// (input scanner + response scanner + child stderr).
-	safeClientOut := &syncWriter{w: clientOut}
+	safeClientOut := newMCPClientWriter(clientOut, opts)
 	safeLogW := &syncWriter{w: logW}
 
 	// Restrict child process environment to safe variables only.
@@ -2240,6 +2358,8 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	// response ID validation is active regardless of which input scanning
 	// features are enabled.
 	tracker := NewRequestTracker()
+	opts = opts.withV3Session()
+	defer opts.settleV3Session(ctx, safeLogW)
 
 	// Build per-invocation opts with session-specific recorder and tool baseline.
 	inputOpts := opts
@@ -2247,6 +2367,8 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	inputOpts.WarnContext = ctx
 	inputOpts.closeStdioInput = sync.OnceFunc(func() { _ = serverIn.Close() })
 	inputOpts.sessionExit = sessionExit
+	reportReplyFailure, replyFailed := stdioLocalReplyFailure(clientIn, serverIn, serverOut, sessionExit, killDirectChild)
+	inputOpts.onLocalV3ReplyFailure = reportReplyFailure
 
 	// Forward client input to server stdin (with optional input scanning).
 	inputDone := make(chan struct{})
@@ -2293,9 +2415,9 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 				// Notifications have no ID - silently drop (no error response per JSON-RPC spec).
 				// Log the block for audit trail - silent drops with zero logging aid attacker reconnaissance.
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: blocked notification (no response sent): %s\n", blocked.LogMessage)
-				continue
 			}
-			if wErr := deliverMCPInputResult(opts, blocked, safeClientOut); wErr != nil {
+			writer := inputOpts.v3SendDenialWriter(safeClientOut, safeLogW, blocked)
+			if wErr := deliverMCPInputResult(opts, blocked, writer); wErr != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: failed to send block response: %v\n", wErr)
 			}
 		}
@@ -2320,15 +2442,26 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 		opts.outputForwardStartedForTest()
 	}
 	_, scanErr := ForwardScanned(serverReader, safeClientOut, safeLogW, tracker, fwdOpts)
+	select {
+	case err := <-replyFailed:
+		scanErr = err
+	default:
+	}
 	timedOut := errors.Is(scanErr, transport.ErrResponseTimeout)
+	replyAdmissionFailed := errors.Is(scanErr, errMCPV3ReplyAdmission)
+	downstreamWriteFailed := errors.Is(scanErr, errMCPDownstreamFrameWrite) || errors.Is(scanErr, io.ErrShortWrite)
 
-	// On an upstream response timeout the child is still alive (it accepted a
-	// request and never replied). Stop request intake before emitting pending
-	// timeout responses below, then terminate the child so cmd.Wait() returns
-	// instead of blocking forever on the hung process. The pgid teardown after
-	// Wait() then reaps any descendants.
-	if timedOut && cmd.Process != nil {
-		_, _ = fmt.Fprintf(safeLogW, "pipelock: terminating MCP subprocess after upstream response timeout\n")
+	// The child may still be waiting for input when forwarding stops after a
+	// response timeout, a reply receipt failure, or a short frame write. Close input and terminate
+	// the child before waiting. The post-Wait teardown reaps descendants.
+	if (timedOut || replyAdmissionFailed || downstreamWriteFailed) && cmd.Process != nil {
+		reason := "upstream response timeout"
+		if replyAdmissionFailed {
+			reason = "reply receipt admission failure"
+		} else if downstreamWriteFailed {
+			reason = "downstream frame write failure"
+		}
+		_, _ = fmt.Fprintf(safeLogW, "pipelock: terminating MCP subprocess after %s\n", reason)
 		if c, ok := clientIn.(io.Closer); ok {
 			_ = c.Close()
 		}
@@ -2394,32 +2527,30 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 		// already failed closed wedge shutdown forever.
 		drainCtx, drainCancel := context.WithTimeout(ctx, 5*time.Second)
 		defer drainCancel()
-		done := make(chan struct{})
-		go func() {
-			<-inputDone
-			<-blockedDone
-			close(done)
-		}()
-		select {
-		case <-done:
-		case <-drainCtx.Done():
+		if !waitMCPInputDrain(drainCtx, inputDone, blockedDone) {
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: timed out waiting for MCP input drain after upstream response timeout\n")
 		}
 		emitPendingTimeoutResponses(safeClientOut, safeLogW, tracker, fwdOpts)
-	} else if sessionExit.inProgress() {
+	} else if sessionExit.inProgress() || replyAdmissionFailed || downstreamWriteFailed {
 		// An arbitrary io.Reader cannot be interrupted by closing the client
 		// side. Once session teardown has killed the server, do not let one
 		// such reader keep the proxy alive indefinitely.
-		select {
-		case <-inputDone:
-			<-blockedDone
-		case <-time.After(sessionGrace):
+		drainCtx, drainCancel := context.WithTimeout(context.WithoutCancel(ctx), sessionGrace)
+		defer drainCancel()
+		if !waitMCPInputDrain(drainCtx, inputDone, blockedDone) {
+			interruptNativeOutput(clientOut)
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: timed out waiting for MCP input drain after session teardown\n")
 		}
 		// Name the actual cause. Reusing "upstream_closed" here would attribute
 		// a session teardown to the server having closed the connection, so the
 		// receipt would record the wrong reason for an aborted request.
-		emitPendingIncompleteOutcomes(safeLogW, tracker, fwdOpts, "session_exit")
+		reason := "session_exit"
+		if replyAdmissionFailed {
+			reason = "receipt_admission_failed"
+		} else if downstreamWriteFailed {
+			reason = "downstream_write_failed"
+		}
+		emitPendingIncompleteOutcomes(safeLogW, tracker, fwdOpts, reason)
 	} else {
 		// Wait for stdin goroutine to finish (server exit closes pipe, unblocking scanner).
 		<-inputDone

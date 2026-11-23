@@ -30,6 +30,10 @@ import (
 
 // SandboxCmd returns the sandbox cobra command.
 func SandboxCmd() *cobra.Command {
+	return sandboxCmd(sandbox.LaunchStandalone)
+}
+
+func sandboxCmd(launchStandalone func(sandbox.StandaloneLaunchConfig) error) *cobra.Command {
 	var workspace string
 	var configFile string
 	var strict bool
@@ -202,6 +206,9 @@ Examples:
 				return fmt.Errorf("proxy init: %w", pErr)
 			}
 			defer p.Close()
+			if err := p.LoadCertCache(cfg); err != nil {
+				return err
+			}
 			stopMetrics, metricsBoundAddr, metricsErr := startDedicatedMetricsServer(cmd.Context(), cfg.MetricsListen, m, cmd.ErrOrStderr())
 			if metricsErr != nil {
 				return metricsErr
@@ -235,7 +242,7 @@ Examples:
 				reportBestEffortAdmission(cmd.ErrOrStderr())
 			}
 
-			return sandbox.LaunchStandalone(launchCfg)
+			return launchStandalone(launchCfg)
 		},
 	}
 

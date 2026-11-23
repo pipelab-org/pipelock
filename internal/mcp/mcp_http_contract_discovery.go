@@ -17,6 +17,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/extract"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/responseencoding"
 )
 
@@ -64,6 +65,20 @@ type mcpContractDiscoveryFlight struct {
 // leader's upstream credentials when callers of one principal send different
 // ones; that refusal lasts only for the overlap and a retry discovers again.
 func (state *mcpListenerClientState) acquireToolContract(ctx context.Context, name string, discover func() error) (func(), error) {
+	return state.acquireToolContractWithDiscovery(ctx, name, func() error {
+		if err := state.contractMu.Lock(ctx); err != nil {
+			return err
+		}
+		defer state.contractMu.Unlock()
+		// A client list or another discovery may have won the lock.
+		if state.baseline.HeaderContract(name).State != tools.HeaderContractUnknown {
+			return nil
+		}
+		return discover()
+	})
+}
+
+func (state *mcpListenerClientState) acquireToolContractWithDiscovery(ctx context.Context, name string, discover func() error) (func(), error) {
 	for {
 		state.discoveryMu.Lock()
 		flight := state.discovery
@@ -85,32 +100,37 @@ func (state *mcpListenerClientState) acquireToolContract(ctx context.Context, na
 			state.discovery = flight
 		}
 		state.discoveryMu.Unlock()
+		var discoveryErr error
 		if leader {
-			flight.err = state.contractMu.Lock(ctx)
-			if flight.err == nil {
-				// A client list or another discovery may have won the lock.
-				if state.baseline.HeaderContract(name).State == tools.HeaderContractUnknown {
-					flight.err = discover()
-				}
-				state.contractMu.Unlock()
-			}
+			flight.err = discover()
 			flight.leaderEnded = ctx.Err() != nil
 			state.discoveryMu.Lock()
 			state.discovery = nil
 			close(flight.done)
 			state.discoveryMu.Unlock()
-			if flight.err != nil {
-				return nil, flight.err
-			}
+			discoveryErr = flight.err
 		} else {
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
 			case <-flight.done:
 			}
-			if flight.err != nil && flight.tool == name && !flight.leaderEnded {
-				return nil, flight.err
+			if flight.tool == name && !flight.leaderEnded {
+				discoveryErr = flight.err
 			}
+		}
+		if discoveryErr != nil {
+			if !errors.Is(discoveryErr, errDiscoveryToolAbsent) {
+				return nil, discoveryErr
+			}
+			if err := state.contractMu.RLock(ctx); err != nil {
+				return nil, err
+			}
+			if state.baseline.HeaderContract(name).State != tools.HeaderContractUnknown {
+				return state.contractMu.RUnlock, nil
+			}
+			state.contractMu.RUnlock()
+			return nil, discoveryErr
 		}
 		// Reacquire through writer preference: a queued client list must get
 		// to publish its newer contract before this call compares mirrors.
@@ -187,6 +207,14 @@ func discoverMCPToolContract(d mcpContractDiscoveryRequest) error {
 			found = found || def.Name == d.tool
 		}
 		if found {
+			if d.opts.receiptEffects.enabled {
+				// Discovery owns the flight, but client lists can publish
+				// while a discovery page waits for its receipt or upstream.
+				if err := d.state.contractMu.Lock(ctx); err != nil {
+					return err
+				}
+				defer d.state.contractMu.Unlock()
+			}
 			// Do not replace an already-observed sibling's stronger state.
 			unknown := definitions[:0]
 			for _, def := range definitions {
@@ -245,11 +273,27 @@ func (d mcpContractDiscoveryRequest) page(ctx context.Context, cursor *string, r
 	var reader transport.MessageReader
 	var budget *io.LimitedReader
 	if d.bridge != nil {
+		effect := mcpV3NetworkExchange{ctx: ctx, opts: d.opts, log: d.log}
+		if err := effect.admit(ParseMCPFrame(body), receipt.EmitOpts{}); err != nil {
+			return nil, fmt.Errorf("admit discovery request: %w", err)
+		}
+		defer effect.finish()
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		headers := http.Header{}
 		headers.Set(listenerMCPMethod, "tools/list")
 		headers.Set(listenerProtocolVersion, d.request.Header.Get(listenerProtocolVersion))
 		var err error
-		reader, err = d.bridge.SendMessageWithOptions(ctx, body, transport.HTTPMessageOptions{Headers: headers, ResponseByteBudget: remaining, PreserveSession: true})
+		effect.sent = true
+		reader, err = d.bridge.SendMessageWithOptions(ctx, body, transport.HTTPMessageOptions{
+			Headers: headers, ResponseByteBudget: remaining, PreserveSession: true,
+			ObserveRoundTrip: func(err error) {
+				if err == nil {
+					effect.observe()
+				}
+			},
+		})
 		if err != nil {
 			return nil, fmt.Errorf("upstream discovery request: %w", err)
 		}
@@ -277,12 +321,22 @@ func (d mcpContractDiscoveryRequest) page(ctx context.Context, cursor *string, r
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Accept", "application/json, text/event-stream")
 		responseencoding.RequestIdentity(req.Header)
+		effect := mcpV3NetworkExchange{ctx: ctx, opts: d.opts, log: d.log}
+		if err := effect.admit(ParseMCPFrame(body), receipt.EmitOpts{}); err != nil {
+			return nil, fmt.Errorf("admit discovery request: %w", err)
+		}
+		defer effect.finish()
+		if effect.send != nil && ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		effect.sent = true
 		resp, err := d.client.Do(req)
 		if err != nil {
 			// The refusal is all the client sees; the cause stays for the log.
 			return nil, fmt.Errorf("%w: %w", discoveryRefusalError("upstream discovery request failed"), err)
 		}
 		defer func() { _ = resp.Body.Close() }()
+		effect.observe()
 		if resp.StatusCode != http.StatusOK {
 			return nil, discoveryRefusalError(fmt.Sprintf("upstream discovery returned HTTP %d", resp.StatusCode))
 		}
@@ -309,6 +363,7 @@ func (d mcpContractDiscoveryRequest) page(ctx context.Context, cursor *string, r
 	tracker.TrackRequest(json.RawMessage("1"), "tools/list")
 	opts := d.opts
 	opts.WarnContext = ctx
+	opts.v3Session = nil
 	opts.toolContractDiscovery = true
 	// Nothing in this inventory reaches the agent, so there is nothing for an
 	// operator to approve, and an approval wait would hold the principal's
