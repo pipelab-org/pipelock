@@ -165,8 +165,7 @@ func (b *checkerTextBuilder) add(view bodyInjectionView) bool {
 	addWide := func(raw string, matchCarrierBytes bool) bool {
 		// Require a BOM here. The body decoder also guesses BOM-less
 		// encodings, which would reinterpret unrelated carrier bytes.
-		if !strings.HasPrefix(raw, "\xff\xfe") && !strings.HasPrefix(raw, "\xfe\xff") &&
-			!strings.HasPrefix(raw, "\x00\x00\xfe\xff") {
+		if !hasWideByteOrderMark(raw) {
 			return true
 		}
 		wide, ok, err := decodeLikelyWideResponseBody(b.ctx, []byte(raw))
@@ -304,4 +303,13 @@ func (b *checkerTextBuilder) add(view bodyInjectionView) bool {
 		b.reason = checker.ReasonTruncated
 	}
 	return true
+}
+
+// hasWideByteOrderMark reports whether raw starts with a UTF-16 or UTF-32
+// byte-order mark. FF FE also begins the UTF-32 little-endian mark.
+func hasWideByteOrderMark(raw string) bool {
+	if len(raw) >= 2 && ((raw[0] == 0xff && raw[1] == 0xfe) || (raw[0] == 0xfe && raw[1] == 0xff)) {
+		return true
+	}
+	return len(raw) >= 4 && raw[0] == 0 && raw[1] == 0 && raw[2] == 0xfe && raw[3] == 0xff
 }
