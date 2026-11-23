@@ -51,6 +51,7 @@ type controlPass struct {
 	unreadable     map[string]string
 	truncated      string
 	undiscovered   map[string]struct{}
+	partlyListed   map[string]struct{}
 	discoveryLimit string
 }
 
@@ -593,6 +594,7 @@ func (w *controlWalker) discoverNested() {
 	}
 	queue := []directory{{path: "."}}
 	w.pass.undiscovered = make(map[string]struct{})
+	w.pass.partlyListed = make(map[string]struct{})
 	// Bound both queue storage and the cost of listing wide directories.
 	listed := 0
 	for i := 0; i < len(queue) && w.pass.truncated == ""; i++ {
@@ -610,7 +612,8 @@ func (w *controlWalker) discoverNested() {
 		}
 		w.list(dir.path, func(child string, d fs.DirEntry) bool {
 			if listed == w.budget.MaxNestedDirs {
-				w.skipDiscovery(dir.path, "nested directory entry limit exceeded")
+				w.pass.partlyListed[dir.path] = struct{}{}
+				w.noteDiscoveryLimit(dir.path, "nested directory entry limit exceeded")
 				return false
 			}
 			listed++
@@ -642,21 +645,38 @@ func (w *controlWalker) discoverNested() {
 
 func (w *controlWalker) skipDiscovery(path, reason string) {
 	w.pass.undiscovered[path] = struct{}{}
+	w.noteDiscoveryLimit(path, reason)
+}
+
+func (w *controlWalker) noteDiscoveryLimit(path, reason string) {
 	if w.pass.discoveryLimit == "" {
 		w.pass.discoveryLimit = fmt.Sprintf("%s at %q", reason, path)
 	}
 }
 
+// discovered reports whether this pass enumerated the place path names. A
+// directory never reached was not examined at all. One whose listing was cut
+// off had its Git marker and fixed paths examined before the listing began, so
+// a path below those names is observed even though its siblings are not.
 func (p controlPass) discovered(path string) bool {
+	var child string
 	for {
 		if _, skipped := p.undiscovered[path]; skipped {
+			return false
+		}
+		if _, partial := p.partlyListed[path]; partial && !examinedBeforeListing(child) {
 			return false
 		}
 		if path == "." {
 			return true
 		}
+		child = filepath.Base(path)
 		path = filepath.Dir(path)
 	}
+}
+
+func examinedBeforeListing(name string) bool {
+	return name == ".git" || slices.Contains(fixedControlPaths[:], name)
 }
 
 func volatileGitEntry(path string, mode fs.FileMode) bool {

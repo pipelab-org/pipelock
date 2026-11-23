@@ -513,3 +513,56 @@ func TestControlSurfaceFixedDirectoryWithGitMarkerKeepsItsFiles(t *testing.T) {
 		})
 	}
 }
+
+// Discovery that runs out of budget while listing a repository's directory
+// still observed that repository's Git directory and fixed paths. A hook added
+// there must be reported even when the same directory was cut off at both
+// endpoints, for example by a pre-existing wide directory.
+func TestControlSurfaceReportsAdditionsInsideAPartiallyListedRepository(t *testing.T) {
+	git := newControlGit(t)
+	root := t.TempDir()
+	git.init(t, root)
+	nested := filepath.Join(root, "wide")
+	if err := os.Mkdir(nested, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	git.init(t, nested)
+	budget := DefaultControlSurfaceBudget()
+	budget.MaxNestedDirs = 50
+	for i := range budget.MaxNestedDirs + 30 {
+		writeControlFixture(t, nested, fmt.Sprintf("file-%d", i), "ordinary file")
+	}
+	before := controlSnapshot(t, root, budget)
+	writeControlFixture(t, nested, ".git/hooks/pre-commit", "inert fixture")
+	writeControlFixture(t, nested, ".claude/settings.json", "inert fixture")
+	diff := controlDiff(t, before, controlSnapshot(t, root, budget))
+	if !diff.NestedDiscoveryPartial || diff.Incomplete {
+		t.Fatalf("want partial nested discovery only: %+v", diff)
+	}
+	expectControlPath(t, diff, "wide/.git/hooks/pre-commit")
+	expectControlPath(t, diff, "wide/.claude/settings.json")
+}
+
+func TestControlPassDiscoveredCoversOnlyWhatWasExamined(t *testing.T) {
+	pass := controlPass{
+		undiscovered: map[string]struct{}{"pending": {}},
+		partlyListed: map[string]struct{}{"wide": {}},
+	}
+	for path, want := range map[string]bool{
+		"wide/.git/hooks/pre-commit":     true,
+		"wide/.claude/settings.json":     true,
+		"wide/.mcp.json":                 true,
+		"wide/sub/.claude/settings.json": false,
+		"wide/sub/.git/hooks/pre-commit": false,
+		"wide/.gitignore":                false,
+		"wide":                           false,
+		"pending/.git/config":            false,
+		"pending":                        false,
+		"other/.git/config":              true,
+		".envrc":                         true,
+	} {
+		if got := pass.discovered(filepath.FromSlash(path)); got != want {
+			t.Errorf("discovered(%q) = %t, want %t", path, got, want)
+		}
+	}
+}
