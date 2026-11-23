@@ -263,6 +263,58 @@ func TestRuntimeReceiptV3IncompleteDrain(t *testing.T) {
 	}
 }
 
+func TestStandaloneMCPV3ListenerDrainSeal(t *testing.T) {
+	for _, tc := range []struct {
+		name, verdict string
+		incomplete    bool
+	}{
+		{"clean", "VALID", false},
+		{"incomplete", "VALID PREFIX, END UNPROVEN", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			upstream, entered, release := heldDrainUpstream(t)
+			evidence := t.TempDir()
+			keyPath := filepath.Join(t.TempDir(), "signer.key")
+			pub, key, err := signing.GenerateKeyPair()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := signing.SavePrivateKey(key, keyPath); err != nil {
+				t.Fatal(err)
+			}
+			body := fmt.Sprintf("defer:\n  enabled: false\nflight_recorder:\n  enabled: true\n  dir: %q\n  signing_key_path: %q\n  receipt_format: v3\n", evidence, keyPath)
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			cmd := mcpProxyCmdWithListenerTimeout(audit.NewWithStream, drainTestTimeout(tc.incomplete))
+			cmd.SetContext(ctx)
+			cmd.SilenceUsage, cmd.SilenceErrors = true, true
+			log := &syncBuffer{}
+			cmd.SetOut(io.Discard)
+			cmd.SetErr(log)
+			cmd.SetArgs([]string{"--config", writeServerTestConfig(t, body), "--listen", serverTestEphemeralListen, "--upstream", upstream})
+			done := startDrainLifecycle(t, cancel, release, cmd.Execute)
+			address := drainListenerAddress(t, log, "pipelock: MCP reverse proxy listening on ")
+			requestDone := startDrainRequest(t, address, true)
+			awaitDrainSignal(t, entered, "upstream request")
+			cancel()
+			if !tc.incomplete {
+				waitDrainListenerClosed(t, address)
+				release()
+			}
+			assertDrainResult(t, awaitDrainResult(t, done), tc.incomplete, "MCP HTTP listener")
+			awaitDrainRequest(t, requestDone, tc.incomplete)
+			release()
+			verified, err := v3.VerifyPaths(t.Context(), []string{evidence}, v3.Options{Directory: true, Keys: []ed25519.PublicKey{pub}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if verified.Verdict != tc.verdict {
+				t.Fatalf("verified as %s, want %s", verified.Verdict, tc.verdict)
+			}
+		})
+	}
+}
+
 var errReceiptFixtureWrite = errors.New("receipt storage write failed")
 
 type heartbeatFaultFile struct {
