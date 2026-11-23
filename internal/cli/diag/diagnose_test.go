@@ -8,10 +8,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -93,6 +97,33 @@ func TestDiagnoseDefault(t *testing.T) {
 	// fetch_hint should be skipped by default (explain_blocks not set).
 	if !strings.Contains(out, "SKIP") {
 		t.Error("expected SKIP for fetch_hint check")
+	}
+}
+
+func TestDiagnosticProxiesRejectInvalidTLSCA(t *testing.T) {
+	dir := t.TempDir()
+	certPath, keyPath := filepath.Join(dir, "ca.pem"), filepath.Join(dir, "ca-key.pem")
+	for _, path := range []string{certPath, keyPath} {
+		if err := os.WriteFile(path, []byte("invalid PEM"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	path := filepath.Join(dir, "pipelock.yaml")
+	data := fmt.Sprintf("forward_proxy: {enabled: true}\ntls_interception: {enabled: true, ca_cert: %q, ca_key: %q}\n", certPath, keyPath)
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, newCmd := range []func() *cobra.Command{DiagnoseCmd, VerifyInstallCmd} {
+		cmd := newCmd()
+		t.Run(cmd.Name(), func(t *testing.T) {
+			cmd.SetOut(io.Discard)
+			cmd.SetErr(io.Discard)
+			cmd.SetArgs([]string{"--config", path})
+			const want = "load TLS CA: no PEM block in CA cert file"
+			if err := cmd.ExecuteContext(t.Context()); err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("startup error = %v, want %q", err, want)
+			}
+		})
 	}
 }
 

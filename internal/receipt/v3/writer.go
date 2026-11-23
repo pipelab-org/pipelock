@@ -455,14 +455,19 @@ func (w *StreamWriter) appendRecord(ctx context.Context, kind string, body any) 
 	return true, nil
 }
 
+var errRecordVisible = errors.New("receipt record visible before durability failure")
+
 func (w *StreamWriter) persist(kind string, line []byte, seq int64) error {
 	reserve := maxLineBytes
 	if kind == kindStreamClose {
 		reserve = 0
 	}
 	if w.active.bytes+len(line)+reserve > w.fileBytes {
-		file, _, err := w.storage.publish(w.dir, writerFilename(w.active.id, seq), line)
+		file, published, err := w.storage.publish(w.dir, writerFilename(w.active.id, seq), line)
 		if err != nil {
+			if published {
+				err = errors.Join(errRecordVisible, err)
+			}
 			return err
 		}
 		_ = w.active.file.Close()
@@ -473,7 +478,7 @@ func (w *StreamWriter) persist(kind string, line []byte, seq int64) error {
 		return err
 	}
 	if err := w.active.file.Sync(); err != nil {
-		return fmt.Errorf("flush receipt record: %w", err)
+		return fmt.Errorf("flush receipt record: %w: %w", errRecordVisible, err)
 	}
 	w.active.bytes += len(line)
 	return nil

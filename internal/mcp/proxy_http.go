@@ -4,6 +4,7 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -257,6 +258,44 @@ func validateRPCStructure(msg []byte) string {
 	// Method must be a JSON string (starts with quote).
 	if env.Method[0] != '"' {
 		return "method must be a string"
+	}
+	return ""
+}
+
+// validateMCPClientReply checks the methodless JSON-RPC response sent to a
+// server-initiated request. In particular, it cannot carry request routing.
+func validateMCPClientReply(body []byte) string {
+	var env struct {
+		JSONRPC string          `json:"jsonrpc"`
+		Method  json.RawMessage `json:"method"`
+		Params  json.RawMessage `json:"params"`
+		ID      json.RawMessage `json:"id"`
+		Result  json.RawMessage `json:"result"`
+		Error   json.RawMessage `json:"error"`
+	}
+	if err := json.Unmarshal(body, &env); err != nil || env.JSONRPC != jsonrpc.Version ||
+		len(env.Method) != 0 || len(env.Params) != 0 || (len(env.Result) == 0) == (len(env.Error) == 0) {
+		return "invalid JSON-RPC response envelope"
+	}
+	var id any
+	decoder := json.NewDecoder(bytes.NewReader(env.ID))
+	decoder.UseNumber()
+	if err := decoder.Decode(&id); err != nil {
+		return "invalid JSON-RPC response ID"
+	}
+	switch id.(type) {
+	case string, json.Number:
+	default:
+		return "invalid JSON-RPC response ID"
+	}
+	if len(env.Error) != 0 {
+		var detail struct {
+			Code    *int    `json:"code"`
+			Message *string `json:"message"`
+		}
+		if err := json.Unmarshal(env.Error, &detail); err != nil || detail.Code == nil || detail.Message == nil {
+			return "invalid JSON-RPC response error"
+		}
 	}
 	return ""
 }

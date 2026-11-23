@@ -19,6 +19,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/door"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
@@ -72,6 +73,7 @@ type mcpListenerPrincipal struct {
 	exclusiveSet string
 	trust        config.DoWSubjectTrust
 	actor        string
+	doorIdentity *door.Identity
 }
 
 // mcpListenerClientStates partitions listener state by either a verified
