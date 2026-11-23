@@ -238,6 +238,18 @@ func TestRuntimeReceiptReloadLegacyDefault(t *testing.T) {
 			}
 		})
 	}
+	badDir := filepath.Join(switched, "not-a-directory")
+	if err := os.WriteFile(badDir, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.LoadBytes([]byte(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.FlightRecorder.Dir = badDir
+	if err := s.Reload(cfg); err == nil || !strings.Contains(err.Error(), "read receipt evidence directory") {
+		t.Fatalf("reload with invalid evidence directory = %v", err)
+	}
 }
 
 func TestRuntimeReceiptV3IncompleteDrain(t *testing.T) {

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -89,3 +90,36 @@ func TestAbortServerContext(t *testing.T) {
 		}()
 	}
 }
+
+func TestCanObserveFlushThroughResponseWriters(t *testing.T) {
+	observable := failedFlushWriter{}
+	for _, tc := range []struct {
+		name   string
+		writer any
+		want   bool
+	}{
+		{"no flusher", nil, false},
+		{"plain flusher", httptest.NewRecorder(), false},
+		{"error flusher", observable, true},
+		{"transparent wrapper", flushUnwrapper{observable}, true},
+		{"plain flusher overrides underlying", plainFlushWrapper{flushUnwrapper{observable}}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := CanObserveFlush(tc.writer); got != tc.want {
+				t.Fatalf("CanObserveFlush = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+type flushUnwrapper struct {
+	http.ResponseWriter
+}
+
+func (w flushUnwrapper) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+type plainFlushWrapper struct {
+	flushUnwrapper
+}
+
+func (plainFlushWrapper) Flush() {}

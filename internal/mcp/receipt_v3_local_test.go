@@ -2986,7 +2986,7 @@ func TestMCPV3ListenerCancelledSendAbortsResponse(t *testing.T) {
 func TestMCPV3ListenerAgentCardBufferedDelivery(t *testing.T) {
 	const cardRequest = `{"jsonrpc":"2.0","id":42,"method":"agent/getAuthenticatedExtendedCard"}`
 	const cardResponse = `{"jsonrpc":"2.0","id":42,"result":` + receiptCardBody + "}"
-	opts, writer, client := localMCPReceiptFixture(t, v3MCPMatrixRow{required: true}, deferred.SurfaceMCPHTTPListener)
+	opts, _, client := localMCPReceiptFixture(t, v3MCPMatrixRow{required: true}, deferred.SurfaceMCPHTTPListener)
 	a2a := config.Defaults().A2AScanning
 	a2a.Enabled, a2a.DetectCardDrift = true, true
 	opts.A2ACfg = &a2a
@@ -3018,7 +3018,4 @@ func TestMCPV3ListenerAgentCardBufferedDelivery(t *testing.T) {
 			return action.Layer == "a2a_card_drift" && action.Phase == "outcome" && action.OutcomeClass == "completed"
 		})
 	}, "card outcome")
-	if err := writer.Close(t.Context(), nil); err != nil {
-		t.Fatal(err)
-	}
 }
