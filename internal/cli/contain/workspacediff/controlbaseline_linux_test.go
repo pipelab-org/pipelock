@@ -179,3 +179,76 @@ func TestControlBaselineIdentityChangeStillNamesChangedPaths(t *testing.T) {
 		})
 	}
 }
+
+// A persisted baseline must give the same verdict as the observation it was
+// written from. The diff reads which repositories referenced a path, so those
+// references have to survive the round trip.
+func TestControlBaselineKeepsReferencesOfUnexaminedRepositories(t *testing.T) {
+	git := newControlGit(t)
+	root := t.TempDir()
+	git.init(t, root)
+	nested := filepath.Join(root, "x", "y", "a")
+	if err := os.MkdirAll(nested, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	git.init(t, nested)
+	git.run(t, nested, "config", "--local", "include.path", "../../../../shared.cfg")
+	git.run(t, nested, "config", "--local", "core.hooksPath", "../../../hk")
+	writeControlFixture(t, root, "shared.cfg", "[example]\n\tkey = value\n")
+	writeControlFixture(t, root, "hk/pre-commit", "before")
+	full := DefaultControlSurfaceBudget()
+	shallow := full
+	shallow.MaxNestedDepth = 2
+	complete := controlSnapshot(t, root, full)
+	cutOff := controlSnapshot(t, root, shallow)
+	for name, pair := range map[string][2]ControlSurfaceSnapshot{
+		"unexamined at end":   {complete, cutOff},
+		"unexamined at start": {cutOff, complete},
+	} {
+		t.Run(name, func(t *testing.T) {
+			live := controlDiff(t, pair[0], pair[1])
+			loaded, err := CompareControlBaseline(reloadControlBaseline(t, pair[0]), pair[1])
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(live, loaded) {
+				t.Fatalf("loaded baseline disagrees with the observation it came from:\nlive   %+v\nloaded %+v", live, loaded)
+			}
+			if !loaded.NestedDiscoveryPartial || loaded.Incomplete || loaded.Changed {
+				t.Fatalf("a repository that was not examined proves no change to what it references: %+v", loaded)
+			}
+		})
+	}
+}
+
+// The baseline codec lists each observed field by hand, so a field added to the
+// observation without a matching wire field would silently stop surviving the
+// round trip. Adding one must come with a decision here.
+func TestControlBaselineCodecCoversEveryObservedField(t *testing.T) {
+	fields := func(v any) []string {
+		typ := reflect.TypeOf(v)
+		names := make([]string, 0, typ.NumField())
+		for i := range typ.NumField() {
+			names = append(names, typ.Field(i).Name)
+		}
+		slices.Sort(names)
+		return names
+	}
+	for name, tc := range map[string]struct {
+		got  any
+		want []string
+	}{
+		"snapshot": {ControlSurfaceSnapshot{}, []string{"capBytes", "identity", "nested", "priority", "problem", "root"}},
+		"pass": {controlPass{}, []string{
+			"discoveryLimit", "entries", "partlyListed", "sources", "truncated", "undiscovered", "unreadable",
+		}},
+		"entry":        {controlEntry{}, []string{"Entry", "info", "mode"}},
+		"entry fields": {Entry{}, []string{"Digest", "Kind", "ModTime", "Oversize", "Path", "Size", "Target"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := fields(tc.got); !slices.Equal(got, tc.want) {
+				t.Fatalf("observed fields changed; encode the new field in controlbaseline.go and list it here: %v", got)
+			}
+		})
+	}
+}

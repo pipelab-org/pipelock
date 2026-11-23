@@ -63,9 +63,18 @@ type baselineUnreadable struct {
 	Reason []byte `json:"reason"`
 }
 
+// baselineSource records the paths whose contents led discovery to Path. The
+// comparison needs them to tell a path that is gone from one whose referencing
+// repository was not examined.
+type baselineSource struct {
+	Path []byte   `json:"path"`
+	From [][]byte `json:"from"`
+}
+
 type baselinePass struct {
 	Entries        []baselineEntry      `json:"entries"`
 	Unreadable     []baselineUnreadable `json:"unreadable"`
+	Sources        []baselineSource     `json:"sources"`
 	Truncated      []byte               `json:"truncated"`
 	Undiscovered   [][]byte             `json:"undiscovered"`
 	PartlyListed   [][]byte             `json:"partly_listed"`
@@ -177,6 +186,13 @@ func encodeBaselinePass(p controlPass) *baselinePass {
 	for path, reason := range p.unreadable {
 		wire.Unreadable = append(wire.Unreadable, baselineUnreadable{Path: []byte(path), Reason: []byte(reason)})
 	}
+	for path, from := range p.sources {
+		source := baselineSource{Path: []byte(path), From: make([][]byte, 0, len(from))}
+		for _, f := range from {
+			source.From = append(source.From, []byte(f))
+		}
+		wire.Sources = append(wire.Sources, source)
+	}
 	for path := range p.undiscovered {
 		wire.Undiscovered = append(wire.Undiscovered, []byte(path))
 	}
@@ -207,6 +223,18 @@ func (wire *baselinePass) decode() (controlPass, error) {
 	}
 	for _, e := range wire.Unreadable {
 		p.unreadable[string(e.Path)] = string(e.Reason)
+	}
+	p.sources = make(map[string][]string, len(wire.Sources))
+	for _, e := range wire.Sources {
+		path := string(e.Path)
+		if _, exists := p.sources[path]; exists || path == "" {
+			return controlPass{}, fmt.Errorf("invalid or duplicate workspace control baseline source %q", path)
+		}
+		from := make([]string, 0, len(e.From))
+		for _, f := range e.From {
+			from = append(from, string(f))
+		}
+		p.sources[path] = from
 	}
 	return p, nil
 }
