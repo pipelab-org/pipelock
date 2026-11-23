@@ -251,3 +251,36 @@ func FuzzResponseMatchMemoParity(f *testing.F) {
 		}
 	})
 }
+
+func TestResponseMatchMemoReleasesBorrowedViews(t *testing.T) {
+	pattern := memoTestPattern("Two markers", `alfa.{1,4}bravo`)
+	patterns := []*compiledPattern{pattern}
+	filter := newResponsePreFilter(patterns)
+	program := responseMatchingProgram(filter)
+	var buffers responseMatchingBuffers
+	padding := strings.Repeat("~", responseMemoMinBytes)
+	text := padding + "alfa and bravo"
+	memo := newResponseMatchMemo(len(text))
+	memo.buffers = &buffers
+	if got := memo.matchTransformed(filter, patterns, text, program, matchingPrimary); len(got) != 0 {
+		t.Fatalf("expected a negative proof, got %v", got)
+	}
+	if positions, complete := memo.matchingRoot.positions("alfa"); !complete || len(positions) != 1 ||
+		memo.matchingRoot.responseBuffers != &buffers.views[matchingPrimary] ||
+		buffers.views[matchingPrimary].positionsCap == 0 || !memo.deltaProof.hasNegatives() {
+		t.Fatal("fixture must retain a negative proof and borrow literal positions")
+	}
+	memo.releaseMatchingViews()
+	if memo.matchingRoot != nil || memo.buffers != nil || !memo.deltaProof.hasNegatives() {
+		t.Fatal("release must drop borrowed views while preserving the proof")
+	}
+
+	text = padding + "   alfa-bravo"
+	next := newResponseMatchMemo(len(text))
+	next.buffers = &buffers
+	got := next.matchTransformed(filter, patterns, text, program, matchingPrimary)
+	want := matchPatternsAgainst(patterns, text)
+	if len(want) != 1 || !reflect.DeepEqual(got, want) {
+		t.Fatalf("reused buffers returned %v, want %v", got, want)
+	}
+}

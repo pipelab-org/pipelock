@@ -72,19 +72,32 @@ func isSensitiveTransferFilename(name string) bool {
 }
 
 func responsePatternMatchLocations(p *compiledPattern, content string) [][]int {
-	locs := p.re.FindAllStringIndex(content, -1)
+	return responsePatternMatchLocationsWith(p, content, func(re *regexp.Regexp, captures bool) [][]int {
+		return responseRegexpLocations(re, content, captures)
+	})
+}
+
+func responseRegexpLocations(re *regexp.Regexp, content string, captures bool) [][]int {
+	if captures {
+		return re.FindAllStringSubmatchIndex(content, -1)
+	}
+	return re.FindAllStringIndex(content, -1)
+}
+
+func responsePatternMatchLocationsWith(p *compiledPattern, content string, locations func(*regexp.Regexp, bool) [][]int) [][]int {
+	locs := locations(p.re, false)
 	if !hasExternalTransferCompanions(p) {
 		return locs
 	}
 
-	for _, loc := range externalTransferURLCandidateRE.FindAllStringIndex(content, -1) {
+	for _, loc := range locations(externalTransferURLCandidateRE, false) {
 		candidate := content[loc[0]:loc[1]]
 		if (!externalTransferHasSensitiveQueryKey(candidate) && !externalTransferHasSensitiveUploadSource(candidate)) || overlapsResponseMatch(locs, loc) {
 			continue
 		}
 		locs = append(locs, loc)
 	}
-	for _, loc := range externalTransferFileDirectiveRE.FindAllStringSubmatchIndex(content, -1) {
+	for _, loc := range locations(externalTransferFileDirectiveRE, true) {
 		if !externalTransferNamesSensitiveFile(content, loc) || overlapsResponseMatch(locs, loc[0:2]) {
 			continue
 		}

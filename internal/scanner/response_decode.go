@@ -6,6 +6,7 @@ package scanner
 import (
 	"encoding/base64"
 	"encoding/hex"
+	"slices"
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
@@ -23,6 +24,7 @@ type responseDecodeMemo struct {
 	suppress        coreResponseSuppressor
 	evidence        int
 	decoded         map[responseDecodeKey]string
+	scratch         []byte
 	emptyTrees      map[responseDecodeVisit]struct{}
 	emptyNormalized map[string]struct{}
 }
@@ -56,16 +58,21 @@ func (m *responseDecodeMemo) decode(content string, encoding *base64.Encoding) s
 	if text, ok := m.decoded[key]; ok {
 		return text
 	}
-	var decoded []byte
+	length := hex.DecodedLen(len(content))
+	if encoding != nil {
+		length = encoding.DecodedLen(len(content))
+	}
+	m.scratch = slices.Grow(m.scratch[:0], length)[:length]
+	var n int
 	var err error
 	if encoding == nil {
-		decoded, err = hex.DecodeString(content)
+		n, err = hex.Decode(m.scratch, []byte(content))
 	} else {
-		decoded, err = encoding.DecodeString(content)
+		n, err = encoding.Decode(m.scratch, []byte(content))
 	}
 	text := ""
 	if err == nil {
-		text = string(decoded)
+		text = string(m.scratch[:n])
 	}
 	m.decoded[key] = text
 	return text

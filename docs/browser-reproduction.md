@@ -392,11 +392,14 @@ The warm case deliberately primes that cache. The marked file adds only the
 inert `BROWSER_REPRO_RESPONSE_MARKER`, with a dedicated configured rule; its
 verdict must contain exactly that finding. Marked results are not cached.
 
-The request-local large-response memo reuses only empty raw pattern results for
-identical text and matching semantics. It never shares positive findings,
-suppression, observations, attribution or span data. Its bounds and fallback
-paths are separate from the existing cross-request clean-verdict cache. The
-canary control is also independent of `dlp.scan_env` and a secrets file: a
+The request-local large-response memo reuses empty raw pattern results for
+identical text with the same matching semantics. For a decoded view, it can
+also use an empty result from an earlier view when it proves that any new
+match must fall inside the regions it rescans. It never shares positive
+findings, suppression, observations, attribution or span data. Its bounds and
+fallback paths are separate from the existing cross-request clean-verdict cache.
+
+The canary control is independent of `dlp.scan_env` and a secrets file: a
 configured canary must be checked even when both discovered secret lists are
 empty. That intentional detection repair is distinct from response-result
 parity checks.

@@ -6,7 +6,6 @@ package scanner
 import (
 	"regexp"
 	"regexp/syntax"
-	"slices"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -30,6 +29,7 @@ type regexpWindowPlan struct {
 	core, hop, first, last asciiByteSet
 	blocks, wild, minimum  int
 	anchors                []string
+	responseWidth          responseWindowWidth
 }
 
 func newRegexpWindowPlan(re *regexp.Regexp, tree *syntax.Regexp) *regexpWindowPlan {
@@ -81,29 +81,8 @@ func newRegexpWindowPlan(re *regexp.Regexp, tree *syntax.Regexp) *regexpWindowPl
 	if w.blocks > 0 {
 		// Choose only actual literal runs. Leading anchors may contain
 		// enumerated class bytes, which need not be inside one core run.
-		anchors := requiredLiteralAnchors(tree)
-		if len(anchors) == 0 || len(anchors) > regexpWindowMaxAnchors {
+		if !w.setLiteralAnchors(tree, regexpWindowMaxAnchors) {
 			return nil
-		}
-		for _, literal := range anchors {
-			if !isASCIIString(literal) || len(literal) < minPreFilterAnchorLength {
-				return nil
-			}
-			anchor := strings.ToLower(literal[:min(len(literal), regexpWindowAnchorBytes)])
-			if !slices.Contains(w.anchors, anchor) {
-				w.anchors = append(w.anchors, anchor)
-			}
-		}
-		// Go regexp's Unicode simple-fold orbits for ASCII letters contain
-		// two non-ASCII members. Where relevant, a window around either rune
-		// is also a candidate, even when the full ASCII anchor is absent.
-		for _, anchor := range w.anchors {
-			if strings.ContainsRune(anchor, 'k') && !slices.Contains(w.anchors, "K") {
-				w.anchors = append(w.anchors, "K")
-			}
-			if strings.ContainsRune(anchor, 's') && !slices.Contains(w.anchors, "ſ") {
-				w.anchors = append(w.anchors, "ſ")
-			}
 		}
 	}
 	w.first, _ = regexpEdgeBytes(tree, false)
@@ -438,6 +417,10 @@ func (w *regexpWindowPlan) findAllWithPositions(source, matcher *regexp.Regexp, 
 	if !ok {
 		return matcher.FindAllStringIndex(view, -1)
 	}
+	return matchRegexpWindows(matcher, view, windows, positions)
+}
+
+func matchRegexpWindows(matcher *regexp.Regexp, view string, windows []regexpWindowRange, positions *matchingView) [][]int {
 	var out [][]int
 	for _, window := range windows {
 		if positions != nil {
