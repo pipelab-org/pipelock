@@ -51,9 +51,15 @@ func newControlGit(t *testing.T) testGit {
 	return testGit{bin: bin, home: t.TempDir()}
 }
 
+// quietGitArgs stops Git from starting background maintenance. Recent Git runs
+// detached maintenance after a commit, holding objects/maintenance.lock and
+// pruning worktree metadata that lacks an index, which changes a fixture while a
+// test observes it.
+var quietGitArgs = []string{"-c", "gc.auto=0", "-c", "maintenance.auto=false"}
+
 func (g testGit) command(t *testing.T, dir string, args ...string) (string, error) {
 	t.Helper()
-	cmd := exec.CommandContext(t.Context(), g.bin, args...) // #nosec G204 -- Git and its arguments are chosen by the test.
+	cmd := exec.CommandContext(t.Context(), g.bin, append(slices.Clone(quietGitArgs), args...)...) // #nosec G204 -- Git and its arguments are chosen by the test.
 	cmd.Dir = dir
 	cmd.Env = []string{
 		"PATH=" + os.Getenv("PATH"),
@@ -169,6 +175,28 @@ func TestControlSurfaceRealGitBenignOperations(t *testing.T) {
 		g.run(t, root, "checkout", "-q", "topic")
 		unchanged(t, func() { g.run(t, root, "rebase", "main") })
 	})
+}
+
+// Git holds objects/maintenance.lock while its maintenance runs, which a commit
+// can start in the background (builtin/gc.c, maintenance_run_tasks). The file is
+// transient bookkeeping, not repository configuration.
+func TestControlSurfaceMaintenanceLockIsVolatile(t *testing.T) {
+	g := newControlGit(t)
+	root := t.TempDir()
+	g.init(t, root)
+	g.commit(t, root, "tracked.txt")
+	before := controlSnapshot(t, root, DefaultControlSurfaceBudget())
+	writeControlFixture(t, root, ".git/objects/maintenance.lock", "")
+	after := controlSnapshot(t, root, DefaultControlSurfaceBudget())
+	if diff := controlDiff(t, before, after); diff.Changed || diff.Incomplete {
+		t.Fatalf("Git's maintenance lock must remain volatile: %+v", diff)
+	}
+	if err := os.Remove(filepath.Join(root, ".git", "objects", "maintenance.lock")); err != nil {
+		t.Fatal(err)
+	}
+	if diff := controlDiff(t, after, controlSnapshot(t, root, DefaultControlSurfaceBudget())); diff.Changed || diff.Incomplete {
+		t.Fatalf("releasing Git's maintenance lock must not be reported: %+v", diff)
+	}
 }
 
 func TestControlSurfaceRealGitReftable(t *testing.T) {

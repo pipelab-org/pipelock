@@ -898,6 +898,10 @@ func volatileGitEntry(path string, mode fs.FileMode) bool {
 	}
 	if mode.IsRegular() {
 		switch path {
+		// Git holds objects/maintenance.lock while background maintenance runs,
+		// which a commit can start (builtin/gc.c, maintenance_run_tasks).
+		case "objects/maintenance.lock":
+			return true
 		case "HEAD", "index", "packed-refs", "FETCH_HEAD", "ORIG_HEAD", "COMMIT_EDITMSG",
 			"MERGE_HEAD", "MERGE_MSG", "MERGE_MODE", "MERGE_RR", "SQUASH_MSG", "AUTO_MERGE",
 			"CHERRY_PICK_HEAD", "REVERT_HEAD", "TAG_EDITMSG", "NOTES_EDITMSG", "gc.log", "gc.pid",
