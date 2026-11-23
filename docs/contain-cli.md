@@ -184,7 +184,11 @@ sudo pipelock contain audit-workspace --record --replace --workspace /srv/projec
 Use `--agent-user USER` in place of `--workspace PATH` to process every
 grant for that user, including expired grants still in the inventory. Both
 modes require root. Use the canonical workspace path. If a workspace path
-traverses a symbolic link or contains `..`, the command refuses it. An existing baseline requires `--record --replace`;
+traverses a symbolic link or contains `..`, the command refuses it. The
+inventory stores a name that is not valid UTF-8 as U+FFFD, so
+`--agent-user` refuses a grant path containing U+FFFD rather than audit a
+directory the grant may not name; audit that directory with `--workspace` and
+its exact name. An existing baseline requires `--record --replace`;
 the command prints the observed differences before replacement. An incomplete
 observation is saved as incomplete when no baseline exists, and continues to
 fail audits until replaced with a usable observation. It never replaces a
@@ -215,8 +219,9 @@ Exit codes:
 In audit mode, `--allow-control-surface-changes` accepts observed changes
 and `--allow-partial-nested-discovery` accepts partial nested discovery.
 An audit with both findings requires both flags. Neither flag accepts an
-incomplete observation. After a reboot or workspace root identity or mount
-change, the audit is incomplete but still lists the changed paths; review them
+incomplete observation. A kernel that does not report mount IDs (before
+Linux 5.8) makes every audit incomplete. After a reboot or workspace root
+identity or mount change, the audit is incomplete but still lists the changed paths; review them
 before recording a replacement.
 
 Baselines are stored in `/var/lib/pipelock-contain/control-audit/`. The

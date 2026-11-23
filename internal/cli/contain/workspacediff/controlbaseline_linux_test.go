@@ -429,3 +429,17 @@ func TestControlBaselineKeepsLinkTargetSpellingsAcrossReload(t *testing.T) {
 		}
 	}
 }
+
+// Inode and device numbers use all 64 bits on some filesystems, and a JSON
+// reader that goes through float64 rounds anything above 2^53. A rounded
+// identity would make a replaced root compare as the recorded one.
+func TestControlBaselineKeepsFullWidthIdentityNumbers(t *testing.T) {
+	root := t.TempDir()
+	writeControlFixture(t, root, ".envrc", "x")
+	snap := controlSnapshot(t, root, DefaultControlSurfaceBudget())
+	snap.identity.Dev, snap.identity.Ino, snap.identity.Mount = 1<<63+1, 1<<62+12345, 1<<60+7
+	loaded := reloadControlBaseline(t, snap)
+	if loaded.identity != snap.identity {
+		t.Fatalf("identity changed across the baseline file: %+v, want %+v", loaded.identity, snap.identity)
+	}
+}

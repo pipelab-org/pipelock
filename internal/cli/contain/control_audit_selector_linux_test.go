@@ -295,3 +295,32 @@ func TestControlAuditWorkspaceKeepsNonUTF8NamesApart(t *testing.T) {
 		}
 	}
 }
+
+// A relative selector is joined to os.Getwd, which returns $PWD whenever it
+// names the working directory. A $PWD that spells "link/../k" passes that test
+// and cleaning it lexically names a directory other than the one the process
+// is in, which a relative selector would then audit in its place.
+func TestControlAuditRelativeSelectorRefusesAParentReferenceInTheWorkingDirectory(t *testing.T) {
+	env, _ := controlAuditFixture(t)
+	p := canonicalTempDir(t)
+	writeAuditFixture(t, filepath.Join(p, "k", "g"), ".envrc", "same")
+	writeAuditFixture(t, filepath.Join(p, "e", "k", "g"), ".envrc", "DIFFERENT")
+	if err := os.MkdirAll(filepath.Join(p, "e", "sub"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(p, "e", "sub"), filepath.Join(p, "link")); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = runAuditFixture(t, env, controlAuditOptions{workspace: filepath.Join(p, "k", "g"), record: true}, 0)
+	t.Chdir(filepath.Join(p, "e", "k"))
+	t.Setenv("PWD", p+"/link/../k")
+	if wd, err := os.Getwd(); err != nil || wd != p+"/link/../k" {
+		t.Skipf("this Go runtime does not return $PWD here: %q, %v", wd, err)
+	}
+	for _, record := range []bool{false, true} {
+		out, err := runAuditFixture(t, env, controlAuditOptions{workspace: "g", record: record}, 1)
+		if !strings.Contains(err.Error(), `".."`) || strings.Contains(out, "workspace_control_surface=clean") {
+			t.Fatalf("record=%t: a working directory spelled with .. was trusted: %v\n%s", record, err, out)
+		}
+	}
+}

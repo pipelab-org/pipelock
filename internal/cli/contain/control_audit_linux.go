@@ -163,14 +163,21 @@ func (env controlAuditEnv) roots(opts controlAuditOptions) ([]string, error) {
 	// Cleaning also drops a ".." together with the component before it, and
 	// after a symbolic link the kernel leaves the link's target instead, so a
 	// path spelled that way would audit a workspace other than the one named.
-	if slices.Contains(strings.Split(filepath.ToSlash(opts.workspace), "/"), "..") {
-		return nil, fmt.Errorf("workspace path %q contains \"..\", which names a different directory when a link precedes it; pass the path without it", opts.workspace)
+	// A relative selector is joined to the working directory, and Getwd returns
+	// $PWD unchanged whenever it names that directory, so the working directory
+	// is held to the same rule.
+	selected := opts.workspace
+	if !filepath.IsAbs(selected) {
+		wd, err := os.Getwd()
+		if err != nil {
+			return nil, err
+		}
+		selected = wd + "/" + selected
 	}
-	abs, err := filepath.Abs(opts.workspace)
-	if err != nil {
-		return nil, err
+	if slices.Contains(strings.Split(filepath.ToSlash(selected), "/"), "..") {
+		return nil, fmt.Errorf("workspace path %q contains \"..\", which names a different directory when a link precedes it; pass the path without it", selected)
 	}
-	return []string{abs}, nil
+	return []string{filepath.Clean(selected)}, nil
 }
 
 // Check the grant path without changing the baseline key. A missing root
