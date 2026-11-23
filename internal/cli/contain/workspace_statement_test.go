@@ -860,7 +860,7 @@ func TestRunContainRun_SignedStatementNeverPassesWithControlFindings(t *testing.
 			activity: func(workspace string) error {
 				return os.MkdirAll(filepath.Join(workspace, strings.Repeat("d/", 70)), 0o750)
 			},
-			wantStatus: "workspace_control_surface=clean",
+			wantStatus: "workspace_control_surface=partial",
 			wantLine:   "nested=partial",
 			wantMarker: "[WARN] workspace nested control discovery is PARTIAL",
 		},

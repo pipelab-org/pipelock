@@ -342,6 +342,9 @@ func summarizeControlSurface(statements []workspacediff.Statement) controlSurfac
 		summary.Status = "incomplete"
 		summary.Reason = strings.Join(reasons, "; ")
 	}
+	if summary.Status == "clean" && summary.NestedPartial {
+		summary.Status = "partial"
+	}
 	return summary
 }
 

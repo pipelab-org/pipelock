@@ -1807,9 +1807,9 @@ func TestPostureVerify_WorkspaceControlSurface(t *testing.T) {
 		fail         bool
 	}{
 		{name: "clean", status: "clean"},
-		{name: "partial", observation: partial, status: "clean", fail: true},
-		{name: "partial allowed", observation: partial, status: "clean", allowPartial: true},
-		{name: "changes flag cannot allow partial", observation: partial, status: "clean", allow: true, fail: true},
+		{name: "partial", observation: partial, status: "partial", fail: true},
+		{name: "partial allowed", observation: partial, status: "partial", allowPartial: true},
+		{name: "changes flag cannot allow partial", observation: partial, status: "partial", allow: true, fail: true},
 		{name: "partial and changed with only changes allowed", observation: partialAndChanged, status: "changed", allow: true, fail: true},
 		{name: "partial and changed with only partial allowed", observation: partialAndChanged, status: "changed", allowPartial: true, fail: true},
 		{name: "partial and changed with both allowed", observation: partialAndChanged, status: "changed", allow: true, allowPartial: true},

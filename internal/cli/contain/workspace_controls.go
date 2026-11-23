@@ -86,10 +86,12 @@ func printWorkspaceControls(w io.Writer, results map[string]workspacediff.Contro
 		slices.Sort(nestedReasons)
 		_, _ = fmt.Fprintf(w, "  [WARN] workspace nested control discovery is PARTIAL: %q\n", nestedReasons)
 	}
+	// A partial nested result is never reported as clean: a consumer keyed on
+	// the status token alone must not read missing coverage as a pass.
+	if status == "clean" && nested == "partial" {
+		status = "partial"
+	}
 	_, _ = fmt.Fprintf(w, "workspace_control_surface=%s changed=%t paths=%q reason=%q nested=%s nested_reason=%q\n",
 		status, len(paths) > 0, paths, strings.Join(reasons, "; "), nested, strings.Join(nestedReasons, "; "))
-	if status == "clean" && nested == "partial" {
-		return "partial"
-	}
 	return status
 }
