@@ -227,7 +227,12 @@ func TestControlSurfaceFollowsInWorkspaceSymlinkTargets(t *testing.T) {
 			root := t.TempDir()
 			tc.prepare(t, root)
 			before := controlSnapshot(t, root, DefaultControlSurfaceBudget())
-			writeControlFixture(t, root, tc.edit, "after, now longer")
+			content := "after, now longer"
+			if tc.name == "config file link" {
+				// Git reads the link's target as configuration, so the edit stays valid.
+				content = "[core]\n\tfilemode = false\n"
+			}
+			writeControlFixture(t, root, tc.edit, content)
 			after := controlSnapshot(t, root, DefaultControlSurfaceBudget())
 			expectControlPath(t, controlDiff(t, before, after), tc.edit)
 		})
@@ -375,6 +380,85 @@ func TestControlSurfaceReportsAmbiguousDotDotConfigPaths(t *testing.T) {
 		before := controlSnapshot(t, root, budget)
 		writeControlFixture(t, root, "hooks/pre-commit", "changed")
 		expectControlPath(t, controlDiff(t, before, controlSnapshot(t, root, budget)), "hooks/pre-commit")
+	})
+}
+
+// A repository's local config can be a symlink to a file in the workspace. Git
+// reads the target, so the hook directory and includes it names must be
+// followed, and relative includes still resolve against the config's own path.
+func TestControlSurfaceFollowsReferencesInASymlinkedGitConfig(t *testing.T) {
+	linkConfig := func(t *testing.T, root, target string) {
+		t.Helper()
+		config := filepath.Join(root, ".git", "config")
+		if err := os.Remove(config); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, config); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		name    string
+		prepare func(t *testing.T, root string)
+		edit    string
+	}{
+		{"hooks path", func(t *testing.T, root string) {
+			writeControlFixture(t, root, "shared/gitconfig", "[core]\n\thooksPath = hooks-target\n")
+			writeControlFixture(t, root, "hooks-target/pre-commit", "before")
+			linkConfig(t, root, "../shared/gitconfig")
+		}, "hooks-target/pre-commit"},
+		{"include relative to the link", func(t *testing.T, root string) {
+			writeControlFixture(t, root, "deep/shared/gitconfig", "[include]\n\tpath = ../inc.cfg\n")
+			writeControlFixture(t, root, "inc.cfg", "[example]\n\tkey = before\n")
+			writeControlFixture(t, root, "deep/inc.cfg", "[example]\n\tkey = decoy\n")
+			linkConfig(t, root, "../deep/shared/gitconfig")
+		}, "inc.cfg"},
+		{"link chain", func(t *testing.T, root string) {
+			writeControlFixture(t, root, "shared/gitconfig", "[core]\n\thooksPath = hooks-target\n")
+			writeControlFixture(t, root, "hooks-target/pre-commit", "before")
+			if err := os.Symlink("shared/gitconfig", filepath.Join(root, "hop")); err != nil {
+				t.Fatal(err)
+			}
+			linkConfig(t, root, "../hop")
+		}, "hooks-target/pre-commit"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			git := newControlGit(t)
+			root := t.TempDir()
+			git.init(t, root)
+			tc.prepare(t, root)
+			budget := DefaultControlSurfaceBudget()
+			before := controlSnapshot(t, root, budget)
+			// Git reads an included file as configuration, so the edit stays valid.
+			writeControlFixture(t, root, tc.edit, "[example]\n\tkey = changed\n")
+			expectControlPath(t, controlDiff(t, before, controlSnapshot(t, root, budget)), tc.edit)
+		})
+	}
+	t.Run("a target outside the workspace cannot be observed", func(t *testing.T) {
+		git := newControlGit(t)
+		root := t.TempDir()
+		git.init(t, root)
+		outside := t.TempDir()
+		writeControlFixture(t, outside, "gitconfig", "[core]\n\thooksPath = hooks-target\n")
+		linkConfig(t, root, filepath.Join(outside, "gitconfig"))
+		budget := DefaultControlSurfaceBudget()
+		diff := controlDiff(t, controlSnapshot(t, root, budget), controlSnapshot(t, root, budget))
+		if !diff.Incomplete || len(diff.Unreadable) != 1 || diff.Unreadable[0].Path != filepath.FromSlash(".git/config") {
+			t.Fatalf("an unreadable config target must make the observation incomplete: %+v", diff)
+		}
+	})
+	t.Run("a missing target is not an observation problem", func(t *testing.T) {
+		git := newControlGit(t)
+		root := t.TempDir()
+		git.init(t, root)
+		linkConfig(t, root, "../missing/gitconfig")
+		budget := DefaultControlSurfaceBudget()
+		before := controlSnapshot(t, root, budget)
+		if diff := controlDiff(t, before, controlSnapshot(t, root, budget)); diff.Incomplete || diff.Changed {
+			t.Fatalf("a dangling config link names nothing to read: %+v", diff)
+		}
+		writeControlFixture(t, root, "missing/gitconfig", "[core]\n\thooksPath = hooks-target\n")
+		expectControlPath(t, controlDiff(t, before, controlSnapshot(t, root, budget)), "missing/gitconfig")
 	})
 }
 

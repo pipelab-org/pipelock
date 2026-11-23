@@ -428,22 +428,32 @@ func (w *controlWalker) following(source string, fn func()) {
 // leaving the grant, or the grant root itself, is never followed. The entry is
 // stored before following, which ends link cycles.
 func (w *controlWalker) followSymlink(link controlEntry) {
+	if rel, ok := w.linkTarget(link); ok {
+		w.following(link.Path, func() { w.queueTree(w.recordPath(rel), "", "") })
+	}
+}
+
+// linkTarget names the in-workspace path a recorded symlink points to, without
+// following it. A link that leaves the workspace or has no usable target has no
+// such path. One whose target the kernel would resolve elsewhere than cleaning
+// does is reported unreadable.
+func (w *controlWalker) linkTarget(link controlEntry) (string, bool) {
 	target := link.Target
 	if target == "" || strings.ContainsRune(target, 0) {
-		return
+		return "", false
 	}
 	if !filepath.IsAbs(target) {
 		target = filepath.Join(w.rootPath, filepath.Dir(link.Path), target)
 	}
 	rel, err := filepath.Rel(w.rootPath, filepath.Clean(target))
 	if err != nil || rel == "." || !filepath.IsLocal(rel) {
-		return
+		return "", false
 	}
 	if !w.lexicalLinkTargetMatches(link, rel) {
 		w.unreadable(link.Path, "symlink target resolution is ambiguous")
-		return
+		return "", false
 	}
-	w.following(link.Path, func() { w.queueTree(w.recordPath(rel), "", "") })
+	return rel, true
 }
 
 // lexicalLinkTargetMatches reports whether cleaning ".." elements from a link

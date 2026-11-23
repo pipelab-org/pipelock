@@ -83,7 +83,7 @@ func (w *controlWalker) linkedWorktreeOfProject(slot string) bool {
 }
 
 func (w *controlWalker) scanGitConfig(entry controlEntry, gitDir, worktree string) {
-	if entry.Kind != KindFile {
+	if entry.Kind != KindFile && entry.Kind != KindSymlink {
 		return
 	}
 	source := gitConfigSource{path: entry.Path, gitDir: gitDir, worktree: worktree}
@@ -95,7 +95,7 @@ func (w *controlWalker) scanGitConfig(entry controlEntry, gitDir, worktree strin
 		return
 	}
 	w.seenConfig[source] = struct{}{}
-	data, ok := w.readObserved(entry)
+	data, ok := w.readConfig(entry)
 	if !ok {
 		return
 	}
@@ -129,10 +129,10 @@ func (w *controlWalker) scanGitConfig(entry controlEntry, gitDir, worktree strin
 }
 
 func (w *controlWalker) configuredWorktree(entry controlEntry) (value string, set bool) {
-	if entry.Kind != KindFile {
+	if entry.Kind != KindFile && entry.Kind != KindSymlink {
 		return "", false
 	}
-	data, ok := w.readObserved(entry)
+	data, ok := w.readConfig(entry)
 	if !ok {
 		return "", false
 	}
@@ -226,6 +226,44 @@ func (w *controlWalker) linkedWorktree(gitDir string) string {
 		}
 	}
 	return ""
+}
+
+// maxConfigLinkHops matches the kernel's limit on symlinks in one resolution.
+const maxConfigLinkHops = 40
+
+// readConfig reads a Git config file. Git reads through a symlink, so a link
+// is followed to the regular file the walk recorded for its target, while the
+// config keeps its own path for resolving relative includes. A target outside
+// the workspace, or one that cannot be resolved safely, is unreadable; a target
+// that does not exist reads as no configuration, and appears as an addition if
+// it is created.
+func (w *controlWalker) readConfig(entry controlEntry) ([]byte, bool) {
+	file := entry
+	for range maxConfigLinkHops {
+		switch file.Kind {
+		case KindFile:
+			return w.readObserved(file)
+		case KindSymlink:
+			rel, ok := w.linkTarget(file)
+			if !ok {
+				w.unreadable(entry.Path, "Git config symlink target could not be observed")
+				return nil, false
+			}
+			next := w.recordPath(rel)
+			if next.Kind == "" {
+				if _, err := w.root.Lstat(rel); !errors.Is(err, fs.ErrNotExist) {
+					w.unreadable(entry.Path, "Git config symlink target could not be observed")
+				}
+				return nil, false
+			}
+			file = next
+		default:
+			w.unreadable(entry.Path, "Git config symlink target is not a regular file")
+			return nil, false
+		}
+	}
+	w.unreadable(entry.Path, "Git config symlink chain is too long")
+	return nil, false
 }
 
 func (w *controlWalker) readObserved(entry controlEntry) ([]byte, bool) {
