@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/luckyPipewrench/pipelock/internal/checker"
 	"github.com/luckyPipewrench/pipelock/internal/checker/checkertest"
@@ -510,6 +511,111 @@ func TestCheckerQuotedPrintableKeepsOriginalCharacters(t *testing.T) {
 		}) {
 			t.Fatalf("missing decoded view %q in %v", want, checkerPartTexts(parts))
 		}
+	}
+}
+
+func TestCheckerWideAndQuotedPrintableViewParity(t *testing.T) {
+	const surface = config.InjectionSurfaceHTTPResponse
+	const patternName = "Fixture phrase"
+	builtin := testResponseConfig()
+	builtin.ResponseScanning.Action = config.ActionBlock
+	builtin.ResponseScanning.Patterns = []config.ResponseScanPattern{{Name: patternName, Regex: "^\ufffd*" + checkerFixturePhrase + "$"}}
+	legacy := MustNew(builtin)
+	t.Cleanup(legacy.Close)
+	cfg := testResponseConfig()
+	srv := checkertest.New(t, "benign")
+	srv.Configure(cfg, surface, config.InjectionModeBlock)
+	s := MustNew(cfg)
+	t.Cleanup(s.Close)
+
+	utf32 := func(order binary.AppendByteOrder) []byte {
+		body := order.AppendUint32(nil, 0xfeff)
+		for i := range len(checkerFixturePhrase) {
+			body = order.AppendUint32(body, uint32(checkerFixturePhrase[i]))
+		}
+		return body
+	}
+	for _, fixture := range []struct {
+		name string
+		data []byte
+	}{
+		{"utf16le", encodeUTF16ResponseBody(checkerFixturePhrase, true, true)},
+		{"utf16be", encodeUTF16ResponseBody(checkerFixturePhrase, false, true)},
+		{"utf32le", utf32(binary.LittleEndian)},
+		{"utf32be", utf32(binary.BigEndian)},
+		{"quoted_printable", []byte("\xff" + strings.ReplaceAll(checkerFixturePhrase, " ", "=20") + "=FF=")},
+	} {
+		for _, carrier := range []struct {
+			name string
+			wrap func([]byte) string
+		}{
+			{"direct", func(data []byte) string { return string(data) }},
+			{"base64", base64.StdEncoding.EncodeToString},
+			{"hex", hex.EncodeToString},
+		} {
+			t.Run(fixture.name+"/"+carrier.name, func(t *testing.T) {
+				source := carrier.wrap(fixture.data)
+				result := legacy.ScanResponseBodyWithSuppress(t.Context(), []byte(source), "", nil)
+				at := slices.IndexFunc(result.Matches, func(match ResponseMatch) bool { return match.PatternName == patternName })
+				if result.Failed() || at < 0 {
+					t.Fatalf("scanner did not match the full fixture view: %+v", result)
+				}
+				parts, coverage := s.BuildInjectionTextParts(t.Context(), surface, source)
+				scannerView := result.Matches[at].MatchText
+				if !hasCheckerView(parts, scannerView) || !hasCheckerView(parts, checkerFixturePhrase) || coverage.Status != checker.Complete {
+					t.Fatalf("checker views %q, completeness %+v, want scanner view %q and exact phrase", checkerPartTexts(parts), coverage, scannerView)
+				}
+				for _, part := range parts {
+					if !utf8.ValidString(part.Text) {
+						t.Errorf("part %s contains invalid UTF-8", part.ID)
+					}
+				}
+				budget := checkerTextBuilder{ctx: t.Context()}
+				for _, part := range parts {
+					if part.Text == checkerFixturePhrase {
+						break
+					}
+					budget.limit += int64(len(part.Text))
+				}
+				budget.addTexts([]string{source})
+				if got := budget.completeness(nil); hasCheckerView(budget.parts, checkerFixturePhrase) || got.Status != checker.Partial || got.Reason != checker.ReasonOverBudget {
+					t.Fatalf("checker views %q, completeness %+v, want omitted phrase and partial coverage", checkerPartTexts(budget.parts), got)
+				}
+			})
+		}
+	}
+}
+
+func TestCheckerOpaqueDecodeKeepsOnlyReadableRuns(t *testing.T) {
+	noise := strings.Repeat("\xff\x80\x81\x01", 32)
+	source := base64.StdEncoding.EncodeToString([]byte(noise + checkerFixturePhrase + noise))
+	parts := InjectionTextParts(source)
+	if got := checkerPartTexts(parts); !slices.Equal(got, []string{source, checkerFixturePhrase}) || parts[1].Representation != "response_decoded_runs/v1" {
+		t.Fatalf("opaque decode produced unexpected checker parts: %q", got)
+	}
+}
+
+func TestCheckerToolResultSizeBaseline(t *testing.T) {
+	const surface = config.InjectionSurfaceMCPToolResult
+	const size = 64 << 10
+	cfg := testResponseConfig()
+	srv := checkertest.New(t, "benign")
+	srv.Configure(cfg, surface, config.InjectionModeBlock)
+	s := MustNew(cfg)
+	t.Cleanup(s.Close)
+	fixture := fmt.Sprintf(`{"base64":%q,"hex":%q,"quoted_printable":%q,"text":"`,
+		base64.StdEncoding.EncodeToString([]byte(checkerFixturePhrase)),
+		hex.EncodeToString([]byte(checkerFixturePhrase)),
+		strings.ReplaceAll(checkerFixturePhrase, " ", "=20"))
+	fixture += strings.Repeat("x", size-len(fixture)-len(`"}`)) + `"}`
+	parts, _ := s.BuildInjectionTextParts(t.Context(), surface, fixture)
+	var submitted int
+	for _, part := range parts {
+		submitted += len(part.Text)
+	}
+	t.Logf("%d input bytes, %d parts, %d submitted bytes", len(fixture), len(parts), submitted)
+	if len(parts) > 32 || submitted > 8*size {
+		t.Fatalf("tool result exceeds baseline bounds: %d parts, %d submitted bytes", len(parts), submitted)
 	}
 }
 

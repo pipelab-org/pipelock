@@ -120,7 +120,8 @@ func (b *checkerTextBuilder) add(view bodyInjectionView) bool {
 	// Fragment reconstructions preserve the producer's synthetic newlines.
 	// Keep each reconstruction in its own part; a checker must not concatenate
 	// independent parts. Encoded-only sources supply decoded parts only.
-	text := strings.ToValidUTF8(exciseVerifiedImageDataURLs(view.Text), " ")
+	rawText := exciseVerifiedImageDataURLs(view.Text)
+	text := strings.ToValidUTF8(rawText, " ")
 	if text == "" {
 		return true
 	}
@@ -161,6 +162,27 @@ func (b *checkerTextBuilder) add(view bodyInjectionView) bool {
 			add(normalize.ForMatchingSpaced(text), "for_matching_spaced/v1") &&
 			(tags == text || add(normalize.ForMatching(tags), "for_matching/v1"))
 	}
+	addWide := func(raw string, matchCarrierBytes bool) bool {
+		// Require a BOM here. The body decoder also guesses BOM-less
+		// encodings, which would reinterpret unrelated carrier bytes.
+		if !strings.HasPrefix(raw, "\xff\xfe") && !strings.HasPrefix(raw, "\xfe\xff") &&
+			!strings.HasPrefix(raw, "\x00\x00\xfe\xff") {
+			return true
+		}
+		wide, ok, err := decodeLikelyWideResponseBody(b.ctx, []byte(raw))
+		if err != nil && b.ctx.Err() != nil {
+			b.reason = checker.ReasonCanceled
+			return false
+		}
+		if ok {
+			wide = exciseVerifiedImageDataURLs(wide)
+			if (isPrintableText([]byte(wide)) && !appendPart(wide, "response_decoded/v1")) || !addMatching(wide, true) {
+				return false
+			}
+		}
+		// The legacy carrier matcher normalizes the decoded bytes directly.
+		return !matchCarrierBytes || addMatching(raw, true)
+	}
 	representation := "original"
 	if view.RequireFragmentBoundary {
 		representation = "response_fragments/v1"
@@ -171,6 +193,9 @@ func (b *checkerTextBuilder) add(view bodyInjectionView) bool {
 	if b.toolDescription &&
 		(!appendPart(normalize.ForToolText(text), "for_tool_text/v1") ||
 			!appendPart(normalize.ForToolTextSpaced(text), "for_tool_text_spaced/v1")) {
+		return false
+	}
+	if !view.DecodeOnly && !addWide(rawText, false) {
 		return false
 	}
 	// The scanner opens a whole-content decode without a text gate, so wording
@@ -187,6 +212,9 @@ func (b *checkerTextBuilder) add(view bodyInjectionView) bool {
 		return appendPart(runs, "response_decoded_runs/v1") && addMatching(runs, true)
 	}
 	addDecoded := func(raw string) bool {
+		if !addWide(raw, true) {
+			return false
+		}
 		if !utf8.ValidString(raw) {
 			textual, err := isTextualResponseBody(b.ctx, []byte(raw))
 			if err != nil {
@@ -213,7 +241,7 @@ func (b *checkerTextBuilder) add(view bodyInjectionView) bool {
 		legacyRoot = text
 	}
 	if view.DecodeOnly || view.RequireFragmentBoundary || hasEncodedRun(normalized) ||
-		hasTextEncoding(normalized) || hasQuotedPrintable(text) || normalize.ContainsTags(text) {
+		hasTextEncoding(normalized) || hasQuotedPrintable(rawText) || normalize.ContainsTags(text) {
 		used, candidates := 0, 0
 		legacy := newResponseDecodeMemo(nil, false, nil)
 		legacy.visitDecoded = func(decoded, _ string) bool {
@@ -231,8 +259,8 @@ func (b *checkerTextBuilder) add(view bodyInjectionView) bool {
 		}
 		if len(legacyRoot) <= maxDecodeTotalBytes {
 			legacy.recursiveMode(legacyRoot, 0, !view.RequireFragmentBoundary)
-			if !legacy.stopVisiting && !view.DecodeOnly && legacyRoot != text && hasQuotedPrintable(text) {
-				legacy.recursiveMode(text, 0, !view.RequireFragmentBoundary)
+			if !legacy.stopVisiting && !view.DecodeOnly && legacyRoot != rawText && hasQuotedPrintable(rawText) {
+				legacy.recursiveMode(rawText, 0, !view.RequireFragmentBoundary)
 			}
 		} else {
 			b.reason = checker.ReasonTruncated
