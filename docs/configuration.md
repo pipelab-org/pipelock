@@ -1525,8 +1525,11 @@ Rules:
 - Each checker gets one item per MCP response or `tools/list`. Description
   findings are attributed to tools by part ID. Buffered text parts include
   distinct Unicode-normalized and decoded text views, including base64 and hex.
+  A decode that is not text as a whole contributes its readable runs.
   Each part is an independent view. If decoding reaches an inspection limit
   or the complete request exceeds the byte limit, assessment is incomplete.
+  Tool descriptions are sent as the original text plus Unicode-tag and
+  normalized views only; encoded descriptions are not decoded for the checker.
 - Outcomes that are not a complete benign assessment, watch results and
   dropped watch calls are logged as `injection_checker` events, with no
   content and no provider text. A known-answer self-test runs against every
