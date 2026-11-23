@@ -138,7 +138,7 @@ A signed `workspace-change-statement/v2` carries a per-workspace `control_surfac
 
 `pipelock posture verify --workspace-statement <path>` reports `control_surface_status`, `control_surface_changed`, and `control_surface_paths`. It exits 2 for incomplete evidence. It also exits 2 for observed control-path changes unless you pass `--allow-control-surface-changes`. That flag accepts observed changes in complete evidence. Archived v1 statements show `not_recorded` and retain their original verification rules.
 
-This is an end-of-session check. A tool with read-write access can change control paths during the session, and host tools can read changes before the warning appears. Snapshots cannot see edits reverted between observations or resolve Git settings outside the grant, including user and system config. The `plk-*` launchers and operator-managed services do not run this check yet.
+This is an end-of-session check against the state at launch. A control path that was already modified before launch is part of the baseline and is not reported. The fixed path list is not exhaustive: other files that run code when a project is opened or built, such as `AGENTS.md`-style instruction files, `.devcontainer`, build scripts, and programs named by Git config settings, appear only in the whole-workspace diff, which has its own budget. A tool with read-write access can change control paths during the session, and host tools can read changes before the warning appears. Snapshots cannot see edits reverted between observations or resolve Git settings outside the grant, including user and system config. The `plk-*` launchers and operator-managed services do not run this check yet.
 
 #### Preventing .git metadata tampering: isolated agent-owned clone
 
