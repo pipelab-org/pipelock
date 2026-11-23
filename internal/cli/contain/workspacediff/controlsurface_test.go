@@ -53,7 +53,7 @@ func newControlGit(t *testing.T) testGit {
 
 func (g testGit) command(t *testing.T, dir string, args ...string) (string, error) {
 	t.Helper()
-	cmd := exec.CommandContext(t.Context(), g.bin, args...) //nolint:gosec // G204: Git and its arguments are chosen by the test.
+	cmd := exec.CommandContext(t.Context(), g.bin, args...) // #nosec G204 -- Git and its arguments are chosen by the test.
 	cmd.Dir = dir
 	cmd.Env = []string{
 		"PATH=" + os.Getenv("PATH"),

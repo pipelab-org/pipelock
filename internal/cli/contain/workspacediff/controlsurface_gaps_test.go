@@ -17,7 +17,7 @@ func TestControlSurfaceReportsPermissionOnlyChange(t *testing.T) {
 	root := t.TempDir()
 	writeControlFixture(t, root, ".git/hooks/pre-commit", "#!/bin/sh\nexit 0\n")
 	before := controlSnapshot(t, root, DefaultControlSurfaceBudget())
-	if err := os.Chmod(filepath.Join(root, ".git", "hooks", "pre-commit"), 0o700); err != nil { //nolint:gosec // G302: the executable bit is the behavior under test.
+	if err := os.Chmod(filepath.Join(root, ".git", "hooks", "pre-commit"), 0o700); err != nil { // #nosec G302 -- the executable bit is the behavior under test.
 		t.Fatal(err)
 	}
 	after := controlSnapshot(t, root, DefaultControlSurfaceBudget())
