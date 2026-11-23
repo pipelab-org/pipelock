@@ -166,7 +166,12 @@ func (env controlAuditEnv) record(w io.Writer, dir *os.File, roots []string, rep
 		if health.Incomplete || health.NestedDiscoveryPartial {
 			incomplete = true
 			printWorkspaceControls(w, map[string]workspacediff.ControlSurfaceStatement{root: health})
-			_, _ = fmt.Fprintf(w, "Resolve the observation issue, then run %s\n", recordRemedy(root, true))
+			if !health.Incomplete {
+				// Recording again cannot widen discovery; the audit flag is the control.
+				_, _ = fmt.Fprintf(w, "Audits of this workspace report partial nested discovery until it is accepted with --allow-partial-nested-discovery\n")
+			} else {
+				_, _ = fmt.Fprintf(w, "Resolve the observation issue, then run %s\n", recordRemedy(root, true))
+			}
 			// A complete baseline is the evidence the next replacement is
 			// reviewed against. An incomplete observation cannot stand in for
 			// it: after one, the preview would no longer show what changed.

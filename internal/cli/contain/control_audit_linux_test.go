@@ -561,3 +561,52 @@ func TestControlAuditStoreRejectsUnsafeAncestors(t *testing.T) {
 		})
 	}
 }
+
+func TestControlAuditPartialRecordNamesTheControlThatAcceptsIt(t *testing.T) {
+	env, root := controlAuditFixture(t)
+	env.budget.MaxNestedDepth = 1
+	writeAuditFixture(t, root, "ordinary/deep/leaf", "fixture")
+	out, _ := runAuditFixture(t, env, controlAuditOptions{workspace: root, record: true}, 2)
+	if !strings.Contains(out, "--allow-partial-nested-discovery") || strings.Contains(out, "Resolve the observation issue") {
+		t.Fatalf("a partial record must name the flag that accepts it, not a replacement that cannot widen discovery: %s", out)
+	}
+	_, _ = runAuditFixture(t, env, controlAuditOptions{workspace: root, allowPartial: true}, 0)
+}
+
+// The status values are documented twice by hand; the documented set must be
+// exactly the set the code can print.
+func TestControlSurfaceStatusValuesMatchDocumentation(t *testing.T) {
+	produced := map[string]struct{}{workspaceControlUnavailable: {}}
+	for mask := range 8 {
+		produced[workspaceControlStatus(mask&1 != 0, mask&2 != 0, mask&4 != 0)] = struct{}{}
+	}
+	data, err := os.ReadFile("../../../docs/contain-cli.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const marker = "`workspace_control_surface="
+	count := 0
+	for _, line := range strings.Split(string(data), "\n") {
+		_, rest, ok := strings.Cut(line, marker)
+		if !ok {
+			continue
+		}
+		list, _, _ := strings.Cut(rest, "`")
+		documented := map[string]struct{}{}
+		for value := range strings.SplitSeq(list, "|") {
+			documented[value] = struct{}{}
+		}
+		if len(documented) != len(produced) {
+			t.Fatalf("documented %v, code prints %v", documented, produced)
+		}
+		for value := range produced {
+			if _, ok := documented[value]; !ok {
+				t.Fatalf("documented %v, code prints %v", documented, produced)
+			}
+		}
+		count++
+	}
+	if count == 0 {
+		t.Fatal("documentation no longer lists the status values")
+	}
+}
