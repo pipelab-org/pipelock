@@ -378,7 +378,7 @@ func (w *controlWalker) record(path string, info fs.FileInfo) controlEntry {
 			e.Oversize = true
 		} else {
 			dev, ino, ok := statIDsWithInode(info)
-			digest, oversize, err := hashFileSafe(w.root, path, filepath.Join(w.rootPath, path), w.capBytes, dev, ino, ok)
+			digest, oversize, err := hashFileSafe(w.snapshotFile(path, dev, ino, ok), w.capBytes)
 			if err != nil {
 				w.unreadable(path, fmt.Sprintf("hash file: %v", err))
 				return controlEntry{}
@@ -419,6 +419,16 @@ func (w *controlWalker) following(source string, fn func()) {
 	w.source = source
 	defer func() { w.source = previous }()
 	fn()
+}
+
+// snapshotFile describes a file the walk observed, to be opened against the
+// workspace mount it checked.
+func (w *controlWalker) snapshotFile(path string, dev, ino uint64, haveIDs bool) snapshotFile {
+	return snapshotFile{
+		root: w.root, relPath: path, path: filepath.Join(w.rootPath, path),
+		dev: dev, ino: ino, haveIDs: haveIDs,
+		workspaceMount: w.rootMount, workspaceMountKnown: w.mountKnown,
+	}
 }
 
 // followSymlink observes the in-workspace target of a recorded control

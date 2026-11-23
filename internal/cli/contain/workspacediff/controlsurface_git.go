@@ -271,7 +271,7 @@ func (w *controlWalker) readObserved(entry controlEntry) ([]byte, bool) {
 		return nil, false
 	}
 	dev, ino, ok := statIDsWithInode(entry.info)
-	file, err := openSnapshotRegular(w.root, entry.Path, filepath.Join(w.rootPath, entry.Path), dev, ino, ok)
+	file, err := openSnapshotRegular(w.snapshotFile(entry.Path, dev, ino, ok))
 	if err != nil {
 		w.unreadable(entry.Path, fmt.Sprintf("open Git metadata: %v", err))
 		return nil, false
