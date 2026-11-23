@@ -487,6 +487,10 @@ func (w *controlWalker) resolveLinkTarget(link controlEntry) (string, pathResolu
 // inspected here the same way, so the result is where Git lands, inside the
 // workspace or not.
 //
+// The value is a literal path, as the kernel reads a symlink target. Git's own
+// spellings for a home or installation path are not literal, so the callers that
+// read a value from Git metadata screen them first, in workspaceTarget.
+//
 // The last component is returned as named and is not followed: the caller
 // records it, and a symlink there is followed as a recorded link. Each symlink
 // passed on the way is recorded as evidence, attributed to source, the path
@@ -500,8 +504,7 @@ func (w *controlWalker) resolveLinkTarget(link controlEntry) (string, pathResolu
 // inspected, such as one on another mount, stops the resolution. A directory
 // that does not exist yet names no configuration.
 func (w *controlWalker) resolveWorkspacePath(source, base, value string) (string, pathResolution) {
-	if value == "" || strings.ContainsRune(value, 0) ||
-		strings.HasPrefix(value, "~") || strings.HasPrefix(value, "%(prefix)/") {
+	if value == "" || strings.ContainsRune(value, 0) {
 		return "", pathOutside
 	}
 	var pending []string

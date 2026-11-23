@@ -156,8 +156,15 @@ func (w *controlWalker) configuredWorktree(entry controlEntry) (value string, se
 
 // workspaceTarget resolves a path named in Git metadata to the workspace place
 // Git finds, or reports that it names none this walk observes. See
-// resolveWorkspacePath.
+// resolveWorkspacePath. Git expands a leading "~" to a home directory and
+// "%(prefix)/" to its installation, so a value spelled that way names a place
+// outside the workspace whatever the workspace holds. That expansion belongs to
+// Git metadata alone: a symlink target is a literal path to the kernel, and is
+// resolved without it.
 func (w *controlWalker) workspaceTarget(source, base, value string) (string, bool) {
+	if strings.HasPrefix(value, "~") || strings.HasPrefix(value, "%(prefix)/") {
+		return "", false
+	}
 	rel, res := w.resolveWorkspacePath(source, base, value)
 	return rel, res == pathResolved
 }

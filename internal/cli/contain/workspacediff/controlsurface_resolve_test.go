@@ -476,3 +476,37 @@ func TestControlSurfaceReadsASymlinkedConfigWhoseFinalComponentIsMissing(t *test
 			".git/config", "Git config symlink target could not be observed")
 	})
 }
+
+// The kernel resolves a symlink target literally. A target spelled like a Git
+// home or installation path is an ordinary directory name there, so an edit to
+// what it names is still an edit to a control path.
+func TestControlSurfaceFollowsASymlinkTargetSpelledLikeAGitPath(t *testing.T) {
+	for _, target := range []string{"~settings/envrc", "~/envrc", "%(prefix)/envrc"} {
+		t.Run(target, func(t *testing.T) {
+			root := t.TempDir()
+			writeControlFixture(t, root, filepath.FromSlash(target), "before")
+			symlinkFixture(t, root, target, ".envrc")
+			budget := DefaultControlSurfaceBudget()
+			before := controlSnapshot(t, root, budget)
+			if diff := controlDiff(t, before, controlSnapshot(t, root, budget)); diff.Changed || diff.Incomplete {
+				t.Fatalf("an unchanged workspace must read clean and complete: %+v", diff)
+			}
+			writeControlFixture(t, root, filepath.FromSlash(target), "after")
+			expectControlPath(t, controlDiff(t, before, controlSnapshot(t, root, budget)), target)
+		})
+	}
+	t.Run("a Git value spelled that way still names no workspace place", func(t *testing.T) {
+		w := newTestWalker(t, t.TempDir())
+		for _, value := range []string{"~settings/envrc", "~/envrc", "%(prefix)/envrc"} {
+			if got, inside := w.workspaceTarget("source", ".", value); inside {
+				t.Fatalf("workspaceTarget(%q) = %q, want no workspace place", value, got)
+			}
+		}
+	})
+	t.Run("a NUL in a link target stays invalid", func(t *testing.T) {
+		w := newTestWalker(t, t.TempDir())
+		if _, res := w.resolveWorkspacePath("source", ".", "a\x00b"); res == pathResolved {
+			t.Fatal("a NUL byte cannot name a path")
+		}
+	})
+}
