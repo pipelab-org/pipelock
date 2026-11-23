@@ -2491,6 +2491,8 @@ type v3FirstSSEFlushFault struct {
 	flushes int
 }
 
+func (w *v3FirstSSEFlushFault) Flush() { _ = w.FlushError() }
+
 func (w *v3FirstSSEFlushFault) FlushError() error {
 	w.flushes++
 	if w.flushes == 1 {
