@@ -236,6 +236,23 @@ func overBudget() Assessment {
 	return Assessment{State: StateIncomplete, Status: StatusNotChecked, Reason: ReasonOverBudget}
 }
 
+// producerStopped reports the outcome for an item its producer could not finish
+// building, before the item is validated: a build stopped by the byte budget or
+// by cancellation can hold no parts at all, which is not a malformed request.
+// A canceled build reports what a request canceled in flight reports.
+func producerStopped(item Item) (Assessment, bool) {
+	if item.Completeness == nil || item.Completeness.Status != Partial {
+		return Assessment{}, false
+	}
+	switch item.Completeness.Reason {
+	case ReasonOverBudget:
+		return overBudget(), true
+	case ReasonCanceled:
+		return failure(StatusNotChecked, ReasonCanceled), true
+	}
+	return Assessment{}, false
+}
+
 func validReason(r Reason) bool {
 	switch r {
 	case ReasonUnavailable, ReasonTimeout, ReasonCanceled, ReasonRefused, ReasonUnsupported,

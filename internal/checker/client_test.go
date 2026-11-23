@@ -237,6 +237,10 @@ func TestNoCall(t *testing.T) {
 			i.Completeness = &Completeness{Status: Partial, Reason: ReasonOverBudget}
 			i.Parts, i.SubmittedBytes = nil, 0
 		}, state: StateIncomplete, reason: ReasonOverBudget},
+		{name: "producer_canceled_no_parts", item: func(i *Item) {
+			i.Completeness = &Completeness{Status: Partial, Reason: ReasonCanceled}
+			i.Parts, i.SubmittedBytes = nil, 0
+		}, state: StateNotAssessed, reason: ReasonCanceled},
 		{name: "producer_truncated_no_parts_is_malformed", item: func(i *Item) {
 			i.Completeness = &Completeness{Status: Partial, Reason: ReasonTruncated}
 			i.Parts, i.SubmittedBytes = nil, 0

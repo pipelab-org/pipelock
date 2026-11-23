@@ -104,8 +104,8 @@ func (j *Jev) Check(ctx context.Context, item Item, policy Policy) Assessment {
 	if item.Kind != KindText {
 		return failure(StatusNotChecked, ReasonUnsupported)
 	}
-	if item.Completeness != nil && item.Completeness.Status == Partial && item.Completeness.Reason == ReasonOverBudget {
-		return overBudget()
+	if a, ok := producerStopped(item); ok {
+		return a
 	}
 	if !validItem(item) {
 		return failure(StatusInvalid, ReasonMalformed)

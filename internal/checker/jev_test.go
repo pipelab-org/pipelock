@@ -237,6 +237,19 @@ func TestJevFailsClosed(t *testing.T) {
 			t.Fatalf("over-budget item sent %d requests", js.requests.Load())
 		}
 	})
+	t.Run("producer_canceled_no_parts_no_request", func(t *testing.T) {
+		js, pool := newJevServer(t, jevAnswer(`{}`))
+		item := testItem()
+		item.Completeness = &Completeness{Status: Partial, Reason: ReasonCanceled}
+		item.Parts, item.SubmittedBytes = nil, 0
+		got := newTestJev(t, js, pool, testJevKey).Check(t.Context(), item, testPolicy())
+		if got.State != StateNotAssessed || got.Status != StatusNotChecked || got.Reason != ReasonCanceled {
+			t.Fatalf("canceled build: %+v", got)
+		}
+		if js.requests.Load() != 0 {
+			t.Fatalf("canceled build sent %d requests", js.requests.Load())
+		}
+	})
 	t.Run("timeout", func(t *testing.T) {
 		release := make(chan struct{})
 		js, pool := newJevServer(t, func(http.ResponseWriter) { <-release })
