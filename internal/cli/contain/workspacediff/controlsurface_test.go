@@ -886,3 +886,95 @@ func TestControlSurfaceDiscoveryDirectoryCountLimit(t *testing.T) {
 		t.Fatalf("want partial discovery from the directory count limit: %+v", diff)
 	}
 }
+
+// An agent worktree checkout must report the same control path changes as the
+// same project placed as an ordinary nested repository. Only its source files
+// are exempt, and a plain nested project never reports those either, so the two
+// layouts must agree path for path. This compares observations across layouts
+// rather than against a fixed expectation list.
+func TestControlSurfaceWorktreeSlotMatchesPlainNestedProject(t *testing.T) {
+	edits := []string{
+		"src/main.go",
+		".mcp.json",
+		".claude/settings.json",
+		"src/.mcp.json",
+		"src/.envrc",
+		"src/.claude/skills/example/SKILL.md",
+		"deep/a/b/c/.vscode/tasks.json",
+		"vendor/lib/.git/hooks/pre-commit",
+		"vendor/lib/.claude/commands/run.md",
+	}
+	type layout struct {
+		name  string
+		build func(t *testing.T, git testGit, root string) string
+	}
+	mkdir := func(t *testing.T, dir string) {
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	worktree := func(t *testing.T, git testGit, project, rel string) string {
+		mkdir(t, project)
+		git.init(t, project)
+		git.commit(t, project, "README.md")
+		dir := filepath.Join(project, filepath.FromSlash(rel))
+		git.run(t, project, "worktree", "add", "-qb", "example", dir)
+		return dir
+	}
+	layouts := []layout{
+		{"plain nested project", func(t *testing.T, git testGit, root string) string {
+			git.init(t, root)
+			dir := filepath.Join(root, "project")
+			mkdir(t, dir)
+			git.init(t, dir)
+			git.commit(t, dir, "README.md")
+			return dir
+		}},
+		{"root worktree slot", func(t *testing.T, git testGit, root string) string {
+			return worktree(t, git, root, ".claude/worktrees/example")
+		}},
+		{"nested project worktree slot", func(t *testing.T, git testGit, root string) string {
+			git.init(t, root)
+			return worktree(t, git, filepath.Join(root, "project"), ".claude/worktrees/example")
+		}},
+	}
+	observed := make(map[string][]string, len(layouts))
+	for _, l := range layouts {
+		git := newControlGit(t)
+		root := t.TempDir()
+		dir := l.build(t, git, root)
+		mkdir(t, filepath.Join(dir, "vendor", "lib"))
+		git.init(t, filepath.Join(dir, "vendor", "lib"))
+		for _, path := range edits {
+			writeControlFixture(t, dir, path, "before")
+		}
+		prefix, err := filepath.Rel(root, dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		budget := DefaultControlSurfaceBudget()
+		before := controlSnapshot(t, root, budget)
+		var seen []string
+		for _, path := range edits {
+			writeControlFixture(t, dir, path, "changed "+path)
+			diff := controlDiff(t, before, controlSnapshot(t, root, budget))
+			if diff.Incomplete || diff.NestedDiscoveryPartial {
+				t.Fatalf("%s: %s: incomplete observation %+v", l.name, path, diff)
+			}
+			if slices.Contains(diff.Paths(), filepath.ToSlash(filepath.Join(prefix, path))) {
+				seen = append(seen, path)
+			}
+			writeControlFixture(t, dir, path, "before")
+		}
+		observed[l.name] = seen
+	}
+	want := observed[layouts[0].name]
+	if slices.Contains(want, "src/main.go") || len(want) != len(edits)-1 {
+		t.Fatalf("plain nested project observed %q, want every control path and no source file", want)
+	}
+	for _, l := range layouts[1:] {
+		if got := observed[l.name]; !slices.Equal(got, want) {
+			t.Errorf("%s observed %q, plain nested project observed %q", l.name, got, want)
+		}
+	}
+}
