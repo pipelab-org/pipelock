@@ -1805,6 +1805,8 @@ func TestPostureVerify_WorkspaceControlSurface(t *testing.T) {
 		{name: "changed allowed", observation: workspacediff.ControlSurfaceStatement{Changed: true, Modified: []string{".envrc"}}, status: "changed", allow: true},
 		{name: "incomplete", observation: workspacediff.ControlSurfaceStatement{Incomplete: true, IncompleteReason: "nested limit"}, status: "incomplete", fail: true},
 		{name: "incomplete with changes allowed", observation: workspacediff.ControlSurfaceStatement{Changed: true, Modified: []string{".envrc"}, Incomplete: true, IncompleteReason: "nested limit"}, status: "incomplete", allow: true, fail: true},
+		{name: "paths without the changed flag", observation: workspacediff.ControlSurfaceStatement{Added: []string{".envrc"}}, status: "changed", fail: true},
+		{name: "unreadable path without the incomplete flag", observation: workspacediff.ControlSurfaceStatement{Unreadable: []workspacediff.UnreadableEntry{{Path: ".mcp.json", Reason: "example"}}}, status: "incomplete", allow: true, fail: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fix := newTestVerifyFixture(t, perfectEvidence())
@@ -1835,7 +1837,7 @@ func TestPostureVerify_WorkspaceControlSurface(t *testing.T) {
 				}
 				if !jsonMode {
 					if !strings.Contains(out.String(), "control_surface_status="+tc.status) ||
-						(tc.observation.Changed && !strings.Contains(out.String(), ".envrc")) {
+						(len(tc.observation.Paths()) > 0 && !strings.Contains(out.String(), ".envrc")) {
 						t.Fatalf("text output omitted control evidence:\n%s", out.String())
 					}
 					continue
@@ -1853,8 +1855,9 @@ func TestPostureVerify_WorkspaceControlSurface(t *testing.T) {
 					t.Fatalf("decode verifier output: %v\n%s", err, out.String())
 				}
 				ws := got.WorkspaceStatement
-				if !ws.Bound || got.Passed == tc.fail || ws.Status != tc.status || ws.Changed != tc.observation.Changed ||
-					(tc.observation.Changed && !slices.Contains(ws.Paths, filepath.Join(statement.Root, ".envrc"))) {
+				wantChanged := tc.observation.Changed || len(tc.observation.Paths()) > 0
+				if !ws.Bound || got.Passed == tc.fail || ws.Status != tc.status || ws.Changed != wantChanged ||
+					(len(tc.observation.Paths()) > 0 && !slices.Contains(ws.Paths, filepath.Join(statement.Root, ".envrc"))) {
 					t.Fatalf("unexpected verifier output:\n%s", out.String())
 				}
 			}
