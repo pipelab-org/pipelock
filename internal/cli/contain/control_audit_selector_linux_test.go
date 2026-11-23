@@ -173,7 +173,7 @@ func TestControlAuditSelectorMatrix(t *testing.T) {
 			writeAuditFixture(t, g, ".envrc", before)
 			writeAuditFixture(t, d, ".envrc", other)
 			recorded, _ := controlAuditFixture(t)
-			if err := os.MkdirAll(filepath.Dir(recorded.store.path), 0o750); err != nil {
+			if err := os.MkdirAll(filepath.Dir(recorded.store.path), 0o700); err != nil {
 				t.Fatal(err)
 			}
 			// Baseline for G, spelled canonically, in the store the audit reads.
