@@ -149,14 +149,10 @@ func (s *Server) executeReloadLocked(newCfg *config.Config, restoringPriorPolicy
 	default:
 	}
 	oldCfg := s.proxy.CurrentConfig()
-	liveFormat := config.ReceiptFormatLegacy
-	if s.receiptWriter != nil {
-		liveFormat = config.ReceiptFormatV3
-	}
-	// An omitted format inherits the active directory format. Directory changes
-	// are handled separately as restart-bound recorder settings.
-	if format := newCfg.FlightRecorder.ReceiptFormat; format != "" && format != liveFormat {
-		return errors.New("flight_recorder.receipt_format changed; restart required")
+	if oldCfg != nil {
+		if err := checkReceiptFormatReload(oldCfg.FlightRecorder, newCfg.FlightRecorder, s.receiptWriter != nil); err != nil {
+			return err
+		}
 	}
 	if s.receiptWriter != nil {
 		if err := newCfg.ValidateReceiptV3(); err != nil {

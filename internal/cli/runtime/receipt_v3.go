@@ -117,6 +117,31 @@ func serverReceiptSurfaces(cfg *config.Config, hasMCPListener, reverseFlag bool)
 	return surfaces
 }
 
+func checkReceiptFormatReload(old, next config.FlightRecorder, liveV3 bool) error {
+	liveFormat := config.ReceiptFormatLegacy
+	if liveV3 {
+		liveFormat = config.ReceiptFormatV3
+	}
+	format := next.ReceiptFormat
+	if format == "" {
+		format = liveFormat
+		if next.Dir != old.Dir {
+			switched, err := v3.DirectoryHasV3(next.Dir)
+			if err != nil {
+				return err
+			}
+			format = config.ReceiptFormatLegacy
+			if switched {
+				format = config.ReceiptFormatV3
+			}
+		}
+	}
+	if format != liveFormat {
+		return errors.New("flight_recorder.receipt_format changed; restart required")
+	}
+	return nil
+}
+
 func checkV3ReloadCoverage(oldCfg, newCfg *config.Config, hasMCPListener, reverseFlag bool) error {
 	oldFR, newFR := oldCfg.FlightRecorder, newCfg.FlightRecorder
 	switch {

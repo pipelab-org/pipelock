@@ -217,6 +217,27 @@ func TestRuntimeReceiptReloadLegacyDefault(t *testing.T) {
 	if strings.Contains(stderr.String(), "flight_recorder settings changed") {
 		t.Fatalf("no-op receipt format reload emitted restart warning: %s", stderr.String())
 	}
+	switched := t.TempDir()
+	if err := os.WriteFile(filepath.Join(switched, "stream.receipt-v3.jsonl"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, format, dir string
+	}{
+		{"explicit v3", config.ReceiptFormatV3, ""},
+		{"directory-selected v3", "", switched},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := config.LoadBytes([]byte(body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg.FlightRecorder.ReceiptFormat, cfg.FlightRecorder.Dir = tc.format, tc.dir
+			if err := s.Reload(cfg); err == nil || !strings.Contains(err.Error(), "receipt_format changed; restart required") {
+				t.Fatalf("legacy reload error = %v, want format change rejection", err)
+			}
+		})
+	}
 }
 
 func TestRuntimeReceiptV3IncompleteDrain(t *testing.T) {
