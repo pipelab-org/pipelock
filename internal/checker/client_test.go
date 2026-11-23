@@ -229,6 +229,18 @@ func TestNoCall(t *testing.T) {
 		{name: "malformed", item: func(i *Item) { i.Completeness = nil }, state: StateNotAssessed, reason: ReasonMalformed},
 		{name: "content_budget", policy: func(p *Policy) { p.MaxRequestBytes = 4 }, state: StateIncomplete, reason: ReasonOverBudget},
 		{name: "envelope_budget", policy: func(p *Policy) { p.MaxRequestBytes = 10 }, state: StateIncomplete, reason: ReasonOverBudget},
+		// A producer that stopped on the budget reports it locally, before any
+		// shape check: the budget stop can leave zero parts, which would
+		// otherwise read as a malformed item and fail the wrong way.
+		{name: "producer_over_budget_with_parts", item: func(i *Item) { i.Completeness = &Completeness{Status: Partial, Reason: ReasonOverBudget} }, state: StateIncomplete, reason: ReasonOverBudget},
+		{name: "producer_over_budget_no_parts", item: func(i *Item) {
+			i.Completeness = &Completeness{Status: Partial, Reason: ReasonOverBudget}
+			i.Parts, i.SubmittedBytes = nil, 0
+		}, state: StateIncomplete, reason: ReasonOverBudget},
+		{name: "producer_truncated_no_parts_is_malformed", item: func(i *Item) {
+			i.Completeness = &Completeness{Status: Partial, Reason: ReasonTruncated}
+			i.Parts, i.SubmittedBytes = nil, 0
+		}, state: StateNotAssessed, reason: ReasonMalformed},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

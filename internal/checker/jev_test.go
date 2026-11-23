@@ -206,6 +206,37 @@ func TestJevFailsClosed(t *testing.T) {
 			t.Fatalf("assessment=%+v requests=%d", got, js.requests.Load())
 		}
 	})
+	t.Run("submitted_bytes_over_budget_no_request", func(t *testing.T) {
+		js, pool := newJevServer(t, jevAnswer(`{}`))
+		p := testPolicy()
+		p.MaxRequestBytes = testItem().SubmittedBytes - 1
+		got := newTestJev(t, js, pool, testJevKey).Check(t.Context(), testItem(), p)
+		if got.State != StateIncomplete || got.Status != StatusNotChecked || got.Reason != ReasonOverBudget || js.requests.Load() != 0 {
+			t.Fatalf("assessment=%+v requests=%d", got, js.requests.Load())
+		}
+	})
+	t.Run("producer_over_budget_no_request", func(t *testing.T) {
+		// The producer stopped on the budget: the item may carry no parts at
+		// all, and that must read as an incomplete assessment, not as a
+		// malformed item.
+		js, pool := newJevServer(t, jevAnswer(`{}`))
+		j := newTestJev(t, js, pool, testJevKey)
+		for name, mutate := range map[string]func(*Item){
+			"with_parts": func(*Item) {},
+			"no_parts":   func(i *Item) { i.Parts, i.SubmittedBytes = nil, 0 },
+		} {
+			item := testItem()
+			item.Completeness = &Completeness{Status: Partial, Reason: ReasonOverBudget}
+			mutate(&item)
+			got := j.Check(t.Context(), item, testPolicy())
+			if got.State != StateIncomplete || got.Status != StatusNotChecked || got.Reason != ReasonOverBudget {
+				t.Fatalf("%s: %+v", name, got)
+			}
+		}
+		if js.requests.Load() != 0 {
+			t.Fatalf("over-budget item sent %d requests", js.requests.Load())
+		}
+	})
 	t.Run("timeout", func(t *testing.T) {
 		release := make(chan struct{})
 		js, pool := newJevServer(t, func(http.ResponseWriter) { <-release })
