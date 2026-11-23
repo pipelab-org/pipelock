@@ -111,8 +111,8 @@ func (w *controlWalker) configuredWorktree(entry controlEntry) (value string, se
 // without opening any external repository or config. Git resolves a path one
 // component at a time, so a ".." after a symlinked component leaves that
 // component's target; when cleaning the path lexically would name a different
-// place, the path cannot be observed and source, the file that named it, is
-// reported unreadable.
+// place, inside the workspace or not, the path cannot be observed and source,
+// the file that named it, is reported unreadable.
 func (w *controlWalker) workspaceTarget(source, base, value string) (string, bool) {
 	if value == "" || strings.ContainsRune(value, 0) ||
 		strings.HasPrefix(value, "~") || strings.HasPrefix(value, "%(prefix)/") {
@@ -126,26 +126,27 @@ func (w *controlWalker) workspaceTarget(source, base, value string) (string, boo
 		joined = filepath.Join(w.rootPath, base, value)
 	}
 	rel, err := filepath.Rel(w.rootPath, filepath.Clean(joined))
-	if err != nil || !filepath.IsLocal(rel) {
-		return "", false
-	}
-	if slices.Contains(strings.Split(filepath.ToSlash(value), "/"), "..") && !w.resolvesLexically(base, value) {
+	inside := err == nil && filepath.IsLocal(rel)
+	if slices.Contains(strings.Split(filepath.ToSlash(value), "/"), "..") && w.dotDotAmbiguous(base, value, inside) {
 		w.unreadable(source, "configured path resolution is ambiguous")
 		return "", false
 	}
-	return rel, true
+	return rel, inside
 }
 
-// resolvesLexically reports whether every ".." in value follows a plain
-// directory, whose parent is then the lexical parent. A ".." after a symlink,
-// or after a component that cannot be inspected, is not a place cleaning finds.
-func (w *controlWalker) resolvesLexically(base, value string) bool {
+// dotDotAmbiguous reports whether a ".." in value follows anything but a plain
+// directory, whose parent is then the lexical parent. A ".." after a symlink, or
+// after a component that cannot be inspected, leaves somewhere cleaning does not
+// find, possibly inside the workspace. A ".." that leaves the workspace through
+// plain directories ends what can be observed. inside is the lexical result,
+// which an absolute path outside the workspace cannot confirm.
+func (w *controlWalker) dotDotAmbiguous(base, value string, inside bool) bool {
 	var stack []string
 	rest := value
 	if filepath.IsAbs(value) {
-		var inside bool
-		if rest, inside = strings.CutPrefix(value, w.rootPath+string(filepath.Separator)); !inside {
-			return false
+		var rooted bool
+		if rest, rooted = strings.CutPrefix(value, w.rootPath+string(filepath.Separator)); !rooted {
+			return inside
 		}
 	} else {
 		stack = slices.DeleteFunc(strings.Split(filepath.ToSlash(base), "/"), func(part string) bool {
@@ -163,14 +164,14 @@ func (w *controlWalker) resolvesLexically(base, value string) bool {
 			// becomes a symlink, the next snapshot finds that and is ambiguous.
 			info, err := w.root.Lstat(strings.Join(stack, "/"))
 			if err != nil && !errors.Is(err, fs.ErrNotExist) || err == nil && !info.IsDir() {
-				return false
+				return true
 			}
 			stack = stack[:len(stack)-1]
 		default:
 			stack = append(stack, part)
 		}
 	}
-	return true
+	return false
 }
 
 // A linked worktree records the path to its .git file in its metadata.

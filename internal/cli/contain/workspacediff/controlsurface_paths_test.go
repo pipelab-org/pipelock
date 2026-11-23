@@ -311,6 +311,13 @@ func TestControlSurfaceReportsAmbiguousDotDotConfigPaths(t *testing.T) {
 			writeControlFixture(t, root, "deep/sub/keep", "keep")
 			writeControlFixture(t, root, "deep/hooks/pre-commit", "before")
 		}, "deep/hooks/pre-commit", ".git/config"},
+		{"hooks path that leaves the workspace lexically", func(t *testing.T, git testGit, root string) {
+			git.init(t, root)
+			git.run(t, root, "config", "--local", "core.hooksPath", "jump/../../hooks")
+			symlink(t, root, "deep/sub/sub2", "jump")
+			writeControlFixture(t, root, "deep/sub/sub2/keep", "keep")
+			writeControlFixture(t, root, "deep/hooks/pre-commit", "before")
+		}, "deep/hooks/pre-commit", ".git/config"},
 		{"include path", func(t *testing.T, git testGit, root string) {
 			git.init(t, root)
 			git.run(t, root, "config", "--local", "include.path", "jump/../shared.cfg")
@@ -344,6 +351,19 @@ func TestControlSurfaceReportsAmbiguousDotDotConfigPaths(t *testing.T) {
 			}
 		})
 	}
+	t.Run("a path that leaves the workspace through plain directories is not ambiguous", func(t *testing.T) {
+		git := newControlGit(t)
+		root := t.TempDir()
+		git.init(t, root)
+		git.run(t, root, "config", "--local", "core.hooksPath", "../shared-hooks")
+		git.run(t, root, "config", "--local", "include.path", "sub/../../shared.cfg")
+		writeControlFixture(t, root, "sub/keep", "keep")
+		budget := DefaultControlSurfaceBudget()
+		before := controlSnapshot(t, root, budget)
+		if diff := controlDiff(t, before, controlSnapshot(t, root, budget)); diff.Incomplete || diff.Changed {
+			t.Fatalf("a path outside the workspace is out of scope, not ambiguous: %+v", diff)
+		}
+	})
 	t.Run("plain directory components resolve the same way", func(t *testing.T) {
 		git := newControlGit(t)
 		root := t.TempDir()
