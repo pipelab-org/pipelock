@@ -616,26 +616,65 @@ func TestCheckNodeThroughProxy(t *testing.T) {
 }
 
 func TestCheckDNSFailure(t *testing.T) {
-	t.Run("clean failure via Pipelock policy denial 403", func(t *testing.T) {
-		env := newDoctorEnv(t, func(args []string) (string, int, error) {
-			if !argsContain(args, dnsFailureHost, "%{http_connect}") {
-				t.Fatalf("did not target nxdomain: %v", args)
+	const (
+		forbidden   = "HTTP/1.1 403 Forbidden\r\n"
+		badGateway  = "HTTP/1.1 502 Bad Gateway\r\n"
+		unavailable = "HTTP/1.1 503 Service Unavailable\r\n"
+		ssrfReason  = "X-Pipelock-Block-Reason: ssrf_private_ip\r\n"
+		ssrfLayer   = "X-Pipelock-Block-Reason-Layer: ssrf\r\n"
+	)
+	for _, tc := range []struct {
+		name, response, status, reason, want, remedy string
+		exitCode                                     int
+	}{
+		{"SSRF refusal", forbidden + ssrfReason + ssrfLayer + "\r\n", "403", "ssrf_private_ip", statusPass, "", 7},
+		{"plain dial failure", badGateway + "Content-Type: text/plain\r\n\r\n", "502", "", statusPass, "", 7},
+		{"port policy", forbidden + "X-Pipelock-Block-Reason: connect_port_not_allowed\r\n\r\n", "403", "connect_port_not_allowed", statusUnknown, "forward_proxy.connect_ports", 56},
+		{"domain policy", forbidden + "X-Pipelock-Block-Reason: domain_blocklist\r\n\r\n", "403", "domain_blocklist", statusUnknown, "domain blocklist", 56},
+		{"strict allowlist", forbidden + "X-Pipelock-Block-Reason: parse_error\r\nX-Pipelock-Block-Reason-Layer: allowlist\r\n\r\n", "403", "parse_error", statusUnknown, "strict-mode allowlist", 56},
+		{"kill switch", unavailable + "X-Pipelock-Block-Reason: kill_switch_active\r\n\r\n", "503", "kill_switch_active", statusUnknown, "kill switch", 56},
+		{"tunnel capacity", unavailable + "X-Pipelock-Block-Reason: rate_limit\r\nX-Pipelock-Block-Reason-Layer: tunnel_capacity\r\n\r\n", "503", "rate_limit", statusUnknown, "tunnel capacity", 56},
+		{"rate limit", "HTTP/1.1 429 Too Many Requests\r\nX-Pipelock-Block-Reason: rate_limit\r\n\r\n", "429", "rate_limit", statusUnknown, "rate limit", 56},
+		{"pattern unavailable", unavailable + "X-Pipelock-Block-Reason: pattern_unavailable\r\n\r\n", "503", "pattern_unavailable", statusUnknown, "scanner", 56},
+		{"other server error", unavailable + "\r\n", "503", "", statusUnknown, "", 56},
+		{"502 with block reason", badGateway + ssrfReason + ssrfLayer + "\r\n", "502", "ssrf_private_ip", statusUnknown, "", 56},
+		{"502 with empty block reason", badGateway + "X-Pipelock-Block-Reason: \r\n\r\n", "502", "", statusUnknown, "", 56},
+		{"502 with orphan block layer", badGateway + ssrfLayer + "\r\n", "502", "", statusUnknown, "", 56},
+		{"502 without captured headers", "", "502", "", statusUnknown, "", 56},
+		{"502 with malformed headers", badGateway + "Content-Type text/plain\r\n\r\n", "502", "", statusUnknown, "", 56},
+		{"502 with truncated headers", badGateway + "Content-Type: text/plain\r\n", "502", "", statusUnknown, "", 56},
+		{"403 without block reason", forbidden + ssrfLayer + "\r\n", "403", "", statusUnknown, "", 56},
+		{"unexpected SSRF reason", forbidden + "X-Pipelock-Block-Reason: ssrf_metadata\r\n" + ssrfLayer + "\r\n", "403", "ssrf_metadata", statusUnknown, "", 56},
+		{"403 without block layer", forbidden + ssrfReason + "\r\n", "403", "ssrf_private_ip", statusUnknown, "", 56},
+		{"core SSRF floor", forbidden + ssrfReason + "X-Pipelock-Block-Reason-Layer: core_ssrf\r\n\r\n", "403", "ssrf_private_ip", statusUnknown, "", 56},
+		{"duplicate reasons", forbidden + ssrfReason + "X-Pipelock-Block-Reason: domain_blocklist\r\n" + ssrfLayer + "\r\n", "403", "ssrf_private_ip", statusUnknown, "", 56},
+		{"duplicate layers", forbidden + ssrfReason + ssrfLayer + "X-Pipelock-Block-Reason-Layer: core_ssrf\r\n\r\n", "403", "ssrf_private_ip", statusUnknown, "", 56},
+		{"conflicting status", "HTTP/1.1 404 Not Found\r\n" + ssrfReason + ssrfLayer + "\r\n", "403", "", statusUnknown, "", 56},
+		{"malformed HTTP version", "HTTP/incomplete 403 Forbidden\r\n" + ssrfReason + ssrfLayer + "\r\n", "403", "", statusUnknown, "", 56},
+		{"status line without code", "HTTP/1.1\r\n" + ssrfReason + ssrfLayer + "\r\n", "403", "", statusUnknown, "", 56},
+		{"reason belongs to later response", forbidden + "\r\n" + forbidden + ssrfReason + ssrfLayer + "\r\n", "403", "", statusUnknown, "", 56},
+		{"refusal with zero exit", forbidden + ssrfReason + ssrfLayer + "\r\n", "403", "ssrf_private_ip", statusUnknown, "", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newDoctorEnv(t, func([]string) (string, int, error) {
+				return "curl output\n" + tc.response + tc.status, tc.exitCode, nil
+			})
+			res := checkDNSFailure(context.Background(), env)
+			if res.status != tc.want || !strings.Contains(res.detail, tc.status) ||
+				!strings.Contains(res.detail, tc.reason) || !strings.Contains(res.remediation, tc.remedy) {
+				t.Fatalf("got %+v, want status %q, detail naming %s %s, and remedy containing %q", res, tc.want, tc.status, tc.reason, tc.remedy)
 			}
-			return "curl: (56) CONNECT tunnel failed, response 403\n403", 56, nil
+		})
+	}
+	t.Run("captures CONNECT headers and status", func(t *testing.T) {
+		env := newDoctorEnv(t, func(args []string) (string, int, error) {
+			if !argsContain(args, dnsFailureHost, "%{http_connect}") || !strings.Contains(strings.Join(args, " "), "--dump-header -") {
+				t.Fatalf("missing CONNECT probe arguments: %v", args)
+			}
+			return "curl: (56) CONNECT tunnel failed, response 403\n" + forbidden + ssrfReason + ssrfLayer + "\r\n403", 56, nil
 		})
 		if res := checkDNSFailure(context.Background(), env); res.status != statusPass {
-			t.Fatalf("got %q (%s)", res.status, res.detail)
-		}
-	})
-	t.Run("clean failure via attributed proxy CONNECT 5xx", func(t *testing.T) {
-		env := newDoctorEnv(t, func(args []string) (string, int, error) {
-			if !argsContain(args, dnsFailureHost, "%{http_connect}") {
-				t.Fatalf("did not target nxdomain: %v", args)
-			}
-			return "curl: (56) CONNECT tunnel failed, response 502\n502", 56, nil
-		})
-		if res := checkDNSFailure(context.Background(), env); res.status != statusPass {
-			t.Fatalf("got %q (%s)", res.status, res.detail)
+			t.Fatalf("got %+v", res)
 		}
 	})
 	t.Run("unattributed nonzero exits are unknown", func(t *testing.T) {
@@ -649,6 +688,7 @@ func TestCheckDNSFailure(t *testing.T) {
 			{name: "proxy authentication required", out: "curl: (56) CONNECT failed\n407", code: 56},
 			{name: "unrelated client denial", out: "curl: (56) CONNECT failed\n404", code: 56},
 			{name: "no status", out: "curl failed", code: 56},
+			{name: "header value without write-out status", out: badGateway + "Content-Length: 502\r\n\r\n", code: 56},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				env := newDoctorEnv(t, func([]string) (string, int, error) {
@@ -1317,7 +1357,7 @@ func allPassDoctorEnv(t *testing.T) *doctorEnv {
 		case argsContain(args, "--noproxy"):
 			return "curl: (7) refused\nPLK_TIME_CONNECT=0.000000\n000", 7, nil // direct egress blocked
 		case argsContain(args, dnsFailureHost):
-			return "curl: (56) CONNECT tunnel failed, response 502\n502", 56, nil // attributed proxy DNS failure
+			return "HTTP/1.1 502 Bad Gateway\r\nContent-Type: text/plain\r\n\r\ncurl: (7) CONNECT tunnel failed, response 502\n502", 7, nil
 		default:
 			return "200", 0, nil // proxied curl/python/node
 		}

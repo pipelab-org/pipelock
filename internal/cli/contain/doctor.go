@@ -4,6 +4,7 @@
 package contain
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/textproto"
 	"os"
 	"os/exec"
 	"os/user"
@@ -21,8 +23,10 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
 // `pipelock contain doctor` is a live self-test for the contained agent's
@@ -1014,19 +1018,16 @@ func checkNodeThroughProxy(ctx context.Context, env *doctorEnv) doctorResult {
 // resolved or the agent bypassed the proxy).
 const dnsFailureHost = "pipelock-doctor-nonexistent.invalid"
 
-// checkDNSFailure proves an invalid hostname is rejected by the proxy rather
-// than succeeding, hanging, or failing without proxy attribution.
+// checkDNSFailure checks for a bounded CONNECT failure attributable to the
+// proxy's DNS check or upstream dial.
 func checkDNSFailure(ctx context.Context, env *doctorEnv) doctorResult {
 	if res, disabled := checkDisabledForwardProxy(env); disabled {
 		return res
 	}
-	// %{http_connect} is the proxy's CONNECT response. It gives this check a
-	// positive attribution signal: the local Pipelock CONNECT response proves the
-	// proxy handled the request. Pipelock returns 403 for a scanner/policy denial
-	// (including DNS resolution failure) and 5xx for upstream failures. A bare
-	// nonzero curl exit could instead be a dead proxy, TLS failure, or unrelated
-	// transport error.
-	name, args := env.sudoAgent(env.curlProxyArgsWithWriteOut("https://"+dnsFailureHost+"/", "%{http_connect}")...)
+	// Curl's write-out header fields describe the origin response. Dump the
+	// CONNECT headers and cross-check them against the CONNECT status.
+	curlArgs := env.curlProxyArgsWithWriteOut("https://"+dnsFailureHost+"/", "%{http_connect}")
+	name, args := env.sudoAgent(append(curlArgs, "--dump-header", "-")...)
 	out, code, err := env.runCmd(ctx, name, args...)
 	if res, done := classifyAgentRun(out, err, "curl", env.port); done {
 		return res
@@ -1034,19 +1035,88 @@ func checkDNSFailure(ctx context.Context, env *doctorEnv) doctorResult {
 	if isSudoTargetCommandMissing(out) {
 		return skip("curl not available for the agent", "install curl on the host")
 	}
-	connectCode, ok := trailingHTTPCode(out)
-	if code != 0 && ok && (connectCode == http.StatusForbidden || connectCode >= 500 && connectCode < 600) {
-		return pass(fmt.Sprintf("proxy CONNECT returned HTTP %d for the unresolvable host (curl exit %d, clean failure)", connectCode, code))
-	}
-	if code == 0 && ok && connectCode == 200 {
+	// The write-out value is on its own line. A trailing number in a
+	// header or diagnostic cannot stand in for it when output is truncated.
+	lastLine := strings.TrimSpace(out)
+	lastLine = lastLine[strings.LastIndexByte(lastLine, '\n')+1:]
+	connectCode, statusErr := strconv.Atoi(lastLine)
+	ok := statusErr == nil
+	if code == 0 && ok && connectCode == http.StatusOK {
 		return fail(classInfra,
-			fmt.Sprintf("an unresolvable host completed proxy CONNECT with HTTP %d — a bogus name resolved or DNS was intercepted", connectCode),
+			fmt.Sprintf("an unresolvable host completed proxy CONNECT with HTTP %d. A bogus name resolved or DNS was intercepted", connectCode),
 			"investigate DNS interception / captive portal; the agent should never reach "+dnsFailureHost)
 	}
+	headers := connectResponseHeaders(out, connectCode)
+	reasons, layers := headers.Values(blockreason.HeaderReason), headers.Values(blockreason.HeaderLayer)
+	reason, layer := blockreason.Reason(headers.Get(blockreason.HeaderReason)), headers.Get(blockreason.HeaderLayer)
+	if code != 0 && headers != nil {
+		switch {
+		case connectCode == http.StatusForbidden && len(reasons) == 1 && reason == blockreason.SSRFPrivateIP &&
+			len(layers) == 1 && layer == scanner.ScannerSSRF:
+			return pass(fmt.Sprintf("proxy CONNECT returned HTTP %d for the unresolvable host (block reason %s, curl exit %d)", connectCode, reason, code))
+		case connectCode == http.StatusBadGateway && len(reasons) == 0 && len(layers) == 0:
+			return pass(fmt.Sprintf("proxy CONNECT returned HTTP %d for the unresolvable host (upstream dial failed, curl exit %d)", connectCode, code))
+		}
+	}
+	observedReason := string(reason)
+	if headers == nil {
+		observedReason = "unavailable"
+	} else if len(reasons) == 0 {
+		observedReason = "none"
+	}
 	return unknown(
-		fmt.Sprintf("DNS-failure probe was inconclusive (curl exit %d, proxy CONNECT status %s): %s",
-			code, formatObservedHTTPCode(connectCode, ok), oneLine(out)),
-		"confirm the proxy is healthy, then inspect Pipelock logs for the "+dnsFailureHost+" resolution failure")
+		fmt.Sprintf("DNS-failure probe was inconclusive (curl exit %d, proxy CONNECT status %s, block reason %q, layer %q)",
+			code, formatObservedHTTPCode(connectCode, ok), observedReason, layer),
+		dnsFailureRemedy(reason, layer))
+}
+
+// connectResponseHeaders reads the first response block (CONNECT), skipping
+// diagnostics that sudo or curl wrote before it. Later headers belong to a
+// different response and cannot establish why CONNECT failed.
+func connectResponseHeaders(out string, connectCode int) http.Header {
+	reader := textproto.NewReader(bufio.NewReader(strings.NewReader(out)))
+	for {
+		line, err := reader.ReadLine()
+		if err != nil {
+			return nil
+		}
+		if !strings.HasPrefix(line, "HTTP/") {
+			continue
+		}
+		fields := strings.Fields(line)
+		_, _, validVersion := http.ParseHTTPVersion(fields[0])
+		if !validVersion || len(fields) < 2 || fields[1] != strconv.Itoa(connectCode) {
+			return nil
+		}
+		headers, err := reader.ReadMIMEHeader()
+		if err != nil {
+			return nil
+		}
+		return http.Header(headers)
+	}
+}
+
+func dnsFailureRemedy(reason blockreason.Reason, layer string) string {
+	switch reason {
+	case blockreason.ConnectPortNotAllowed:
+		return "the probe requires port 443 in forward_proxy.connect_ports. Add 443 if intended, or disregard this check while the port is blocked"
+	case blockreason.DomainBlocklist:
+		return "the domain blocklist stopped the probe before DNS. Check fetch_proxy.monitoring.blocklist or disregard this check while the probe host is blocked"
+	case blockreason.ParseError:
+		if layer == scanner.ScannerAllowlist {
+			return "the strict-mode allowlist stopped the probe before DNS. Check api_allowlist or disregard this check while the probe host is blocked"
+		}
+	case blockreason.KillSwitchActive:
+		return "the kill switch is active. Rerun this check when normal proxy operation resumes"
+	case blockreason.RateLimit:
+		if layer == "tunnel_capacity" {
+			return "the proxy reached tunnel capacity. Retry when fewer tunnels are active"
+		}
+		return "the proxy rate limit stopped the probe. Retry when the limit clears"
+	case blockreason.PatternUnavailable:
+		return "the scanner was unavailable. Check the proxy logs for scanner errors and retry once it is healthy"
+	}
+	return "confirm the proxy is healthy, then inspect Pipelock logs for the " + dnsFailureHost + " probe"
 }
 
 // Attribute disabled forwarding only to a successfully inspected effective

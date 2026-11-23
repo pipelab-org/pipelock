@@ -824,7 +824,7 @@ func RunHTTPProxy(
 		if admitErr != nil {
 			decision.Outcome.settle(safeLogW, fwdOpts, "blocked", -1, "receipt_admission_failed")
 			logMCPV3Error(safeLogW, admitErr)
-			_ = fwdOpts.writeV3SendDenial(safeLogW, wireClientOut, frame, effect)
+			_ = fwdOpts.writeV3SendDenial(safeLogW, wireClientOut, frame, effect, admitErr)
 			continue
 		}
 		unlockInventory := func() {}
@@ -953,14 +953,25 @@ func RunHTTPProxy(
 			// which could contain prompt injection payloads.
 			rpcID := frame.ID
 			errResp := upstreamErrorResponse(rpcID, fmt.Errorf("upstream HTTP request failed"))
-			if wErr := fwdOpts.localV3ReplyWriter(wireClientOut, safeLogW, effect).WriteMessage(errResp); wErr != nil {
-				_, _ = fmt.Fprintf(safeLogW, "pipelock: failed to send error response: %v\n", wErr)
+			size := int64(len(errResp))
+			var writeErr error
+			if fwdOpts.receiptEffects.enabled {
+				reply := fwdOpts.localV3ReplyWriter(wireClientOut, safeLogW, effect)
+				writeErr = writeMCPDenial(fwdOpts, mcpResponseInspectionBlockAudit("upstream_error"), reply, errResp)
+				if writeErr != nil {
+					size = -1
+				}
+			} else {
+				writeErr = wireClientOut.WriteMessage(errResp)
+			}
+			if writeErr != nil {
+				_, _ = fmt.Fprintf(safeLogW, "pipelock: failed to send error response: %v\n", writeErr)
 			}
 			outcome := decision.Outcome
 			if pending, ok := tracker.takeOwnedOutcome(frame.ID, registration); ok {
 				outcome = pending
 			}
-			outcome.settle(safeLogW, fwdOpts, "error", int64(len(errResp)), "upstream_error")
+			outcome.settle(safeLogW, fwdOpts, "error", size, "upstream_error")
 			continue
 		}
 

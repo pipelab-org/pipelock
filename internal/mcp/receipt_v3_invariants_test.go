@@ -159,10 +159,19 @@ func checkMCPWireObservations(actions []v3.Action, boundary string, observations
 		}
 		if observed.outcome == "completed" {
 			var frame struct {
-				ID    json.RawMessage
-				Error json.RawMessage
+				Version string `json:"jsonrpc"`
+				Method  string
+				ID      json.RawMessage
+				Result  json.RawMessage
+				Error   json.RawMessage
 			}
-			if err := json.Unmarshal(observed.message, &frame); err != nil || canonicalID(frame.ID) != observed.requestID {
+			if err := json.Unmarshal(observed.message, &frame); err != nil || frame.Version != "2.0" ||
+				canonicalID(frame.ID) != observed.requestID {
+				return fmt.Errorf("wire message %d has wrong RPC envelope: %s", i+1, observed.message)
+			}
+			hasResult, hasError := len(frame.Result) != 0, len(frame.Error) != 0
+			if (frame.Method != "" && (hasResult || hasError)) ||
+				(frame.Method == "" && (len(frame.ID) == 0 || hasResult == hasError)) {
 				return fmt.Errorf("wire message %d has wrong RPC envelope: %s", i+1, observed.message)
 			}
 			if len(frame.Error) > 0 {
@@ -276,6 +285,60 @@ func TestMCPReceiptWireObservationInvariants(t *testing.T) {
 			err := checkMCPWireObservations(history, mcpDownstreamDeliveryBoundary, tc.writes)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("checker returned %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestMCPReceiptWireObservationRequiresNotificationEnvelope(t *testing.T) {
+	attempt := int64(1)
+	intent := v3.Action{Phase: "intent", ActionID: "event", EffectBoundary: mcpDownstreamDeliveryBoundary, Attempt: &attempt}
+	outcome := intent
+	outcome.Phase, outcome.OutcomeClass = "outcome", "completed"
+	observed := mcpWireObservation{
+		message:  []byte(`{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}`),
+		boundary: mcpDownstreamDeliveryBoundary, outcome: "completed", before: []v3.Action{intent},
+	}
+	history := []v3.Action{intent, outcome}
+	if err := checkMCPWireObservations(history, mcpDownstreamDeliveryBoundary, []mcpWireObservation{observed}); err != nil {
+		t.Fatal(err)
+	}
+	observed.message = []byte("{}")
+	if err := checkMCPWireObservations(history, mcpDownstreamDeliveryBoundary, []mcpWireObservation{observed}); err == nil {
+		t.Fatal("accepted an empty notification envelope")
+	}
+}
+
+func TestMCPReceiptWireObservationEnvelopeShapes(t *testing.T) {
+	for _, tc := range []struct {
+		name, requestID, message string
+		valid                    bool
+	}{
+		{"notification", "", `{"jsonrpc":"2.0","method":"notifications/progress"}`, true},
+		{"request", "1", `{"jsonrpc":"2.0","id":1,"method":"sampling/createMessage"}`, true},
+		{"result response", "1", `{"jsonrpc":"2.0","id":1,"result":{}}`, true},
+		{"error response", "1", `{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"denied"}}`, true},
+		{"method with result", "1", `{"jsonrpc":"2.0","id":1,"method":"tools/list","result":{}}`, false},
+		{"method with error", "1", `{"jsonrpc":"2.0","id":1,"method":"tools/list","error":{"code":-32000,"message":"denied"}}`, false},
+		{"response without id", "", `{"jsonrpc":"2.0","result":{}}`, false},
+		{"response with result and error", "1", `{"jsonrpc":"2.0","id":1,"result":{},"error":{"code":-32000,"message":"denied"}}`, false},
+		{"response with neither", "1", `{"jsonrpc":"2.0","id":1}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			attempt := int64(1)
+			intent := v3.Action{Phase: "intent", RequestID: tc.requestID, ActionID: "shape", EffectBoundary: mcpDownstreamDeliveryBoundary, Attempt: &attempt}
+			outcome := intent
+			outcome.Phase, outcome.OutcomeClass = "outcome", "completed"
+			observed := mcpWireObservation{
+				message: []byte(tc.message), boundary: mcpDownstreamDeliveryBoundary,
+				requestID: tc.requestID, outcome: "completed", before: []v3.Action{intent},
+			}
+			err := checkMCPWireObservations([]v3.Action{intent, outcome}, mcpDownstreamDeliveryBoundary, []mcpWireObservation{observed})
+			if tc.valid && err != nil {
+				t.Fatalf("rejected a valid envelope: %v", err)
+			}
+			if !tc.valid && (err == nil || !strings.Contains(err.Error(), "wrong RPC envelope")) {
+				t.Fatalf("checker returned %v, want a wrong RPC envelope rejection", err)
 			}
 		})
 	}
