@@ -44,12 +44,15 @@ func controlIdentityChange(before, after controlRootIdentity) string {
 
 // Wire paths and symlink targets use base64 byte strings because Linux permits
 // names that are not valid UTF-8. A control entry's path also keys its pass.
+// Modification times are Unix seconds and nanoseconds: the agent chooses them,
+// and a time outside RFC 3339's years 0-9999 must still be recordable.
 type baselineEntry struct {
 	Path     []byte       `json:"path"`
 	Mode     *fs.FileMode `json:"mode"`
 	Kind     EntryKind    `json:"kind"`
 	Size     int64        `json:"size"`
-	ModTime  time.Time    `json:"mod_time"`
+	ModSec   int64        `json:"mod_time_sec"`
+	ModNsec  int32        `json:"mod_time_nsec"`
 	Digest   string       `json:"digest"`
 	Oversize bool         `json:"oversize"`
 	Target   []byte       `json:"symlink_target"`
@@ -167,7 +170,8 @@ func encodeBaselinePass(p controlPass) *baselinePass {
 		mode := e.mode
 		wire.Entries = append(wire.Entries, baselineEntry{
 			Path: []byte(path), Mode: &mode, Kind: e.Kind,
-			Size: e.Size, ModTime: e.ModTime, Digest: e.Digest, Oversize: e.Oversize, Target: []byte(e.Target),
+			Size: e.Size, ModSec: e.ModTime.Unix(), ModNsec: int32(e.ModTime.Nanosecond()), // #nosec G115 -- Nanosecond is in [0, 999999999].
+			Digest: e.Digest, Oversize: e.Oversize, Target: []byte(e.Target),
 		})
 	}
 	for path, reason := range p.unreadable {
@@ -193,12 +197,12 @@ func (wire *baselinePass) decode() (controlPass, error) {
 	}
 	for _, e := range wire.Entries {
 		path := string(e.Path)
-		if _, exists := p.entries[path]; exists || path == "" || e.Mode == nil {
+		if _, exists := p.entries[path]; exists || path == "" || e.Mode == nil || e.ModNsec < 0 || e.ModNsec >= 1e9 {
 			return controlPass{}, fmt.Errorf("invalid or duplicate workspace control baseline entry %q", path)
 		}
 		p.entries[path] = controlEntry{mode: *e.Mode, Entry: Entry{
 			Path: path, Kind: e.Kind, Size: e.Size,
-			ModTime: e.ModTime, Digest: e.Digest, Oversize: e.Oversize, Target: string(e.Target),
+			ModTime: time.Unix(e.ModSec, int64(e.ModNsec)), Digest: e.Digest, Oversize: e.Oversize, Target: string(e.Target),
 		}}
 	}
 	for _, e := range wire.Unreadable {

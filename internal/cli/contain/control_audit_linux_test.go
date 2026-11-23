@@ -399,3 +399,20 @@ func TestControlAuditReplaceAfterRebootStillShowsChangedPaths(t *testing.T) {
 	}
 	_, _ = runAuditFixture(t, env, controlAuditOptions{workspace: root}, 0)
 }
+
+// The agent chooses the timestamps of its own control files. An mtime that
+// JSON's RFC 3339 range cannot hold must not stop the operator from recording.
+func TestControlAuditRecordsAnyModificationTime(t *testing.T) {
+	env, root := controlAuditFixture(t)
+	writeAuditFixture(t, root, ".envrc", "fixture")
+	// os.Chtimes wraps beyond 2262; set the 64-bit seconds directly, as touch(1) does.
+	stamp := []unix.Timespec{{Sec: 1 << 38}, {Sec: 1 << 38}}
+	if err := unix.UtimesNanoAt(unix.AT_FDCWD, filepath.Join(root, ".envrc"), stamp, 0); err != nil {
+		t.Skipf("filesystem cannot hold the far-future timestamp: %v", err)
+	}
+	if info, err := os.Stat(filepath.Join(root, ".envrc")); err != nil || info.ModTime().Year() < 10000 {
+		t.Skipf("filesystem did not keep the far-future timestamp: %v %v", info, err)
+	}
+	_, _ = runAuditFixture(t, env, controlAuditOptions{workspace: root, record: true}, 0)
+	_, _ = runAuditFixture(t, env, controlAuditOptions{workspace: root}, 0)
+}
