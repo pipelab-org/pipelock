@@ -224,7 +224,7 @@ func (w *v3DeliveryWriter) observeDelivery() (bool, error) {
 	}
 	_, framed := responseFrameLength(w.request, w.status, w.Header())
 	err := flushOutcomeResponse(w.ResponseWriter, w.request, w.cfg, true)
-	observed := !IsSSEContentType(w.Header().Get("Content-Type")) || httpstream.CanObserveFlush(w.ResponseWriter)
+	observed := httpstream.CanObserveFlush(w.ResponseWriter)
 	return observed && framed && w.framed && (w.request.Method == http.MethodHead || w.written == w.length), err
 }
 

@@ -325,7 +325,7 @@ func exerciseV3Transport(t *testing.T, p *Proxy, surface string, exercise v3Tran
 	}))
 	t.Cleanup(upstream.Close)
 	response := httptest.NewRecorder()
-	var downstream http.ResponseWriter = response
+	var downstream http.ResponseWriter = &v3SSEFlushFaultRecorder{ResponseRecorder: response}
 	if exercise.flushError {
 		downstream = &v3DeliveryObserver{
 			ResponseRecorder: response, beforeHeader: func() {},
@@ -749,7 +749,7 @@ func TestV3FetchRedirectEvidence(t *testing.T) {
 				contractruntimetest.HTTPEnforceRule("redirect-hop", host, "/final", http.MethodGet),
 			))
 			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+origin+"/start&agent=agent-a", nil)
-			observer := httptest.NewRecorder()
+			observer := &v3SSEFlushFaultRecorder{ResponseRecorder: httptest.NewRecorder()}
 			p.handleFetch(observer, req)
 			if observer.Code != http.StatusOK || hits.Load() != 2 {
 				t.Fatalf("redirect status=%d requests=%d body=%q", observer.Code, hits.Load(), observer.Body)
@@ -1590,7 +1590,7 @@ func TestV3DeliveryAdaptiveRefusalAfterIntent(t *testing.T) {
 			req := httptest.NewRequestWithContext(ctx, http.MethodGet, "http://api.vendor.example", http.NoBody)
 			opts := receipt.EmitOpts{Verdict: config.ActionAllow, Transport: TransportForward, Method: req.Method, Target: req.URL.String()}
 			cfg := adaptiveConfigBlockAll()
-			observer := httptest.NewRecorder()
+			observer := &v3SSEFlushFaultRecorder{ResponseRecorder: httptest.NewRecorder()}
 			checks := 0
 			adaptive := &adaptiveRefusalWriter{
 				ResponseWriter: observer, cfg: &cfg.AdaptiveEnforcement, transport: TransportForward,
@@ -2168,7 +2168,7 @@ func TestV3RequiredAgentCardAcceptance(t *testing.T) {
 				}, rt)
 			}
 			for _, want := range []int{http.StatusForbidden, http.StatusOK} {
-				out := httptest.NewRecorder()
+				out := &v3SSEFlushFaultRecorder{ResponseRecorder: httptest.NewRecorder()}
 				handler.ServeHTTP(out, httptest.NewRequestWithContext(t.Context(), http.MethodGet, target, http.NoBody))
 				if out.Code != want {
 					t.Fatalf("status=%d want=%d body=%q", out.Code, want, out.Body.String())
@@ -2381,6 +2381,27 @@ func TestV3SSEPlainFlusherLeavesDeliveryUnknown(t *testing.T) {
 	if warnings != 1 {
 		t.Fatalf("warning delivery outcomes = %d, want 1", warnings)
 	}
+}
+
+func TestV3PlainFlusherNonSSELeavesDeliveryUnknown(t *testing.T) {
+	p, writer, dir, _ := newTestV3HTTPProxy(t, TransportForward, true, nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://api.vendor.example", http.NoBody)
+	opts := receipt.EmitOpts{ActionID: receipt.NewActionID(), Verdict: config.ActionAllow, Transport: TransportForward, Method: req.Method, Target: req.URL.String()}
+	out := httptest.NewRecorder()
+	out.Header().Set("Content-Type", "application/json")
+	out.Header().Set("Content-Length", "2")
+	w, finish := p.startReceiptDelivery(out, req, p.CurrentConfig(), opts)
+	if _, err := io.WriteString(w, "{}"); err != nil {
+		t.Fatal(err)
+	}
+	finish()
+	if !out.Flushed {
+		t.Fatal("expected a flush")
+	}
+	if err := writer.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	assertHandshakeOutcome(t, dir, boundaryDownstreamDelivery, "attempt_unknown")
 }
 
 func TestV3SignedCardReceiptsFollowDelivery(t *testing.T) {

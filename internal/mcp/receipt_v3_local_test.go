@@ -3014,8 +3014,16 @@ func TestMCPV3ListenerAgentCardBufferedDelivery(t *testing.T) {
 	}
 	testwait.For(t, time.Second, func() bool {
 		actions, err := decodeMCPMatrixActions(client.dir)
-		return err == nil && slices.ContainsFunc(actions, func(action v3.Action) bool {
-			return action.Layer == "a2a_card_drift" && action.Phase == "outcome" && action.OutcomeClass == "completed"
-		})
-	}, "card outcome")
+		if err != nil {
+			return false
+		}
+		var card, delivery bool
+		for _, action := range actions {
+			if action.Phase == "outcome" && action.EffectBoundary == mcpDownstreamDeliveryBoundary && action.OutcomeClass == "completed" {
+				card = card || action.Layer == "a2a_card_drift"
+				delivery = delivery || action.Layer == ""
+			}
+		}
+		return card && delivery
+	}, "card and primary delivery outcomes")
 }

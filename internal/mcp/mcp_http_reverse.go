@@ -2591,14 +2591,14 @@ func RunHTTPListenerProxy(
 			return
 		}
 		var cardDeliveries []*mcpV3EffectToken
-		var cardAttempted, cardFramed bool
+		var cardAttempted bool
 		reqOpts.bufferedCardDelivery = func(token *mcpV3EffectToken) {
 			cardDeliveries = append(cardDeliveries, token)
 		}
 		defer func() {
 			for _, token := range cardDeliveries {
 				if cardAttempted {
-					logMCPV3Error(safeLogW, confirmMCPV3Effect(effect.ctx, token, cardFramed))
+					logMCPV3Error(safeLogW, confirmMCPV3Effect(effect.ctx, token, effect.framed))
 				} else {
 					logMCPV3Error(safeLogW, token.Refuse(effect.ctx))
 				}
@@ -2667,8 +2667,7 @@ func RunHTTPListenerProxy(
 						return
 					}
 				}
-				effect.framed = true
-				cardFramed = cardAttempted && httpstream.CanObserveFlush(w.ResponseWriter)
+				effect.framed = httpstream.CanObserveFlush(w.ResponseWriter)
 				if responseStatus != "" {
 					terminalStatus, terminalReason, terminalSize = responseStatus, responseReason, responseSize
 				}
