@@ -65,21 +65,18 @@ type chainOptions struct {
 // legacySelection maps the legacy chain flags onto a mixed-directory v3
 // verification. Expectation bindings apply to one session, as they do for a
 // legacy directory, so they use the --session default when none was given.
-func (opts chainOptions) legacySelection() (v3.LegacySelection, error) {
+func (opts chainOptions) legacySelection() v3.LegacySelection {
 	legacy := v3.LegacySelection{Group: opts.groupID}
 	if opts.sessionExplicit {
 		legacy.Session = opts.sessionID
 	}
 	if opts.expectSignerKeyID != "" || opts.expectContractHash != "" || opts.expectManifestHash != "" || opts.expectPayloadKind != "" {
-		bindings, err := opts.chainVerifyOptions("")
-		if err != nil {
-			return v3.LegacySelection{}, err
-		}
+		bindings := opts.chainBindings(nil)
 		bindings.ExpectHeadHash = ""
 		legacy.Bindings = &bindings
 		legacy.Session = opts.sessionID
 	}
-	return legacy, nil
+	return legacy
 }
 
 func newChainCmd() *cobra.Command {
@@ -155,10 +152,7 @@ end_proof, scope, and signer trust.`,
 						return cliutil.ExitCodeError(cliutil.ExitConfig, err)
 					}
 				}
-				legacy, err := opts.legacySelection()
-				if err != nil {
-					return cliutil.ExitCodeError(cliutil.ExitConfig, err)
-				}
+				legacy := opts.legacySelection()
 				return v3Flags.Run(cmd, receiptv3.Input{
 					Paths: paths, Directory: dir, Keys: keys, Head: opts.expectHeadHash,
 					Seq: seq, SeqSet: cmd.Flags().Changed("expect-seq"),

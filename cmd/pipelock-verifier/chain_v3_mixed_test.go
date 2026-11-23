@@ -75,10 +75,7 @@ func TestChainLegacySelectionScopesBindingsToSession(t *testing.T) {
 		{"bindings keep explicit session", chainOptions{sessionID: "run-b", sessionExplicit: true, evidenceBindingOptions: evidenceBindingOptions{expectContractHash: contract}}, "run-b", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := tc.opts.legacySelection()
-			if err != nil {
-				t.Fatal(err)
-			}
+			got := tc.opts.legacySelection()
 			if got.Session != tc.wantSession || (got.Bindings != nil) != tc.wantBinding {
 				t.Fatalf("selection = session %q bindings %v, want session %q bindings %v", got.Session, got.Bindings != nil, tc.wantSession, tc.wantBinding)
 			}
