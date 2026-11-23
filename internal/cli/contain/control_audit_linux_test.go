@@ -197,6 +197,7 @@ func TestControlAuditAgentIncludesExpiredGrants(t *testing.T) {
 	const agent = "pipelock-agent"
 	inv := workspaceInventory{Workspaces: []workspaceGrant{
 		{Path: root, AgentUser: agent},
+		// clock-literal-ok: deliberately-expired negative case; the audit must still include expired grants.
 		{Path: expired, AgentUser: agent, Expires: "2020-01-01T00:00:00Z"},
 		{Path: t.TempDir(), AgentUser: "other-agent"},
 	}}
