@@ -582,10 +582,18 @@ func TestControlSurfaceBareRepositoryAtFixedPathFollowsItsConfig(t *testing.T) {
 	git.run(t, bare, "init", "-q", "--bare", ".")
 	git.run(t, bare, "config", "core.hooksPath", "../tools/hooks")
 	writeControlFixture(t, root, "tools/hooks/pre-commit", "before")
+	writeControlFixture(t, root, ".claude/settings.json", "before")
+	writeControlFixture(t, root, ".claude/commands/run.md", "before")
 	budget := DefaultControlSurfaceBudget()
 	before := controlSnapshot(t, root, budget)
 	writeControlFixture(t, root, "tools/hooks/pre-commit", "changed")
-	expectControlPath(t, controlDiff(t, before, controlSnapshot(t, root, budget)), "tools/hooks/pre-commit")
+	writeControlFixture(t, root, ".claude/settings.json", "changed")
+	writeControlFixture(t, root, ".claude/commands/run.md", "changed")
+	diff := controlDiff(t, before, controlSnapshot(t, root, budget))
+	expectControlPath(t, diff, "tools/hooks/pre-commit")
+	// The directory's own agent files are not Git internals and are never filtered.
+	expectControlPath(t, diff, ".claude/settings.json")
+	expectControlPath(t, diff, ".claude/commands/run.md")
 }
 
 // Discovery keeps queued directory paths in memory. Their count is bounded,
