@@ -263,6 +263,32 @@ func TestNoCall(t *testing.T) {
 	}
 }
 
+// A build canceled after it produced parts still sends them. Only a build with
+// nothing to send is reported locally: a watch call runs on a context detached
+// from the canceled build, and a suspicious reading of what was built is a
+// finding that settleAfterCall and the partial-coverage rule both keep.
+func TestProducerCanceledWithPartsIsStillChecked(t *testing.T) {
+	var calls atomic.Int32
+	client := clientFor(t, func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		var req Request
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Error(err)
+			return
+		}
+		resp := testResponse(req)
+		resp.Classification = Suspicious
+		resp.Findings = []Finding{{ReasonID: "suspicious_instruction", PartIDs: []string{"part"}}}
+		_ = json.NewEncoder(w).Encode(resp)
+	})
+	item := testItem()
+	item.Completeness = &Completeness{Status: Partial, Reason: ReasonCanceled}
+	got := client.Check(t.Context(), item, testPolicy())
+	if got.State != StateFinding || calls.Load() != 1 {
+		t.Fatalf("canceled build with parts: %+v calls=%d, want the finding from one request", got, calls.Load())
+	}
+}
+
 func TestOptions(t *testing.T) {
 	credentialURL := &url.URL{Scheme: "https", Host: "api.vendor.example", User: url.UserPassword("example-user", "example-value")}
 	for _, opts := range []Options{

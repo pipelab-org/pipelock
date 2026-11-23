@@ -250,6 +250,16 @@ func TestJevFailsClosed(t *testing.T) {
 			t.Fatalf("canceled build sent %d requests", js.requests.Load())
 		}
 	})
+	// A canceled build that kept parts is still sent, and its finding stands.
+	t.Run("producer_canceled_with_parts_is_sent", func(t *testing.T) {
+		js, pool := newJevServer(t, jevAnswer(`{"answers":{"redirects_agent":{"noul":0.99}}}`))
+		item := testItem()
+		item.Completeness = &Completeness{Status: Partial, Reason: ReasonCanceled}
+		got := newTestJev(t, js, pool, testJevKey).Check(t.Context(), item, testPolicy())
+		if got.State != StateFinding || js.requests.Load() != 1 {
+			t.Fatalf("canceled build with parts: %+v requests=%d", got, js.requests.Load())
+		}
+	})
 	t.Run("timeout", func(t *testing.T) {
 		release := make(chan struct{})
 		js, pool := newJevServer(t, func(http.ResponseWriter) { <-release })
