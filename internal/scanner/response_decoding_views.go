@@ -75,7 +75,6 @@ func (s *Scanner) walkAdditionalInjectionViews(ctx context.Context, content, tar
 		ctx = context.Background()
 	}
 	outbound, _ := ctx.Value(outboundInjectionContextKey{}).(bool)
-	queue := newInjectionDecodeQueue(content, outbound)
 	var chainWindows *responseChainWindowMemo
 	var buffers responseMatchingBuffers
 	var alternateDeltaParent *responseDeltaParent
@@ -83,12 +82,8 @@ func (s *Scanner) walkAdditionalInjectionViews(ctx context.Context, content, tar
 	if !outbound {
 		chainWindows = &responseChainWindowMemo{}
 	}
-	if !outbound {
-		queue.views[0].proof = options.rootProof
-	}
-	used := 0
-	expanded := 0
-	sparseExpanded := 0
+	var deltaParent *responseDeltaParent
+	deltaHead := -1
 	incomplete := false
 	defer func() {
 		// A cancellation or other scan error already decides the result; a
@@ -113,14 +108,81 @@ func (s *Scanner) walkAdditionalInjectionViews(ctx context.Context, content, tar
 			s.EmitTextDLPWarnMatches(ctx, []TextDLPMatch{partialEncodedContentMatch()})
 		}
 	}()
+	var err error
+	incomplete, err = visitAdditionalInjectionViews(ctx, content, options, func(head int, parent, view injectionDecodeView, alignment injectionDecodeAlignment, aligned bool, proof *responseDeltaProof) bool {
+		if view.label == "" {
+			return true
+		}
+		memo := newResponseMatchMemo(len(view.text))
+		if memo != nil && !outbound {
+			memo.chainWindows = chainWindows
+			memo.buffers = &buffers
+		}
+		if memo != nil && aligned {
+			switch {
+			case alignment.index != head && alignment.base.proof.hasNegatives():
+				if alignment.index != alternateDeltaIndex {
+					alternateDeltaParent = newResponseDeltaParent(alignment.base)
+					alternateDeltaIndex = alignment.index
+				}
+				memo.deltaParent = alternateDeltaParent
+			case parent.proof.hasNegatives():
+				if deltaHead != head {
+					deltaHead = head
+					deltaParent = newResponseDeltaParent(parent)
+				}
+				memo.deltaParent = deltaParent
+			}
+		}
+		checked := s.scanResponseMatchesWithOptions(ctx, view.text, target, suppress, responseScanOptions{skipEncodedDecode: true}, memo)
+		memo.releaseMatchingViews()
+		if memo != nil && !outbound && checked.Clean && !checked.Failed() &&
+			len(checked.WarnedMatches)+len(checked.SuppressedMatches)+len(checked.ObservedCoreMatches) == 0 {
+			*proof = memo.deltaProof
+		}
+		if BlankViewAddsNoCoverage(view.text, checked) {
+			return true
+		}
+		// Coordinates belong to a decoded view, never to the original body. A
+		// strip caller must not rewrite the original using these offsets.
+		for i := range checked.Matches {
+			checked.Matches[i].span.ViewLabel = spanViewLabel(checked.Matches[i].span.ViewLabel, view.label)
+		}
+		checked.SuppressedMatches = append(result.SuppressedMatches, checked.SuppressedMatches...)
+		checked.ObservedCoreMatches = append(result.ObservedCoreMatches, checked.ObservedCoreMatches...)
+		checked.WarnedMatches = append(result.WarnedMatches, checked.WarnedMatches...)
+		checked.StegoDetected = result.StegoDetected
+		checked.StegoDensity = result.StegoDensity
+		result = checked
+		if !result.Clean || result.Failed() || len(result.WarnedMatches) > 0 {
+			return false
+		}
+		return true
+	})
+	if err != nil {
+		result.Clean = false
+		result.ScanError = err.Error()
+	}
+	return result
+}
+
+// visitAdditionalInjectionViews owns queue admission and decode limits. The
+// visitor can stop after a finding and can record a negative matching proof.
+func visitAdditionalInjectionViews(ctx context.Context, content string, options injectionWalkOptions, visit func(int, injectionDecodeView, injectionDecodeView, injectionDecodeAlignment, bool, *responseDeltaProof) bool) (bool, error) {
+	outbound, _ := ctx.Value(outboundInjectionContextKey{}).(bool)
+	queue := newInjectionDecodeQueue(content, outbound)
+	if !outbound {
+		queue.views[0].proof = options.rootProof
+	}
+	used := 0
+	expanded := 0
+	sparseExpanded := 0
+	incomplete := false
 	for head := 0; head < len(queue.views); head++ {
 		if err := ctx.Err(); err != nil {
-			result.Clean = false
-			result.ScanError = err.Error()
-			return result
+			return incomplete, err
 		}
 		parent := queue.decodeView(head)
-		var deltaParent *responseDeltaParent
 		if len(parent.text) > maxDecodeTotalBytes {
 			// The caller already scanned this text. A larger plain payload is
 			// not a decoding limit; only a transform we will not open is.
@@ -196,59 +258,12 @@ func (s *Scanner) walkAdditionalInjectionViews(ctx context.Context, content, tar
 				used += cost
 				expanded += len(view.text)
 			}
-			if view.label == "" {
-				continue
-			}
-			memo := newResponseMatchMemo(len(view.text))
-			if memo != nil && !outbound {
-				memo.chainWindows = chainWindows
-				memo.buffers = &buffers
-			}
-			if memo != nil && aligned {
-				switch {
-				case alignment.index != head && alignment.base.proof.hasNegatives():
-					if alignment.index != alternateDeltaIndex {
-						alternateDeltaParent = newResponseDeltaParent(alignment.base)
-						alternateDeltaIndex = alignment.index
-					}
-					memo.deltaParent = alternateDeltaParent
-				case parent.proof.hasNegatives():
-					if deltaParent == nil {
-						deltaParent = newResponseDeltaParent(parent)
-					}
-					memo.deltaParent = deltaParent
-				}
-			}
-			checked := s.scanResponseMatchesWithOptions(ctx, view.text, target, suppress, responseScanOptions{skipEncodedDecode: true}, memo)
-			memo.releaseMatchingViews()
-			if memo != nil && !outbound && checked.Clean && !checked.Failed() &&
-				len(checked.WarnedMatches)+len(checked.SuppressedMatches)+len(checked.ObservedCoreMatches) == 0 {
-				queue.views[len(queue.views)-1].proof = memo.deltaProof
-			}
-			if BlankViewAddsNoCoverage(view.text, checked) {
-				continue
-			}
-			// Coordinates belong to a decoded view, never to the original body. A
-			// strip caller must not rewrite the original using these offsets.
-			for i := range checked.Matches {
-				checked.Matches[i].span.ViewLabel = spanViewLabel(checked.Matches[i].span.ViewLabel, view.label)
-			}
-			checked.SuppressedMatches = append(result.SuppressedMatches, checked.SuppressedMatches...)
-			checked.ObservedCoreMatches = append(result.ObservedCoreMatches, checked.ObservedCoreMatches...)
-			checked.WarnedMatches = append(result.WarnedMatches, checked.WarnedMatches...)
-			checked.StegoDetected = result.StegoDetected
-			checked.StegoDensity = result.StegoDensity
-			result = checked
-			if !result.Clean || result.Failed() || len(result.WarnedMatches) > 0 {
-				return result
+			if !visit(head, parent, view, alignment, aligned, &queue.views[len(queue.views)-1].proof) {
+				return incomplete, nil
 			}
 		}
 	}
-	if err := ctx.Err(); err != nil {
-		result.Clean = false
-		result.ScanError = err.Error()
-	}
-	return result
+	return incomplete, ctx.Err()
 }
 
 func hasAdditionalInjectionEncoding(text string) bool {
