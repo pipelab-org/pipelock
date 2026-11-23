@@ -202,7 +202,7 @@ func (b *checkerTextBuilder) add(view bodyInjectionView) bool {
 	// buried in binary reaches its rules. A decode that is not text as a whole
 	// still contributes its readable runs, the same floor the opaque body view
 	// applies. Short coincidental decodes of ordinary words stay below it.
-	addReadableRuns := func(text string) bool {
+	addRuns := func(text string) bool {
 		views, err := opaqueResponseTextView(b.ctx, []byte(text))
 		if err != nil {
 			b.reason = checker.ReasonCanceled
@@ -210,6 +210,16 @@ func (b *checkerTextBuilder) add(view bodyInjectionView) bool {
 		}
 		runs := strings.ToValidUTF8(exciseVerifiedImageDataURLs(views.retained), " ")
 		return appendPart(runs, "response_decoded_runs/v1") && addMatching(runs, true)
+	}
+	addReadableRuns := func(text string) bool {
+		if !addRuns(text) {
+			return false
+		}
+		// Matching drops NUL bytes, so wording interleaved with them (wide
+		// text behind a prefix or without a byte-order mark) is one phrase to
+		// the scanner but breaks every run above. Read the runs again with
+		// the NULs removed; the same length floor applies.
+		return !strings.Contains(text, "\x00") || addRuns(strings.ReplaceAll(text, "\x00", ""))
 	}
 	addDecoded := func(raw string) bool {
 		if !addWide(raw, true) {

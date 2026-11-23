@@ -586,6 +586,63 @@ func TestCheckerWideAndQuotedPrintableViewParity(t *testing.T) {
 	}
 }
 
+// Matching removes NUL bytes, so wide text behind a prefix, or without a
+// byte-order mark, is one phrase to the scanner even when the decode is not
+// text as a whole. Those views must reach the checker like the marked ones.
+func TestCheckerWideTextBehindPrefixReachesChecker(t *testing.T) {
+	const surface = config.InjectionSurfaceHTTPResponse
+	const patternName = "Fixture phrase"
+	builtin := testResponseConfig()
+	builtin.ResponseScanning.Action = config.ActionBlock
+	builtin.ResponseScanning.Patterns = []config.ResponseScanPattern{{Name: patternName, Regex: checkerFixturePhrase}}
+	legacy := MustNew(builtin)
+	t.Cleanup(legacy.Close)
+	cfg := testResponseConfig()
+	srv := checkertest.New(t, "benign")
+	srv.Configure(cfg, surface, config.InjectionModeBlock)
+	s := MustNew(cfg)
+	t.Cleanup(s.Close)
+
+	wide := encodeUTF16ResponseBody(checkerFixturePhrase, true, false)
+	bom := encodeUTF16ResponseBody(checkerFixturePhrase, true, true)
+	for _, fixture := range []struct {
+		name string
+		data []byte
+	}{
+		{"whitespace_then_bom", append([]byte(" \n"), bom...)},
+		{"junk_then_bomless_utf16", append([]byte("\xff\x80\x81"), wide...)},
+		{"text_then_bom", append([]byte("abc "), bom...)},
+	} {
+		for _, carrier := range []struct {
+			name string
+			wrap func([]byte) string
+		}{
+			{"base64", base64.StdEncoding.EncodeToString},
+			{"hex", hex.EncodeToString},
+			{"query_percent", func(data []byte) string {
+				var out strings.Builder
+				out.WriteString("x=")
+				for _, c := range data {
+					fmt.Fprintf(&out, "%%%02X", c)
+				}
+				return out.String()
+			}},
+		} {
+			t.Run(fixture.name+"/"+carrier.name, func(t *testing.T) {
+				source := carrier.wrap(fixture.data)
+				result := legacy.ScanResponseBodyWithSuppress(t.Context(), []byte(source), "", nil)
+				if result.Failed() || !slices.ContainsFunc(result.Matches, func(match ResponseMatch) bool { return match.PatternName == patternName }) {
+					t.Fatalf("scanner did not match the decoded phrase: %+v", result)
+				}
+				parts, coverage := s.BuildInjectionTextParts(t.Context(), surface, source)
+				if !hasCheckerView(parts, checkerFixturePhrase) || coverage.Status != checker.Complete {
+					t.Fatalf("checker views %q, completeness %+v, want the exact phrase", checkerPartTexts(parts), coverage)
+				}
+			})
+		}
+	}
+}
+
 func TestCheckerOpaqueDecodeKeepsOnlyReadableRuns(t *testing.T) {
 	noise := strings.Repeat("\xff\x80\x81\x01", 32)
 	source := base64.StdEncoding.EncodeToString([]byte(noise + checkerFixturePhrase + noise))
