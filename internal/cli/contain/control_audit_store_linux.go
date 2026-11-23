@@ -104,10 +104,17 @@ func (s controlAuditStore) load(dir *os.File, root string) (workspacediff.Contro
 	if err := unix.Fstat(fd, &st); err != nil {
 		return workspacediff.ControlSurfaceSnapshot{}, err
 	}
-	if st.Uid != s.uid || st.Gid != s.gid || st.Mode != unix.S_IFREG|0o600 || st.Nlink != 1 {
-		return workspacediff.ControlSurfaceSnapshot{}, errors.New("workspace control baseline must be a root-owned regular file with mode 0600 and one link")
+	if err := s.checkFile(st); err != nil {
+		return workspacediff.ControlSurfaceSnapshot{}, err
 	}
 	return workspacediff.DecodeControlBaseline(f, root)
+}
+
+func (s controlAuditStore) checkFile(st unix.Stat_t) error {
+	if st.Uid != s.uid || st.Gid != s.gid || st.Mode != unix.S_IFREG|0o600 || st.Nlink != 1 {
+		return errors.New("workspace control baseline must be a root-owned regular file with mode 0600 and one link")
+	}
+	return nil
 }
 
 func writeControlBaseline(dir *os.File, root string, snapshot workspacediff.ControlSurfaceSnapshot, replace bool) error {

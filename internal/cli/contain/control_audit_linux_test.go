@@ -443,3 +443,77 @@ func TestControlAuditIncompleteReplacementKeepsCompleteBaseline(t *testing.T) {
 	}
 	_, _ = runAuditFixture(t, env, controlAuditOptions{workspace: root}, 0)
 }
+
+func TestControlAuditStoreRejectsUnsafeBaselineFile(t *testing.T) {
+	store := controlAuditStore{}
+	good := unix.Stat_t{Mode: unix.S_IFREG | 0o600, Nlink: 1}
+	if err := store.checkFile(good); err != nil {
+		t.Fatalf("rejected correct owner, mode, and link count: %v", err)
+	}
+	for name, change := range map[string]func(*unix.Stat_t){
+		"owner":    func(st *unix.Stat_t) { st.Uid = 123 },
+		"group":    func(st *unix.Stat_t) { st.Gid = 123 },
+		"links":    func(st *unix.Stat_t) { st.Nlink = 2 },
+		"setuid":   func(st *unix.Stat_t) { st.Mode |= unix.S_ISUID },
+		"readable": func(st *unix.Stat_t) { st.Mode |= 0o004 },
+		"fifo":     func(st *unix.Stat_t) { st.Mode = unix.S_IFIFO | 0o600 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			st := good
+			change(&st)
+			if err := store.checkFile(st); err == nil {
+				t.Fatal("accepted an unsafe baseline file")
+			}
+		})
+	}
+}
+
+func TestControlAuditStoreRejectsLinkedAndSpecialBaselineFiles(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change func(*testing.T, string)
+	}{
+		{name: "hard link", change: func(t *testing.T, path string) {
+			if err := os.Link(path, path+"-link"); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "fifo", change: func(t *testing.T, path string) {
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+			if err := unix.Mkfifo(path, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env, root := controlAuditFixture(t)
+			_, _ = runAuditFixture(t, env, controlAuditOptions{workspace: root, record: true}, 0)
+			tc.change(t, filepath.Join(env.store.path, controlBaselineFilename(root)))
+			_, _ = runAuditFixture(t, env, controlAuditOptions{workspace: root}, 1)
+			_, _ = runAuditFixture(t, env, controlAuditOptions{workspace: root, record: true, replace: true}, 1)
+		})
+	}
+}
+
+// The runner is unprivileged, so an on-disk foreign owner cannot be created.
+// Expecting a different owner than the one the live directories carry drives
+// the same fstat-based check in open() that a foreign owner would.
+func TestControlAuditStoreOwnerMismatchOnLiveDirectories(t *testing.T) {
+	for name, change := range map[string]func(*controlAuditStore){
+		"uid": func(s *controlAuditStore) { s.uid++ },
+		"gid": func(s *controlAuditStore) { s.gid++ },
+	} {
+		t.Run(name, func(t *testing.T) {
+			env, root := controlAuditFixture(t)
+			_, _ = runAuditFixture(t, env, controlAuditOptions{workspace: root, record: true}, 0)
+			change(&env.store)
+			_, err := runAuditFixture(t, env, controlAuditOptions{workspace: root}, 1)
+			if !strings.Contains(err.Error(), "baseline directory component") {
+				t.Fatalf("owner mismatch must be reported against the directory chain: %v", err)
+			}
+			_, _ = runAuditFixture(t, env, controlAuditOptions{workspace: root, record: true, replace: true}, 1)
+		})
+	}
+}
