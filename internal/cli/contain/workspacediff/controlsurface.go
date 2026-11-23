@@ -520,9 +520,12 @@ func (w *controlWalker) resolveWorkspacePath(source, base, value string) (string
 		}
 		pending = append(pathParts(base), pathParts(value)...)
 	}
-	// The last component of the value is not followed. A value with no component
-	// of its own, such as ".", names the directory its base resolves to.
+	// The last component of the value is not followed, unless the value ends in a
+	// slash or a "." component: the kernel then requires a directory there, which
+	// it reaches through a symlink and refuses for a regular file. A value with no
+	// component of its own, such as ".", names the directory its base resolves to.
 	ownsLast := len(pathParts(value)) > 0
+	needsDir := endsInDirectoryMarker(value)
 	var stack []string
 	for hops := 0; len(pending) > 0; {
 		part := pending[0]
@@ -535,7 +538,8 @@ func (w *controlWalker) resolveWorkspacePath(source, base, value string) (string
 			continue
 		}
 		path := filepath.Join(append(slices.Clone(stack), part)...)
-		if len(pending) == 0 && ownsLast {
+		last := len(pending) == 0 && ownsLast
+		if last && !needsDir {
 			return path, pathResolved
 		}
 		info := w.lookup(path)
@@ -543,6 +547,10 @@ func (w *controlWalker) resolveWorkspacePath(source, base, value string) (string
 			if _, unreadable := w.pass.unreadable[path]; unreadable {
 				w.unreadable(source, "configured path could not be inspected")
 				return "", pathUnobservable
+			}
+			if last {
+				// Nothing is named yet, as with any last component.
+				return path, pathResolved
 			}
 			return "", pathMissing
 		}
@@ -605,6 +613,13 @@ func (w *controlWalker) outsideWorkspace(source, spelling string) (string, pathR
 		return "", pathUnobservable
 	}
 	return "", pathOutside
+}
+
+// endsInDirectoryMarker reports whether a path ends in a slash or a "."
+// component, either of which makes the kernel require a directory at its end.
+func endsInDirectoryMarker(path string) bool {
+	path = filepath.ToSlash(path)
+	return strings.HasSuffix(path, "/") || strings.HasSuffix(path, "/.")
 }
 
 // pathParts splits a path into its components, dropping empty and "." ones.
