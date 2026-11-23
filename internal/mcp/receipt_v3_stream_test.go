@@ -194,6 +194,13 @@ func verifyMCPFailedStreamFixture(t *testing.T, writer *v3.StreamWriter, opts v3
 	if err != nil || verified.Integrity != "ok" || verified.Verdict != "VALID PREFIX, END UNPROVEN" {
 		t.Fatalf("receipt verification = %s, integrity %s (%v)", verified.Verdict, verified.Integrity, err)
 	}
+	var findings []string
+	for _, finding := range verified.Findings {
+		findings = append(findings, finding.Code)
+	}
+	if !slices.Equal(findings, []string{"END_UNPROVEN"}) {
+		t.Fatalf("receipt verification findings = %v, want [END_UNPROVEN]", findings)
+	}
 	actions, err := readMCPMatrixActions(opts.Dir)
 	if err != nil {
 		t.Fatal(err)

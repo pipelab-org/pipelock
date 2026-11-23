@@ -276,17 +276,23 @@ func RunWSProxy(
 
 	refuseTaskRelease := func(frame MCPFrame, decision httpInputDecision, refusal string) {
 		outcome := decision.Outcome
-		block := inputMCPDenial(wsOpts, mcpTaintDenialAudit(), &BlockedRequest{
-			ID: frame.ID, IsNotification: isRPCNotification(frame.ID),
-			ErrorCode: -32002, ErrorMessage: "pipelock: " + refusal,
-		})
-		if wErr := deliverMCPInputResult(wsOpts, *block, localClientOut); wErr != nil {
-			_, _ = fmt.Fprintf(safeLogW, "pipelock: failed to send task refusal: %v\n", wErr)
-		}
 		intent := outcome.Receipt
 		intent.Layer = mcpReceiptLayerTaint
 		intent.TaintDecision = config.ActionBlock
 		intent.TaintDecisionReason = decision.taskTaint.recordTaskReleaseRefusal(refusal)
+		denialAudit := mcpTaintDenialAudit()
+		block := inputMCPDenial(wsOpts, denialAudit, &BlockedRequest{
+			ID: frame.ID, IsNotification: isRPCNotification(frame.ID),
+			ErrorCode: -32002, ErrorMessage: "pipelock: " + refusal,
+		})
+		if wsOpts.receiptEffects.enabled {
+			block.v3Evidence = mcpInputDenialEvidence(wsOpts, frame, denialAudit, receipt.EmitOpts{
+				Layer: intent.Layer, Pattern: intent.TaintDecisionReason, Severity: taintReceiptSeverity(decision.taskTaint),
+			})
+		}
+		if wErr := deliverMCPInputResult(wsOpts, *block, localClientOut); wErr != nil {
+			_, _ = fmt.Fprintf(safeLogW, "pipelock: failed to send task refusal: %v\n", wErr)
+		}
 		outcome.Receipt = intent
 		outcome.settle(safeLogW, wsOpts, mcpOutcomeStatusBlocked, -1, intent.TaintDecisionReason)
 	}
@@ -465,6 +471,10 @@ func RunWSProxy(
 		if bindErr != nil || innerCtx.Err() != nil {
 			inputOpts.finishV3Send(innerCtx, safeLogW, effect, false)
 			tracker.removeOwnedOutcome(frame.ID, registration)
+			if bindErr != nil {
+				decision.Outcome.settle(safeLogW, inputOpts, mcpOutcomeStatusBlocked, -1, "request_tracking_failed")
+				writeNativeAdmissionDenial(inputOpts, safeLogW, localClientOut, frame, bindErr)
+			}
 			continue
 		}
 

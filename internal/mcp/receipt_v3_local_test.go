@@ -4,6 +4,7 @@
 package mcp
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -17,8 +18,12 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/gobwas/ws"
+	gobwasutil "github.com/gobwas/ws/wsutil"
 
 	"github.com/luckyPipewrench/pipelock/internal/ael"
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -27,6 +32,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
+	"github.com/luckyPipewrench/pipelock/internal/session"
 	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
@@ -954,44 +960,6 @@ func TestMCPV3ReplyRetainsDecisionTimePolicy(t *testing.T) {
 	}
 }
 
-func TestMCPV3NetworkReplyRefusalIsSigned(t *testing.T) {
-	for _, stream := range []bool{false, true} {
-		t.Run(map[bool]string{false: "buffered", true: "streamed"}[stream], func(t *testing.T) {
-			opts, writer, client := localMCPReceiptFixture(t, v3MCPMatrixRow{required: true}, deferred.SurfaceMCPHTTPListener)
-			x := mcpV3NetworkExchange{ctx: t.Context(), opts: opts, log: io.Discard}
-			frame := MCPFrame{ID: []byte("1"), Method: "tools/call"}
-			if err := x.admit(frame, receipt.EmitOpts{ActionID: "send"}); err != nil {
-				t.Fatal(err)
-			}
-			x.sent = true
-			x.observe()
-			if stream {
-				w := mcpV3NetworkStreamWriter{exchange: &x, base: transport.NewStdioWriter(client)}
-				msg := blockRequestResponse(BlockedRequest{ID: frame.ID, ErrorCode: -32000, ErrorMessage: "response blocked"})
-				if err := w.messageWriter(msg, ParseMCPFrame(msg), true).writeDeniedMessage(msg); err != nil {
-					t.Fatal(err)
-				}
-			} else {
-				x.refuseReply()
-			}
-			x.finish()
-			if stream {
-				assertLocalMCPErrors(t, client.output.String(), "1")
-				if !client.intent {
-					t.Fatal("error was written before its delivery intent")
-				}
-			}
-			for _, action := range localMCPReceiptActions(t, writer, client.dir) {
-				if action.EffectBoundary == mcpDownstreamDeliveryBoundary && action.ParentActionID == "send" &&
-					action.Phase == "decision" && action.Verdict == config.ActionBlock {
-					return
-				}
-			}
-			t.Fatal("missing signed reply refusal")
-		})
-	}
-}
-
 type brokenListenerBody struct {
 	*httptest.ResponseRecorder
 }
@@ -1757,4 +1725,263 @@ func TestMCPV3StdioRedirectRefusalRetainsWriteError(t *testing.T) {
 	default:
 		t.Fatal("missing redirect refusal")
 	}
+}
+
+func TestMCPV3EarlyDenialSettlesSend(t *testing.T) {
+	const dropped = `{"jsonrpc":"2.0","method":"notifications/resources/list_changed"}`
+	for _, surface := range []string{"stdio", "sandbox", deferred.SurfaceMCPWS, deferred.SurfaceMCPHTTPUpstream} {
+		t.Run(surface, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(10*time.Second))
+			defer cancel()
+			transportName := surface
+			if surface == "stdio" || surface == "sandbox" {
+				transportName = transportMCPStdio
+			}
+			opts, writer, client := localMCPReceiptFixture(t, v3MCPMatrixRow{required: true}, transportName)
+			opts.KillSwitch = deferKillTestController()
+			var responses atomic.Int32
+			opts.OnResponseKeysValidated = func() {
+				if responses.Add(1) == 1 {
+					opts.KillSwitch.SetAPI(true)
+				}
+			}
+
+			in, send := io.Pipe()
+			replies, out := io.Pipe()
+			closePipes := context.AfterFunc(ctx, func() {
+				_ = send.CloseWithError(ctx.Err())
+				_ = out.CloseWithError(ctx.Err())
+			})
+			defer closePipes()
+			defer func() {
+				_ = send.Close()
+				_ = replies.Close()
+			}()
+
+			var run func() error
+			switch surface {
+			case "stdio", "sandbox":
+				cmd := []string{"sh", "-c", `IFS= read -r line || exit; printf '%s\n' "$2" "$1"; while IFS= read -r line; do printf '%s\n' "$1"; done`, "peer", heldNativeReply, dropped}
+				run = func() error {
+					if surface == "stdio" {
+						return RunProxy(ctx, in, out, io.Discard, cmd, opts)
+					}
+					child := exec.CommandContext(ctx, cmd[0], cmd[1:]...)
+					return runProxyWithSandbox(ctx, child, child.Start, in, out, io.Discard, opts)
+				}
+			case deferred.SurfaceMCPWS:
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					conn, _, _, err := ws.UpgradeHTTP(r, w)
+					if err != nil {
+						t.Error(err)
+						return
+					}
+					defer func() { _ = conn.Close() }()
+					deadline, _ := ctx.Deadline()
+					_ = conn.SetDeadline(deadline)
+					for i := range 2 {
+						if _, err := gobwasutil.ReadClientMessage(conn, nil); err != nil {
+							return
+						}
+						if i == 0 {
+							if err := gobwasutil.WriteServerMessage(conn, ws.OpText, []byte(dropped)); err != nil {
+								return
+							}
+						}
+						if err := gobwasutil.WriteServerMessage(conn, ws.OpText, []byte(heldNativeReply)); err != nil {
+							return
+						}
+					}
+					_ = gobwasutil.WriteServerMessage(conn, ws.OpClose, ws.NewCloseFrameBody(ws.StatusNormalClosure, ""))
+				}))
+				defer server.Close()
+				run = func() error { return RunWSProxy(ctx, in, out, io.Discard, wsURL(server), opts) }
+			case deferred.SurfaceMCPHTTPUpstream:
+				var requests atomic.Int32
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					if requests.Add(1) == 1 {
+						w.Header().Set("Content-Type", "text/event-stream")
+						_, _ = fmt.Fprintf(w, "data: %s\n\ndata: %s\n\n", dropped, heldNativeReply)
+						return
+					}
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = io.WriteString(w, heldNativeReply)
+				}))
+				defer server.Close()
+				run = func() error { return RunHTTPProxy(ctx, in, out, io.Discard, server.URL, nil, opts) }
+			}
+			done := make(chan error, 1)
+			go func() {
+				err := run()
+				_ = out.CloseWithError(err)
+				done <- err
+			}()
+			reader := bufio.NewReader(replies)
+			sendCall := func() string {
+				t.Helper()
+				if _, err := io.WriteString(send, jsonToolsCallEcho+"\n"); err != nil {
+					t.Fatal(err)
+				}
+				line, err := reader.ReadString('\n')
+				if err != nil {
+					t.Fatal(err)
+				}
+				return line
+			}
+			assertLocalMCPErrors(t, sendCall(), "1")
+			opts.KillSwitch.SetAPI(false)
+			if response := strings.TrimSpace(sendCall()); response != heldNativeReply {
+				t.Fatalf("reused request response = %q", response)
+			}
+			_ = send.Close()
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+
+			var original string
+			var completed, decision, delivery bool
+			drops := 0
+			for _, action := range localMCPReceiptActions(t, writer, client.dir) {
+				switch {
+				case action.Method == secondSSEMethod && action.EffectBoundary == mcpDownstreamDeliveryBoundary:
+					if action.Phase != "decision" || action.Verdict != config.ActionBlock || action.Target != secondSSEMethod {
+						t.Fatalf("unexpected notification receipt: %+v", action)
+					}
+					drops++
+				case original == "" && action.EffectBoundary == mcpUpstreamSendBoundary && action.Phase == "intent":
+					original = action.ActionID
+				case original != "" && action.ActionID == original && action.Phase == "outcome":
+					completed = action.OutcomeClass == "completed"
+				case original != "" && action.ParentActionID == original && action.EffectBoundary == mcpDownstreamDeliveryBoundary:
+					decision = decision || action.Phase == "decision" && action.Verdict == config.ActionBlock
+					delivery = delivery || action.Phase == "outcome" && action.OutcomeClass == "completed"
+				}
+			}
+			if drops != 1 {
+				t.Fatalf("notification drop decisions = %d, want 1", drops)
+			}
+			if !completed || !decision || !delivery {
+				t.Fatalf("original send completed=%t, linked refusal=%t, linked delivery=%t", completed, decision, delivery)
+			}
+		})
+	}
+}
+
+func TestMCPV3EarlyResponseDropRecordsRefusal(t *testing.T) {
+	opts, writer, client := localMCPReceiptFixture(t, v3MCPMatrixRow{required: true}, deferred.SurfaceMCPHTTPListener)
+	opts.KillSwitch = deferKillTestController()
+	event := fmt.Sprintf(`{"jsonrpc":"2.0","method":%q}`, secondSSEMethod)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		opts.KillSwitch.SetAPI(true)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", event)
+	}))
+	defer upstream.Close()
+	url, _ := startListenerProxyWithOpts(t, upstream.URL, opts)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Accept", "text/event-stream")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil || bytes.Contains(body, []byte(event)) {
+		t.Fatalf("dropped notification reached the client: status=%d body=%q error=%v", resp.StatusCode, body, err)
+	}
+	var downstream []v3.Action
+	for _, action := range localMCPReceiptActions(t, writer, client.dir) {
+		if action.EffectBoundary == mcpDownstreamDeliveryBoundary && action.Method == secondSSEMethod {
+			downstream = append(downstream, action)
+		}
+	}
+	if len(downstream) != 1 || downstream[0].Phase != "decision" || downstream[0].Verdict != config.ActionBlock ||
+		downstream[0].Target != secondSSEMethod {
+		t.Fatalf("expected one attributed drop decision, got %+v", downstream)
+	}
+}
+
+func TestMCPV3StdioAskRefusalAttribution(t *testing.T) {
+	for _, sandbox := range []bool{false, true} {
+		t.Run(fmt.Sprintf("sandbox=%t", sandbox), func(t *testing.T) {
+			opts, writer, client := localMCPReceiptFixture(t, v3MCPMatrixRow{required: true}, transportMCPStdio)
+			opts.PolicyCfg = policy.New(config.MCPToolPolicy{
+				Enabled: true, Action: config.ActionAsk,
+				Rules: []config.ToolPolicyRule{{Name: "review_echo", ToolPattern: "^echo$", Action: config.ActionAsk}},
+			})
+			input := strings.NewReader(jsonToolsCallEcho + "\n")
+			cmd := []string{"sh", "-c", "cat"}
+			var err error
+			if sandbox {
+				child := exec.CommandContext(t.Context(), cmd[0], cmd[1:]...)
+				err = runProxyWithSandbox(t.Context(), child, child.Start, input, client, io.Discard, opts)
+			} else {
+				err = RunProxy(t.Context(), input, client, io.Discard, cmd, opts)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertLocalMCPErrors(t, client.output.String(), "1")
+			for _, action := range localMCPReceiptActions(t, writer, client.dir) {
+				if action.EffectBoundary == mcpDownstreamDeliveryBoundary && action.Phase == "decision" &&
+					action.Verdict == config.ActionBlock && action.Method == "tools/call" && action.Layer == mcpReceiptLayerPolicy &&
+					action.Pattern == "review_echo" && action.Severity == config.SeverityHigh && action.Target == "echo" {
+					return
+				}
+			}
+			t.Fatal("missing attributed echo refusal")
+		})
+	}
+}
+
+func TestMCPV3WebSocketTaskReleaseRefusalAttribution(t *testing.T) {
+	cfg := config.Defaults()
+	rec := &httpTaskPermissionRecorder{expireAt: 3}
+	rec.ObserveRisk(session.ClassifyMCPResponseFindings("mcp_response", true, []session.HostileFindingKind{session.FindingDLP}))
+	opts, writer, client := localMCPReceiptFixture(t, v3MCPMatrixRow{required: true}, deferred.SurfaceMCPWS)
+	opts.ReceiptEmitter, _, _, _ = newReceiptTestHarness(t)
+	opts.TaintCfg = &cfg.Taint
+	opts.Store = taskPermissionTestStore{rec: rec}
+	opts.ServerBinding = "test-server"
+	opts.AuthorityVerifier, opts.AuthorityActor = allowAuthorityVerifier(nil), "test-agent"
+	msg := []byte(strings.Replace(deferKillTestCall, `"arguments":`, `"_meta":{"com.pipelock/authority":"grant"},"arguments":`, 1))
+	admitted, _, err := extractInboundMCPAuthority(msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame := ParseMCPFrame(admitted)
+	rec.action = mcpTaskAction(opts, frame)
+	var connections atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		connections.Add(1)
+		w.WriteHeader(http.StatusBadRequest)
+	}))
+	defer upstream.Close()
+	ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(5*time.Second))
+	defer cancel()
+	var out lockedHTTPBuffer
+	err = runTaskPermissionWS(ctx, msg, func(input io.Reader) error {
+		return RunWSProxy(ctx, input, &out, io.Discard, wsURL(upstream), opts)
+	}, func() {
+		testwait.For(t, time.Second, func() bool { return out.contains(session.TaskPermissionRequired) }, "task release denial")
+	})
+	if err != nil || connections.Load() != 0 {
+		t.Fatalf("upstream connections=%d, response=%q, error=%v", connections.Load(), out.String(), err)
+	}
+	for _, action := range localMCPReceiptActions(t, writer, client.dir) {
+		if action.EffectBoundary == mcpDownstreamDeliveryBoundary && action.Phase == "decision" &&
+			action.Verdict == config.ActionBlock && action.Method == frame.Method && action.Layer == mcpReceiptLayerTaint &&
+			action.Pattern == session.TaskPermissionRequired && action.Target == frame.ToolCallName && action.Severity != "" {
+			return
+		}
+	}
+	t.Fatal("missing attributed task release refusal")
 }

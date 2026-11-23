@@ -220,12 +220,7 @@ func (o MCPProxyOpts) v3ResponseWriter(ctx context.Context, log io.Writer, write
 	if !isResponse(line) || canonicalID(frame.ID) == "" {
 		return mcpV3WithheldWriter{}
 	}
-	s := o.v3Session
-	key := canonicalID(frame.ID)
-	s.mu.Lock()
-	x := s.pending[key]
-	delete(s.pending, key)
-	s.mu.Unlock()
+	x := o.takeV3Send(frame.ID)
 	if x == nil {
 		return mcpV3WithheldWriter{}
 	}
@@ -237,6 +232,19 @@ func (o MCPProxyOpts) v3ResponseWriter(ctx context.Context, log io.Writer, write
 type mcpV3WithheldWriter struct{}
 
 func (mcpV3WithheldWriter) WriteMessage([]byte) error { return nil }
+
+func (o MCPProxyOpts) takeV3Send(id json.RawMessage) *mcpV3Exchange {
+	if o.v3Session == nil {
+		return nil
+	}
+	s := o.v3Session
+	key := canonicalID(id)
+	s.mu.Lock()
+	x := s.pending[key]
+	delete(s.pending, key)
+	s.mu.Unlock()
+	return x
+}
 
 func (o MCPProxyOpts) pendingV3Send(id json.RawMessage) *mcpV3Exchange {
 	if o.v3Session == nil {
@@ -447,12 +455,6 @@ func (x *mcpV3NetworkExchange) admitList(frame MCPFrame, evidence receipt.EmitOp
 		x.listReply = &mcpV3ReplyReservation{token: token}
 	}
 	return nil, lock.Lock(x.ctx)
-}
-
-func (x *mcpV3NetworkExchange) refuseReply() {
-	if x.send != nil && !x.replyAdmitted && x.listReply == nil {
-		logMCPV3Error(x.log, x.opts.refuseV3Reply(x.ctx, x.replyEvidence))
-	}
 }
 
 func (x *mcpV3NetworkExchange) admitReply() error {

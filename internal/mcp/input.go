@@ -1907,7 +1907,11 @@ func ForwardScannedInput(
 			_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked %s request (%s) [ask not supported for input scanning]\n",
 				lineNum, method, reasonStr)
 			denialAudit = mcpInputDecisionBlockAudit(verdict, contentBlock || (!verdict.Clean && !policyVerdict.Matched && bindingAction == "" && chainAction == "" && baselineAction == ""), policyVerdict, bindingAction, chainAction, eval.ChainPatternName, baselineAction)
-			sendMCPDenial(opts, denialAudit, BlockedRequest{
+			if opts.receiptEffects.enabled {
+				layer, pattern, severity := pickAttribution(eval)
+				v3Evidence = receipt.EmitOpts{Target: receiptTarget, Layer: layer, Pattern: pattern, Severity: severity}
+			}
+			sendInputDenial(opts, denialAudit, BlockedRequest{
 				ID:             verdict.ID,
 				IsNotification: isNotification,
 				LogMessage:     fmt.Sprintf("pipelock: input line %d: blocked (ask fallback)", lineNum),

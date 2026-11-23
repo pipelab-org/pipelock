@@ -265,6 +265,30 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 	defer finishMessage()
 
 	baseWriter := writer
+	writeEarlyDenial := func(descriptor mcpDenialAudit, frame MCPFrame, outbound []byte, reason string) error {
+		denialWriter := writer
+		id := attributableMCPResponseID(frame.Raw)
+		var outcome TrackedRequestOutcome
+		var correlated bool
+		recordV3 := opts.receiptEffects.enabled && opts.responseDropped == nil
+		if recordV3 {
+			if !isRPCNotification(id) {
+				outcome, correlated = tracker.Consume(id)
+			}
+			denialWriter = earlyMCPV3ResponseWriter(opts, baseWriter, frame, logW, correlated)
+		}
+		if err := writeMCPDenial(opts, descriptor, denialWriter, outbound); err != nil {
+			outcome.releaseNativeLease()
+			return err
+		}
+		if !recordV3 && !isRPCNotification(id) {
+			outcome, correlated = tracker.Consume(id)
+		}
+		if correlated {
+			outcome.recordResponseOutcome(logW, opts, mcpOutcomeStatusBlocked, int64(len(outbound)), reason)
+		}
+		return nil
+	}
 	for {
 		finishMessage()
 		writer = baseWriter
@@ -320,7 +344,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		lineNum++
 		var denialAudit mcpDenialAudit
 		if err := opts.checkServerIdentity(); err != nil {
-			dropMCPDenial(opts, mcpIdentityMcpResponseDenialAudit(), "response")
+			dropEarlyMCPResponse(opts, mcpIdentityMcpResponseDenialAudit(), baseWriter, frame, logW)
 			return foundInjection, &mcpFinalizedDenialError{err: err}
 		}
 
@@ -372,7 +396,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				denialAudit = mcpKillMcpResponseDenialAudit()
 				rpcID := frame.ID
 				if rpcID == nil {
-					dropMCPDenial(opts, denialAudit, "response")
+					dropEarlyMCPResponse(opts, denialAudit, baseWriter, frame, logW)
 					// Notification: drop silently (no response possible).
 					_, _ = fmt.Fprintf(logW, "pipelock: response line %d: kill switch dropped notification (source=%s)\n",
 						lineNum, d.Source)
@@ -381,10 +405,9 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				_, _ = fmt.Fprintf(logW, "pipelock: response line %d: kill switch denied (source=%s)\n",
 					lineNum, d.Source)
 				resp := killswitch.ErrorResponse(rpcID, d.Message)
-				if wErr := writeMCPDenial(opts, denialAudit, writer, resp); wErr != nil {
+				if wErr := writeEarlyDenial(denialAudit, frame, resp, "kill_switch"); wErr != nil {
 					return foundInjection, fmt.Errorf("writing kill switch response: %w", wErr)
 				}
-				settleMCPResponseDenial(frame.Raw, resp, logW, tracker, opts, "kill_switch")
 				continue
 			}
 		}
@@ -436,14 +459,13 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			// Notifications (no ID) must not receive a response per JSON-RPC spec.
 			// Drop them silently instead of writing an error.
 			if rpcID == nil {
-				dropMCPDenial(opts, denialAudit, "response")
+				dropEarlyMCPResponse(opts, denialAudit, baseWriter, frame, logW)
 				continue
 			}
 			resp := blockSessionDenyResponse(rpcID, mcpAdaptiveBlockMessage(rec, adaptiveCfg, "session_deny", logW))
-			if wErr := writeMCPDenial(opts, denialAudit, writer, resp); wErr != nil {
+			if wErr := writeEarlyDenial(denialAudit, frame, resp, "session_deny"); wErr != nil {
 				return foundInjection, fmt.Errorf("writing session deny: %w", wErr)
 			}
-			settleMCPResponseDenial(frame.Raw, resp, logW, tracker, opts, "session_deny")
 			continue
 		}
 
@@ -453,7 +475,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		// frame: WebSocket and SSE can preserve leading whitespace that
 		// a raw first-byte check would miss.
 		if frame.IsBatch {
-			dropMCPDenial(opts, mcpBatchResponseDenialAudit(), "response")
+			dropEarlyMCPResponse(opts, mcpBatchResponseDenialAudit(), baseWriter, frame, logW)
 			_, _ = fmt.Fprintf(logW, "pipelock: line %d: blocked batch JSON-RPC message (not supported by MCP)\n", lineNum)
 			continue
 		}
@@ -1411,14 +1433,30 @@ func attributableMCPResponseID(raw []byte) json.RawMessage {
 	return fields["id"]
 }
 
-func settleMCPResponseDenial(raw, outbound []byte, logW io.Writer, tracker *RequestTracker, opts MCPProxyOpts, reason string) {
-	id := attributableMCPResponseID(raw)
-	if isRPCNotification(id) {
-		return
+func dropEarlyMCPResponse(opts MCPProxyOpts, descriptor mcpDenialAudit, base transport.MessageWriter, frame MCPFrame, logW io.Writer) {
+	dropMCPDenial(opts, descriptor, "response")
+	// The buffered listener records its refusal when it commits the HTTP response.
+	if opts.receiptEffects.enabled && opts.responseDropped == nil {
+		reply := earlyMCPV3ResponseWriter(opts, base, frame, logW, false)
+		logMCPV3Error(logW, reply.writeDeniedMessage(nil))
 	}
-	if outcome, ok := tracker.Consume(id); ok {
-		outcome.recordResponseOutcome(logW, opts, mcpOutcomeStatusBlocked, int64(len(outbound)), reason)
+}
+
+func earlyMCPV3ResponseWriter(opts MCPProxyOpts, base transport.MessageWriter, frame MCPFrame, logW io.Writer, correlated bool) *mcpV3ReplyWriter {
+	if stream, ok := base.(*mcpV3NetworkStreamWriter); ok {
+		return stream.messageWriter(frame.Raw, frame, correlated)
 	}
+	if correlated {
+		if x := opts.takeV3Send(frame.ID); x != nil {
+			logMCPV3Error(logW, confirmMCPV3Effect(opts.warnContext(), x.token, true))
+			return &mcpV3ReplyWriter{base: base, opts: opts, log: logW, request: x.request}
+		}
+	}
+	request := receipt.EmitOpts{
+		RequestID: canonicalID(frame.ID), Method: frame.Method,
+		Target: firstNonEmpty(frame.Method, "mcp://event"), Transport: opts.Transport,
+	}
+	return &mcpV3ReplyWriter{base: base, opts: opts, log: logW, request: request}
 }
 
 func emitRejectedResponseOutcome(raw, outbound []byte, logW io.Writer, tracker *RequestTracker, opts MCPProxyOpts) {
