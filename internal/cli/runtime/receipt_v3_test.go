@@ -198,12 +198,14 @@ func TestStandaloneMCPV3RequiredHeartbeatFailure(t *testing.T) {
 
 func TestStandaloneMCPV3RequiresWriter(t *testing.T) {
 	for _, tc := range []struct {
-		name    string
-		openErr error
-		want    string
+		name, surface, want string
+		args                []string
+		openErr             error
 	}{
-		{name: "missing", want: "no v3 receipt writer is active"},
-		{name: "open failure", openErr: errors.New("stream unavailable"), want: "open v3 receipt writer: stream unavailable"},
+		{name: "missing", surface: deferred.SurfaceMCPHTTPListener, want: "no v3 receipt writer is active", args: []string{"--listen", serverTestEphemeralListen, "--upstream", serverTestUpstreamURL}},
+		{name: "HTTP upstream", surface: deferred.SurfaceMCPHTTPUpstream, args: []string{"--upstream", serverTestUpstreamURL}, openErr: errors.New("stream unavailable")},
+		{name: "WebSocket upstream", surface: deferred.SurfaceMCPWS, args: []string{"--upstream", "ws://api.vendor.example/mcp"}, openErr: errors.New("stream unavailable")},
+		{name: "stdio", surface: deferred.SurfaceMCPStdio, args: []string{"--", "example-mcp"}, openErr: errors.New("stream unavailable")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, key, err := signing.GenerateKeyPair()
@@ -215,14 +217,26 @@ func TestStandaloneMCPV3RequiresWriter(t *testing.T) {
 				t.Fatal(err)
 			}
 			yaml := fmt.Sprintf("defer:\n  enabled: false\nflight_recorder:\n  enabled: true\n  dir: %q\n  signing_key_path: %q\n  receipt_format: v3\n  require_receipts: true\n", t.TempDir(), keyPath)
-			open := func(context.Context, *config.Config, ed25519.PrivateKey, *recorder.Recorder, posturebinding.Result, runtimeReceiptStreamOptions) (*v3.StreamWriter, error) {
+			open := func(ctx context.Context, _ *config.Config, _ ed25519.PrivateKey, _ *recorder.Recorder, _ posturebinding.Result, opts runtimeReceiptStreamOptions) (*v3.StreamWriter, error) {
+				if !slices.Equal(opts.surfaces, []string{tc.surface}) {
+					t.Fatalf("receipt surfaces = %v, want %q", opts.surfaces, tc.surface)
+				}
+				opts.onHeartbeatError(nil)
+				if ctx.Err() != nil {
+					t.Fatal("nil heartbeat error cancelled startup")
+				}
 				return nil, tc.openErr
 			}
 			cmd := mcpProxyCmdWithReceiptWriter(audit.NewWithStream, 0, open)
-			cmd.SetArgs([]string{"--config", writeServerTestConfig(t, yaml), "--listen", serverTestEphemeralListen, "--upstream", serverTestUpstreamURL})
+			cmd.SetArgs(append([]string{"--config", writeServerTestConfig(t, yaml)}, tc.args...))
 			cmd.SetOut(io.Discard)
 			cmd.SetErr(io.Discard)
-			if err := cmd.ExecuteContext(t.Context()); err == nil || !strings.Contains(err.Error(), tc.want) {
+			err = cmd.ExecuteContext(t.Context())
+			if tc.openErr != nil {
+				if !errors.Is(err, tc.openErr) {
+					t.Fatalf("startup error = %v, want %v", err, tc.openErr)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("startup error = %v, want %q", err, tc.want)
 			}
 		})
@@ -298,5 +312,49 @@ func TestRuntimeReceiptV3WriterPrerequisites(t *testing.T) {
 	}
 	if err := writer.Close(t.Context(), nil); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestServerV3RefusesInvalidEvidenceDirectory(t *testing.T) {
+	_, key, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(t.TempDir(), "signer.key")
+	if err := signing.SavePrivateKey(key, keyPath); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, want string
+		evidence   func(*testing.T) string
+	}{
+		{"file", "read receipt evidence directory", func(*testing.T) string { return keyPath }},
+		{"corrupt stream", "open v3 receipt writer", func(t *testing.T) string {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "invalid.receipt-v3.jsonl"), []byte("invalid evidence\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			return dir
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			evidence := tc.evidence(t)
+			yaml := fmt.Sprintf("defer:\n  enabled: false\nflight_recorder:\n  enabled: true\n  dir: %q\n  signing_key_path: %q\n  receipt_format: v3\n  require_receipts: true\n", evidence, keyPath)
+			file := writeServerTestConfig(t, yaml)
+			s, err := NewServer(ServerOpts{ConfigFile: file, Stdout: &syncBuffer{}, Stderr: &syncBuffer{}})
+			if s != nil {
+				s.cleanup()
+				t.Fatal("server opened invalid receipt evidence")
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("server error = %v, want %q", err, tc.want)
+			}
+			if tc.name == "file" {
+				_, _, err := runMCPProxyCommand(t, file)
+				if err == nil || !strings.Contains(err.Error(), tc.want) {
+					t.Fatalf("MCP error = %v, want %q", err, tc.want)
+				}
+			}
+		})
 	}
 }

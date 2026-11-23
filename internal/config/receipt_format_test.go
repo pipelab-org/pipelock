@@ -41,6 +41,13 @@ func TestLoadReceiptFormat(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			wantEffective := tc.want
+			if wantEffective == "" {
+				wantEffective = ReceiptFormatLegacy
+			}
+			if got := cfg.FlightRecorder.EffectiveReceiptFormat(); got != wantEffective {
+				t.Fatalf("effective receipt format = %q, want %q", got, wantEffective)
+			}
 			if got := cfg.FlightRecorder.ReceiptFormat; got != tc.want {
 				t.Fatalf("receipt format = %q, want %q", got, tc.want)
 			}
