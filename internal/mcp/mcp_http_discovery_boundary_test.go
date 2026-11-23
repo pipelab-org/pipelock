@@ -294,3 +294,47 @@ func TestHTTPListener_ContractDiscoveryCauseStaysInLog(t *testing.T) {
 		})
 	}
 }
+
+func TestContractDiscoveryRechecksAbsenceAfterListPublishes(t *testing.T) {
+	state := newMCPListenerClientState("", "")
+	t.Cleanup(state.revoke)
+	ctx := t.Context()
+	release, err := state.acquireToolContractWithDiscovery(ctx, "echo", func() error {
+		if err := state.contractMu.Lock(ctx); err != nil {
+			return err
+		}
+		defer state.contractMu.Unlock()
+		if err := state.baseline.SetToolHeaderBindings([]tools.ToolDef{{Name: "echo"}}); err != nil {
+			return err
+		}
+		return errDiscoveryToolAbsent
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	release()
+}
+
+func TestMCPV3BridgeDiscoveryRequiresSendAdmission(t *testing.T) {
+	opts, _, _ := localMCPReceiptFixture(t, v3MCPMatrixRow{required: true, scenario: "intent write fail"}, "mcp_http_upstream")
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer server.Close()
+	bridge := mcpBridgeHeaders{
+		client: transport.NewHTTPClient(server.URL, nil),
+		state:  newMCPListenerClientState("", ""),
+		opts:   opts,
+		log:    io.Discard,
+	}
+	t.Cleanup(bridge.state.revoke)
+	message := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","_meta":{"io.modelcontextprotocol/protocolVersion":"` + currentMCPVersion + `"}}}`)
+	if _, err := bridge.prepare(t.Context(), message); err == nil || !strings.Contains(err.Error(), "admit discovery request") {
+		t.Errorf("discovery returned %v, want receipt admission error", err)
+	}
+	if count := requests.Load(); count != 0 {
+		t.Errorf("upstream received %d discovery requests", count)
+	}
+}

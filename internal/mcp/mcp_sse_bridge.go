@@ -83,6 +83,9 @@ func (sw *sseMessageWriter) WriteMessage(msg []byte) error {
 	if len(msg) > transport.MaxLineSize {
 		return fmt.Errorf("message too large: %d bytes", len(msg))
 	}
+	if listener, ok := sw.w.(*mcpListenerDenialWriter); ok && !listener.claimEffectReply() {
+		return io.ErrClosedPipe
+	}
 	// The first write may commit headers even when it fails part way. Wrote
 	// must reflect that attempt so the handler aborts instead of appending a
 	// synthetic 502 response to a partially written event.
@@ -246,7 +249,16 @@ func scanGETStream(ctx context.Context, client *transport.HTTPClient, writer tra
 		logReceiptEmitFailure(logW, err, true, config.ActionForward)
 		return nil, err
 	}
-	reader, err := client.OpenGETStream(streamCtx)
+	effect := mcpV3NetworkExchange{ctx: streamCtx, opts: transportReceiptOpts, log: logW}
+	if err := effect.admit(MCPFrame{Method: http.MethodGet}, transportAdmission); err != nil {
+		return nil, err
+	}
+	defer effect.finish()
+	if effect.send != nil && streamCtx.Err() != nil {
+		return nil, streamCtx.Err()
+	}
+	effect.sent = true
+	reader, err := client.OpenObservedGETStream(streamCtx, effect.observe)
 	if err != nil {
 		switch {
 		case errors.Is(context.Cause(streamCtx), ael.ErrCapacity):
@@ -261,8 +273,11 @@ func scanGETStream(ctx context.Context, client *transport.HTTPClient, writer tra
 	}
 	warnContext, stopWarnings := opts.nativeWarningContext(streamCtx, admission)
 	opts.WarnContext = warnContext
+	// Subscription events are independent of pending POST replies.
+	opts.v3Session = nil
 	defer stopWarnings()
-	_, scanErr = scanMCPHTTPResponse(streamCtx, reader, writer, logW, tracker, opts)
+
+	_, scanErr = scanMCPHTTPResponse(streamCtx, reader, effect.streamWriter(writer), logW, tracker, opts)
 	if errors.Is(scanErr, ael.ErrCapacity) || errors.Is(context.Cause(streamCtx), ael.ErrCapacity) {
 		if transportAdmission.ActionID != "" {
 			recordTransportAdmissionResult(logW, transportReceiptOpts, transportAdmission, "cancelled", nativeCapacityReason)

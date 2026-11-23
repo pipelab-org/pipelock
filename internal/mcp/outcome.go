@@ -33,7 +33,12 @@ func isPairedMCPMethod(method string) bool {
 // trackMCPOutcome settles handles that lost correlation without attributing
 // a response to them. Writes happen after releasing the tracker's lock.
 func trackMCPOutcome(logW io.Writer, opts MCPProxyOpts, tracker *RequestTracker, id json.RawMessage, outcome TrackedRequestOutcome) *requestRegistration {
-	registration, unowned := tracker.registerOutcome(id, outcome)
+	registration, unowned, evictedKey := tracker.registerOutcome(id, outcome)
+	if evictedKey != "" {
+		if x := opts.takeV3SendKey(evictedKey); x != nil {
+			logMCPV3Error(logW, x.token.SettleOnExit(opts.warnContext()))
+		}
+	}
 	for _, pending := range unowned {
 		pending.outcome.settle(logW, opts, "incomplete", -1, pending.reason)
 	}

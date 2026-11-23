@@ -514,14 +514,14 @@
       },
       "implementation": {
         "file": "internal/cli/runtime/sandbox.go",
-        "symbol": "SandboxCmd"
+        "symbol": "sandboxCmd"
       },
       "operator_entry_point": {
         "kind": "command",
         "value": "pipelock sandbox",
         "source": {
           "file": "internal/cli/runtime/sandbox.go",
-          "symbol": "SandboxCmd"
+          "symbol": "sandboxCmd"
         }
       }
     },
