@@ -351,7 +351,7 @@ func TestControlSurfaceReportsAmbiguousDotDotConfigPaths(t *testing.T) {
 			for _, entry := range diff.Unreadable {
 				named = named || (entry.Path == filepath.FromSlash(tc.source) && strings.Contains(entry.Reason, "ambiguous"))
 			}
-			if !reported && !(diff.Incomplete && named) {
+			if !reported && (!diff.Incomplete || !named) {
 				t.Fatalf("a path Git resolves through a symlink must be observed or reported ambiguous: %+v", diff)
 			}
 		})

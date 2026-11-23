@@ -28,7 +28,11 @@ func TestSnapshotRefusesSameInodeBindMountSwap(t *testing.T) {
 		if err != nil {
 			t.Skip("unshare is required for a private mount namespace")
 		}
-		cmd := exec.CommandContext(t.Context(), unshare, "-Urm", os.Args[0], "-test.run=^TestSnapshotRefusesSameInodeBindMountSwap$", "-test.v") // #nosec G204 -- the test re-runs its own binary.
+		self, err := os.Executable()
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.CommandContext(t.Context(), unshare, "-Urm", self, "-test.run=^TestSnapshotRefusesSameInodeBindMountSwap$", "-test.v") // #nosec G204 -- the test re-runs its own binary under unshare.
 		cmd.Env = append(os.Environ(), bindMountChildEnv+"=1")
 		output, err := cmd.CombinedOutput()
 		switch {
