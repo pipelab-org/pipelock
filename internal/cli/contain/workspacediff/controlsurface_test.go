@@ -177,6 +177,20 @@ func TestControlSurfaceRealGitBenignOperations(t *testing.T) {
 	})
 }
 
+// The real-Git fixtures must not race Git's own background maintenance, which
+// would add objects/maintenance.lock or prune worktree metadata mid-test.
+func TestControlSurfaceTestGitDisablesBackgroundMaintenance(t *testing.T) {
+	g := newControlGit(t)
+	root := t.TempDir()
+	g.init(t, root)
+	for key, want := range map[string]string{"gc.auto": "0", "maintenance.auto": "false"} {
+		out, err := g.command(t, root, "config", "--get", key)
+		if err != nil || strings.TrimSpace(out) != want {
+			t.Errorf("git config %s = %q (%v), want %q", key, strings.TrimSpace(out), err, want)
+		}
+	}
+}
+
 // Git holds objects/maintenance.lock while its maintenance runs, which a commit
 // can start in the background (builtin/gc.c, maintenance_run_tasks). The file is
 // transient bookkeeping, not repository configuration.
