@@ -1151,3 +1151,73 @@ func TestControlSurfaceBareRepositoryInsideFixedDirectoryIsMonitoredWhole(t *tes
 		})
 	}
 }
+
+// Only a linked worktree of this checkout, created by `git worktree add`, is an
+// agent worktree slot whose source files are project content. The directory
+// name is not enough: a standalone repository, a worktree of another
+// repository, or a Git file naming metadata that does not point back are places
+// an agent can put scripts the operator later runs.
+func TestControlSurfaceWorktreeSlotRequiresALinkedWorktreeOfThisCheckout(t *testing.T) {
+	const slot = ".claude/worktrees/example"
+	cases := map[string]func(t *testing.T, git testGit, root string){
+		"standalone repository": func(t *testing.T, git testGit, root string) {
+			dir := filepath.Join(root, filepath.FromSlash(slot))
+			if err := os.MkdirAll(dir, 0o750); err != nil {
+				t.Fatal(err)
+			}
+			git.init(t, dir)
+			git.commit(t, dir, "README.md")
+		},
+		"worktree of another repository": func(t *testing.T, git testGit, root string) {
+			other := filepath.Join(root, "other")
+			if err := os.MkdirAll(other, 0o750); err != nil {
+				t.Fatal(err)
+			}
+			git.init(t, other)
+			git.commit(t, other, "README.md")
+			git.run(t, other, "worktree", "add", "-qb", "example", filepath.Join(root, filepath.FromSlash(slot)))
+		},
+		"metadata that does not point back": func(t *testing.T, _ testGit, root string) {
+			writeControlFixture(t, root, ".git/worktrees/ghost/gitdir", filepath.Join(root, "elsewhere", ".git")+"\n")
+			writeControlFixture(t, root, slot+"/.git", "gitdir: "+filepath.Join(root, ".git", "worktrees", "ghost")+"\n")
+		},
+		"metadata without a back pointer": func(t *testing.T, _ testGit, root string) {
+			writeControlFixture(t, root, ".git/worktrees/ghost/HEAD", "ref: refs/heads/main\n")
+			writeControlFixture(t, root, slot+"/.git", "gitdir: "+filepath.Join(root, ".git", "worktrees", "ghost")+"\n")
+		},
+		"metadata outside the worktrees directory": func(t *testing.T, _ testGit, root string) {
+			writeControlFixture(t, root, ".git/ghost/gitdir", filepath.Join(root, slot, ".git")+"\n")
+			writeControlFixture(t, root, slot+"/.git", "gitdir: "+filepath.Join(root, ".git", "ghost")+"\n")
+		},
+	}
+	for name, plant := range cases {
+		t.Run(name, func(t *testing.T) {
+			git := newControlGit(t)
+			root := t.TempDir()
+			git.init(t, root)
+			git.commit(t, root, "source.txt")
+			plant(t, git, root)
+			const script = slot + "/run.sh"
+			writeControlFixture(t, root, script, "before")
+			budget := DefaultControlSurfaceBudget()
+			before := controlSnapshot(t, root, budget)
+			writeControlFixture(t, root, script, "changed")
+			expectControlPath(t, controlDiff(t, before, controlSnapshot(t, root, budget)), script)
+		})
+	}
+	t.Run("a worktree created by Git stays exempt", func(t *testing.T) {
+		git := newControlGit(t)
+		root := t.TempDir()
+		git.init(t, root)
+		git.commit(t, root, "source.txt")
+		dir := filepath.Join(root, filepath.FromSlash(slot))
+		git.run(t, root, "worktree", "add", "-qb", "example", dir)
+		writeControlFixture(t, dir, "run.sh", "before")
+		budget := DefaultControlSurfaceBudget()
+		before := controlSnapshot(t, root, budget)
+		writeControlFixture(t, dir, "run.sh", "changed")
+		if diff := controlDiff(t, before, controlSnapshot(t, root, budget)); diff.Changed || diff.Incomplete {
+			t.Fatalf("a linked worktree's source files are project content: %+v", diff)
+		}
+	})
+}

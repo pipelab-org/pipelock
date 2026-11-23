@@ -566,7 +566,7 @@ func (w *controlWalker) scanFixedChild(path string, info fs.FileInfo) {
 			w.scanGitDir(path, path, true)
 			return
 		}
-		if w.scanGitMarker(path) && agentWorktreeSlot(path) {
+		if w.scanGitMarker(path) && agentWorktreePath(path) && w.linkedWorktreeOfProject(path) {
 			w.scanFixed(path)
 			w.worktreeSlots = append(w.worktreeSlots, path)
 			return
@@ -575,13 +575,15 @@ func (w *controlWalker) scanFixedChild(path string, info fs.FileInfo) {
 	w.enqueueTree(e, controlTree{fixed: true})
 }
 
-// agentWorktreeSlot reports whether path is a direct child of .claude/worktrees,
+// agentWorktreePath reports whether path is a direct child of .claude/worktrees,
 // where Claude Code's --worktree option creates a full checkout of the project.
 // Such a checkout's own control paths are scanned by scanFixed; its source files
-// are project content, not agent configuration. The .claude directory must be a
-// project's own: one inside another monitored directory, such as a cloned skill,
-// is no place Claude Code creates checkouts, so it cannot exempt files there.
-func agentWorktreeSlot(path string) bool {
+// are project content, not agent configuration, once linkedWorktreeOfProject
+// confirms it is a linked worktree of that project. The .claude directory must
+// be a project's own: one inside another monitored directory, such as a cloned
+// skill, is no place Claude Code creates checkouts, so it cannot exempt files
+// there.
+func agentWorktreePath(path string) bool {
 	parent := filepath.Dir(path)
 	claude := filepath.Dir(parent)
 	if filepath.Base(parent) != "worktrees" || filepath.Base(claude) != ".claude" {

@@ -23,16 +23,7 @@ type gitConfigSource struct {
 }
 
 func (w *controlWalker) scanGitPointer(entry controlEntry, prefix, base, worktree string) {
-	data, ok := w.readObserved(entry)
-	if !ok {
-		return
-	}
-	target, valid := strings.CutPrefix(strings.TrimRight(string(data), "\r\n"), prefix)
-	if !valid || target == "" || strings.ContainsRune(target, 0) {
-		w.unreadable(entry.Path, "invalid Git directory pointer")
-		return
-	}
-	if path, inside := w.workspaceTarget(entry.Path, base, target); inside {
+	if path, inside := w.pointerTarget(entry, prefix, base); inside {
 		w.following(entry.Path, func() {
 			targetEntry := w.recordPath(path)
 			if targetEntry.Kind == KindDir {
@@ -42,6 +33,53 @@ func (w *controlWalker) scanGitPointer(entry controlEntry, prefix, base, worktre
 			}
 		})
 	}
+}
+
+// pointerTarget reads the Git directory a pointer file names, relative to base,
+// and reports it when it lies inside the workspace.
+func (w *controlWalker) pointerTarget(entry controlEntry, prefix, base string) (string, bool) {
+	data, ok := w.readObserved(entry)
+	if !ok {
+		return "", false
+	}
+	target, valid := strings.CutPrefix(strings.TrimRight(string(data), "\r\n"), prefix)
+	if !valid || target == "" || strings.ContainsRune(target, 0) {
+		w.unreadable(entry.Path, "invalid Git directory pointer")
+		return "", false
+	}
+	return w.workspaceTarget(entry.Path, base, target)
+}
+
+// linkedWorktreeOfProject reports whether slot is a linked worktree of the
+// checkout in the project directory that owns it, as `git worktree add` makes:
+// its .git file names a directory under that project's own .git/worktrees, and
+// that directory's gitdir file names the slot's .git file in return. A
+// standalone repository, a worktree of another repository, or a Git file whose
+// metadata does not point back is not one, whatever its directory is called.
+// Metadata the workspace does not contain cannot be checked, so it is not one.
+func (w *controlWalker) linkedWorktreeOfProject(slot string) bool {
+	gitFile := w.pass.entries[filepath.Join(slot, ".git")]
+	if gitFile.Kind != KindFile {
+		return false
+	}
+	ownGit := filepath.Join(filepath.Dir(filepath.Dir(filepath.Dir(slot))), ".git")
+	if info := w.lookup(ownGit); info == nil || !info.IsDir() {
+		return false
+	}
+	metadata, inside := w.pointerTarget(gitFile, "gitdir: ", slot)
+	if !inside || filepath.Base(filepath.Dir(metadata)) != "worktrees" || filepath.Dir(filepath.Dir(metadata)) != ownGit {
+		return false
+	}
+	back := w.recordPath(filepath.Join(metadata, "gitdir"))
+	if back.Kind != KindFile {
+		return false
+	}
+	data, ok := w.readObserved(back)
+	if !ok {
+		return false
+	}
+	target, inside := w.workspaceTarget(back.Path, metadata, strings.TrimRight(string(data), "\r\n"))
+	return inside && target == gitFile.Path
 }
 
 func (w *controlWalker) scanGitConfig(entry controlEntry, gitDir, worktree string) {
