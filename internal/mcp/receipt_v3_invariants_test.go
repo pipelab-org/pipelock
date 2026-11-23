@@ -159,10 +159,19 @@ func checkMCPWireObservations(actions []v3.Action, boundary string, observations
 		}
 		if observed.outcome == "completed" {
 			var frame struct {
-				ID    json.RawMessage
-				Error json.RawMessage
+				Version string `json:"jsonrpc"`
+				Method  string
+				ID      json.RawMessage
+				Result  json.RawMessage
+				Error   json.RawMessage
 			}
-			if err := json.Unmarshal(observed.message, &frame); err != nil || canonicalID(frame.ID) != observed.requestID {
+			if err := json.Unmarshal(observed.message, &frame); err != nil || frame.Version != "2.0" ||
+				canonicalID(frame.ID) != observed.requestID {
+				return fmt.Errorf("wire message %d has wrong RPC envelope: %s", i+1, observed.message)
+			}
+			hasResult, hasError := len(frame.Result) != 0, len(frame.Error) != 0
+			if (frame.Method != "" && (hasResult || hasError)) ||
+				(frame.Method == "" && (len(frame.ID) == 0 || hasResult == hasError)) {
 				return fmt.Errorf("wire message %d has wrong RPC envelope: %s", i+1, observed.message)
 			}
 			if len(frame.Error) > 0 {
@@ -278,5 +287,24 @@ func TestMCPReceiptWireObservationInvariants(t *testing.T) {
 				t.Fatalf("checker returned %v, want %q", err, tc.want)
 			}
 		})
+	}
+}
+
+func TestMCPReceiptWireObservationRequiresNotificationEnvelope(t *testing.T) {
+	attempt := int64(1)
+	intent := v3.Action{Phase: "intent", ActionID: "event", EffectBoundary: mcpDownstreamDeliveryBoundary, Attempt: &attempt}
+	outcome := intent
+	outcome.Phase, outcome.OutcomeClass = "outcome", "completed"
+	observed := mcpWireObservation{
+		message:  []byte(`{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}`),
+		boundary: mcpDownstreamDeliveryBoundary, outcome: "completed", before: []v3.Action{intent},
+	}
+	history := []v3.Action{intent, outcome}
+	if err := checkMCPWireObservations(history, mcpDownstreamDeliveryBoundary, []mcpWireObservation{observed}); err != nil {
+		t.Fatal(err)
+	}
+	observed.message = []byte("{}")
+	if err := checkMCPWireObservations(history, mcpDownstreamDeliveryBoundary, []mcpWireObservation{observed}); err == nil {
+		t.Fatal("accepted an empty notification envelope")
 	}
 }

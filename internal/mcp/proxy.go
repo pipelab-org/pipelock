@@ -128,6 +128,26 @@ func stdioLocalReplyFailure(clientIn io.Reader, serverIn, serverOut io.Closer, s
 	}, failed
 }
 
+func stdioReplyFailure(scanErr error, failed <-chan error) error {
+	select {
+	case err := <-failed:
+		return err
+	default:
+		return scanErr
+	}
+}
+
+func stdioIncompleteReason(scanErr error, fallback string) string {
+	switch {
+	case errors.Is(scanErr, errMCPV3ReplyAdmission):
+		return "receipt_admission_failed"
+	case errors.Is(scanErr, errMCPDownstreamFrameWrite):
+		return "downstream_write_failed"
+	default:
+		return fallback
+	}
+}
+
 func waitMCPInputDrain(ctx context.Context, inputDone, blockedDone <-chan struct{}) bool {
 	for _, done := range []<-chan struct{}{inputDone, blockedDone} {
 		select {
@@ -164,7 +184,11 @@ func emitMCPTimeoutReply(writer transport.MessageWriter, logW io.Writer, id json
 	if writeErr != nil {
 		_, _ = fmt.Fprintf(logW, "pipelock: failed to send timeout response: %v\n", writeErr)
 	}
-	outcome.settle(logW, opts, "error", size, "response_timeout")
+	status := "error"
+	if opts.receiptEffects.enabled && writeErr != nil && opts.warnContext().Err() != nil {
+		status = "incomplete"
+	}
+	outcome.settle(logW, opts, status, size, "response_timeout")
 }
 
 func emitPendingIncompleteOutcomes(logW io.Writer, tracker *RequestTracker, opts MCPProxyOpts, reason string) {
@@ -226,7 +250,13 @@ func isRequest(msg []byte) bool {
 func ForwardScanned(reader transport.MessageReader, writer transport.MessageWriter, logW io.Writer, tracker *RequestTracker, opts MCPProxyOpts) (foundInjection bool, scanErr error) {
 	opts = opts.snapshotScanPolicy()
 	if opts.ServerIdentityFn != nil {
-		writer = &serverIdentityMessageWriter{writer: writer, opts: opts}
+		if stream, ok := writer.(*mcpV3NetworkStreamWriter); ok {
+			guarded := *stream
+			guarded.base = &serverIdentityMessageWriter{writer: stream.base, opts: opts}
+			writer = &guarded
+		} else {
+			writer = &serverIdentityMessageWriter{writer: writer, opts: opts}
+		}
 	}
 	sc := opts.scanner()
 	approver := opts.Approver
@@ -2442,10 +2472,9 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 		opts.outputForwardStartedForTest()
 	}
 	_, scanErr := ForwardScanned(serverReader, safeClientOut, safeLogW, tracker, fwdOpts)
-	select {
-	case err := <-replyFailed:
-		scanErr = err
-	default:
+	scanErr = stdioReplyFailure(scanErr, replyFailed)
+	if opts.outputForwardDoneForTest != nil {
+		opts.outputForwardDoneForTest()
 	}
 	timedOut := errors.Is(scanErr, transport.ErrResponseTimeout)
 	replyAdmissionFailed := errors.Is(scanErr, errMCPV3ReplyAdmission)
@@ -2521,7 +2550,10 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 		logAsync(safeLogW, "pipelock: timed out draining MCP subprocess stderr after child exit\n")
 	}
 
-	if timedOut {
+	reason := "upstream_closed"
+	switch {
+	case timedOut:
+		reason = "response_timeout"
 		// Closing a closable clientIn above wakes the usual CLI/pipe readers.
 		// If a custom Reader cannot be interrupted, do not let a request that
 		// already failed closed wedge shutdown forever.
@@ -2530,8 +2562,11 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 		if !waitMCPInputDrain(drainCtx, inputDone, blockedDone) {
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: timed out waiting for MCP input drain after upstream response timeout\n")
 		}
-		emitPendingTimeoutResponses(safeClientOut, safeLogW, tracker, fwdOpts)
-	} else if sessionExit.inProgress() || replyAdmissionFailed || downstreamWriteFailed {
+	case sessionExit.inProgress() || replyAdmissionFailed || downstreamWriteFailed:
+		reason = "session_exit"
+		if downstreamWriteFailed {
+			reason = "downstream_write_failed"
+		}
 		// An arbitrary io.Reader cannot be interrupted by closing the client
 		// side. Once session teardown has killed the server, do not let one
 		// such reader keep the proxy alive indefinitely.
@@ -2541,23 +2576,18 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 			interruptNativeOutput(clientOut)
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: timed out waiting for MCP input drain after session teardown\n")
 		}
-		// Name the actual cause. Reusing "upstream_closed" here would attribute
-		// a session teardown to the server having closed the connection, so the
-		// receipt would record the wrong reason for an aborted request.
-		reason := "session_exit"
-		if replyAdmissionFailed {
-			reason = "receipt_admission_failed"
-		} else if downstreamWriteFailed {
-			reason = "downstream_write_failed"
-		}
-		emitPendingIncompleteOutcomes(safeLogW, tracker, fwdOpts, reason)
-	} else {
+	default:
 		// Wait for stdin goroutine to finish (server exit closes pipe, unblocking scanner).
 		<-inputDone
 
 		// Wait for blocked channel drain to complete.
 		<-blockedDone
-		emitPendingIncompleteOutcomes(safeLogW, tracker, fwdOpts, "upstream_closed")
+	}
+	scanErr = stdioReplyFailure(scanErr, replyFailed)
+	if errors.Is(scanErr, transport.ErrResponseTimeout) {
+		emitPendingTimeoutResponses(safeClientOut, safeLogW, tracker, fwdOpts)
+	} else {
+		emitPendingIncompleteOutcomes(safeLogW, tracker, fwdOpts, stdioIncompleteReason(scanErr, reason))
 	}
 
 	if err := opts.nativeCapacityStopError(); err != nil {

@@ -345,8 +345,20 @@ func checkMCPV3StdioReplyAdmissionFailure(t *testing.T, scenario string, sandbox
 		}
 		done <- RunProxy(ctx, in, output, io.Discard, cmd, opts)
 	}()
-	if _, err := io.WriteString(client, jsonToolsCallEcho+"\n"); err != nil {
-		t.Fatal(err)
+	feed := make(chan error, 1)
+	go func() {
+		_, err := io.WriteString(client, jsonToolsCallEcho+"\n")
+		feed <- err
+	}()
+	select {
+	case err := <-feed:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case err := <-done:
+		t.Fatalf("proxy exited before reading input: %v", err)
+	case <-ctx.Done():
+		t.Fatal("proxy did not read input")
 	}
 	select {
 	case err := <-done:
@@ -759,9 +771,14 @@ func exerciseMCPV3GET(t *testing.T, row v3MCPMatrixRow) {
 		if err != nil {
 			t.Error(err)
 		}
-		seen <- slices.ContainsFunc(actions, func(a v3.Action) bool {
+		admitted := slices.ContainsFunc(actions, func(a v3.Action) bool {
 			return a.EffectBoundary == mcpUpstreamSendBoundary && a.Phase == "intent"
 		})
+		select {
+		case seen <- admitted:
+		default:
+			t.Error("unexpected extra upstream GET")
+		}
 		if row.scenario == "upstream error" {
 			w.WriteHeader(http.StatusBadGateway)
 			return
