@@ -176,8 +176,9 @@ func (w *controlWalker) workspaceTarget(source, base, value string) (string, boo
 // directory, whose parent is then the lexical parent. A ".." after a symlink, or
 // after a component that cannot be inspected, leaves somewhere cleaning does not
 // find, possibly inside the workspace. A ".." that leaves the workspace through
-// plain directories ends what can be observed. inside is the lexical result,
-// which an absolute path outside the workspace cannot confirm.
+// plain directories ends what can be observed, unless the path then names a
+// place inside the workspace again. inside is the lexical result, which an
+// absolute path outside the workspace cannot confirm.
 func (w *controlWalker) dotDotAmbiguous(base, value string, inside bool) bool {
 	var stack []string
 	rest := value
@@ -195,8 +196,10 @@ func (w *controlWalker) dotDotAmbiguous(base, value string, inside bool) bool {
 		switch part {
 		case "", ".":
 		case "..":
+			// Past the workspace root nothing can be observed. Naming the
+			// workspace again from there is a place only the real parent knows.
 			if len(stack) == 0 {
-				return false
+				return inside
 			}
 			// A component that does not exist now has no target to leave. If it
 			// becomes a symlink, the next snapshot finds that and is ambiguous.

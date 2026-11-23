@@ -377,3 +377,21 @@ func TestControlSurfaceReportsAmbiguousDotDotConfigPaths(t *testing.T) {
 		expectControlPath(t, controlDiff(t, before, controlSnapshot(t, root, budget)), "hooks/pre-commit")
 	})
 }
+
+// A path that leaves the workspace and names it again returns to a place the
+// lexical result and Git can disagree about: ".." from the workspace root goes to
+// the root's real parent, not to the parent of the path the workspace was
+// opened by.
+func TestControlSurfaceReportsAmbiguousPathThatReentersTheWorkspace(t *testing.T) {
+	git := newControlGit(t)
+	root := t.TempDir()
+	git.init(t, root)
+	git.run(t, root, "config", "--local", "core.hooksPath", "../"+filepath.Base(root)+"/hooks")
+	writeControlFixture(t, root, "hooks/pre-commit", "before")
+	budget := DefaultControlSurfaceBudget()
+	diff := controlDiff(t, controlSnapshot(t, root, budget), controlSnapshot(t, root, budget))
+	if !diff.Incomplete || len(diff.Unreadable) != 1 || diff.Unreadable[0].Path != filepath.FromSlash(".git/config") ||
+		!strings.Contains(diff.Unreadable[0].Reason, "ambiguous") {
+		t.Fatalf("a path that re-enters the workspace by name must be reported ambiguous: %+v", diff)
+	}
+}
