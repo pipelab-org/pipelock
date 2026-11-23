@@ -286,7 +286,9 @@ func runContainRun(
 	// session rather than refusing containment the operator otherwise
 	// qualifies for.
 	var beforeSnapshots map[string]workspacediff.Manifest
+	var beforeControls map[string]controlSurfaceObservation
 	if !opts.servicePrestart {
+		beforeControls = snapshotWorkspaceControls(grants, opts.workspaceDiffCapBytes)
 		var snapErr error
 		beforeSnapshots, snapErr = snapshotWorkspaces(grants, opts.workspaceDiffCapBytes)
 		if snapErr != nil {
@@ -341,6 +343,9 @@ func runContainRun(
 	}
 	posture, err := env.emitPosture(runCfg, capsuleSigningKey, opts.postureOutput, env.probe, args)
 	if err != nil {
+		if len(beforeControls) > 0 {
+			_, _ = fmt.Fprintln(stdout, "workspace_control_surface=unavailable reason=launch_not_started")
+		}
 		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("%s posture capsule: %w", commandLabel, err))
 	}
 	if env.probe.lifecycle != nil {
@@ -356,6 +361,9 @@ func runContainRun(
 
 	launchErr := env.launch(ctx, env.probe, args, stdin, stdout, stderr)
 
+	controls := compareWorkspaceControls(beforeControls, snapshotWorkspaceControls(grants, opts.workspaceDiffCapBytes))
+	controlStatus := printWorkspaceControls(stdout, controls)
+
 	// Session-end workspace change statement, bound to the posture capsule
 	// this exact session emitted, regardless of whether the launched tool
 	// exited cleanly: a crashed or refused launch still gets an honest
@@ -364,7 +372,9 @@ func runContainRun(
 	// workspaces; already-reported-unavailable when the key could not be
 	// loaded before launch.
 	if len(beforeSnapshots) > 0 && workspaceSigningKeyErr == nil {
-		stmtPath, incomplete, incompleteReason, boundaryCheck, stmtErr := emitContainRunWorkspaceStatement(opts, env.probe, beforeSnapshots, grants, posture.path, posture.capsuleSHA256, workspaceSigningKey)
+		stmtPath, incomplete, incompleteReason, boundaryCheck, stmtErr := emitContainRunWorkspaceStatement(opts, env.probe, grants, workspaceStatementInputs{
+			before: beforeSnapshots, controls: controls, posture: posture, key: workspaceSigningKey,
+		})
 		switch {
 		case stmtErr != nil:
 			_, _ = fmt.Fprintf(stderr, "pipelock contain run: workspace change statement failed: %v\n", stmtErr)
@@ -378,7 +388,11 @@ func runContainRun(
 			_, _ = fmt.Fprintf(stdout, "  [WARN] signed workspace change statement is INCOMPLETE: %s\n", stmtPath)
 			_, _ = fmt.Fprintf(stdout, "%s reason=%q path=%s boundary_check=%s\n", workspaceStatementIncompleteLine, incompleteReason, stmtPath, boundaryCheck)
 		default:
-			_, _ = fmt.Fprintf(stdout, "  [PASS] signed workspace change statement: %s\n", stmtPath)
+			if controlStatus == "clean" {
+				_, _ = fmt.Fprintf(stdout, "  [PASS] signed workspace change statement: %s\n", stmtPath)
+			} else {
+				_, _ = fmt.Fprintf(stdout, "  Signed workspace change statement: %s\n", stmtPath)
+			}
 			_, _ = fmt.Fprintf(stdout, "%s path=%s boundary_check=%s\n", workspaceStatementWrittenLine, stmtPath, boundaryCheck)
 		}
 	}
@@ -434,6 +448,13 @@ func snapshotWorkspaces(grants []workspaceGrant, capBytes int64) (map[string]wor
 	return out, nil
 }
 
+type workspaceStatementInputs struct {
+	before   map[string]workspacediff.Manifest
+	controls map[string]workspacediff.ControlSurfaceStatement
+	posture  postureEmission
+	key      ed25519.PrivateKey
+}
+
 // emitContainRunWorkspaceStatement diffs each granted workspace against its
 // session-start snapshot and signs the result with privKey (resolved BEFORE
 // launch by the caller), bound to this session via the posture capsule's own
@@ -441,11 +462,8 @@ func snapshotWorkspaces(grants []workspaceGrant, capBytes int64) (map[string]wor
 func emitContainRunWorkspaceStatement(
 	opts containRunOptions,
 	env *probeEnv,
-	before map[string]workspacediff.Manifest,
 	grants []workspaceGrant,
-	posturePath string,
-	capsuleSHA256 string,
-	privKey ed25519.PrivateKey,
+	inputs workspaceStatementInputs,
 ) (path string, incomplete bool, incompleteReason string, boundaryCheck workspacediff.BoundaryCheck, err error) {
 	statements := make([]workspacediff.Statement, 0, len(grants))
 	seen := make(map[string]struct{}, len(grants))
@@ -456,7 +474,7 @@ func emitContainRunWorkspaceStatement(
 			continue
 		}
 		seen[g.Path] = struct{}{}
-		beforeSnap, ok := before[g.Path]
+		beforeSnap, ok := inputs.before[g.Path]
 		if !ok {
 			return "", false, "", "", fmt.Errorf("missing session-start snapshot for %s", g.Path)
 		}
@@ -476,14 +494,20 @@ func emitContainRunWorkspaceStatement(
 		if st.Incomplete {
 			incompleteReasons = append(incompleteReasons, fmt.Sprintf("%s: %s", g.Path, st.IncompleteReason))
 		}
+		if control, ok := inputs.controls[g.Path]; ok {
+			st.ControlSurface = &control
+			if control.Incomplete {
+				incompleteReasons = append(incompleteReasons, fmt.Sprintf("%s control surface: %s", g.Path, control.IncompleteReason))
+			}
+		}
 		statements = append(statements, st)
 	}
 
-	signed, err := workspacediff.Sign(statements, capsuleSHA256, privKey)
+	signed, err := workspacediff.Sign(statements, inputs.posture.capsuleSHA256, inputs.key)
 	if err != nil {
 		return "", false, "", "", err
 	}
-	path, err = workspacediff.WriteJSON(filepath.Dir(posturePath), signed)
+	path, err = workspacediff.WriteJSON(filepath.Dir(inputs.posture.path), signed)
 	if err != nil {
 		return "", false, "", "", err
 	}

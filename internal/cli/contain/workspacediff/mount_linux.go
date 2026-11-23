@@ -5,7 +5,11 @@
 
 package workspacediff
 
-import "golang.org/x/sys/unix"
+import (
+	"os"
+
+	"golang.org/x/sys/unix"
+)
 
 // mountID returns path's Linux mount ID (STATX_MNT_ID) and whether the
 // kernel supplied one. Unlike st_dev, a bind mount of a directory from
@@ -15,8 +19,16 @@ import "golang.org/x/sys/unix"
 // the statx call fails or the running kernel does not report STATX_MNT_ID
 // (pre-5.8), in which case callers fall back to the device-only check.
 func mountID(path string) (id uint64, ok bool) {
+	return statMountID(unix.AT_FDCWD, path, unix.AT_SYMLINK_NOFOLLOW)
+}
+
+func fileMountID(file *os.File) (id uint64, ok bool) {
+	return statMountID(int(file.Fd()), "", unix.AT_EMPTY_PATH)
+}
+
+func statMountID(fd int, path string, flags int) (id uint64, ok bool) {
 	var stx unix.Statx_t
-	if err := unix.Statx(unix.AT_FDCWD, path, unix.AT_SYMLINK_NOFOLLOW, unix.STATX_MNT_ID, &stx); err != nil {
+	if err := unix.Statx(fd, path, flags, unix.STATX_MNT_ID, &stx); err != nil {
 		return 0, false
 	}
 	if stx.Mask&unix.STATX_MNT_ID == 0 {
