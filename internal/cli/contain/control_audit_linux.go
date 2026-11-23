@@ -143,6 +143,13 @@ func (env controlAuditEnv) roots(opts controlAuditOptions) ([]string, error) {
 			if !filepath.IsAbs(grant.Path) || filepath.Clean(grant.Path) != grant.Path {
 				return nil, fmt.Errorf("invalid workspace grant path %q", grant.Path)
 			}
+			// The inventory is JSON, which stores a byte that is not valid UTF-8 as
+			// U+FFFD. Such a grant names a different path than the directory it was
+			// made on, and an unrelated directory spelled with U+FFFD would be
+			// audited in its place.
+			if strings.ContainsRune(grant.Path, utf8.RuneError) {
+				return nil, fmt.Errorf("workspace grant path %q contains U+FFFD, which the inventory stores for a name that is not valid UTF-8, so it cannot name the granted directory exactly; audit that directory with --workspace and its exact name", grant.Path)
+			}
 			paths = append(paths, grant.Path)
 		}
 		if len(paths) == 0 {
