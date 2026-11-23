@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"math/big"
 	"mime"
@@ -5448,16 +5449,17 @@ func (c *Config) validateSandbox() error {
 // ValidateReceiptV3 checks prerequisites for explicit and directory-selected v3.
 func (c *Config) ValidateReceiptV3() error {
 	fr := c.FlightRecorder
-	switch {
-	case c.Defer.Enabled || c.MCPToolPolicy.Action == ActionDefer:
-		return errors.New("receipt_format v3 does not yet support deferred holds (defer actions); remove defer rules and disable defer or use the legacy receipt format")
+	if c.Defer.Enabled {
+		return errors.New("defer.enabled: receipt_format v3 does not yet support deferred holds; disable defer or use receipt_format: legacy")
 	}
-	for _, rule := range c.MCPToolPolicy.Rules {
-		if rule.Action == ActionRedirect {
-			return errors.New("receipt_format v3 does not yet support redirect rules; remove redirect rules or use the legacy receipt format")
-		}
-		if rule.Action == ActionDefer {
-			return errors.New("receipt_format v3 does not yet support deferred holds (defer actions); remove defer rules or use the legacy receipt format")
+	if err := validateReceiptV3ToolPolicy("mcp_tool_policy", c.MCPToolPolicy); err != nil {
+		return err
+	}
+	for _, name := range slices.Sorted(maps.Keys(c.Agents)) {
+		if policy := c.Agents[name].MCPToolPolicy; policy != nil {
+			if err := validateReceiptV3ToolPolicy("agents."+name+".mcp_tool_policy", *policy); err != nil {
+				return err
+			}
 		}
 	}
 	switch {
@@ -5465,6 +5467,29 @@ func (c *Config) ValidateReceiptV3() error {
 		return errors.New("flight_recorder.receipt_format v3 requires flight_recorder.enabled, dir, and signing_key_path")
 	case fr.ReceiptChainCount() > 1:
 		return errors.New("flight_recorder.receipt_format v3 requires at most one flight_recorder.receipt_chains chain")
+	default:
+		return nil
+	}
+}
+
+func validateReceiptV3ToolPolicy(path string, policy MCPToolPolicy) error {
+	if err := validateReceiptV3ToolAction(path+".action", policy.Action); err != nil {
+		return err
+	}
+	for i, rule := range policy.Rules {
+		if err := validateReceiptV3ToolAction(fmt.Sprintf("%s.rules[%d].action", path, i), rule.Action); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateReceiptV3ToolAction(path, action string) error {
+	switch action {
+	case ActionRedirect:
+		return fmt.Errorf("%s: receipt_format v3 does not yet support redirect rules; use receipt_format: legacy", path)
+	case ActionDefer:
+		return fmt.Errorf("%s: receipt_format v3 does not yet support deferred holds; use receipt_format: legacy", path)
 	default:
 		return nil
 	}

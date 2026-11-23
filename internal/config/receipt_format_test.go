@@ -24,6 +24,7 @@ func TestLoadReceiptFormat(t *testing.T) {
 		{name: "manager", fields: "  receipt_format: v3\n", other: "defer:\n  enabled: true\n", wantErr: "does not yet support deferred holds"},
 		{name: "policy action", fields: "  receipt_format: v3\n", other: "mcp_tool_policy:\n  action: defer\n", wantErr: "does not yet support deferred holds"},
 		{name: "policy rule", fields: "  receipt_format: v3\n", other: "mcp_tool_policy:\n  rules:\n    - action: defer\n", wantErr: "does not yet support deferred holds"},
+		{name: "redirect action", fields: "  receipt_format: v3\n", other: "mcp_tool_policy:\n  action: redirect\n", wantErr: "does not yet support redirect rules"},
 		{name: "redirect rule", fields: "  receipt_format: v3\n", other: "mcp_tool_policy:\n  rules:\n    - action: redirect\n", wantErr: "does not yet support redirect rules"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -73,6 +74,32 @@ func TestValidateReceiptV3RequiresRecorder(t *testing.T) {
 			tc.remove(&cfg.FlightRecorder)
 			if err := cfg.ValidateReceiptV3(); err == nil || !strings.Contains(err.Error(), "requires flight_recorder.enabled, dir, and signing_key_path") {
 				t.Fatalf("ValidateReceiptV3 error = %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateReceiptV3AgentPolicy(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		policy MCPToolPolicy
+		want   string
+	}{
+		{"redirect action", MCPToolPolicy{Action: ActionRedirect}, ".action"},
+		{"defer action", MCPToolPolicy{Action: ActionDefer}, ".action"},
+		{"redirect rule", MCPToolPolicy{Rules: []ToolPolicyRule{{Action: ActionRedirect}}}, ".rules[0].action"},
+		{"defer rule", MCPToolPolicy{Rules: []ToolPolicyRule{{Action: ActionDefer}}}, ".rules[0].action"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.Defer.Enabled = false
+			cfg.FlightRecorder.Enabled = true
+			cfg.FlightRecorder.Dir = t.TempDir()
+			cfg.FlightRecorder.SigningKeyPath = "signer.key"
+			cfg.Agents = map[string]AgentProfile{"test": {MCPToolPolicy: &tc.policy}}
+			want := "agents.test.mcp_tool_policy" + tc.want
+			if err := cfg.ValidateReceiptV3(); err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("ValidateReceiptV3 error = %v, want %s", err, want)
 			}
 		})
 	}
