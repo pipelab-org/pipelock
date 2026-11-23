@@ -8,7 +8,6 @@ import (
 	"io"
 
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
-	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
 )
 
 // confirmMCPResponseEffect retains a tracked request's selected shard. A
@@ -25,7 +24,7 @@ func confirmMCPResponseEffect(logW io.Writer, opts MCPProxyOpts, selected receip
 	return err
 }
 
-func confirmMCPCardAcceptance(ctx context.Context, logW io.Writer, opts MCPProxyOpts, selected, evidence receipt.EmitOpts, candidate AgentCardScanResult) (*v3.EffectToken, error) {
+func confirmMCPCardAcceptance(ctx context.Context, logW io.Writer, opts MCPProxyOpts, selected, evidence receipt.EmitOpts, candidate AgentCardScanResult) (*mcpV3EffectToken, error) {
 	var checks []receipt.EmitOpts
 	if candidate.SignatureVerified {
 		check := evidence
@@ -46,13 +45,7 @@ func confirmMCPCardAcceptance(ctx context.Context, logW io.Writer, opts MCPProxy
 		}
 		return nil, nil
 	}
-	actions := make([]v3.Action, 0, len(checks))
-	for _, check := range checks {
-		action, _ := opts.v3EffectAction(withMCPResponseShard(selected, check), mcpDownstreamDeliveryBoundary)
-		actions = append(actions, action)
-	}
-	_, policy := opts.v3EffectAction(evidence, mcpDownstreamDeliveryBoundary)
-	return opts.receiptEffects.gate.AdmitBatch(ctx, actions, policy)
+	return opts.admitV3CardBatch(ctx, selected, evidence, checks)
 }
 
 func withMCPResponseShard(selected, decision receipt.EmitOpts) receipt.EmitOpts {

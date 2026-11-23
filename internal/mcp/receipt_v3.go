@@ -78,6 +78,18 @@ func (o MCPProxyOpts) v3EffectAction(opts receipt.EmitOpts, boundary string) (v3
 	return action, v3.CapturePolicy(digest)
 }
 
+type mcpV3EffectToken = v3.EffectToken
+
+func (o MCPProxyOpts) admitV3CardBatch(ctx context.Context, selected, evidence receipt.EmitOpts, checks []receipt.EmitOpts) (*mcpV3EffectToken, error) {
+	actions := make([]v3.Action, 0, len(checks))
+	for _, check := range checks {
+		action, _ := o.v3EffectAction(withMCPResponseShard(selected, check), mcpDownstreamDeliveryBoundary)
+		actions = append(actions, action)
+	}
+	_, policy := o.v3EffectAction(evidence, mcpDownstreamDeliveryBoundary)
+	return o.receiptEffects.gate.AdmitBatch(ctx, actions, policy)
+}
+
 func (o MCPProxyOpts) admitV3Effect(ctx context.Context, evidence receipt.EmitOpts, boundary string) (*v3.EffectToken, error) {
 	if !o.receiptEffects.enabled {
 		return nil, nil

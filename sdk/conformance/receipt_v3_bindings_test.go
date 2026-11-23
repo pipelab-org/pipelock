@@ -176,7 +176,7 @@ func receiptEmissionSites(fset *token.FileSet, path string, file *ast.File) ([]r
 				return false
 			}
 			callee := receiptEmissionName(node, file)
-			if callee == "" && (path == "internal/proxy/receipt_v3.go" || path == "internal/mcp/receipt_v3.go" || path == "internal/mcp/response_receipt.go") {
+			if callee == "" && (path == "internal/proxy/receipt_v3.go" || path == "internal/mcp/receipt_v3.go") {
 				if call, ok := node.(*ast.CallExpr); ok {
 					if selector, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr); ok {
 						if receiver, ok := ast.Unparen(selector.X).(*ast.SelectorExpr); ok && receiver.Sel.Name == "gate" {

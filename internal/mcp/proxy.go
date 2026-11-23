@@ -33,7 +33,6 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
-	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	session "github.com/luckyPipewrench/pipelock/internal/session"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
@@ -308,7 +307,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 	responsePending := false
 	var outcomeStatus, outcomeReason string
 	var outcomeSize int64
-	var cardDelivery *v3.EffectToken
+	var cardDelivery *mcpV3EffectToken
 	finishWarnings := func() {}
 	baseWarnContext := opts.warnContext()
 	finishMessage := func() {

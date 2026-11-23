@@ -1764,7 +1764,7 @@
     "internal/proxy/reverse.go/(*ReverseProxyHandler).modifyResponse/emitReverseReceipt/7fb3aa66db57510f": "Forwards the SSE callback's selected response decision to the existing reverse response receipt helper when v3 receipt effects are disabled.",
     "internal/proxy/receipt_v3.go/(*Proxy).refuseEffect/recordEffectRefusal/61a6afc580d1e325": "The shared receipt adapter forwards decision attribution and the producer boundary to the receipt emitter.",
     "internal/proxy/sse.go/(*Proxy).legacySSEFindingConfirmer/sseFindingReceiptConfirmer/46d9a19dc80806ed": "The shared receipt adapter forwards decision attribution and the producer boundary to the receipt emitter.",
-    "internal/mcp/response_receipt.go/confirmMCPCardAcceptance/AdmitBatch/e2f5bed294e43411": "Admits the signature and baseline checks with the request policy and attribution supplied by the Agent Card producer.",
+    "internal/mcp/receipt_v3.go/(MCPProxyOpts).admitV3CardBatch/AdmitBatch/c4caa5d6d38146cd": "Admits the signature and baseline checks with the request policy and attribution supplied by the Agent Card producer.",
     "internal/proxy/receipt_v3.go/(*Proxy).admitV3CardAcceptance/AdmitBatch/0ed04b1b137c0426": "Admits the signature and baseline checks with the request policy and attribution supplied by the Agent Card producer."
   },
   "emit_sites": {

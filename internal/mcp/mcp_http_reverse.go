@@ -40,7 +40,6 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
-	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
 	"github.com/luckyPipewrench/pipelock/internal/responseencoding"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	session "github.com/luckyPipewrench/pipelock/internal/session"
@@ -2591,9 +2590,9 @@ func RunHTTPListenerProxy(
 			}
 			return
 		}
-		var cardDeliveries []*v3.EffectToken
+		var cardDeliveries []*mcpV3EffectToken
 		var cardAttempted, cardFramed bool
-		reqOpts.bufferedCardDelivery = func(token *v3.EffectToken) {
+		reqOpts.bufferedCardDelivery = func(token *mcpV3EffectToken) {
 			cardDeliveries = append(cardDeliveries, token)
 		}
 		defer func() {

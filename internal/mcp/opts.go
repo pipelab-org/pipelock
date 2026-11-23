@@ -30,7 +30,6 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
-	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
@@ -152,7 +151,7 @@ type MCPProxyOpts struct {
 	responseDropped func()
 	// The HTTP listener keeps the outcome handle through its response adapter.
 	listenerOwnsResponseOutcome bool
-	bufferedCardDelivery        func(*v3.EffectToken)
+	bufferedCardDelivery        func(*mcpV3EffectToken)
 	// A buffered listener response cannot settle on the buffer write.
 	bufferedResponseOutcome func(status, reason string, size int64)
 	// Modern HTTP lists enforce structural contracts independently of drift trust.
