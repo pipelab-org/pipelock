@@ -616,3 +616,20 @@ func TestControlWalkerReportsALinkTargetThatNeedsADirectoryAsBlocked(t *testing.
 		})
 	}
 }
+
+// Git reads a pointer file's path literally, so a gitfile naming "~meta" points
+// at the in-workspace directory of that name, and the configuration there is
+// followed like any other Git directory's.
+func TestControlSurfaceFollowsAGitfilePointerSpelledWithATilde(t *testing.T) {
+	root := t.TempDir()
+	writeControlFixture(t, root, ".git", "gitdir: ~meta\n")
+	writeControlFixture(t, root, filepath.Join("~meta", "config"), "[core]\n\thooksPath = hk\n")
+	writeControlFixture(t, root, filepath.Join("hk", "pre-commit"), "before")
+	budget := DefaultControlSurfaceBudget()
+	before := controlSnapshot(t, root, budget)
+	if diff := controlDiff(t, before, controlSnapshot(t, root, budget)); diff.Changed || diff.Incomplete {
+		t.Fatalf("an unchanged workspace must read clean and complete: %+v", diff)
+	}
+	writeControlFixture(t, root, filepath.Join("hk", "pre-commit"), "after")
+	expectControlPath(t, controlDiff(t, before, controlSnapshot(t, root, budget)), "hk/pre-commit")
+}

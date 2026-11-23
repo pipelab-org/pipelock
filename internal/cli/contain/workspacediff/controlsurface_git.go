@@ -57,7 +57,9 @@ func (w *controlWalker) scanGitPointer(entry controlEntry, prefix, base, worktre
 
 // pointerTarget reads the Git directory a pointer file names, relative to base,
 // and resolves it. The pointer is reported unreadable when it cannot be read or
-// is not a pointer, which resolves as pathUnobservable.
+// is not a pointer, which resolves as pathUnobservable. Git reads a pointer
+// file's path literally: a leading "~" is a directory name, not a home
+// directory, so the configuration-value filter does not apply here.
 func (w *controlWalker) pointerTarget(entry controlEntry, prefix, base string) (string, pathResolution) {
 	data, ok := w.readObserved(entry)
 	if !ok {
@@ -68,7 +70,7 @@ func (w *controlWalker) pointerTarget(entry controlEntry, prefix, base string) (
 		w.unreadable(entry.Path, "invalid Git directory pointer")
 		return "", pathUnobservable
 	}
-	return w.gitValueTarget(entry.Path, base, target)
+	return w.resolveWorkspacePath(entry.Path, base, target)
 }
 
 // linkedWorktreeOfProject reports whether slot is a linked worktree of the
@@ -99,8 +101,8 @@ func (w *controlWalker) linkedWorktreeOfProject(slot string) bool {
 	if !ok {
 		return false
 	}
-	target, inside := w.workspaceTarget(back.Path, metadata, strings.TrimRight(string(data), "\r\n"))
-	return inside && target == gitFile.Path
+	target, res := w.resolveWorkspacePath(back.Path, metadata, strings.TrimRight(string(data), "\r\n"))
+	return res == pathResolved && target == gitFile.Path
 }
 
 func (w *controlWalker) scanGitConfig(entry controlEntry, gitDir, worktree string) {
@@ -177,7 +179,7 @@ func (w *controlWalker) workspaceTarget(source, base, value string) (string, boo
 	return rel, res == pathResolved
 }
 
-// gitValueTarget resolves a value read from Git metadata, keeping what
+// gitValueTarget resolves a path value read from Git configuration, keeping what
 // resolveWorkspacePath found for a caller that tells a missing place from one
 // outside the workspace.
 func (w *controlWalker) gitValueTarget(source, base, value string) (string, pathResolution) {
@@ -192,7 +194,7 @@ func (w *controlWalker) linkedWorktree(gitDir string) string {
 	entry := w.recordPath(filepath.Join(gitDir, "gitdir"))
 	if entry.Kind == KindFile {
 		if data, ok := w.readObserved(entry); ok {
-			if target, inside := w.workspaceTarget(entry.Path, gitDir, strings.TrimRight(string(data), "\r\n")); inside {
+			if target, res := w.resolveWorkspacePath(entry.Path, gitDir, strings.TrimRight(string(data), "\r\n")); res == pathResolved {
 				return filepath.Dir(target)
 			}
 		}
