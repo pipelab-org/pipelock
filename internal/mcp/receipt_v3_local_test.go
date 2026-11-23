@@ -2309,3 +2309,108 @@ func TestMCPV3ListenerDoorPublicRepliesHaveNoReceipts(t *testing.T) {
 		t.Fatalf("public door replies recorded %d actions", len(actions))
 	}
 }
+
+func TestMCPV3ResponseWriterWithholdsUnpairedMessages(t *testing.T) {
+	opts, writer, observer := localMCPReceiptFixture(t, v3MCPMatrixRow{required: true}, transportMCPStdio)
+	opts = opts.withV3Session()
+	out := newMCPClientWriter(observer, opts)
+	for _, raw := range []string{`{}`, `{"jsonrpc":"2.0","id":null,"result":{}}`, heldNativeReply} {
+		msg := []byte(raw)
+		reply := opts.v3ResponseWriter(t.Context(), io.Discard, out, msg, ParseMCPFrame(msg))
+		if err := reply.WriteMessage(msg); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if actions := localMCPReceiptActions(t, writer, observer.dir); observer.output.Len() != 0 || len(actions) != 0 {
+		t.Fatalf("unpaired response produced %q and %d receipt actions", observer.output.String(), len(actions))
+	}
+}
+
+func TestMCPV3LocalAndNetworkStreamWritersSettleDeliveries(t *testing.T) {
+	const event = `{"jsonrpc":"2.0","method":"notifications/resources/list_changed"}`
+	opts, writer, observer := localMCPReceiptFixture(t, v3MCPMatrixRow{required: true}, deferred.SurfaceMCPHTTPListener)
+	out := newMCPClientWriter(observer, opts)
+	ctx := t.Context()
+	exchange := mcpV3NetworkExchange{ctx: ctx, opts: opts, log: io.Discard}
+	if err := exchange.admit(ParseMCPFrame([]byte(jsonToolsCallEcho)), receipt.EmitOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	exchange.sent = true
+	exchange.observe()
+	if err := exchange.admitReply(); err != nil {
+		t.Fatal(err)
+	}
+	if err := exchange.streamWriter(out).WriteMessage([]byte(event)); err != nil {
+		t.Fatal(err)
+	}
+	if err := opts.localV3ReplyWriter(out, io.Discard, exchange.send).WriteMessage([]byte(heldNativeReply)); err != nil {
+		t.Fatal(err)
+	}
+	exchange.finish()
+	if got := observer.output.String(); got != event+"\n"+heldNativeReply+"\n" {
+		t.Fatalf("received %q", got)
+	}
+	var results []string
+	for _, action := range localMCPReceiptActions(t, writer, observer.dir) {
+		if action.EffectBoundary == mcpDownstreamDeliveryBoundary && action.Phase == "outcome" {
+			results = append(results, action.OutcomeClass)
+		}
+	}
+	if !slices.Equal(results, []string{"completed", "completed", "not_released"}) {
+		t.Fatalf("delivery outcomes = %v", results)
+	}
+}
+
+func TestMCPV3WebSocketDuplicatePendingIDRefusesSecondSend(t *testing.T) {
+	opts, writer, observer := localMCPReceiptFixture(t, v3MCPMatrixRow{required: true}, deferred.SurfaceMCPWS)
+	seen := make(chan []byte, 2)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, _, _, err := ws.UpgradeHTTP(r, w)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		_ = conn.SetReadDeadline(time.Now().Add(testwait.Deadline(3 * time.Second)))
+		for {
+			msg, _, err := gobwasutil.ReadClientData(conn)
+			if err != nil {
+				return
+			}
+			select {
+			case seen <- msg:
+			default:
+				t.Error("unexpected extra upstream frame")
+				return
+			}
+		}
+	}))
+	defer upstream.Close()
+	in := strings.NewReader(strings.Repeat(jsonToolsCallEcho+"\n", 2))
+	if err := RunWSProxy(t.Context(), in, observer, io.Discard, wsURL(upstream), opts); err != nil {
+		t.Fatal(err)
+	}
+	assertLocalMCPErrors(t, observer.output.String(), "1")
+	var upstreamOutcomes []string
+	for _, action := range localMCPReceiptActions(t, writer, observer.dir) {
+		if action.EffectBoundary == mcpUpstreamSendBoundary && action.Phase == "outcome" {
+			upstreamOutcomes = append(upstreamOutcomes, action.OutcomeClass)
+		}
+	}
+	if !slices.Equal(upstreamOutcomes, []string{"not_released", "attempt_unknown"}) {
+		t.Fatalf("upstream outcomes = %v", upstreamOutcomes)
+	}
+	select {
+	case msg := <-seen:
+		if string(msg) != jsonToolsCallEcho {
+			t.Fatalf("upstream received %q", msg)
+		}
+	case <-time.After(testwait.Deadline(time.Second)):
+		t.Fatal("upstream did not receive the original request")
+	}
+	select {
+	case msg := <-seen:
+		t.Fatalf("upstream also received %q", msg)
+	default:
+	}
+}
