@@ -203,17 +203,25 @@ func encodeBaselinePass(p controlPass) *baselinePass {
 }
 
 func (wire *baselinePass) decode() (controlPass, error) {
+	undiscovered, err := decodeDiscoveryPaths(wire.Undiscovered)
+	if err != nil {
+		return controlPass{}, err
+	}
+	partlyListed, err := decodeDiscoveryPaths(wire.PartlyListed)
+	if err != nil {
+		return controlPass{}, err
+	}
 	p := controlPass{
 		unreadable: make(map[string]string, len(wire.Unreadable)),
 		truncated:  string(wire.Truncated), discoveryLimit: string(wire.DiscoveryLimit),
-		undiscovered: decodeDiscoveryPaths(wire.Undiscovered), partlyListed: decodeDiscoveryPaths(wire.PartlyListed),
+		undiscovered: undiscovered, partlyListed: partlyListed,
 	}
 	if wire.Entries != nil {
 		p.entries = make(map[string]controlEntry, len(wire.Entries))
 	}
 	for _, e := range wire.Entries {
 		path := string(e.Path)
-		if _, exists := p.entries[path]; exists || path == "" || e.Mode == nil || e.ModNsec < 0 || e.ModNsec >= 1e9 {
+		if _, exists := p.entries[path]; exists || !localBaselinePath(path) || e.Mode == nil || e.ModNsec < 0 || e.ModNsec >= 1e9 {
 			return controlPass{}, fmt.Errorf("invalid or duplicate workspace control baseline entry %q", path)
 		}
 		p.entries[path] = controlEntry{mode: *e.Mode, Entry: Entry{
@@ -222,16 +230,22 @@ func (wire *baselinePass) decode() (controlPass, error) {
 		}}
 	}
 	for _, e := range wire.Unreadable {
+		if !localBaselinePath(string(e.Path)) {
+			return controlPass{}, fmt.Errorf("invalid workspace control baseline unreadable path %q", e.Path)
+		}
 		p.unreadable[string(e.Path)] = string(e.Reason)
 	}
 	p.sources = make(map[string][]string, len(wire.Sources))
 	for _, e := range wire.Sources {
 		path := string(e.Path)
-		if _, exists := p.sources[path]; exists || path == "" {
+		if _, exists := p.sources[path]; exists || !localBaselinePath(path) {
 			return controlPass{}, fmt.Errorf("invalid or duplicate workspace control baseline source %q", path)
 		}
 		from := make([]string, 0, len(e.From))
 		for _, f := range e.From {
+			if !localBaselinePath(string(f)) {
+				return controlPass{}, fmt.Errorf("invalid workspace control baseline source reference %q", f)
+			}
 			from = append(from, string(f))
 		}
 		p.sources[path] = from
@@ -239,10 +253,21 @@ func (wire *baselinePass) decode() (controlPass, error) {
 	return p, nil
 }
 
-func decodeDiscoveryPaths(paths [][]byte) map[string]struct{} {
+func decodeDiscoveryPaths(paths [][]byte) (map[string]struct{}, error) {
 	out := make(map[string]struct{}, len(paths))
 	for _, path := range paths {
+		if !localBaselinePath(string(path)) {
+			return nil, fmt.Errorf("invalid workspace control baseline discovery path %q", path)
+		}
 		out[string(path)] = struct{}{}
 	}
-	return out
+	return out, nil
+}
+
+// localBaselinePath reports whether a persisted path names a place inside the
+// workspace in the form a snapshot records it: "." for the root, otherwise a
+// clean relative path. Comparison walks a path up to "." with filepath.Dir, so
+// an absolute path would never arrive there.
+func localBaselinePath(path string) bool {
+	return path == "." || (filepath.IsLocal(path) && filepath.Clean(path) == path)
 }
