@@ -111,6 +111,17 @@ func auditRetryArgs(opts controlAuditOptions) string {
 	if opts.replace {
 		args += " --replace"
 	}
+	// A retry must ask for the same report and accept the same findings, or the
+	// pasted command can change the outcome it was meant to repeat.
+	if opts.json {
+		args += " --json"
+	}
+	if opts.allowChanges {
+		args += " --allow-control-surface-changes"
+	}
+	if opts.allowPartial {
+		args += " --allow-partial-nested-discovery"
+	}
 	return args
 }
 

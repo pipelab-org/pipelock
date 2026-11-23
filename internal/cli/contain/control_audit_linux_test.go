@@ -773,3 +773,15 @@ func TestAuditShellArgEscapesControlCharacters(t *testing.T) {
 		}
 	}
 }
+
+func TestAuditRetryArgsRepeatTheRequestedReportAndAcceptance(t *testing.T) {
+	got := auditRetryArgs(controlAuditOptions{workspace: "/srv/project", json: true, allowChanges: true, allowPartial: true})
+	for _, want := range []string{"--workspace '/srv/project'", "--json", "--allow-control-surface-changes", "--allow-partial-nested-discovery"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("auditRetryArgs = %q, missing %q", got, want)
+		}
+	}
+	if got := auditRetryArgs(controlAuditOptions{workspace: "/srv/project"}); strings.Contains(got, "--json") || strings.Contains(got, "--allow") {
+		t.Fatalf("plain retry added flags: %q", got)
+	}
+}
