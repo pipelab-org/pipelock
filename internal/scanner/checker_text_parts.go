@@ -154,6 +154,9 @@ func (b *checkerTextBuilder) add(view bodyInjectionView) bool {
 
 	addMatching := func(text string, printableOnly bool) bool {
 		add := func(value, representation string) bool {
+			// Normalization can rebuild a verified image data URL whose
+			// characters were split by NUL bytes, so excise after it.
+			value = exciseVerifiedImageDataURLs(value)
 			return (printableOnly && !isPrintableText([]byte(value))) || appendPart(value, representation)
 		}
 		tags := normalize.DecodeTags(text)

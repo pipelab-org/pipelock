@@ -702,3 +702,27 @@ func TestCheckerNestedDecodeBelowTextEncodingStopsAtBudget(t *testing.T) {
 		t.Fatalf("completeness = %+v", got)
 	}
 }
+
+// A verified image data URL inside wide text is split by NUL bytes, so the
+// first excision misses it; matching normalization then rebuilds it. The
+// rebuilt image must not reach the checker or spend its budget.
+func TestCheckerWideCarrierExcisesRebuiltImageDataURL(t *testing.T) {
+	imageURL := dataURLForPNGBytes(t, randomPNG(t, 21))
+	wide := encodeUTF16ResponseBody(checkerFixturePhrase+" "+imageURL, true, true)
+	cfg := testResponseConfig()
+	checkertest.New(t, "benign").Configure(cfg, config.InjectionSurfaceHTTPResponse, config.InjectionModeBlock)
+	s := MustNew(cfg)
+	t.Cleanup(s.Close)
+	for _, source := range []string{base64.StdEncoding.EncodeToString(wide), hex.EncodeToString(wide)} {
+		parts, coverage := s.BuildInjectionTextParts(t.Context(), config.InjectionSurfaceHTTPResponse, source)
+		for _, part := range parts {
+			if strings.Contains(part.Text, "data:image/") {
+				t.Fatalf("part %s carries the image data URL: %q", part.ID, part.Text)
+			}
+		}
+		phrase := slices.ContainsFunc(parts, func(part checker.Part) bool { return strings.Contains(part.Text, checkerFixturePhrase) })
+		if !phrase || coverage.Status != checker.Complete {
+			t.Fatalf("checker views %q, completeness %+v, want the phrase with complete coverage", checkerPartTexts(parts), coverage)
+		}
+	}
+}
