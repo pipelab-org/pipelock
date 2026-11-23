@@ -416,3 +416,30 @@ func TestControlAuditRecordsAnyModificationTime(t *testing.T) {
 	_, _ = runAuditFixture(t, env, controlAuditOptions{workspace: root, record: true}, 0)
 	_, _ = runAuditFixture(t, env, controlAuditOptions{workspace: root}, 0)
 }
+
+// A replacement made from an incomplete observation must not discard a complete
+// baseline: the next replacement's preview is only a review if it is compared
+// against what was last known complete.
+func TestControlAuditIncompleteReplacementKeepsCompleteBaseline(t *testing.T) {
+	env, root := controlAuditFixture(t)
+	writeAuditFixture(t, root, ".claude/settings.json", "fixture")
+	writeAuditFixture(t, root, ".claude/policy.json", "fixture")
+	_, _ = runAuditFixture(t, env, controlAuditOptions{workspace: root, record: true}, 0)
+	writeAuditFixture(t, root, ".claude/hook.json", "hostile")
+	full := env.budget
+	env.budget.MaxControlEntries = 1
+	out, _ := runAuditFixture(t, env, controlAuditOptions{workspace: root, record: true, replace: true}, 2)
+	if !strings.Contains(out, "Kept the existing complete baseline") || strings.Contains(out, "Recorded workspace control baseline") {
+		t.Fatalf("incomplete replacement must say it kept the baseline: %s", out)
+	}
+	env.budget = full
+	out, _ = runAuditFixture(t, env, controlAuditOptions{workspace: root}, 2)
+	if !strings.Contains(out, filepath.Join(".claude", "hook.json")) || !strings.Contains(out, "workspace_control_surface=changed") {
+		t.Fatalf("the kept baseline must still show the added path: %s", out)
+	}
+	out, _ = runAuditFixture(t, env, controlAuditOptions{workspace: root, record: true, replace: true}, 0)
+	if !strings.Contains(out, filepath.Join(".claude", "hook.json")) {
+		t.Fatalf("complete replacement preview must name the added path: %s", out)
+	}
+	_, _ = runAuditFixture(t, env, controlAuditOptions{workspace: root}, 0)
+}

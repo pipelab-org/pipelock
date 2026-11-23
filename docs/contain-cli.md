@@ -185,8 +185,10 @@ Use `--agent-user USER` in place of `--workspace PATH` to process every
 grant for that user, including expired grants still in the inventory. Both
 modes require root. An existing baseline requires `--record --replace`;
 the command prints the observed differences before replacement. An incomplete
-observation is saved as incomplete and continues to fail audits until replaced
-with a usable observation.
+observation is saved as incomplete when no baseline exists, and continues to
+fail audits until replaced with a usable observation. It never replaces a
+complete baseline: the command keeps the old one and exits 2, so the next
+replacement is still reviewed against it.
 
 Audits use the saved per-file digest cap. They print the same warnings and
 `workspace_control_surface=clean|changed|partial|incomplete|unavailable`
@@ -211,7 +213,8 @@ In audit mode, `--allow-control-surface-changes` accepts observed changes
 and `--allow-partial-nested-discovery` accepts partial nested discovery.
 An audit with both findings requires both flags. Neither flag accepts an
 incomplete observation. After a reboot or workspace root identity or mount
-change, review the workspace before recording a replacement.
+change, the audit is incomplete but still lists the changed paths; review them
+before recording a replacement.
 
 Baselines are stored in `/var/lib/pipelock-contain/control-audit/`. The
 directories are owned by root with mode `0700`, and the files by root with

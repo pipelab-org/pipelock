@@ -128,6 +128,7 @@ func (env controlAuditEnv) roots(opts controlAuditOptions) ([]string, error) {
 
 func (env controlAuditEnv) record(w io.Writer, dir *os.File, roots []string, replace bool) error {
 	pending := make(map[string]workspacediff.ControlSurfaceSnapshot, len(roots))
+	var kept []string
 	incomplete := false
 	for _, root := range roots {
 		old, err := env.store.load(dir, root)
@@ -166,14 +167,34 @@ func (env controlAuditEnv) record(w io.Writer, dir *os.File, roots []string, rep
 			incomplete = true
 			printWorkspaceControls(w, map[string]workspacediff.ControlSurfaceStatement{root: health})
 			_, _ = fmt.Fprintf(w, "Resolve the observation issue, then run %s\n", recordRemedy(root, true))
+			// A complete baseline is the evidence the next replacement is
+			// reviewed against. An incomplete observation cannot stand in for
+			// it: after one, the preview would no longer show what changed.
+			if existing && health.Incomplete {
+				prior, err := workspacediff.CompareControlBaseline(old, old)
+				if err != nil {
+					return err
+				}
+				if !prior.Incomplete {
+					_, _ = fmt.Fprintf(w, "Kept the existing complete baseline for %q\n", root)
+					kept = append(kept, root)
+					continue
+				}
+			}
 		}
 		pending[root] = current
 	}
 	for _, root := range roots {
+		if _, ok := pending[root]; !ok {
+			continue
+		}
 		if err := writeControlBaseline(dir, root, pending[root], replace); err != nil {
 			return fmt.Errorf("save baseline for %q: %w; review the store and retry %s", root, err, recordRemedy(root, replace))
 		}
 		_, _ = fmt.Fprintf(w, "Recorded workspace control baseline for %q\n", root)
+	}
+	if len(kept) > 0 {
+		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("kept the existing complete baseline for %q because the new observation is incomplete", kept))
 	}
 	if incomplete {
 		return cliutil.ExitCodeError(cliutil.ExitConfig, errors.New("recorded baseline has incomplete or partial observations"))
