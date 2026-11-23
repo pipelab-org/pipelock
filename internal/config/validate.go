@@ -688,6 +688,15 @@ func (c *Config) ValidateWithWarnings() ([]Warning, error) {
 	if err := c.validateMCPDataClassLabels(); err != nil {
 		return warnings, err
 	}
+	switch c.FlightRecorder.ReceiptFormat {
+	case "", ReceiptFormatLegacy:
+	case ReceiptFormatV3:
+		if err := c.ValidateReceiptV3(); err != nil {
+			return nil, err
+		}
+	default:
+		return nil, errors.New("flight_recorder.receipt_format must be omitted, legacy, or v3")
+	}
 	if err := c.validateMCPToolPolicy(); err != nil {
 		return warnings, err
 	}
@@ -5434,6 +5443,31 @@ func (c *Config) validateSandbox() error {
 		}
 	}
 	return nil
+}
+
+// ValidateReceiptV3 checks prerequisites for explicit and directory-selected v3.
+func (c *Config) ValidateReceiptV3() error {
+	fr := c.FlightRecorder
+	switch {
+	case c.Defer.Enabled || c.MCPToolPolicy.Action == ActionDefer:
+		return errors.New("receipt_format v3 does not yet support deferred holds (defer actions); remove defer rules and disable defer or use the legacy receipt format")
+	}
+	for _, rule := range c.MCPToolPolicy.Rules {
+		if rule.Action == ActionRedirect {
+			return errors.New("receipt_format v3 does not yet support redirect rules; remove redirect rules or use the legacy receipt format")
+		}
+		if rule.Action == ActionDefer {
+			return errors.New("receipt_format v3 does not yet support deferred holds (defer actions); remove defer rules or use the legacy receipt format")
+		}
+	}
+	switch {
+	case !fr.Enabled || fr.Dir == "" || fr.SigningKeyPath == "":
+		return errors.New("flight_recorder.receipt_format v3 requires flight_recorder.enabled, dir, and signing_key_path")
+	case fr.ReceiptChainCount() > 1:
+		return errors.New("flight_recorder.receipt_format v3 requires at most one flight_recorder.receipt_chains chain")
+	default:
+		return nil
+	}
 }
 
 func (c *Config) validateFlightRecorder(warnings *[]Warning) error {

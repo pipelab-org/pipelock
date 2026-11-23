@@ -1009,3 +1009,21 @@ file named by `flight_recorder.signing_key_path`.
 - [Mediation envelope guide](mediation-envelope.md) for receipt ID correlation
 - [Receipt transport coverage](receipt-transports.md) for the per-transport emission matrix and error-path receipt coverage
 - [Configuration reference](../configuration.md#flight-recorder-v21) for all recorder fields
+
+## Enable v3 receipts
+
+Set `flight_recorder.receipt_format: v3` in the configuration for
+`pipelock run` or `pipelock mcp proxy`. Enable the flight recorder, set
+`flight_recorder.dir` and `flight_recorder.signing_key_path`, and use a
+single receipt chain. Restart after changing the format or v3 coverage
+settings. V3 currently refuses deferred holds and MCP tool policy redirect rules.
+Remove defer and redirect rules and disable `defer.enabled` before switching.
+
+Receipt v3 records an intent before forwarding each complete WebSocket message (and each ping/pong) and an outcome after writing it. In this release each record is flushed to disk in turn, including when require_receipts is false. That is two disk syncs per WebSocket message on one shared writer, roughly 100-500 messages per second in total across the process on typical SSD or cloud storage, and HTTP, MCP and WebSocket traffic share that limit. Keep receipt_format: legacy for high-rate WebSocket workloads until shared flushing lands.
+
+To cut over an existing evidence directory, stop the legacy writer and
+restart with v3 enabled and the same directory. V3 preserves and inventories
+the existing legacy chains. Keep that inventory with the receipts and all
+trusted signer keys. After a clean shutdown, verify the directory with
+`pipelock verify-receipt --chain EVIDENCE_DIR --key SIGNER_PUBLIC_KEY`.
+Use a fresh directory if you switch back to legacy.
