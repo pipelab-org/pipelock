@@ -335,3 +335,97 @@ func TestControlBaselineRootSwappedForALinkIsNotClean(t *testing.T) {
 		t.Fatalf("a swapped root must never read clean: %+v", diff)
 	}
 }
+
+// A control symlink whose literal target is spelled like a Git home path, or
+// ends in a slash that demands a directory, is resolved by rules a snapshot
+// applies while it is observed. A baseline read back from disk must reach the
+// same verdict as the snapshot it came from, unchanged and after each edit of
+// the target.
+func TestControlBaselineKeepsLinkTargetSpellingsAcrossReload(t *testing.T) {
+	type edit struct {
+		name  string
+		apply func(t *testing.T, root string)
+	}
+	remove := func(path string) func(*testing.T, string) {
+		return func(t *testing.T, root string) {
+			if err := os.RemoveAll(filepath.Join(root, path)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	for _, tc := range []struct {
+		name   string
+		target string
+		setup  func(t *testing.T, root string)
+		edits  []edit
+	}{
+		{
+			name: "in-workspace target spelled like a Git home path", target: "~settings/envrc",
+			setup: func(t *testing.T, root string) { writeControlFixture(t, root, "~settings/envrc", "before") },
+			edits: []edit{
+				{name: "edit the target", apply: func(t *testing.T, root string) { writeControlFixture(t, root, "~settings/envrc", "after") }},
+				{name: "remove the target", apply: remove("~settings/envrc")},
+				{name: "retarget the link", apply: func(t *testing.T, root string) {
+					remove(".envrc")(t, root)
+					symlinkFixture(t, root, "other", ".envrc")
+				}},
+			},
+		},
+		{
+			name: "directory with a trailing slash", target: "dir/",
+			setup: func(t *testing.T, root string) { writeControlFixture(t, root, "dir/x", "before") },
+			edits: []edit{
+				{name: "edit a file in the directory", apply: func(t *testing.T, root string) { writeControlFixture(t, root, "dir/x", "after") }},
+				{name: "replace the directory by a file", apply: func(t *testing.T, root string) {
+					remove("dir")(t, root)
+					writeControlFixture(t, root, "dir", "now a file")
+				}},
+				{name: "remove the directory", apply: remove("dir")},
+			},
+		},
+		{
+			name: "regular file with a trailing slash", target: "file/",
+			setup: func(t *testing.T, root string) { writeControlFixture(t, root, "file", "before") },
+			edits: []edit{
+				{name: "edit the file", apply: func(t *testing.T, root string) { writeControlFixture(t, root, "file", "after") }},
+				{name: "replace the file by a directory", apply: func(t *testing.T, root string) {
+					remove("file")(t, root)
+					writeControlFixture(t, root, "file/x", "now a directory")
+				}},
+				{name: "remove the file", apply: remove("file")},
+			},
+		},
+	} {
+		for _, e := range tc.edits {
+			t.Run(tc.name+"/"+e.name, func(t *testing.T) {
+				root := t.TempDir()
+				tc.setup(t, root)
+				symlinkFixture(t, root, tc.target, ".envrc")
+				budget := DefaultControlSurfaceBudget()
+				before := controlSnapshot(t, root, budget)
+				loaded := reloadControlBaseline(t, before)
+				compare := func(label string) ControlSurfaceStatement {
+					t.Helper()
+					after := controlSnapshot(t, root, budget)
+					live := controlDiff(t, before, after)
+					fromDisk, err := CompareControlBaseline(loaded, after)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if !reflect.DeepEqual(live, fromDisk) {
+						t.Fatalf("%s: loaded baseline disagrees with the observation it came from:\nlive   %+v\nloaded %+v", label, live, fromDisk)
+					}
+					return fromDisk
+				}
+				if got := compare("unchanged"); got.Changed || got.Incomplete {
+					t.Fatalf("an unchanged workspace must read clean and complete: %+v", got)
+				}
+				e.apply(t, root)
+				got := compare("after the edit")
+				if !got.Changed && !got.Incomplete {
+					t.Fatalf("an edit to what the link names must be reported after %q: %+v", e.name, got)
+				}
+			})
+		}
+	}
+}
