@@ -1562,7 +1562,7 @@ func ScanA2AStreamWithOptions(ctx context.Context, body io.Reader, w io.Writer, 
 			if err := writeSSEEvent(w, event, reader.LastEventID(), reader.LastEventType(), reader.LastRetry()); err != nil {
 				return false, fmt.Errorf("a2a stream write: %w", err)
 			}
-			return flushSSEEvent(flusher)
+			return flushSSEEvent(flusher, warnedFinding != nil && opts.Warning.DeliverFinding != nil)
 		}); err != nil {
 			return err
 		}

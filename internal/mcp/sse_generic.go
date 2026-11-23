@@ -554,7 +554,7 @@ func ScanGenericSSEStreamWithOptions(
 			if err := writeSSEEvent(w, event, reader.LastEventID(), reader.LastEventType(), reader.LastRetry()); err != nil {
 				return false, fmt.Errorf("sse stream write: %w", err)
 			}
-			return flushSSEEvent(flusher)
+			return flushSSEEvent(flusher, warnedFinding != nil && opts.DeliverFinding != nil)
 		}); err != nil {
 			return err
 		}
@@ -576,11 +576,11 @@ func (o GenericSSEScanOptions) deliverWarnedEvent(finding error, deliver func() 
 	return err
 }
 
-func flushSSEEvent(flusher http.Flusher) (bool, error) {
+func flushSSEEvent(flusher http.Flusher, observe bool) (bool, error) {
 	if flusher == nil {
 		return false, nil
 	}
-	if f, ok := flusher.(interface{ FlushError() error }); ok {
+	if f, ok := flusher.(interface{ FlushError() error }); observe && ok {
 		err := f.FlushError()
 		return err == nil, err
 	}
