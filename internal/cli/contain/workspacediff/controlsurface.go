@@ -984,12 +984,12 @@ func compareControlPass(before, after controlPass) controlPassDiff {
 		if seen && (b.mode != a.mode || entryChanged(b.Entry, a.Entry)) {
 			diff.modified = append(diff.modified, path)
 		}
-		if !seen && complete && after.covers(before, path) && !withinExcluded(path, excluded) {
+		if !seen && complete && after.covers(before, path, excluded) && !withinExcluded(path, excluded) {
 			diff.removed = append(diff.removed, path)
 		}
 	}
 	for path := range after.entries {
-		if _, seen := before.entries[path]; !seen && complete && before.covers(after, path) && !withinExcluded(path, excluded) {
+		if _, seen := before.entries[path]; !seen && complete && before.covers(after, path, excluded) && !withinExcluded(path, excluded) {
 			diff.added = append(diff.added, path)
 		}
 	}
@@ -1000,18 +1000,23 @@ func compareControlPass(before, after controlPass) controlPassDiff {
 // observe path, had the path been recorded as it was in the other pass: the
 // place the path names and, for one found through a reference, the contents of
 // the paths that referenced it. A pass that never examined a referencing
-// repository cannot show the reference, or what it names, to be gone.
-func (p controlPass) covers(recorded controlPass, path string) bool {
-	return p.coversPath(recorded, path, make(map[string]struct{}))
+// repository cannot show the reference, or what it names, to be gone, and one
+// that could not read a referencing path, at either endpoint, never saw what the
+// path named. excluded holds the paths unreadable at either endpoint.
+func (p controlPass) covers(recorded controlPass, path string, excluded map[string]struct{}) bool {
+	return p.coversPath(recorded, path, excluded, make(map[string]struct{}))
 }
 
-func (p controlPass) coversPath(recorded controlPass, path string, visited map[string]struct{}) bool {
+func (p controlPass) coversPath(recorded controlPass, path string, excluded, visited map[string]struct{}) bool {
 	if !p.discovered(path) {
 		return false
 	}
 	visited[path] = struct{}{}
 	for _, source := range recorded.sources[path] {
-		if _, done := visited[source]; !done && !p.coversPath(recorded, source, visited) {
+		if withinExcluded(source, excluded) {
+			return false
+		}
+		if _, done := visited[source]; !done && !p.coversPath(recorded, source, excluded, visited) {
 			return false
 		}
 	}

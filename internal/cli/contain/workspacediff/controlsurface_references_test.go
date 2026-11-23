@@ -6,6 +6,8 @@ package workspacediff
 import (
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 )
 
@@ -47,6 +49,63 @@ func TestControlSurfaceInfersNothingFromASymlinkedConfigOfAnUnexaminedRepository
 			diff := controlDiff(t, pair[0], pair[1])
 			if !diff.NestedDiscoveryPartial || diff.Incomplete || diff.Changed {
 				t.Fatalf("a repository that was not examined proves no change to what its config link names: %+v", diff)
+			}
+		})
+	}
+}
+
+// A repository whose configuration cannot be read in one snapshot, here for being
+// over the digest cap, does not show the files it includes. A snapshot that read
+// it must not report those files added or removed on that account; a path both
+// snapshots observed independently is still compared.
+func TestControlSurfaceInfersNothingFromAnUnreadableConfigsReferences(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// target is the included path; a fixed control path is one discovery
+		// reaches on its own.
+		target string
+		change func(t *testing.T, root string)
+		// wantChange says whether the change to the target must still be reported.
+		wantChange bool
+	}{
+		{"only the config names the target", "shared.cfg", func(t *testing.T, root string) {}, false},
+		{"the target is also a fixed control path", ".mcp.json", func(t *testing.T, root string) {
+			if err := os.Remove(filepath.Join(root, ".mcp.json")); err != nil {
+				t.Fatal(err)
+			}
+		}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			includeTarget := "[include]\n\tpath = ../" + tc.target + "\n"
+			writeControlFixture(t, root, ".git/HEAD", "ref: refs/heads/main\n")
+			writeControlFixture(t, root, ".git/config", includeTarget)
+			writeControlFixture(t, root, tc.target, "[example]\n\tkey = value\n")
+			readable := controlSnapshot(t, root, DefaultControlSurfaceBudget())
+			if _, observed := readable.priority.entries[tc.target]; !observed {
+				t.Fatal("test setup: the include must be followed while the config is readable")
+			}
+			tc.change(t, root)
+			// The same include stays in the file, but the file is now over the cap.
+			writeControlFixture(t, root, ".git/config", includeTarget+"# "+strings.Repeat("x", testControlCap)+"\n")
+			oversize := controlSnapshot(t, root, DefaultControlSurfaceBudget())
+			if _, observed := oversize.priority.entries[tc.target]; observed && !tc.wantChange {
+				t.Fatal("test setup: an oversize config must not be followed")
+			}
+			for name, pair := range map[string][2]ControlSurfaceSnapshot{
+				"unreadable at end":   {readable, oversize},
+				"unreadable at start": {oversize, readable},
+			} {
+				t.Run(name, func(t *testing.T) {
+					diff := controlDiff(t, pair[0], pair[1])
+					if !diff.Incomplete {
+						t.Fatalf("an oversize config must make the observation incomplete: %+v", diff)
+					}
+					reported := slices.Contains(diff.Paths(), filepath.FromSlash(tc.target))
+					if reported != tc.wantChange {
+						t.Fatalf("%s reported = %t, want %t: %+v", tc.target, reported, tc.wantChange, diff)
+					}
+				})
 			}
 		})
 	}
