@@ -179,8 +179,12 @@ type controlWalker struct {
 	trees        []controlTree
 	treeEntries  int
 	coveredTrees map[string]struct{}
-	seenConfig   map[gitConfigSource]struct{}
-	seenGitDirs  map[gitConfigSource]struct{}
+	// worktreeSlots are agent worktree checkouts found inside fixed control
+	// trees. Their root control paths are scanned with the fixed tree; nested
+	// discovery continues below them so their deeper control paths are seen.
+	worktreeSlots []string
+	seenConfig    map[gitConfigSource]struct{}
+	seenGitDirs   map[gitConfigSource]struct{}
 }
 
 func (w *controlWalker) walkPass(seed func()) controlPass {
@@ -487,6 +491,7 @@ func (w *controlWalker) scanFixedChild(path string, info fs.FileInfo) {
 		}
 		if w.scanGitMarker(path) && agentWorktreeSlot(path) {
 			w.scanFixed(path)
+			w.worktreeSlots = append(w.worktreeSlots, path)
 			return
 		}
 	}
@@ -623,8 +628,16 @@ func (w *controlWalker) discoverNested() {
 	type directory struct {
 		path  string
 		depth int
+		// slot marks an agent worktree checkout whose Git marker and root
+		// control paths the fixed tree walk already scanned.
+		slot bool
 	}
 	queue := []directory{{path: "."}}
+	// The fixed tree walk does not descend into an agent worktree checkout's
+	// ordinary directories, so nested discovery starts there too.
+	for _, slot := range w.worktreeSlots {
+		queue = append(queue, directory{path: slot, depth: 1 + strings.Count(filepath.ToSlash(slot), "/"), slot: true})
+	}
 	w.pass.undiscovered = make(map[string]struct{})
 	w.pass.partlyListed = make(map[string]struct{})
 	// Bound queue storage (count and path bytes) and the cost of listing wide
@@ -636,7 +649,7 @@ func (w *controlWalker) discoverNested() {
 		if _, covered := w.coveredTrees[dir.path]; covered {
 			continue
 		}
-		if dir.depth > 0 {
+		if dir.depth > 0 && !dir.slot {
 			if w.bareRepository(dir.path) {
 				w.scanGitDir(dir.path, dir.path)
 				continue

@@ -466,6 +466,33 @@ func TestControlSurfaceGitCheckoutInsideFixedTree(t *testing.T) {
 	expectControlPath(t, controlDiff(t, withConfig, controlSnapshot(t, root, budget)), checkout+"/.hooks/example")
 }
 
+// Nested discovery continues inside an agent worktree checkout, so control
+// paths below its root, such as a nested project's .mcp.json or a skill under a
+// nested .claude, are observed even though the checkout's source files are not.
+func TestControlSurfaceWorktreeSlotNestedControlPaths(t *testing.T) {
+	git := newControlGit(t)
+	root := t.TempDir()
+	git.init(t, root)
+	git.commit(t, root, "source.txt")
+	const checkout = ".claude/worktrees/example"
+	dir := filepath.Join(root, filepath.FromSlash(checkout))
+	git.run(t, root, "worktree", "add", "-qb", "example", dir)
+	writeControlFixture(t, dir, "src/.mcp.json", "before")
+	writeControlFixture(t, dir, "src/.claude/skills/example/SKILL.md", "before")
+	writeControlFixture(t, dir, "src/main.go", "before")
+	budget := DefaultControlSurfaceBudget()
+	before := controlSnapshot(t, root, budget)
+	writeControlFixture(t, dir, "src/main.go", "changed")
+	if diff := controlDiff(t, before, controlSnapshot(t, root, budget)); diff.Changed || diff.Incomplete || diff.NestedDiscoveryPartial {
+		t.Fatalf("ordinary checkout source must stay outside the control surface: %+v", diff)
+	}
+	for _, path := range []string{"src/.mcp.json", "src/.claude/skills/example/SKILL.md"} {
+		writeControlFixture(t, dir, path, "changed "+path)
+		after := controlSnapshot(t, root, budget)
+		expectControlPath(t, controlDiff(t, before, after), checkout+"/"+path)
+	}
+}
+
 // A checkout anywhere in a fixed control tree other than an agent worktree slot
 // keeps its working-tree files monitored: a skill or hook directory that is a
 // repository can hold scripts that run as the operator.
