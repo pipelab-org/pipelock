@@ -91,7 +91,21 @@ func CompareControlBaseline(before, after ControlSurfaceSnapshot) (ControlSurfac
 			snapshot.problem = joinIncompleteReasons(snapshot.problem, "workspace boot, root, or mount identity unavailable")
 		}
 	}
-	return DiffControlSurface(before, after)
+	// A reboot or a replaced root makes the comparison incomplete, never clean.
+	// The control paths are still compared: this statement is what an operator
+	// reviews before replacing the baseline, and an identity change must not
+	// hide the paths that moved.
+	identityReason := controlIdentityChange(before.identity, after.identity)
+	before.identity = after.identity
+	statement, err := DiffControlSurface(before, after)
+	if err != nil {
+		return ControlSurfaceStatement{}, err
+	}
+	if identityReason != "" {
+		statement.IncompleteReason = joinIncompleteReasons(identityReason, statement.IncompleteReason)
+		statement.Incomplete = true
+	}
+	return statement, nil
 }
 
 // EncodeControlBaseline serializes the observation needed by DiffControlSurface.

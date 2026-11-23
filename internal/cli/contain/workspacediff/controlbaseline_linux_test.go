@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -133,5 +134,48 @@ func TestControlBaselineIdentityChange(t *testing.T) {
 	diff := controlDiff(t, loaded, controlSnapshot(t, root, budget))
 	if !diff.Incomplete || !strings.Contains(diff.IncompleteReason, "root identity") {
 		t.Fatalf("root replacement must be incomplete: %+v", diff)
+	}
+}
+
+// A replacement preview is only a review if it names what changed. A reboot or
+// a replaced root makes the comparison incomplete, but the control paths are
+// still compared, so an operator accepting the new observation sees them.
+func TestControlBaselineIdentityChangeStillNamesChangedPaths(t *testing.T) {
+	const hook = ".git/hooks/pre-commit"
+	for _, tc := range []struct {
+		name   string
+		change func(*ControlSurfaceSnapshot)
+		reason string
+	}{
+		{name: "reboot", reason: "host rebooted", change: func(s *ControlSurfaceSnapshot) {
+			s.identity.BootID = "00000000-0000-0000-0000-000000000000"
+		}},
+		{name: "root inode", reason: "root identity", change: func(s *ControlSurfaceSnapshot) {
+			s.identity.Ino++
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			newControlGit(t).init(t, root)
+			writeControlFixture(t, root, ".envrc", "before")
+			budget := DefaultControlSurfaceBudget()
+			baseline := controlSnapshot(t, root, budget)
+			tc.change(&baseline)
+			loaded := reloadControlBaseline(t, baseline)
+			writeControlFixture(t, root, ".envrc", "after")
+			writeControlFixture(t, root, hook, "inert fixture")
+			diff, err := CompareControlBaseline(loaded, controlSnapshot(t, root, budget))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !diff.Incomplete || !strings.Contains(diff.IncompleteReason, tc.reason) {
+				t.Fatalf("identity change must stay incomplete: %+v", diff)
+			}
+			for _, path := range []string{".envrc", hook} {
+				if !slices.Contains(diff.Paths(), filepath.FromSlash(path)) {
+					t.Fatalf("%s hidden by the identity change: %+v", path, diff)
+				}
+			}
+		})
 	}
 }

@@ -368,3 +368,34 @@ func TestControlAuditReplaceRequiresVisibleDiff(t *testing.T) {
 	}
 	_, _ = runAuditFixture(t, env, controlAuditOptions{workspace: root}, 2)
 }
+
+func TestControlAuditReplaceAfterRebootStillShowsChangedPaths(t *testing.T) {
+	env, root := controlAuditFixture(t)
+	writeAuditFixture(t, root, ".envrc", "before")
+	_, _ = runAuditFixture(t, env, controlAuditOptions{workspace: root, record: true}, 0)
+	path := filepath.Join(env.store.path, controlBaselineFilename(root))
+	data, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	boot, err := os.ReadFile("/proc/sys/kernel/random/boot_id")
+	if err != nil {
+		t.Skip("boot ID unavailable")
+	}
+	current := bytes.TrimSpace(boot)
+	if !bytes.Contains(data, current) {
+		t.Fatal("baseline does not record the boot ID")
+	}
+	writeAuditFixture(t, filepath.Dir(path), filepath.Base(path),
+		string(bytes.ReplaceAll(data, current, []byte("00000000-0000-0000-0000-000000000000"))))
+	writeAuditFixture(t, root, ".envrc", "hostile")
+	out, _ := runAuditFixture(t, env, controlAuditOptions{workspace: root}, 2)
+	if !strings.Contains(out, "host rebooted") || !strings.Contains(out, ".envrc") {
+		t.Fatalf("audit after a reboot must report the incomplete comparison and the changed path: %s", out)
+	}
+	out, _ = runAuditFixture(t, env, controlAuditOptions{workspace: root, record: true, replace: true}, 0)
+	if !strings.Contains(out, "Replacing workspace control baseline") || !strings.Contains(out, ".envrc") {
+		t.Fatalf("replacement after a reboot hid the changed path: %s", out)
+	}
+	_, _ = runAuditFixture(t, env, controlAuditOptions{workspace: root}, 0)
+}
