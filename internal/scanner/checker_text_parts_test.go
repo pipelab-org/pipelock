@@ -374,6 +374,42 @@ func TestCheckerCancellationIsNeverComplete(t *testing.T) {
 	}
 }
 
+// errCounter counts how often a build asks whether its context is done.
+type errCounter struct {
+	context.Context
+	calls int
+}
+
+func (c *errCounter) Err() error {
+	c.calls++
+	return nil
+}
+
+// A cancellation that lands after the last view was built, with no view left
+// to notice it, still leaves the item partial: the checker is never told a
+// canceled build is complete, whichever text was built.
+func TestCheckerCompletenessSeesCancellationAfterLastView(t *testing.T) {
+	sources := []string{
+		checkerFixturePhrase,
+		strings.ReplaceAll(checkerFixturePhrase, " ", "%20"),
+		base64.StdEncoding.EncodeToString([]byte(checkerFixturePhrase)),
+	}
+	for i, source := range sources {
+		counter := &errCounter{Context: t.Context()}
+		uncanceled := checkerTextBuilder{ctx: counter, limit: math.MaxInt64}
+		uncanceled.addTexts([]string{source})
+		ctx := &cancelAfter{Context: t.Context(), left: counter.calls}
+		b := checkerTextBuilder{ctx: ctx, limit: math.MaxInt64}
+		b.addTexts([]string{source})
+		if b.reason != "" || ctx.observed {
+			t.Fatalf("source %d: the build saw the cancellation before its last view (reason %q)", i, b.reason)
+		}
+		if got := b.completeness(nil); got.Status != checker.Partial || got.Reason != checker.ReasonCanceled {
+			t.Errorf("source %d: completeness after a late cancellation = %+v", i, got)
+		}
+	}
+}
+
 // A body whose later view no longer fits is incomplete and the checker is not
 // called with the views that did fit.
 func TestCheckerBodyBudgetStopsAtOmittedView(t *testing.T) {
