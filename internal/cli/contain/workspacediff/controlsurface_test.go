@@ -464,3 +464,52 @@ func TestControlSurfaceGitCheckoutInsideFixedTree(t *testing.T) {
 	writeControlFixture(t, dir, ".hooks/example", "changed")
 	expectControlPath(t, controlDiff(t, withConfig, controlSnapshot(t, root, budget)), checkout+"/.hooks/example")
 }
+
+// A fixed control directory is monitored as a whole even when it carries its
+// own Git marker, for example a submodule or a standalone repository for the
+// agent configuration. Only checkouts found below it are limited to their Git
+// metadata.
+func TestControlSurfaceFixedDirectoryWithGitMarkerKeepsItsFiles(t *testing.T) {
+	cases := map[string]func(t *testing.T, root string){
+		"gitfile": func(t *testing.T, root string) {
+			writeControlFixture(t, root, ".claude/.git", "gitdir: ../.git\n")
+		},
+		"gitdir": func(t *testing.T, root string) {
+			if err := os.MkdirAll(filepath.Join(root, ".claude", ".git"), 0o750); err != nil {
+				t.Fatal(err)
+			}
+		},
+	}
+	cases["repository"] = func(t *testing.T, root string) {
+		git := newControlGit(t)
+		git.init(t, filepath.Join(root, ".claude"))
+		git.commit(t, filepath.Join(root, ".claude"), "history.txt")
+	}
+	for name, plant := range cases {
+		t.Run(name, func(t *testing.T) {
+			git := newControlGit(t)
+			root := t.TempDir()
+			git.init(t, root)
+			writeControlFixture(t, root, ".claude/settings.json", "before")
+			writeControlFixture(t, root, ".claude/hooks/run.sh", "before")
+			plant(t, root)
+			budget := DefaultControlSurfaceBudget()
+			before := controlSnapshot(t, root, budget)
+			writeControlFixture(t, root, ".claude/settings.json", "changed")
+			writeControlFixture(t, root, ".claude/hooks/run.sh", "changed")
+			if name == "repository" {
+				git.commit(t, filepath.Join(root, ".claude"), "more-history.txt")
+			}
+			diff := controlDiff(t, before, controlSnapshot(t, root, budget))
+			expectControlPath(t, diff, ".claude/settings.json")
+			expectControlPath(t, diff, ".claude/hooks/run.sh")
+			if name == "repository" {
+				for _, path := range diff.Paths() {
+					if strings.HasPrefix(path, ".claude/.git/") && !strings.HasSuffix(path, "/config") {
+						t.Errorf("volatile repository metadata reported: %s", path)
+					}
+				}
+			}
+		})
+	}
+}
