@@ -29,7 +29,18 @@ type Server struct {
 // New starts a checker with state benign, finding, not_checked, incomplete or failure.
 func New(t *testing.T, state string) *Server {
 	t.Helper()
-	s := &Server{state: state}
+	return newServer(t, state, "")
+}
+
+// NewMatching flags items that contain an exact part with the supplied text.
+func NewMatching(t *testing.T, text string) *Server {
+	t.Helper()
+	return newServer(t, "benign", text)
+}
+
+func newServer(t *testing.T, initialState, matchText string) *Server {
+	t.Helper()
+	s := &Server{state: initialState}
 	s.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req checker.Request
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -50,13 +61,21 @@ func New(t *testing.T, state string) *Server {
 			Revision:     checker.Revision{Checker: "fixture/v1", Model: "fixture-model/v1", Adapter: "fixture-adapter/v1"},
 			Completeness: &checker.Completeness{Status: checker.Complete}, Status: checker.StatusAssessed, Classification: checker.Benign,
 		}
+		findingID := item.Parts[0].ID
+		for _, part := range item.Parts {
+			if matchText != "" && part.Text == matchText {
+				state = "finding"
+				findingID = part.ID
+				break
+			}
+		}
 		switch state {
 		case "failure":
 			http.Error(w, "unavailable", http.StatusServiceUnavailable)
 			return
 		case "finding":
 			resp.Classification = checker.Suspicious
-			resp.Findings = []checker.Finding{{ReasonID: "instruction_override", PartIDs: []string{item.Parts[0].ID}}}
+			resp.Findings = []checker.Finding{{ReasonID: "instruction_override", PartIDs: []string{findingID}}}
 		case "not_checked":
 			resp.Status = checker.StatusNotChecked
 			resp.Reason = checker.ReasonUnavailable

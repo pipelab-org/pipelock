@@ -106,6 +106,14 @@ func (e ExternalAssessment) Reason() string {
 	return string(e.Assessment.State)
 }
 
+// DiagnosticReason describes the outcome for operator-facing errors.
+func (e ExternalAssessment) DiagnosticReason() string {
+	if e.Assessment.Reason == checker.ReasonOverBudget {
+		return e.Reason() + ": request exceeds max_request_bytes"
+	}
+	return e.Reason()
+}
+
 // AssessInjection runs the external checker deciding surface on item. ok is
 // false when the built-in checker decides surface or its mode is off; the
 // built-in then applies as usual. Every non-benign result is reported to the

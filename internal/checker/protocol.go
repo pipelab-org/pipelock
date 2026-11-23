@@ -230,6 +230,35 @@ func failure(status Status, reason Reason) Assessment {
 	return Assessment{State: state, Status: status, Reason: reason}
 }
 
+// overBudget reports a locally incomplete assessment when the request cannot
+// be sent within the configured limit.
+func overBudget() Assessment {
+	return Assessment{State: StateIncomplete, Status: StatusNotChecked, Reason: ReasonOverBudget}
+}
+
+// producerStopped reports the outcome for an item its producer could not finish
+// building, before the item is validated: a build stopped by the byte budget or
+// by cancellation can hold no parts at all, which is not a malformed request.
+// A canceled build with no parts reports what a request canceled in flight
+// reports. One that kept parts is still sent: its builder's context is not the
+// call's context (a watch call runs detached from it, so a finished delivery
+// never cancels its own evidence), and a suspicious reading of the parts built
+// is a finding the partial-coverage rule keeps.
+func producerStopped(item Item) (Assessment, bool) {
+	if item.Completeness == nil || item.Completeness.Status != Partial {
+		return Assessment{}, false
+	}
+	switch item.Completeness.Reason {
+	case ReasonOverBudget:
+		return overBudget(), true
+	case ReasonCanceled:
+		if len(item.Parts) == 0 {
+			return failure(StatusNotChecked, ReasonCanceled), true
+		}
+	}
+	return Assessment{}, false
+}
+
 func validReason(r Reason) bool {
 	switch r {
 	case ReasonUnavailable, ReasonTimeout, ReasonCanceled, ReasonRefused, ReasonUnsupported,

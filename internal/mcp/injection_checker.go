@@ -14,7 +14,7 @@ import (
 )
 
 // checkerExtractionVersion labels how MCP text is turned into checker parts.
-const checkerExtractionVersion = "mcp-text/v1"
+const checkerExtractionVersion = "mcp-text/v2"
 
 // CheckerPatternPrefix prefixes the pattern name of an external checker
 // finding, followed by the checker name.
@@ -50,11 +50,13 @@ func applyResponseChecker(ctx context.Context, sc *scanner.Scanner, opts Respons
 	if verdict.Error != "" && verdict.Action == config.ActionBlock {
 		return verdict
 	}
-	parts := scanner.InjectionTextParts(texts...)
-	if len(parts) == 0 {
+	parts, completeness := sc.BuildInjectionTextParts(ctx, config.InjectionSurfaceMCPToolResult, texts...)
+	if len(parts) == 0 && completeness.Status == checker.Complete {
 		return verdict
 	}
-	ext, ok := sc.AssessInjection(ctx, config.InjectionSurfaceMCPToolResult, checkerItem(config.InjectionSurfaceMCPToolResult, opts.checkerTransport(), originalBytes, parts))
+	item := checkerItem(config.InjectionSurfaceMCPToolResult, opts.checkerTransport(), originalBytes, parts)
+	item.Completeness = completeness
+	ext, ok := sc.AssessInjection(ctx, config.InjectionSurfaceMCPToolResult, item)
 	if !ok {
 		return verdict
 	}
@@ -66,8 +68,8 @@ func applyResponseChecker(ctx context.Context, sc *scanner.Scanner, opts Respons
 		verdict.Assessment = ext.Recovery()
 	case ext.Block():
 		return jsonrpc.ScanVerdict{
-			ID: verdict.ID, Action: config.ActionBlock,
-			Error: fmt.Sprintf("injection checker %s did not assess the response (%s)", ext.Checker, ext.Reason()),
+			ID: verdict.ID, Action: config.ActionBlock, Assessment: ext.Recovery(),
+			Error: fmt.Sprintf("injection checker %s did not assess the response (%s)", ext.Checker, ext.DiagnosticReason()),
 		}
 	default:
 		verdict.Assessment = ext.Recovery()
