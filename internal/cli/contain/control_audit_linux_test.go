@@ -785,3 +785,13 @@ func TestAuditRetryArgsRepeatTheRequestedReportAndAcceptance(t *testing.T) {
 		t.Fatalf("plain retry added flags: %q", got)
 	}
 }
+
+// Rollback removes the baseline store only through the install environment's
+// path, and an empty path means nothing to remove. A production environment
+// that forgot the path would keep every baseline after a rollback that was
+// asked to delete data, and no test built from a literal environment would say so.
+func TestDefaultInstallEnvNamesTheControlBaselineStore(t *testing.T) {
+	if got := defaultInstallEnv(io.Discard).controlAuditDir; got != defaultControlAuditDir {
+		t.Fatalf("controlAuditDir = %q, want %q", got, defaultControlAuditDir)
+	}
+}
