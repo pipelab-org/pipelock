@@ -256,7 +256,7 @@ func TestCheckerBudgetNeverDropsViewsSilently(t *testing.T) {
 		"tags around invisibles":    tags.String() + "\u200b" + tags.String() + " " + strings.ReplaceAll(checkerFixturePhrase, " ", "=20"),
 		"quoted-printable in tags":  tags.String() + " " + strings.ReplaceAll(strings.ReplaceAll(checkerFixturePhrase, " ", "=\u200b20"), "e", "=65"),
 		"percent and entities":      strings.ReplaceAll(checkerFixturePhrase, " ", "%20") + " &amp; " + strings.ReplaceAll(checkerFixturePhrase, " ", "&#32;"),
-		"dense invisibles":          strings.ReplaceAll(checkerFixturePhrase, " ", "​​"),
+		"dense invisibles":          strings.ReplaceAll(checkerFixturePhrase, " ", "\u200b\u200b"),
 		"hex of base64":             hex.EncodeToString([]byte(base64.StdEncoding.EncodeToString([]byte(checkerFixturePhrase)))),
 	}
 	for name, source := range inputs {
