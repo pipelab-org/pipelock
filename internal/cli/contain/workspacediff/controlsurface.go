@@ -440,55 +440,175 @@ func (w *controlWalker) snapshotFile(path string, dev, ino uint64, haveIDs bool)
 // followSymlink observes the in-workspace target of a recorded control
 // symlink. A symlinked hook, config or agent directory otherwise lets later
 // edits to its target pass unobserved while the link itself stays unchanged.
-// The target is resolved lexically and every prefix is inspected, so a link
-// leaving the grant, or the grant root itself, is never followed. The entry is
-// stored before following, which ends link cycles.
+// The target is resolved the way the kernel does, inspecting every prefix, so a
+// link leaving the grant, or the grant root itself, is never followed. The entry
+// is stored before following, which ends link cycles.
 func (w *controlWalker) followSymlink(link controlEntry) {
-	if rel, ok := w.linkTarget(link); ok {
+	if rel, res := w.resolveLinkTarget(link); res == pathResolved {
 		w.following(link.Path, func() { w.queueTree(w.recordPath(rel), "", "") })
 	}
 }
 
-// linkTarget names the in-workspace path a recorded symlink points to, without
-// following it. A link that leaves the workspace or has no usable target has no
-// such path. One whose target the kernel would resolve elsewhere than cleaning
-// does is reported unreadable.
-func (w *controlWalker) linkTarget(link controlEntry) (string, bool) {
-	target := link.Target
-	if target == "" || strings.ContainsRune(target, 0) {
-		return "", false
+// pathResolution says what resolveWorkspacePath found.
+type pathResolution int
+
+const (
+	// pathResolved: the path names a place in the workspace, whose last
+	// component may or may not exist yet.
+	pathResolved pathResolution = iota
+	// pathMissing: a directory the path passes through does not exist, so Git
+	// finds no configuration there. Creating it later is seen as an addition.
+	pathMissing
+	// pathBlocked: a file stands where the path needs a directory.
+	pathBlocked
+	// pathOutside: the path leaves the grant, which is not followed.
+	pathOutside
+	// pathUnobservable: the path could not be resolved safely. The source that
+	// named it was reported unreadable.
+	pathUnobservable
+)
+
+// resolveLinkTarget resolves where a recorded symlink points, without following
+// the target itself. A link with no usable target, one that leaves the workspace
+// and one naming the workspace root have no place to observe.
+func (w *controlWalker) resolveLinkTarget(link controlEntry) (string, pathResolution) {
+	rel, res := w.resolveWorkspacePath(link.Path, filepath.Dir(link.Path), link.Target)
+	if res == pathResolved && rel == "." {
+		return "", pathOutside
 	}
-	if !filepath.IsAbs(target) {
-		target = filepath.Join(w.rootPath, filepath.Dir(link.Path), target)
-	}
-	rel, err := filepath.Rel(w.rootPath, filepath.Clean(target))
-	if err != nil || rel == "." || !filepath.IsLocal(rel) {
-		return "", false
-	}
-	if !w.lexicalLinkTargetMatches(link, rel) {
-		w.unreadable(link.Path, "symlink target resolution is ambiguous")
-		return "", false
-	}
-	return rel, true
+	return rel, res
 }
 
-// lexicalLinkTargetMatches reports whether cleaning ".." elements from a link
-// target names the same file the kernel resolves. A ".." after a symlinked
-// component walks out of that component's target, so the cleaned path would
-// observe the wrong place. Such a link is reported unreadable instead.
-func (w *controlWalker) lexicalLinkTargetMatches(link controlEntry, rel string) bool {
-	if !slices.Contains(strings.Split(filepath.ToSlash(link.Target), "/"), "..") {
-		return true
+// resolveWorkspacePath finds the workspace place Git reaches from a path named
+// in its metadata or by a symlink, relative to base unless value is absolute.
+// Git and the kernel resolve a path one component at a time: a symlinked
+// directory is followed, and ".." leaves the directory the path has actually
+// reached, not the one it was spelled through. Every directory component is
+// inspected here the same way, so the result is where Git lands, inside the
+// workspace or not.
+//
+// The last component is returned as named and is not followed: the caller
+// records it, and a symlink there is followed as a recorded link. Each symlink
+// passed on the way is recorded as evidence, attributed to source, the path
+// whose contents named it, so a snapshot that never read source does not claim
+// to have observed what it led to.
+//
+// A path that leaves the workspace is outside the grant and is not followed. One
+// that leaves it and names it again by name is ambiguous, because only the
+// workspace root's real parent knows the way back: source is reported unreadable,
+// as it is when a symlink loop, too long a chain, or a component that cannot be
+// inspected, such as one on another mount, stops the resolution. A directory
+// that does not exist yet names no configuration.
+func (w *controlWalker) resolveWorkspacePath(source, base, value string) (string, pathResolution) {
+	if value == "" || strings.ContainsRune(value, 0) ||
+		strings.HasPrefix(value, "~") || strings.HasPrefix(value, "%(prefix)/") {
+		return "", pathOutside
 	}
-	if filepath.IsAbs(link.Target) {
-		return false
+	var pending []string
+	if filepath.IsAbs(value) {
+		rest, rooted := w.underRoot(value)
+		if !rooted {
+			return w.outsideWorkspace(source, value)
+		}
+		pending = pathParts(rest)
+	} else {
+		if base == "" {
+			return "", pathOutside
+		}
+		pending = append(pathParts(base), pathParts(value)...)
 	}
-	resolved, err := w.root.Lstat(filepath.Dir(link.Path) + "/" + link.Target)
-	cleaned, cleanedErr := w.root.Lstat(rel)
-	if err != nil || cleanedErr != nil {
-		return errors.Is(err, fs.ErrNotExist) && errors.Is(cleanedErr, fs.ErrNotExist)
+	// The last component of the value is not followed. A value with no component
+	// of its own, such as ".", names the directory its base resolves to.
+	ownsLast := len(pathParts(value)) > 0
+	var stack []string
+	for hops := 0; len(pending) > 0; {
+		part := pending[0]
+		pending = pending[1:]
+		if part == ".." {
+			if len(stack) == 0 {
+				return w.outsideWorkspace(source, filepath.Join(w.rootPath, "..", filepath.Join(pending...)))
+			}
+			stack = stack[:len(stack)-1]
+			continue
+		}
+		path := filepath.Join(append(slices.Clone(stack), part)...)
+		if len(pending) == 0 && ownsLast {
+			return path, pathResolved
+		}
+		info := w.lookup(path)
+		if info == nil {
+			if _, unreadable := w.pass.unreadable[path]; unreadable {
+				w.unreadable(source, "configured path could not be inspected")
+				return "", pathUnobservable
+			}
+			return "", pathMissing
+		}
+		switch {
+		case info.IsDir():
+			stack = append(stack, part)
+		case info.Mode()&fs.ModeSymlink != 0:
+			hops++
+			if hops > maxConfigLinkHops {
+				w.unreadable(source, "configured path symlink chain is too long")
+				return "", pathUnobservable
+			}
+			link := w.recordAs(source, path, info)
+			if link.Kind != KindSymlink || link.Target == "" || strings.ContainsRune(link.Target, 0) {
+				w.unreadable(source, "configured path symlink could not be observed")
+				return "", pathUnobservable
+			}
+			if filepath.IsAbs(link.Target) {
+				rest, rooted := w.underRoot(link.Target)
+				if !rooted {
+					return w.outsideWorkspace(source, link.Target)
+				}
+				stack = nil
+				pending = append(pathParts(rest), pending...)
+			} else {
+				pending = append(pathParts(link.Target), pending...)
+			}
+		default:
+			w.recordAs(source, path, info)
+			return "", pathBlocked
+		}
 	}
-	return os.SameFile(resolved, cleaned)
+	if len(stack) == 0 {
+		return ".", pathResolved
+	}
+	return filepath.Join(stack...), pathResolved
+}
+
+// recordAs records a path as evidence for the reference source followed.
+func (w *controlWalker) recordAs(source, path string, info fs.FileInfo) (e controlEntry) {
+	w.following(source, func() { e = w.record(path, info) })
+	return e
+}
+
+// underRoot returns the part of an absolute path below the workspace root.
+func (w *controlWalker) underRoot(abs string) (string, bool) {
+	if abs == w.rootPath {
+		return "", true
+	}
+	return strings.CutPrefix(abs, w.rootPath+string(filepath.Separator))
+}
+
+// outsideWorkspace classifies a path the resolution found outside the workspace
+// root, which lexical is the cleaned spelling of. Outside the grant is not
+// followed. A spelling that cleans back inside names a place only the real
+// parent of the root can resolve, so it is reported unreadable instead.
+func (w *controlWalker) outsideWorkspace(source, spelling string) (string, pathResolution) {
+	if rel, err := filepath.Rel(w.rootPath, filepath.Clean(spelling)); err == nil && filepath.IsLocal(rel) {
+		w.unreadable(source, "configured path resolution is ambiguous")
+		return "", pathUnobservable
+	}
+	return "", pathOutside
+}
+
+// pathParts splits a path into its components, dropping empty and "." ones.
+func pathParts(path string) []string {
+	return slices.DeleteFunc(strings.Split(filepath.ToSlash(path), "/"), func(part string) bool {
+		return part == "" || part == "."
+	})
 }
 
 func (w *controlWalker) recheck(path string, info fs.FileInfo) {

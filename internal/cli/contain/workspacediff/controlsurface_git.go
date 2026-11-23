@@ -11,7 +11,6 @@ import (
 	"io"
 	"io/fs"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 )
@@ -29,8 +28,8 @@ func (w *controlWalker) scanGitPointer(entry controlEntry, prefix, base, worktre
 			// it, which is the Git directory whose configuration is followed.
 			targetEntry := w.recordPath(path)
 			for hops := 0; targetEntry.Kind == KindSymlink; hops++ {
-				rel, ok := w.linkTarget(targetEntry)
-				if !ok || hops == maxConfigLinkHops {
+				rel, res := w.resolveLinkTarget(targetEntry)
+				if res != pathResolved || hops == maxConfigLinkHops {
 					w.unreadable(entry.Path, "Git directory symlink target could not be observed")
 					return
 				}
@@ -155,75 +154,12 @@ func (w *controlWalker) configuredWorktree(entry controlEntry) (value string, se
 	return value, set
 }
 
-// Config paths are relative to Git's working directory for hooks and
-// fsmonitor, or to the including file for includes. Resolve literal paths
-// without opening any external repository or config. Git resolves a path one
-// component at a time, so a ".." after a symlinked component leaves that
-// component's target; when cleaning the path lexically would name a different
-// place, inside the workspace or not, the path cannot be observed and source,
-// the file that named it, is reported unreadable.
+// workspaceTarget resolves a path named in Git metadata to the workspace place
+// Git finds, or reports that it names none this walk observes. See
+// resolveWorkspacePath.
 func (w *controlWalker) workspaceTarget(source, base, value string) (string, bool) {
-	if value == "" || strings.ContainsRune(value, 0) ||
-		strings.HasPrefix(value, "~") || strings.HasPrefix(value, "%(prefix)/") {
-		return "", false
-	}
-	joined := value
-	if !filepath.IsAbs(value) {
-		if base == "" {
-			return "", false
-		}
-		joined = filepath.Join(w.rootPath, base, value)
-	}
-	rel, err := filepath.Rel(w.rootPath, filepath.Clean(joined))
-	inside := err == nil && filepath.IsLocal(rel)
-	if slices.Contains(strings.Split(filepath.ToSlash(value), "/"), "..") && w.dotDotAmbiguous(base, value, inside) {
-		w.unreadable(source, "configured path resolution is ambiguous")
-		return "", false
-	}
-	return rel, inside
-}
-
-// dotDotAmbiguous reports whether a ".." in value follows anything but a plain
-// directory, whose parent is then the lexical parent. A ".." after a symlink, or
-// after a component that cannot be inspected, leaves somewhere cleaning does not
-// find, possibly inside the workspace. A ".." that leaves the workspace through
-// plain directories ends what can be observed, unless the path then names a
-// place inside the workspace again. inside is the lexical result, which an
-// absolute path outside the workspace cannot confirm.
-func (w *controlWalker) dotDotAmbiguous(base, value string, inside bool) bool {
-	var stack []string
-	rest := value
-	if filepath.IsAbs(value) {
-		var rooted bool
-		if rest, rooted = strings.CutPrefix(value, w.rootPath+string(filepath.Separator)); !rooted {
-			return inside
-		}
-	} else {
-		stack = slices.DeleteFunc(strings.Split(filepath.ToSlash(base), "/"), func(part string) bool {
-			return part == "" || part == "."
-		})
-	}
-	for part := range strings.SplitSeq(filepath.ToSlash(rest), "/") {
-		switch part {
-		case "", ".":
-		case "..":
-			// Past the workspace root nothing can be observed. Naming the
-			// workspace again from there is a place only the real parent knows.
-			if len(stack) == 0 {
-				return inside
-			}
-			// A component that does not exist now has no target to leave. If it
-			// becomes a symlink, the next snapshot finds that and is ambiguous.
-			info, err := w.root.Lstat(strings.Join(stack, "/"))
-			if err != nil && !errors.Is(err, fs.ErrNotExist) || err == nil && !info.IsDir() {
-				return true
-			}
-			stack = stack[:len(stack)-1]
-		default:
-			stack = append(stack, part)
-		}
-	}
-	return false
+	rel, res := w.resolveWorkspacePath(source, base, value)
+	return rel, res == pathResolved
 }
 
 // A linked worktree records the path to its .git file in its metadata.
@@ -255,8 +191,13 @@ func (w *controlWalker) readConfig(entry controlEntry) ([]byte, bool) {
 		case KindFile:
 			return w.readObserved(file)
 		case KindSymlink:
-			rel, ok := w.linkTarget(file)
-			if !ok {
+			rel, res := w.resolveLinkTarget(file)
+			switch res {
+			case pathResolved:
+			case pathMissing:
+				// Nothing is there to read; creating it is seen as an addition.
+				return nil, false
+			default:
 				w.unreadable(entry.Path, "Git config symlink target could not be observed")
 				return nil, false
 			}

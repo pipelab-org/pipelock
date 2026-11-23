@@ -256,7 +256,10 @@ func TestControlSurfaceFollowsInWorkspaceSymlinkTargets(t *testing.T) {
 	})
 }
 
-func TestControlSurfaceReportsAmbiguousDotDotLinkTargets(t *testing.T) {
+// A link target is resolved the way the kernel does: ".." leaves the directory
+// the path has reached. Replacing a plain prefix directory with a symlink moves
+// where the target lands, and the observation follows it there.
+func TestControlSurfaceResolvesDotDotLinkTargetsThroughSymlinks(t *testing.T) {
 	root := t.TempDir()
 	writeControlFixture(t, root, "sub/keep", "keep")
 	writeControlFixture(t, root, "shared/cmds/run", "before")
@@ -271,8 +274,8 @@ func TestControlSurfaceReportsAmbiguousDotDotLinkTargets(t *testing.T) {
 	if diff := controlDiff(t, before, before); diff.Incomplete {
 		t.Fatalf("a plain directory prefix resolves the same way lexically: %+v", diff)
 	}
-	// Replacing the prefix directory with a link makes the kernel resolve the
-	// target under deep/, where a lexical walk would keep observing shared/.
+	// The prefix is now a link to deep/inner, so the kernel resolves the target
+	// to deep/shared/cmds, where a lexical walk would keep observing shared/.
 	if err := os.RemoveAll(filepath.Join(root, "sub")); err != nil {
 		t.Fatal(err)
 	}
@@ -282,17 +285,18 @@ func TestControlSurfaceReportsAmbiguousDotDotLinkTargets(t *testing.T) {
 	writeControlFixture(t, root, "deep/shared/cmds/run", "planted")
 	after := controlSnapshot(t, root, DefaultControlSurfaceBudget())
 	diff := controlDiff(t, before, after)
-	if !diff.Incomplete || !strings.Contains(diff.IncompleteReason, "unreadable control paths") ||
-		len(diff.Unreadable) != 1 || diff.Unreadable[0].Path != filepath.FromSlash(".claude/cmds") ||
-		!strings.Contains(diff.Unreadable[0].Reason, "ambiguous") {
-		t.Fatalf("want an incomplete observation naming the ambiguous link: %+v", diff)
+	if diff.Incomplete || !slices.Contains(diff.Added, filepath.FromSlash("deep/shared/cmds/run")) {
+		t.Fatalf("want the file the kernel resolves the link to reported added: %+v", diff)
 	}
+	writeControlFixture(t, root, "deep/shared/cmds/run", "edited, now longer")
+	expectControlPath(t, controlDiff(t, after, controlSnapshot(t, root, DefaultControlSurfaceBudget())), "deep/shared/cmds/run")
 }
 
 // Git resolves a path named in its metadata one component at a time, so ".."
-// after a symlinked component leaves that component's target. Cleaning the
-// path lexically instead would observe a different directory than Git uses.
-func TestControlSurfaceReportsAmbiguousDotDotConfigPaths(t *testing.T) {
+// after a symlinked component leaves that component's target. The observation
+// resolves it the same way, not by cleaning the path lexically, which would
+// watch a different directory than Git uses.
+func TestControlSurfaceResolvesDotDotConfigPathsThroughSymlinks(t *testing.T) {
 	symlink := func(t *testing.T, root, target, name string) {
 		t.Helper()
 		path := filepath.Join(root, filepath.FromSlash(name))
@@ -307,7 +311,6 @@ func TestControlSurfaceReportsAmbiguousDotDotConfigPaths(t *testing.T) {
 		name    string
 		prepare func(t *testing.T, git testGit, root string)
 		edit    string
-		source  string
 	}{
 		{"hooks path", func(t *testing.T, git testGit, root string) {
 			git.init(t, root)
@@ -315,28 +318,28 @@ func TestControlSurfaceReportsAmbiguousDotDotConfigPaths(t *testing.T) {
 			symlink(t, root, "deep/sub", "jump")
 			writeControlFixture(t, root, "deep/sub/keep", "keep")
 			writeControlFixture(t, root, "deep/hooks/pre-commit", "before")
-		}, "deep/hooks/pre-commit", ".git/config"},
+		}, "deep/hooks/pre-commit"},
 		{"hooks path that leaves the workspace lexically", func(t *testing.T, git testGit, root string) {
 			git.init(t, root)
 			git.run(t, root, "config", "--local", "core.hooksPath", "jump/../../hooks")
 			symlink(t, root, "deep/sub/sub2", "jump")
 			writeControlFixture(t, root, "deep/sub/sub2/keep", "keep")
 			writeControlFixture(t, root, "deep/hooks/pre-commit", "before")
-		}, "deep/hooks/pre-commit", ".git/config"},
+		}, "deep/hooks/pre-commit"},
 		{"include path", func(t *testing.T, git testGit, root string) {
 			git.init(t, root)
 			git.run(t, root, "config", "--local", "include.path", "jump/../shared.cfg")
 			symlink(t, root, "../deep/sub", ".git/jump")
 			writeControlFixture(t, root, "deep/sub/keep", "keep")
 			writeControlFixture(t, root, "deep/shared.cfg", "[example]\nkey = before\n")
-		}, "deep/shared.cfg", ".git/config"},
+		}, "deep/shared.cfg"},
 		{"gitdir pointer", func(t *testing.T, _ testGit, root string) {
 			writeControlFixture(t, root, "proj/.git", "gitdir: jump/../gitdata\n")
 			symlink(t, root, "../deep/sub", "proj/jump")
 			writeControlFixture(t, root, "deep/sub/keep", "keep")
 			writeControlFixture(t, root, "deep/gitdata/hooks/pre-commit", "before")
 			writeControlFixture(t, root, "proj/gitdata/hooks/pre-commit", "lexical decoy")
-		}, "deep/gitdata/hooks/pre-commit", "proj/.git"},
+		}, "deep/gitdata/hooks/pre-commit"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			git := newControlGit(t)
@@ -344,16 +347,9 @@ func TestControlSurfaceReportsAmbiguousDotDotConfigPaths(t *testing.T) {
 			tc.prepare(t, git, root)
 			budget := DefaultControlSurfaceBudget()
 			before := controlSnapshot(t, root, budget)
-			writeControlFixture(t, root, tc.edit, "changed")
-			diff := controlDiff(t, before, controlSnapshot(t, root, budget))
-			reported := diff.Changed && slices.Contains(diff.Paths(), filepath.FromSlash(tc.edit))
-			var named bool
-			for _, entry := range diff.Unreadable {
-				named = named || (entry.Path == filepath.FromSlash(tc.source) && strings.Contains(entry.Reason, "ambiguous"))
-			}
-			if !reported && (!diff.Incomplete || !named) {
-				t.Fatalf("a path Git resolves through a symlink must be observed or reported ambiguous: %+v", diff)
-			}
+			// Git reads an included file as configuration, so the edit stays valid.
+			writeControlFixture(t, root, tc.edit, "[example]\n\tkey = changed\n")
+			expectControlPath(t, controlDiff(t, before, controlSnapshot(t, root, budget)), tc.edit)
 		})
 	}
 	t.Run("a path that leaves the workspace through plain directories is not ambiguous", func(t *testing.T) {

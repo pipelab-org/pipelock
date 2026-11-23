@@ -89,10 +89,10 @@ func TestControlSurfaceReportsUnreadableGitMetadata(t *testing.T) {
 			// An absolute target keeps the walk from resolving a dot-dot.
 			symlinkFixture(t, root, root+"/real.cfg/inner", ".git/config")
 		}, ".git/config", "Git config symlink target could not be observed"},
-		{"link naming a place with an absolute dot-dot", func(t *testing.T, root string) {
+		{"link leaving the workspace and naming it again", func(t *testing.T, root string) {
 			writeControlFixture(t, root, "b/target", "fixture")
-			// Join would clean the dot-dot away; the link must keep it.
-			symlinkFixture(t, root, root+"/a/../b", ".claude/link")
+			// Only the root's real parent knows the way back in.
+			symlinkFixture(t, root, root+"/../"+filepath.Base(root)+"/b", ".claude/link")
 		}, ".claude/link", "ambiguous"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -419,7 +419,7 @@ func TestControlWalkerFailsClosedOnVanishedAndChangedEntries(t *testing.T) {
 	t.Run("a link with no usable target", func(t *testing.T) {
 		w := newTestWalker(t, t.TempDir())
 		for _, target := range []string{"", "a\x00b"} {
-			if rel, ok := w.linkTarget(controlEntry{Entry: Entry{Path: "link", Kind: KindSymlink, Target: target}}); ok {
+			if rel, res := w.resolveLinkTarget(controlEntry{Entry: Entry{Path: "link", Kind: KindSymlink, Target: target}}); res == pathResolved {
 				t.Fatalf("target %q resolved to %q", target, rel)
 			}
 		}
@@ -430,6 +430,7 @@ func TestControlWalkerFailsClosedOnVanishedAndChangedEntries(t *testing.T) {
 // place, are out of scope rather than an observation problem.
 func TestControlWalkerResolvesConfiguredPaths(t *testing.T) {
 	root := t.TempDir()
+	writeControlFixture(t, root, "sub/keep", "x")
 	w := newTestWalker(t, root)
 	for _, tc := range []struct {
 		name, base, value string
