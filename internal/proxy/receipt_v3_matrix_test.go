@@ -2393,10 +2393,12 @@ func TestV3SignedCardReceiptsFollowDelivery(t *testing.T) {
 		for _, tc := range []struct {
 			name            string
 			required, block bool
+			status          int
 		}{
-			{"required", true, false},
-			{"optional", false, false},
-			{"post-card block", true, true},
+			{"required", true, false, http.StatusOK},
+			{"optional", false, false, http.StatusOK},
+			{"post-card block", true, true, http.StatusOK},
+			{"upstream 404", true, false, http.StatusNotFound},
 		} {
 			t.Run(surface+"/"+tc.name, func(t *testing.T) {
 				p, writer, dir, _ := newTestV3HTTPProxy(t, surface, tc.required, nil, func(cfg *config.Config) {
@@ -2412,7 +2414,7 @@ func TestV3SignedCardReceiptsFollowDelivery(t *testing.T) {
 					}
 				})
 				rt := roundTripFunc(func(req *http.Request) (*http.Response, error) {
-					return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}, "Content-Length": {strconv.Itoa(len(card))}}, ContentLength: int64(len(card)), Body: io.NopCloser(bytes.NewReader(card)), Request: req}, nil
+					return &http.Response{StatusCode: tc.status, Header: http.Header{"Content-Type": {"application/json"}, "Content-Length": {strconv.Itoa(len(card))}}, ContentLength: int64(len(card)), Body: io.NopCloser(bytes.NewReader(card)), Request: req}, nil
 				})
 				p.client = &http.Client{Transport: rt}
 				handler := http.Handler(http.HandlerFunc(p.handleForwardHTTP))
@@ -2421,24 +2423,34 @@ func TestV3SignedCardReceiptsFollowDelivery(t *testing.T) {
 				}
 				out := &v3SSEFlushFaultRecorder{ResponseRecorder: httptest.NewRecorder()}
 				handler.ServeHTTP(out, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://api.vendor.example"+agentCardPath, http.NoBody))
-				wantStatus, wantOutcome := http.StatusOK, "completed"
+				wantStatus, wantOutcome := tc.status, "completed"
 				if tc.block {
 					wantStatus, wantOutcome = http.StatusForbidden, "not_released"
 				}
 				if out.Code != wantStatus {
 					t.Fatalf("status = %d, want %d (%s)", out.Code, wantStatus, out.Body.String())
 				}
+				if !tc.block && !bytes.Equal(out.Body.Bytes(), card) {
+					t.Fatalf("delivered body = %q, want signed card", out.Body.Bytes())
+				}
 				if err := writer.Close(t.Context(), nil); err != nil {
 					t.Fatal(err)
 				}
 				counts := make(map[string]int)
+				primaryCompleted := false
 				for _, action := range readV3TransportActions(t, dir) {
+					if action.Phase == "outcome" && action.EffectBoundary == boundaryDownstreamDelivery && action.Layer == "" {
+						primaryCompleted = action.OutcomeClass == "completed"
+					}
 					if action.Phase == "outcome" && (action.Layer == scannerLabelA2ACardSignature || action.Layer == scannerLabelA2ACardDrift) {
 						counts[action.Layer]++
 						if action.OutcomeClass != wantOutcome {
 							t.Errorf("%s outcome = %q, want %q", action.Layer, action.OutcomeClass, wantOutcome)
 						}
 					}
+				}
+				if !tc.block && !primaryCompleted {
+					t.Error("missing completed primary delivery")
 				}
 				if counts[scannerLabelA2ACardSignature] != 1 || counts[scannerLabelA2ACardDrift] != 1 {
 					t.Fatalf("card outcomes = %v, want one for each check", counts)

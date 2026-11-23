@@ -201,7 +201,7 @@ func (w *v3DeliveryWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 
 func (w *v3DeliveryWriter) finish() {
 	ctx := w.request.Context()
-	if w.card != nil && (w.token == nil || w.status >= http.StatusBadRequest) {
+	if w.card != nil && w.token == nil {
 		w.proxy.refuseAdmittedEffect(ctx, w.options, w.card)
 		w.card = nil
 	}
