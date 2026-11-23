@@ -29,6 +29,7 @@ func TestDefaultControlSurfaceBudgetMatchesContainCLIDoc(t *testing.T) {
 		fmt.Sprintf("**%d control path components**", b.MaxControlDepth),
 		fmt.Sprintf("**%d discovery directories**", b.MaxNestedDirs),
 		fmt.Sprintf("**%d discovery levels**", b.MaxNestedDepth),
+		fmt.Sprintf("**%d MiB of discovery paths**", b.MaxNestedPathBytes>>20),
 	} {
 		if !strings.Contains(string(doc), expected) {
 			t.Errorf("contain-cli.md lacks %q", expected)
@@ -585,4 +586,33 @@ func TestControlSurfaceBareRepositoryAtFixedPathFollowsItsConfig(t *testing.T) {
 	before := controlSnapshot(t, root, budget)
 	writeControlFixture(t, root, "tools/hooks/pre-commit", "changed")
 	expectControlPath(t, controlDiff(t, before, controlSnapshot(t, root, budget)), "tools/hooks/pre-commit")
+}
+
+// Discovery keeps queued directory paths in memory. Their count is bounded,
+// but a few hundred thousand names of 255 bytes under a deep chain are not, so
+// the queue has a path-bytes budget as the whole-workspace snapshot does.
+func TestControlSurfaceDiscoveryBoundsQueuedPathBytes(t *testing.T) {
+	git := newControlGit(t)
+	root := t.TempDir()
+	git.init(t, root)
+	const hook = ".git/hooks/example"
+	writeControlFixture(t, root, hook, "before")
+	budget := DefaultControlSurfaceBudget()
+	budget.MaxNestedPathBytes = 256
+	before := controlSnapshot(t, root, budget)
+	for i := range 20 {
+		if err := os.Mkdir(filepath.Join(root, fmt.Sprintf("dir-%02d-%s", i, strings.Repeat("x", 40))), 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeControlFixture(t, root, hook, "changed")
+	diff := controlDiff(t, before, controlSnapshot(t, root, budget))
+	if diff.Incomplete || !diff.NestedDiscoveryPartial || !strings.Contains(diff.NestedDiscoveryReason, "path-bytes limit exceeded at") {
+		t.Fatalf("want partial nested discovery from the path-bytes limit: %+v", diff)
+	}
+	expectControlPath(t, diff, hook)
+	budget.MaxNestedPathBytes = 0
+	if _, err := SnapshotControlSurface(root, testControlCap, budget); err == nil {
+		t.Fatal("a zero discovery path budget must be rejected")
+	}
 }

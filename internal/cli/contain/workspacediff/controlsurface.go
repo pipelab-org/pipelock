@@ -24,6 +24,9 @@ type ControlSurfaceBudget struct {
 	MaxControlDepth     int
 	MaxNestedDirs       int
 	MaxNestedDepth      int
+	// MaxNestedPathBytes bounds the path strings discovery keeps queued, so a
+	// few hundred thousand directories with long names cannot exhaust memory.
+	MaxNestedPathBytes int64
 }
 
 // DefaultControlSurfaceBudget returns Pipelock's local operational defaults.
@@ -31,7 +34,7 @@ type ControlSurfaceBudget struct {
 func DefaultControlSurfaceBudget() ControlSurfaceBudget {
 	return ControlSurfaceBudget{
 		MaxControlEntries: 16_384, MaxControlPathBytes: 8 << 20, MaxControlDepth: 32,
-		MaxNestedDirs: 200_000, MaxNestedDepth: 64,
+		MaxNestedDirs: 200_000, MaxNestedDepth: 64, MaxNestedPathBytes: 64 << 20,
 	}
 }
 
@@ -98,7 +101,8 @@ func (s ControlSurfaceStatement) Paths() []string {
 // does not invoke Git or follow symlinks outside the workspace.
 func SnapshotControlSurface(root string, capBytes int64, budget ControlSurfaceBudget) (ControlSurfaceSnapshot, error) {
 	if capBytes <= 0 || budget.MaxControlEntries <= 0 || budget.MaxControlPathBytes <= 0 ||
-		budget.MaxControlDepth <= 0 || budget.MaxNestedDirs <= 0 || budget.MaxNestedDepth <= 0 {
+		budget.MaxControlDepth <= 0 || budget.MaxNestedDirs <= 0 || budget.MaxNestedDepth <= 0 ||
+		budget.MaxNestedPathBytes <= 0 {
 		return ControlSurfaceSnapshot{}, errors.New("workspacediff: control surface limits must be positive")
 	}
 	abs, err := filepath.Abs(root)
@@ -600,7 +604,9 @@ func (w *controlWalker) discoverNested() {
 	queue := []directory{{path: "."}}
 	w.pass.undiscovered = make(map[string]struct{})
 	w.pass.partlyListed = make(map[string]struct{})
-	// Bound both queue storage and the cost of listing wide directories.
+	// Bound queue storage (count and path bytes) and the cost of listing wide
+	// directories. A directory that cannot queue a child is partly listed.
+	var queuedBytes int64
 	listed := 0
 	for i := 0; i < len(queue) && w.pass.truncated == ""; i++ {
 		dir := queue[i]
@@ -617,8 +623,7 @@ func (w *controlWalker) discoverNested() {
 		}
 		w.list(dir.path, func(child string, d fs.DirEntry) bool {
 			if listed == w.budget.MaxNestedDirs {
-				w.pass.partlyListed[dir.path] = struct{}{}
-				w.noteDiscoveryLimit(dir.path, "nested directory entry limit exceeded")
+				w.limitListing(dir.path, "nested directory entry limit exceeded")
 				return false
 			}
 			listed++
@@ -628,15 +633,17 @@ func (w *controlWalker) discoverNested() {
 			if _, covered := w.coveredTrees[child]; covered {
 				return true
 			}
-			if dir.depth >= w.budget.MaxNestedDepth {
-				w.skipDiscovery(child, "nested directory depth limit exceeded")
-				return true
+			switch {
+			case dir.depth >= w.budget.MaxNestedDepth:
+				w.limitListing(dir.path, "nested directory depth limit exceeded")
+			case len(queue) >= w.budget.MaxNestedDirs:
+				w.limitListing(dir.path, "nested directory count limit exceeded")
+			case queuedBytes+int64(len(child)) > w.budget.MaxNestedPathBytes:
+				w.limitListing(dir.path, "nested directory path-bytes limit exceeded")
+			default:
+				queuedBytes += int64(len(child))
+				queue = append(queue, directory{path: child, depth: dir.depth + 1})
 			}
-			if len(queue) >= w.budget.MaxNestedDirs {
-				w.skipDiscovery(child, "nested directory count limit exceeded")
-				return true
-			}
-			queue = append(queue, directory{path: child, depth: dir.depth + 1})
 			return true
 		})
 		if listed == w.budget.MaxNestedDirs {
@@ -650,6 +657,12 @@ func (w *controlWalker) discoverNested() {
 
 func (w *controlWalker) skipDiscovery(path, reason string) {
 	w.pass.undiscovered[path] = struct{}{}
+	w.noteDiscoveryLimit(path, reason)
+}
+
+// limitListing records that a directory's listing could not be completed.
+func (w *controlWalker) limitListing(path, reason string) {
+	w.pass.partlyListed[path] = struct{}{}
 	w.noteDiscoveryLimit(path, reason)
 }
 
