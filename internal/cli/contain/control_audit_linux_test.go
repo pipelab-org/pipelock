@@ -82,7 +82,7 @@ func TestCheckAuditRoot(t *testing.T) {
 	}
 	err = checkAuditRoot(alias)
 	// The operator needs the path that works, not just the refusal.
-	if err == nil || !strings.Contains(err.Error(), "through a symbolic link") || !strings.Contains(err.Error(), "pass "+shellQuote(canonical)) {
+	if err == nil || !strings.Contains(err.Error(), "through a symbolic link") || !strings.Contains(err.Error(), fmt.Sprintf("resolves to %q", canonical)) {
 		t.Fatalf("check %q: %v", alias, err)
 	}
 	// A symlinked ancestor is refused the same way as a symlinked root.
@@ -672,5 +672,45 @@ func TestControlSurfaceStatusValuesMatchDocumentation(t *testing.T) {
 	}
 	if count == 0 {
 		t.Fatal("documentation no longer lists the status values")
+	}
+}
+
+// A link target and the path an inspection failed on are chosen by whoever can
+// write the workspace's parents, and the error is printed to an operator's
+// terminal. Neither may reach it as raw control characters.
+func TestCheckAuditRootErrorsEscapeAgentChosenPaths(t *testing.T) {
+	const esc = "\x1b[31m"
+	parent, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(parent, "t"+esc)
+	if err := os.Mkdir(target, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(parent, "alias")
+	if err := os.Symlink(target, alias); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkAuditRoot(alias); err == nil || strings.ContainsRune(err.Error(), 0x1b) {
+		t.Fatalf("link target reached the terminal unescaped: %q", err)
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	denied := filepath.Join(parent, "denied")
+	if err := os.Mkdir(denied, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(denied, "ws"+esc), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(denied, 0); err != nil { // #nosec G302 -- removing access is the fixture.
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(denied, 0o700) }) // #nosec G302 -- restore so TempDir can clean up.
+	err = checkAuditRoot(filepath.Join(denied, "ws"+esc))
+	if err == nil || strings.ContainsRune(err.Error(), 0x1b) || !strings.Contains(err.Error(), "inspect workspace path") {
+		t.Fatalf("inspection failure reached the terminal unescaped: %q", err)
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -123,10 +124,18 @@ func checkAuditRoot(root string) error {
 		return nil
 	}
 	if err != nil {
+		// A PathError prints the failing path unescaped, and that path can be
+		// an intermediate a link target chose. Report only the cause.
+		var pathErr *fs.PathError
+		if errors.As(err, &pathErr) {
+			err = pathErr.Err
+		}
 		return fmt.Errorf("inspect workspace path %q: %w", root, err)
 	}
+	// The resolved path comes from link targets the agent may have chosen, so it
+	// is shown escaped and never offered as text to paste into a shell.
 	if resolved != root {
-		return fmt.Errorf("workspace path %q resolves to %q through a symbolic link; baselines are keyed by the path as given, so pass %s (the path sudo pipelock contain list-workspaces shows for a grant), or restore the layout the baseline was recorded under", root, resolved, shellQuote(resolved))
+		return fmt.Errorf("workspace path %q resolves to %q through a symbolic link; baselines are keyed by the path as given, so pass the resolved path or the path sudo pipelock contain list-workspaces shows for the grant, or restore the layout the baseline was recorded under", root, resolved)
 	}
 	return nil
 }
