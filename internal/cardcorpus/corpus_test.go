@@ -11,12 +11,14 @@ import (
 func TestAllowedLossPresentation(t *testing.T) {
 	pan := number("4019", 16, 0)
 	public := strings.Repeat("4242", 4)
+	long := number("4019", 19, 2)
 	for _, tc := range []struct {
 		value, context, want string
 		redaction            bool
 	}{
 		{pan[:4] + "." + pan[4:], "cell", "decimal", false},
 		{pan[:8] + "\t" + pan[8:], "bare", "control-boundary", false},
+		{long[:16] + "\t" + long[16:18] + "\t" + long[18:], "bare", "", false},
 		{pan[:8] + "\r\n" + pan[8:], "bare", "control-boundary", false},
 		{pan[:8] + " " + pan[8:], "bare", "", false},
 		{pan[:4] + " - " + pan[4:], "bare", "", false},

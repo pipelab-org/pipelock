@@ -36,3 +36,24 @@ func TestScanDiffCardURLs(t *testing.T) {
 		}
 	}
 }
+
+func TestScanDiffCardRedactionUnion(t *testing.T) {
+	patterns := CompileDLPPatterns(config.Defaults().DLP.Patterns)
+	pan := cardtest.Issuer("4019", 16)
+	invalid := pan[:15] + string('0'+(pan[15]-'0'+1)%10)
+	public := strings.Repeat("4242", 4)
+	text := pan + " " + invalid + " " + public
+	diff := "diff --git a/pay.txt b/pay.txt\n--- a/pay.txt\n+++ b/pay.txt\n@@ -0,0 +1 @@\n+" + text + "\n"
+	got, err := ScanDiff(diff, patterns)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Findings) == 0 {
+		t.Fatal("card finding missing")
+	}
+	for _, f := range got.Findings {
+		if strings.Contains(f.Content, pan) || strings.Contains(f.Content, invalid) || !strings.Contains(f.Content, public) {
+			t.Fatalf("redaction union: %q", f.Content)
+		}
+	}
+}

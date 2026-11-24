@@ -307,6 +307,11 @@ func (c Case) AllowedLoss(redaction bool) string {
 		return ""
 	}
 	if controls > 0 {
+		for _, field := range strings.FieldsFunc(c.Value, func(r rune) bool { return r == '\t' || r == '\r' || r == '\n' }) {
+			if completeCardField(field) {
+				return ""
+			}
+		}
 		return "control-boundary"
 	}
 	if dots == 1 && strings.Count(c.Value, ".") == 1 {
@@ -354,4 +359,42 @@ func (c Case) Category() string {
 		return "separator/" + strconv.Quote(c.Separator)
 	}
 	return "overlapping-or-grouping/" + c.Context
+}
+
+// completeCardField independently checks the corpus issuer families and Luhn
+// arithmetic. A control boundary only excuses joins, never a complete field.
+func completeCardField(field string) bool {
+	var digits strings.Builder
+	for _, r := range field {
+		if r >= '0' && r <= '9' {
+			digits.WriteRune(r)
+		} else if r != ' ' && r != '-' {
+			return false
+		}
+	}
+	value := digits.String()
+	known := false
+	for _, issuer := range issuers {
+		known = known || len(value) == issuer.size && strings.HasPrefix(value, issuer.prefix)
+	}
+	if !known {
+		return false
+	}
+	for _, p := range published() {
+		if value == p {
+			return false
+		}
+	}
+	sum := 0
+	for i := len(value) - 1; i >= 0; i-- {
+		d := int(value[i] - '0')
+		if (len(value)-i)%2 == 0 {
+			d *= 2
+			if d > 9 {
+				d -= 9
+			}
+		}
+		sum += d
+	}
+	return sum%10 == 0
 }

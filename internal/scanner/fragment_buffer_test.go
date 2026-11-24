@@ -7,10 +7,12 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/cardtest"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
 )
@@ -979,5 +981,49 @@ func TestHasCoreFragmentMatch(t *testing.T) {
 	}
 	if !HasCoreFragmentMatch([]DLPMatch{{PatternName: "Vendor Token"}, {PatternName: "AWS Access ID"}}) {
 		t.Fatal("a core credential after another match was not reported")
+	}
+}
+
+func TestFragmentBuffer_OverlappingCardContributors(t *testing.T) {
+	for _, withImage := range []bool{false, true} {
+		for _, sharedStart := range []bool{false, true} {
+			t.Run(fmt.Sprint(sharedStart, withImage), func(t *testing.T) {
+				sc := testFragmentScanner()
+				t.Cleanup(sc.Close)
+				fb := NewFragmentBuffer(65536, 1000, testWindowSecs)
+				t.Cleanup(fb.Close)
+				first := cardtest.Issuer("400000005191", 16)
+				second := cardtest.Issuer(first[8:]+"0000000", 16)
+				suffix := second[8:]
+				if sharedStart {
+					first = cardtest.Issuer("4019", 16)
+					second = cardtest.Issuer(first+"00", 19)
+					suffix = second[16:]
+				}
+				owner, stream := testCEEIdentity(testSessionA), testCEEStream(testSessionA)
+				firstBody := cardtest.Grouped(first, " ")
+				if withImage {
+					firstBody = dataURLForPNGBytes(t, randomPNG(t, 21)) + " " + firstBody
+				}
+				appendFragmentWithSource(t, fb, owner, stream, []byte("first"), []byte(firstBody), sc)
+				matches := appendFragmentWithSource(t, fb, owner, stream, []byte("second"), []byte(" "+cardtest.Grouped(suffix, " ")), sc)
+				for _, m := range matches {
+					if m.PatternName == "Credit Card Number" && len(m.Contributors) == 2 && string(m.Contributors[0]) == "first" && string(m.Contributors[1]) == "second" {
+						return
+					}
+				}
+				t.Fatalf("overlapping card lost contributors: %+v", matches)
+			})
+		}
+	}
+}
+
+func TestFragmentCardCandidatePublicExampleExclusion(t *testing.T) {
+	sc := testFragmentScanner()
+	t.Cleanup(sc.Close)
+	public := strings.Repeat("4242", 4)
+	ranges := []fragmentRange{{start: 0, end: 8}, {start: 8, end: 16}}
+	if match, found := crossFragmentCardCandidate(sc, public, "Credit Card Number", ranges, nil); found {
+		t.Fatalf("published test card became a cross-fragment finding: %+v", match)
 	}
 }

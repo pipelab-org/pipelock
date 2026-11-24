@@ -40,6 +40,12 @@ func TestURLCardTextSpans(t *testing.T) {
 		"https://" + pan[:4] + "%3" + pan[4:5] + pan[5:] + "@api.vendor.example/",
 		"https://user:" + pan[:4] + "%3" + pan[4:5] + pan[5:] + "@api.vendor.example/",
 		"https://api.vendor.example/%ZZ/?a=" + pan[:8] + "&b=" + pan[8:],
+		"https://api.vendor.example/" + pan[:4] + "%E2%80%8B" + pan[4:],
+		"https://api.vendor.example/#" + pan[:4] + "%E2%80%8B" + pan[4:],
+		"https://api.vendor.example/?a=" + pan[:4] + "%E2%80%8B" + pan[4:],
+		"https://api.vendor.example/%ZZ/?a=" + pan[:4] + "%E2%80%8B" + pan[4:],
+		"https://api.vendor.example/?a=%34" + pan[1:] + "&b=%34" + pan[1:],
+		"https://api.vendor.example/%ZZ/?a=%34" + pan[1:] + "&b=%34" + pan[1:],
 	} {
 		text := "see (" + token + ")."
 		for _, stop := range []bool{false, true} {
@@ -60,5 +66,21 @@ func TestURLCardTextSpans(t *testing.T) {
 		if VisitText(text, func(Candidate) bool { return true }) {
 			t.Fatalf("clean URL became a card: %q", text)
 		}
+	}
+}
+
+func TestURLCardIndependentQueryValues(t *testing.T) {
+	first, second := cardtest.Issuer("4019", 16), cardtest.Issuer("5191", 16)
+	token := "https://api.vendor.example/?a=%34" + first[1:] + "&b=%35" + second[1:]
+	seen := map[string]bool{}
+	VisitText(token, func(c Candidate) bool {
+		if c.Start != 0 || c.End != len(token) {
+			t.Fatalf("decoded span must replace URL: %+v", c)
+		}
+		seen[c.Digits] = true
+		return false
+	})
+	if !seen[first] || !seen[second] {
+		t.Fatalf("independent query values lost: %v", seen)
 	}
 }

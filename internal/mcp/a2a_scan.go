@@ -532,7 +532,7 @@ func a2aKeyCardMatches(ctx context.Context, sc *scanner.Scanner, atoms []extract
 			*limit--
 		}
 		seen[view] = struct{}{}
-		matches = append(matches, sc.ScanTextForDLPWithCardView(ctx, atom.Text, atom.Card).Matches...)
+		matches = append(matches, sc.ScanTextForDLPWithCardView(ctx, atom.Text, atom.Card).Findings()...)
 	}
 	return matches, false
 }

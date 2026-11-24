@@ -529,7 +529,7 @@ func (s *assembledScan) searchLane(codec, phase, id int) {
 	}
 	if pattern.cardPrefixRetry {
 		carddlp.Visit(lane.view, false, func(c carddlp.Candidate) bool {
-			return pattern.accepts(lane.view, c.Start, c.End) && visit(c.Start, c.End)
+			return matchPattern.accepts(lane.view, c.Start, c.End) && visit(c.Start, c.End)
 		})
 		return
 	}

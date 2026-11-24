@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/luckyPipewrench/pipelock/internal/normalize"
 )
 
 // URLPattern is the supported scheme-prefixed text URL grammar. Bare dotted
@@ -100,7 +102,7 @@ func visitTextView(text string, yield func(Candidate) bool) bool {
 		if err != nil {
 			if _, rest, ok := strings.Cut(token, "?"); ok {
 				rawQuery, _, _ := strings.Cut(rest, "#")
-				if query := decodedRawQueryValues(rawQuery); Visit(query, true, func(c Candidate) bool {
+				if visitDecodedQueryValues(rawQuery, func(c Candidate) bool {
 					c.Start, c.End = span.Start, span.End
 					return yield(c)
 				}) {
@@ -112,7 +114,13 @@ func visitTextView(text string, yield func(Candidate) bool) bool {
 		// RFC 3986 percent decoding and URL-ordered query values preserve the
 		// existing URL reconstruction contract. Reconstructed spans replace the
 		// complete URL because their source bytes may be discontiguous.
-		views := []string{parsed.Path, parsed.Fragment, decodedRawQueryValues(parsed.RawQuery)}
+		if visitDecodedQueryValues(parsed.RawQuery, func(c Candidate) bool {
+			c.Start, c.End = span.Start, span.End
+			return yield(c)
+		}) {
+			return true
+		}
+		views := []string{parsed.Path, parsed.Fragment}
 		if parsed.User != nil {
 			views = append(views, parsed.User.Username())
 			if pass, ok := parsed.User.Password(); ok {
@@ -120,7 +128,7 @@ func visitTextView(text string, yield func(Candidate) bool) bool {
 			}
 		}
 		for _, view := range views {
-			if Visit(view, true, func(c Candidate) bool {
+			if Visit(normalize.ForCardText(view), true, func(c Candidate) bool {
 				c.Start, c.End = span.Start, span.End
 				return yield(c)
 			}) {
@@ -131,9 +139,12 @@ func visitTextView(text string, yield func(Candidate) bool) bool {
 	return false
 }
 
-func decodedRawQueryValues(rawQuery string) string {
+// Scan each decoded field before joining: a neighbouring full card must not
+// turn independently valid values into an overlong digit run. The joined view
+// retains the established split-query reconstruction contract.
+func visitDecodedQueryValues(rawQuery string, yield func(Candidate) bool) bool {
 	if rawQuery == "" {
-		return ""
+		return false
 	}
 	var query strings.Builder
 	for _, pair := range strings.Split(rawQuery, "&") {
@@ -142,11 +153,14 @@ func decodedRawQueryValues(rawQuery string) string {
 			value = key
 		}
 		decoded, err := url.QueryUnescape(value)
-		if err == nil {
-			query.WriteString(decoded)
-		} else {
-			query.WriteString(value)
+		if err != nil {
+			decoded = value
 		}
+		decoded = normalize.ForCardText(decoded)
+		if Visit(decoded, true, yield) {
+			return true
+		}
+		query.WriteString(decoded)
 	}
-	return query.String()
+	return Visit(query.String(), true, yield)
 }

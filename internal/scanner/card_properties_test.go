@@ -19,6 +19,7 @@ func TestCardPresentationProperties(t *testing.T) {
 	cfg.Internal = nil
 	cfg.DLP.ScanEnv = false
 	cfg.FetchProxy.Monitoring.EntropyThreshold = 0
+	cfg.FetchProxy.Monitoring.MaxURLLength = 0
 	s := MustNew(cfg)
 	t.Cleanup(s.Close)
 	for seed := range 8 {
@@ -59,8 +60,8 @@ func TestCardPresentationProperties(t *testing.T) {
 				}
 				// Destination protocol policy rejects non-HTTP schemes before DLP.
 				if scheme == "http" || scheme == "HTTPS" {
-					if got := s.Scan(t.Context(), url); got.Allowed {
-						t.Fatalf("URL allowed: %s", url)
+					if got := s.Scan(t.Context(), url); got.Allowed || got.Scanner != ScannerDLP || !strings.Contains(got.Reason, "Credit Card Number") {
+						t.Fatalf("URL card denial missing for %s: %+v", url, got)
 					}
 				}
 			}
@@ -72,6 +73,25 @@ func TestCardPresentationProperties(t *testing.T) {
 					t.Fatalf("noncanonical input %q: %+v", value, got)
 				}
 			}
+		}
+	}
+}
+
+func TestCardCompleteControlColumn(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.DLP.ScanEnv = false
+	sc := MustNew(cfg)
+	t.Cleanup(sc.Close)
+	pan := cardtest.Issuer("4019"+strings.Repeat("0", 9)+"17", 16)
+	text := pan + "\t69\t1"
+	for _, scan := range []func(string) TextDLPResult{
+		func(v string) TextDLPResult { return sc.ScanTextForDLP(t.Context(), v) },
+		func(v string) TextDLPResult { return sc.ScanTextForDLPInbound(t.Context(), v) },
+	} {
+		got := scan(text)
+		if got.Clean || !HasEnforcingMatch(got.Matches) {
+			t.Fatalf("complete control-separated card column was not detected: %+v", got)
 		}
 	}
 }

@@ -452,12 +452,14 @@ func ScanGenericSSEStreamWithOptions(
 					return err
 				}
 				droppedDLP.record(droppedMatches)
-				if result.Clean {
+				if result.Clean && len(result.Findings()) == 0 {
 					continue
 				}
 				findingErr := sseDLPFindingError(result.Findings(), "cross-event dlp")
 				if scanner.CardRunAction(result.Findings(), cfg.Action) == config.ActionWarn {
 					onFinding(findingErr)
+					// Warn-only evidence is reported once, just like a warn
+					// action on an enforcing match: discard the reported tail.
 					resetFieldTail = true
 					break
 				}
@@ -892,20 +894,24 @@ func sseDLPFindingError(matches []scanner.TextDLPMatch, phase string) error {
 
 // keepUnsuppressedDLP removes suppressed DLP matches and recomputes Clean.
 func keepUnsuppressedDLP(res scanner.TextDLPResult, target string, suppress []config.SuppressEntry) (scanner.TextDLPResult, []scanner.TextDLPMatch) {
-	if len(res.Matches) == 0 || len(suppress) == 0 {
+	if len(res.Findings()) == 0 || len(suppress) == 0 {
 		return res, nil
 	}
-	var kept []scanner.TextDLPMatch
 	var dropped []scanner.TextDLPMatch
-	for _, m := range res.Matches {
-		if m.IsInspectionLimit() || config.IsCoreDLPPatternName(m.PatternName) || !config.IsSuppressed(m.PatternName, target, suppress) {
-			kept = append(kept, m)
-		} else {
-			dropped = append(dropped, m)
+	filter := func(matches []scanner.TextDLPMatch) []scanner.TextDLPMatch {
+		var kept []scanner.TextDLPMatch
+		for _, m := range matches {
+			if m.IsInspectionLimit() || config.IsCoreDLPPatternName(m.PatternName) || !config.IsSuppressed(m.PatternName, target, suppress) {
+				kept = append(kept, m)
+			} else {
+				dropped = append(dropped, m)
+			}
 		}
+		return kept
 	}
-	res.Matches = kept
-	res.Clean = !res.Incomplete && !scanner.HasEnforcingMatch(kept)
+	res.Matches = filter(res.Matches)
+	res.InformationalMatches = filter(res.InformationalMatches)
+	res.Clean = !res.Incomplete && !scanner.HasEnforcingMatch(res.Matches)
 	return res, dropped
 }
 

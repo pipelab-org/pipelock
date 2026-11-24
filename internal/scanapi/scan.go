@@ -571,7 +571,7 @@ func dlpFindings(result scanner.TextDLPResult, opts *RequestOptions) []Finding {
 			Message:  "Secret-like token detected (" + m.PatternName + ")",
 		}
 		if m.IsInformational() {
-			f.Message = "Informational JSON card run detected (action=warn)"
+			f.Message = "Informational DLP match detected (" + m.PatternName + ", action=warn)"
 		}
 		if opts != nil && opts.IncludeEvidence {
 			encoding := m.Encoded

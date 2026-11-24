@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/carddlp"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/identitykey"
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
@@ -1050,6 +1051,10 @@ func scanFragmentView(ctx context.Context, sc *Scanner, fragments []fragment, vi
 	}
 	sort.Strings(patternNames)
 	for _, patternName := range patternNames {
+		if match, found := crossFragmentCardCandidate(sc, text, patternName, ranges, nil); found {
+			matches = append(matches, match)
+			continue
+		}
 		masked := []byte(text)
 		for _, occurrence := range complete[patternName] {
 			_ = maskFragmentOccurrence(masked, occurrence.start, occurrence.end)
@@ -1194,6 +1199,10 @@ func imageSplicedFragmentMatches(ctx context.Context, sc *Scanner, excised, deco
 			continue
 		}
 		reported[name] = struct{}{}
+		if match, found := crossFragmentCardCandidate(sc, excised, name, ranges, toOriginal); found {
+			matches = append(matches, match)
+			continue
+		}
 		masked := []byte(window)
 		for attempt := 0; ; attempt++ {
 			// Each single-request copy costs a full rescan. Bound the work and
@@ -1727,4 +1736,32 @@ func (fb *FragmentBuffer) scanBatchWithCleanMemo(ctx context.Context, sc *Scanne
 		matches = append(matches, scanOneFragmentContinuityMemo(ctx, sc, group, &fb.cleanMemo, stream)...)
 	}
 	return matches
+}
+
+// Enumerate raw card spans before masking whole occurrences. A shorter card
+// and a longer cross-fragment card may share every byte, including their start.
+// Encoded findings still use the existing rescan path when no raw span crosses.
+func crossFragmentCardCandidate(sc *Scanner, text, name string, ranges []fragmentRange, toOriginal func(int, bool) int) (DLPMatch, bool) {
+	for _, pattern := range sc.dlpPatterns {
+		if pattern.name != name || !pattern.cardPrefixRetry {
+			continue
+		}
+		var match DLPMatch
+		found := carddlp.Visit(text, false, func(c carddlp.Candidate) bool {
+			if c.PublicExample || !pattern.accepts(text, c.Start, c.End) {
+				return false
+			}
+			start, end := c.Start, c.End
+			if toOriginal != nil {
+				start, end = toOriginal(start, false), toOriginal(end, true)
+			}
+			if spanIsWithinOneFragment(ranges, start, end) {
+				return false
+			}
+			match = DLPMatch{PatternName: name, Contributors: contributorsForSpan(ranges, start, end)}
+			return true
+		})
+		return match, found
+	}
+	return DLPMatch{}, false
 }

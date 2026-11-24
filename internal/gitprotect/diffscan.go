@@ -505,14 +505,15 @@ func scanAddedLines(addedLines map[string][]addedLine, patterns []CompiledDLPPat
 							}
 							return false
 						})
-						hits = append(hits, cp)
-						continue
 					}
 					// Spans are found on the original line, so redaction
 					// already applied for another pattern cannot hide part
 					// of this match. Every match is redacted, accepted by
 					// the validator or not.
 					for _, loc := range cp.Re.FindAllStringIndex(al.content, -1) {
+						if cp.cardPrefixRetry && carddlp.IsPublicTestPAN(al.content[loc[0]:loc[1]]) {
+							continue
+						}
 						spans = append(spans, redact.Match{Start: loc[0], End: loc[1]})
 					}
 					matched = true

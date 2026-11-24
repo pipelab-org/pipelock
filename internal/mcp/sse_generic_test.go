@@ -2248,3 +2248,19 @@ func TestScanGenericSSEStream_JoinedPayloadRescanWithSuppression(t *testing.T) {
 		t.Errorf("event should pass through after suppression, got %q", out.String())
 	}
 }
+
+func TestGenericSSEFieldTailWarnCallback(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.DLP.ScanEnv = false
+	cfg.DLP.Patterns = []config.DLPPattern{{Name: "Custom token", Regex: `TOKEN[0-9]{8}`, Severity: config.SeverityHigh, Action: config.ActionWarn}}
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	body := "data: {\"part\":\"TOKEN1234\"}\n\ndata: {\"part\":\"5678\"}\n\ndata: {\"after\":\"safe\"}\n\n"
+	var out bytes.Buffer
+	var findings []error
+	err := ScanGenericSSEStreamWithOptions(t.Context(), strings.NewReader(body), &out, nil, sc, enabledSSECfg(), GenericSSEScanOptions{OnFinding: func(e error) { findings = append(findings, e) }})
+	if err != nil || len(findings) != 1 || out.String() != body {
+		t.Fatalf("field-tail warning err=%v findings=%v out=%q", err, findings, out.String())
+	}
+}
