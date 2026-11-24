@@ -1486,3 +1486,38 @@ func TestMCPV3HeldBridgePOSTOwnsResponse(t *testing.T) {
 		t.Fatalf("child reply intents = %d, want 1", replyIntents)
 	}
 }
+
+func TestMCPV3POSTScopeDoesNotClaimReusedID(t *testing.T) {
+	id := json.RawMessage("1")
+	opts := MCPProxyOpts{v3Session: &mcpV3Session{pending: make(map[string]*mcpV3Exchange)}}
+	tracker := NewRequestTracker()
+	request := receipt.EmitOpts{RequestID: canonicalID(id)}
+	original := &mcpV3Exchange{request: request}
+	if err := opts.bindV3Send(original); err != nil {
+		t.Fatal(err)
+	}
+	oldRegistration := tracker.trackOutcome(id, TrackedRequestOutcome{})
+	stale := opts.withV3POST(original, oldRegistration)
+	opts.unbindV3Send(original)
+	tracker.removeOwnedOutcome(id, oldRegistration)
+	replacement := &mcpV3Exchange{request: request}
+	if err := opts.bindV3Send(replacement); err != nil {
+		t.Fatal(err)
+	}
+	currentRegistration := tracker.trackOutcome(id, TrackedRequestOutcome{Method: methodToolsCall})
+
+	if _, ok := stale.consumeMCPResponse(tracker, id); ok || stale.takeV3Send(id) != nil {
+		t.Fatal("stale POST took a replacement registration or exchange")
+	}
+	changedRegistration := opts.withV3POST(replacement, oldRegistration)
+	if _, ok := changedRegistration.consumeMCPResponse(tracker, id); ok {
+		t.Fatal("response claimed an exchange using a different registration")
+	}
+	current := opts.withV3POST(replacement, currentRegistration)
+	if got, ok := current.consumeMCPResponse(tracker, id); !ok || got.Method != methodToolsCall {
+		t.Fatalf("current POST lost its tracked request: %+v, %t", got, ok)
+	}
+	if got := current.takeV3Send(id); got != replacement {
+		t.Fatalf("current POST lost its exchange: %p", got)
+	}
+}

@@ -399,7 +399,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		// Parse the inbound frame once per message; every gate below reads
 		// ID / Method / tool fields from this frame instead of re-parsing.
 		frame := ParseMCPFrame(line)
-		if opts.v3POST != nil && isResponse(line) && !opts.v3POST.ownsID(attributableMCPResponseID(line)) {
+		if opts.v3POST != nil && (frame.KeyValidationErr != nil || isResponse(line)) && !opts.v3POST.ownsID(postResponseDiagnosticID(frame)) {
 			dropMCPDenial(opts, mcpCorrelationResponseDenialAudit(), "response")
 			_, _ = fmt.Fprintln(logW, "pipelock: dropped response outside its upstream POST")
 			continue
@@ -1506,6 +1506,15 @@ func rejectResponseKeys(frame MCPFrame, lineNum int, sc *scanner.Scanner, writer
 		return true, resp, fmt.Errorf("writing preflight JSON block: %w", err)
 	}
 	return true, resp, nil
+}
+
+// A recoverable ID can address a key-validation diagnostic without
+// correlating the rejected envelope to a request or consuming its send.
+func postResponseDiagnosticID(frame MCPFrame) json.RawMessage {
+	if frame.KeyValidationErr != nil {
+		return recoverTopLevelJSONRPCID(frame.Raw)
+	}
+	return frame.ID
 }
 
 // attributableMCPResponseID accepts only unambiguous reply IDs. Neither
