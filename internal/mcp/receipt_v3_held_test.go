@@ -1079,3 +1079,59 @@ func TestMCPV3HeldClosureDuringAdmission(t *testing.T) {
 		})
 	}
 }
+
+func TestMCPV3HeldSessionSettleDoesNotMisreportReservedExchange(t *testing.T) {
+	for _, duringAdmit := range []bool{false, true} {
+		t.Run(fmt.Sprintf("during_admit=%t", duringAdmit), func(t *testing.T) {
+			writer, writerOpts := openMCPV3RegressionWriter(t, deferred.SurfaceMCPStdio)
+			opts := (MCPProxyOpts{Transport: deferred.SurfaceMCPStdio}).WithV3ReceiptWriter(writer).withV3Session()
+			manager := deferred.NewManager(deferred.Config{Enabled: true, Timeout: testwait.Deadline(time.Minute)})
+			requestID := json.RawMessage("1")
+
+			held := v3ManagerAction(opts, "reserved-teardown", func(res deferred.Resolution, release deferred.Release) {
+				if res.FinalDecision != config.ActionAllow {
+					t.Errorf("unexpected resolution %+v", res)
+					return
+				}
+				if duringAdmit {
+					var wg sync.WaitGroup
+					wg.Add(1)
+					go func() {
+						defer wg.Done()
+						testwait.For(t, 5*time.Second, func() bool {
+							opts.v3Session.mu.Lock()
+							defer opts.v3Session.mu.Unlock()
+							return opts.v3Session.pending[canonicalID(requestID)] != nil
+						}, "reserved exchange bound before settle")
+						opts.settleV3Session(t.Context(), io.Discard)
+					}()
+					exchange, err := opts.admitV3HeldSend(t.Context(), heldV3Evidence(res, requestID, opts), release)
+					wg.Wait()
+					if err == nil {
+						opts.refuseV3HeldIntent(t.Context(), exchange, release)
+					}
+					return
+				}
+				exchange, err := opts.admitV3HeldSend(t.Context(), heldV3Evidence(res, requestID, opts), release)
+				if err != nil {
+					t.Errorf("admitV3HeldSend: %v", err)
+					return
+				}
+				// Session teardown runs while the held send is still reserved (pre-commit).
+				// It must not settle the unsent intent as attempt_unknown.
+				opts.settleV3Session(t.Context(), io.Discard)
+				opts.refuseV3HeldIntent(t.Context(), exchange, release)
+			})
+			if err := manager.Hold(held); err != nil {
+				t.Fatal(err)
+			}
+			applied, err := manager.ResolveApprovalResultContext(t.Context(), held.DeferID, config.ActionAllow, deferred.SourceOperator)
+			if err != nil || applied != config.ActionBlock {
+				t.Fatalf("resolve = %q, %v; want block, nil", applied, err)
+			}
+			want := []heldEvidencePoint{holdPoint(held.ActionID, ""), resolutionPoint(held.ActionID, config.ActionAllow, false)}
+			want = append(want, heldAttempt(held.ActionID, "not_released")...)
+			assertHeldEvidence(t, verifiedMCPV3RegressionActions(t, writer, writerOpts), want)
+		})
+	}
+}

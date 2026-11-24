@@ -246,7 +246,24 @@ func (o MCPProxyOpts) admitV3HeldSend(ctx context.Context, evidence receipt.Emit
 		release.Refuse("receipt_admission_failed", settle)
 		return nil, err
 	}
-	exchange.token = token
+	if s := o.v3Session; s != nil && evidence.RequestID != "" {
+		s.mu.Lock()
+		exchange.token = token
+		closed := s.closed
+		s.mu.Unlock()
+		if closed {
+			release.Refuse("request_cancelled", func() error {
+				refuseErr := token.Refuse(ctx)
+				if errors.Is(refuseErr, v3.ErrEffectNotReleased) {
+					return nil
+				}
+				return refuseErr
+			})
+			return nil, context.Canceled
+		}
+	} else {
+		exchange.token = token
+	}
 	return exchange, nil
 }
 
@@ -369,11 +386,16 @@ func (o MCPProxyOpts) settleV3Session(ctx context.Context, log io.Writer) {
 	}
 	s := o.v3Session
 	s.mu.Lock()
-	pending := s.pending
+	var committed []*mcpV3Exchange
+	for _, x := range s.pending {
+		if !x.reserved {
+			committed = append(committed, x)
+		}
+	}
 	s.pending = nil
 	s.closed = true
 	s.mu.Unlock()
-	for _, x := range pending {
+	for _, x := range committed {
 		logMCPV3Error(log, x.token.SettleOnExit(ctx))
 	}
 }
