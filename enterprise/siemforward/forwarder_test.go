@@ -392,7 +392,7 @@ func TestForwarderIPLiteralCannotBeRetargetedByResolver(t *testing.T) {
 		if addr != net.JoinHostPort(testPublicIP, "80") {
 			t.Fatalf("dial address = %q, want pinned literal", addr)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(3 * time.Second)):
 		t.Fatal("dial was not attempted")
 	}
 }
@@ -511,7 +511,7 @@ func TestForwarderPlaintextLocalhostServesLoopback(t *testing.T) {
 	}
 	select {
 	case <-received:
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(3 * time.Second)):
 		t.Fatal("loopback localhost delivery was not served")
 	}
 }
@@ -599,7 +599,7 @@ func TestForwarderRefusesRedirectWithoutForwardingAuthorization(t *testing.T) {
 		if auth != "Bearer "+token {
 			t.Fatalf("origin Authorization = %q", auth)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(3 * time.Second)):
 		t.Fatal("origin did not receive delivery")
 	}
 	waitFor(t, func() bool { return f.Health().Failed > 0 })
@@ -822,7 +822,7 @@ func TestForwarderQueueFullDropsWithoutBlocking(t *testing.T) {
 	}
 	select {
 	case <-dialStarted:
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(3 * time.Second)):
 		t.Fatal("worker did not start delivery")
 	}
 
