@@ -13,6 +13,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/luckyPipewrench/pipelock/internal/jsonnumber"
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
 	"gopkg.in/yaml.v3"
 )
@@ -110,7 +111,7 @@ func (p DLPPattern) ValidateKeywords() error {
 
 func (p DLPPattern) canonicalBuiltInDetector() bool {
 	for _, builtIn := range defaultDLPPatternSet {
-		if p.Regex == builtIn.Regex && p.Validator == builtIn.Validator {
+		if p.Validator == builtIn.Validator && (p.Regex == builtIn.Regex || (builtIn.BuiltInCreditCard && jsonnumber.IsShippedCardPattern(p.Regex))) {
 			return true
 		}
 	}
