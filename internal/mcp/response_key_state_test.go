@@ -26,6 +26,8 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 )
 
+const duplicateResultReply = `{"jsonrpc":"2.0","id":1,"result":{},"result":{}}`
+
 func responseStateReader(t *testing.T, kind, raw string) transport.MessageReader {
 	t.Helper()
 	switch kind {
@@ -52,7 +54,7 @@ func TestResponseKeyRejectionPreservesOutcomeReceipts(t *testing.T) {
 			name, raw   string
 			wantOutcome bool
 		}{
-			{"duplicate", `{"jsonrpc":"2.0","id":1,"result":{},"result":{}}`, true},
+			{"duplicate", duplicateResultReply, true},
 			{"alias", `{"jsonrpc":"2.0","id":1,"Result":{}}`, true},
 			{"nested-alias", `{"jsonrpc":"2.0","id":1,"result":{"Content":[]}}`, true},
 			{"duplicate-id", `{"jsonrpc":"2.0","id":1,"id":2,"result":{}}`, false},
@@ -111,6 +113,60 @@ func TestResponseKeyRejectionPreservesOutcomeReceipts(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestRejectedResponseOutcomeReadiness(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		held, committed bool
+	}{
+		{name: "uncommitted", held: true},
+		{name: "committed", held: true, committed: true},
+		{name: "ordinary"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			id := json.RawMessage("1")
+			tracker := NewRequestTracker()
+			tracked := TrackedRequestOutcome{
+				Receipt: receipt.EmitOpts{ActionID: receipt.NewActionID()},
+				handle:  &mcpOutcomeHandle{},
+				Method:  methodToolsCall,
+			}
+			if tc.held {
+				tracked.readyToCorrelate = &atomic.Bool{}
+				tracked.readyToCorrelate.Store(tc.committed)
+			}
+			registration := tracker.trackOutcome(id, tracked)
+			if registration == nil {
+				t.Fatal("request was not registered")
+			}
+			var diagnostics []string
+			opts := buildTestOpts(testInputScanner(t))
+			opts.WarnContext = t.Context()
+			opts.bufferedResponseOutcome = func(status, reason string, _ int64) {
+				diagnostics = append(diagnostics, status+"/"+reason)
+			}
+			reader := responseStateReader(t, "stdio", duplicateResultReply)
+			if _, err := ForwardScanned(reader, transport.NewStdioWriter(io.Discard), io.Discard, tracker, opts); err != nil {
+				t.Fatal(err)
+			}
+			if tc.held && !tc.committed {
+				if len(diagnostics) != 0 {
+					t.Errorf("unsent request recorded a diagnostic: %v", diagnostics)
+				}
+				if got, ok := tracker.takeOwnedOutcome(id, registration); !ok || got.handle != tracked.handle {
+					t.Error("unsent request lost its owned registration")
+				}
+				return
+			}
+			if len(diagnostics) != 1 || diagnostics[0] != "error/response_key_validation" {
+				t.Fatalf("diagnostics = %v, want response key validation error", diagnostics)
+			}
+			if _, ok := tracker.takeOwnedOutcome(id, registration); ok {
+				t.Error("terminal diagnostic left the registration pending")
+			}
+		})
 	}
 }
 

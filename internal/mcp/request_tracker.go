@@ -245,7 +245,8 @@ func (t *RequestTracker) claimRejectedOutcome(id json.RawMessage, expected *requ
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	request, ok := t.pending[key]
-	if !ok || expected != nil && request.registration != expected || request.rejectionOutcomeClaimed || request.outcome.Receipt.ActionID == "" {
+	if !ok || request.outcome.readyToCorrelate != nil && !request.outcome.readyToCorrelate.Load() ||
+		expected != nil && request.registration != expected || request.rejectionOutcomeClaimed || request.outcome.Receipt.ActionID == "" {
 		return TrackedRequestOutcome{}, false
 	}
 	if request.outcome.handle != nil {
