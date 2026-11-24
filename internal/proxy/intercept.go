@@ -2778,7 +2778,13 @@ func newInterceptHandler(
 				return
 			}
 
-			flusher, _ := w.(http.Flusher)
+			// Under v3 the delivery writer flushes and records the result. The
+			// timing wrapper advertises no flusher, so otherwise use the
+			// server's own writer.
+			flusher, ok := w.(http.Flusher)
+			if !ok {
+				flusher, _ = timing.ResponseWriter.(http.Flusher)
+			}
 			streamErr := DispatchSSEScan(r.Context(), resp.Body, httpstream.Writer{Writer: w}, flusher, ic.Scanner, sseOpts)
 			responseFindingKinds = session.MergeFindingKinds(responseFindingKinds, sseTaintFindingKinds(streamErr))
 			observeResponseFindings(responseFindingKinds)
@@ -3755,12 +3761,6 @@ func (t *interceptTimingWriter) Write(b []byte) (int, error) {
 }
 
 // Unwrap lets http.ResponseController reach the underlying writer.
-func (t *interceptTimingWriter) Flush() { _ = t.FlushError() }
-
-func (t *interceptTimingWriter) FlushError() error {
-	return http.NewResponseController(t.ResponseWriter).Flush()
-}
-
 func (t *interceptTimingWriter) Unwrap() http.ResponseWriter {
 	return t.ResponseWriter
 }
