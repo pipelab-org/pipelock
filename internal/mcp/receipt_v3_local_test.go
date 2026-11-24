@@ -1983,6 +1983,21 @@ func TestMCPV3EarlyResponseDropRecordsRefusal(t *testing.T) {
 	if err != nil || bytes.Contains(body, []byte(event)) {
 		t.Fatalf("dropped notification reached the client: status=%d body=%q error=%v", resp.StatusCode, body, err)
 	}
+	// The client can reach end of body before the listener handler's deferred
+	// exchange finish appends the GET send outcome. Closing the writer first
+	// would strand that intent, so wait for a complete history on disk.
+	testwait.For(t, 5*time.Second, func() bool {
+		actions, err := decodeMCPMatrixReceiptFiles(client.dir, true)
+		if err != nil || checkMCPReceiptHistory(actions) != nil {
+			return false
+		}
+		for _, action := range actions {
+			if action.EffectBoundary == mcpDownstreamDeliveryBoundary && action.Method == secondSSEMethod {
+				return true
+			}
+		}
+		return false
+	}, "complete early drop receipt history")
 	var downstream []v3.Action
 	for _, action := range localMCPReceiptActions(t, writer, client.dir) {
 		if action.EffectBoundary == mcpDownstreamDeliveryBoundary && action.Method == secondSSEMethod {
