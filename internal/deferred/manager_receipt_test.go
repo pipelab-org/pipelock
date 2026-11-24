@@ -657,3 +657,49 @@ func TestHoldFailureSourceCancellation(t *testing.T) {
 		}
 	}
 }
+
+func TestReceiptCascadeSweepKeepsReplacementHold(t *testing.T) {
+	m := NewManager(Config{Enabled: true, Timeout: time.Minute})
+	parent := receiptAdmissionFixture("parent")
+	first := receiptAdmissionFixture("first")
+	second := receiptAdmissionFixture("second")
+	first.Authority.SessionID, second.Authority.SessionID = "left", "right"
+	var replaced string
+	replaceOther := func(id string) func(Resolution, Release) {
+		return func(Resolution, Release) {
+			if replaced != "" {
+				return
+			}
+			replaced = id
+			if err := m.Resolve(id, config.ActionBlock, SourceOperator); err != nil {
+				t.Fatal(err)
+			}
+			replacement := receiptAdmissionFixture(id)
+			replacement.Authority.SessionID = "replacement"
+			if err := m.Hold(replacement); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	first.ResolveReceipt, second.ResolveReceipt = replaceOther(second.DeferID), replaceOther(first.DeferID)
+	for _, held := range []HeldAction{parent, first, second} {
+		if err := m.Hold(held); err != nil {
+			t.Fatal(err)
+		}
+	}
+	defer m.ResolveAll(config.ActionBlock, SourceCancel)
+	// Install two sibling descendants so the first callback can replace the
+	// other hold regardless of map traversal order.
+	m.mu.Lock()
+	root := m.lineage[parent.DeferID]
+	m.lineage[first.DeferID].parent, m.lineage[second.DeferID].parent = root, root
+	root.children = 2
+	m.mu.Unlock()
+	if err := m.Resolve(parent.DeferID, config.ActionBlock, SourceOperator); err != nil {
+		t.Fatal(err)
+	}
+	held, ok := m.Held(replaced)
+	if !ok || held.Authority.SessionID != "replacement" {
+		t.Fatalf("stale cascade consumed replacement hold %q", replaced)
+	}
+}
