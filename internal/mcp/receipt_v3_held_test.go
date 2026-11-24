@@ -532,13 +532,15 @@ func TestMCPV3HeldSiblingsAndSweeps(t *testing.T) {
 			const parent, sibling, child = "z-parent", "sibling", "a-child"
 			sends := make(chan string, 2)
 			parentConfirmed := make(chan struct{})
+			childResolved := make(chan struct{})
 			resolve := func(res deferred.Resolution, release deferred.Release) {
 				if res.FinalDecision != config.ActionAllow {
 					return
 				}
 				id := res.DeferID
 				if id == child {
-					<-parentConfirmed
+					close(childResolved)
+					awaitHeldTest(t, parentConfirmed)
 				}
 				evidence := heldV3Evidence(res, json.RawMessage(fmt.Sprintf("%q", id)), opts)
 				exchange, err := opts.admitV3HeldSend(t.Context(), evidence, release)
@@ -548,6 +550,11 @@ func TestMCPV3HeldSiblingsAndSweeps(t *testing.T) {
 				}
 				if err := opts.commitV3HeldSend(exchange, release, nil); err != nil {
 					t.Errorf("commitV3HeldSend: %v", err)
+				}
+				if id == parent {
+					// The child can record its resolution as soon as the parent
+					// commits, even while the parent has no send outcome.
+					awaitHeldTest(t, childResolved)
 				}
 				opts.confirmV3HeldSend(t.Context(), io.Discard, exchange, true)
 				sends <- id
@@ -597,14 +604,26 @@ func TestMCPV3HeldSiblingsAndSweeps(t *testing.T) {
 			if got := []string{awaitHeldTest(t, sends), awaitHeldTest(t, sends)}; !slices.Equal(got, []string{parent, child}) {
 				t.Fatalf("peer observed %v", got)
 			}
-			want := []heldEvidencePoint{
-				holdPoint(parent, ""), holdPoint(sibling, parent), resolutionPoint(sibling, config.ActionBlock, false),
-				holdPoint(child, parent), resolutionPoint(parent, config.ActionAllow, false),
+			var parentAndSibling, childActions []v3.Action
+			var parentIntent bool
+			for _, action := range verifiedMCPV3RegressionActions(t, writer, writerOpts) {
+				if action.ActionID == child {
+					if action.Phase == "resolution" && !parentIntent {
+						t.Fatal("child resolved before the parent send intent")
+					}
+					childActions = append(childActions, action)
+				} else {
+					parentIntent = parentIntent || action.ActionID == parent && action.Phase == "intent"
+					parentAndSibling = append(parentAndSibling, action)
+				}
 			}
-			want = append(want, heldAttempt(parent, "completed")...)
-			want = append(want, resolutionPoint(child, config.ActionAllow, false))
-			want = append(want, heldAttempt(child, "completed")...)
-			assertHeldEvidence(t, verifiedMCPV3RegressionActions(t, writer, writerOpts), want)
+			wantParentAndSibling := []heldEvidencePoint{
+				holdPoint(parent, ""), holdPoint(sibling, parent), resolutionPoint(sibling, config.ActionBlock, false),
+				resolutionPoint(parent, config.ActionAllow, false),
+			}
+			wantChild := []heldEvidencePoint{holdPoint(child, parent), resolutionPoint(child, config.ActionAllow, false)}
+			assertHeldEvidence(t, parentAndSibling, append(wantParentAndSibling, heldAttempt(parent, "completed")...))
+			assertHeldEvidence(t, childActions, append(wantChild, heldAttempt(child, "completed")...))
 		})
 	}
 }
