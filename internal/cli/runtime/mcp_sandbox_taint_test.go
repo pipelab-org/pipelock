@@ -54,7 +54,7 @@ func TestMCPSandboxBridgeTaintRequiresRecorder(t *testing.T) {
 			cfg.SessionProfiling.Enabled = false
 			bridge, err := startMCPSandboxBridge(mcpSandboxBridgeStartOptions{Context: ctx, Config: cfg, Rec: tc.rec, AuditLogger: audit.NewNop()})
 			if bridge != nil {
-				bridge.Close()
+				_ = bridge.Close()
 			}
 			if err == nil || !strings.Contains(err.Error(), "taint") || !strings.Contains(err.Error(), "recorder") {
 				t.Fatalf("taint-enabled bridge without recorder: error=%v, want explicit startup refusal", err)
@@ -144,7 +144,7 @@ func TestMCPSandboxBridgeTaintDisabledNeedsNoRecorder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	bridge.Close()
+	_ = bridge.Close()
 }
 
 func TestMCPSandboxBridgeTaintInvalidCARefusesStartup(t *testing.T) {
@@ -156,7 +156,7 @@ func TestMCPSandboxBridgeTaintInvalidCARefusesStartup(t *testing.T) {
 	defer cancel()
 	bridge, err := startMCPSandboxBridge(mcpSandboxBridgeStartOptions{Context: ctx, Config: cfg, Rec: &proxy.SessionState{}, AuditLogger: audit.NewNop()})
 	if bridge != nil {
-		bridge.Close()
+		_ = bridge.Close()
 	}
 	if err == nil || !strings.Contains(err.Error(), "TLS interception") {
 		t.Fatalf("invalid CA error=%v", err)
@@ -188,7 +188,7 @@ func TestMCPSandboxBridgeTaintStartupFailures(t *testing.T) {
 			tc.configure(cfg, &opts)
 			bridge, err := startMCPSandboxBridge(opts)
 			if bridge != nil {
-				bridge.Close()
+				_ = bridge.Close()
 			}
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("startup error=%v want=%s", err, tc.want)
@@ -222,7 +222,7 @@ func sandboxTaintBridge(t *testing.T, cfg *config.Config, rec session.Recorder) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(bridge.Close)
+	t.Cleanup(func() { _ = bridge.Close() })
 	pool := x509.NewCertPool()
 	pool.AddCert(ca)
 	rt := &http.Transport{
@@ -420,7 +420,7 @@ func TestMCPSandboxBridgeTaintBoundIdentityPreservesMCPTaskSubject(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(bridge.Close)
+	t.Cleanup(func() { _ = bridge.Close() })
 
 	pool := x509.NewCertPool()
 	pool.AddCert(ca)
@@ -538,7 +538,7 @@ func TestMCPSandboxBridgeCarriesConnectPorts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer bridge.Close()
+	defer func() { _ = bridge.Close() }()
 	cfg.ForwardProxy.ConnectPorts[0] = 22
 	got := bridge.proxy.CurrentConfig().ForwardProxy
 	if !got.ConnectPortAllowed(443) || got.ConnectPortAllowed(22) {

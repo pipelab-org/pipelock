@@ -153,3 +153,33 @@ func TestDetectorInputChangesMinSecretLength(t *testing.T) {
 		})
 	}
 }
+
+func TestReceiptFormatReloadWarningOnlyForExplicitChange(t *testing.T) {
+	for _, tc := range []struct {
+		before, after string
+		want          bool
+	}{
+		{"", ReceiptFormatLegacy, false},
+		{ReceiptFormatLegacy, "", false},
+		{"", ReceiptFormatV3, false},
+		{ReceiptFormatV3, "", false},
+		{ReceiptFormatV3, ReceiptFormatV3, false},
+		{ReceiptFormatLegacy, ReceiptFormatV3, true},
+		{ReceiptFormatV3, ReceiptFormatLegacy, true},
+	} {
+		old, updated := Defaults(), Defaults()
+		old.FlightRecorder.ReceiptFormat, updated.FlightRecorder.ReceiptFormat = tc.before, tc.after
+		found := false
+		for _, warning := range ValidateReload(old, updated) {
+			if warning.Field == "flight_recorder.receipt_format" {
+				found = true
+				if warning.Disposition != ReloadWarningDispositionAdvisory {
+					t.Fatalf("unexpected warning disposition: %+v", warning)
+				}
+			}
+		}
+		if found != tc.want {
+			t.Errorf("receipt format %q to %q: warning = %t, want %t", tc.before, tc.after, found, tc.want)
+		}
+	}
+}

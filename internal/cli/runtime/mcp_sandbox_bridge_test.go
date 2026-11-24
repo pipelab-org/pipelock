@@ -22,6 +22,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/httpstream"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
@@ -91,7 +92,7 @@ func TestSetupMCPSandboxBridge_LinuxStartsBridge(t *testing.T) {
 	if got := stderr.String(); !strings.Contains(got, "MCP sandbox egress bridge enabled") {
 		t.Fatalf("stderr = %q, want bridge enabled message", got)
 	}
-	closeBridge()
+	_ = closeBridge()
 }
 
 func TestSetupMCPSandboxBridge_StartError(t *testing.T) {
@@ -162,34 +163,17 @@ func TestSetupMCPSandboxBridge_NonLinuxWarns(t *testing.T) {
 	if !strings.Contains(got, "Linux-only") || !strings.Contains(got, "HTTPS_PROXY") {
 		t.Fatalf("stderr = %q, want actionable non-Linux warning", got)
 	}
-	closeBridge()
+	_ = closeBridge()
 }
 
-func TestMCPSandboxBridgeHelpers_NilAndClosed(t *testing.T) {
+func TestMCPSandboxBridgeHelpers_Nil(t *testing.T) {
 	t.Parallel()
 
 	var nilBridge *mcpSandboxBridge
 	if nilBridge.SocketPath() != "" {
 		t.Fatal("nil bridge SocketPath should be empty")
 	}
-	nilBridge.Close()
-
-	trackedConn, peerConn := net.Pipe()
-	t.Cleanup(func() { _ = peerConn.Close() })
-
-	bridge := &mcpSandboxBridge{
-		conns: map[net.Conn]struct{}{
-			trackedConn: {},
-		},
-	}
-	conns := bridge.markClosed()
-	if len(conns) != 1 || conns[0] != trackedConn {
-		t.Fatalf("markClosed tracked %d conn(s), want original tracked conn", len(conns))
-	}
-	if bridge.trackConn(peerConn) {
-		t.Fatal("trackConn succeeded after bridge was marked closed")
-	}
-	bridge.Close()
+	_ = nilBridge.Close()
 }
 
 func TestStartMCPSandboxBridge_ForcesForwardProxyIntoScanner(t *testing.T) {
@@ -217,7 +201,7 @@ func TestStartMCPSandboxBridge_ForcesForwardProxyIntoScanner(t *testing.T) {
 	if err != nil {
 		t.Fatalf("startMCPSandboxBridge: %v", err)
 	}
-	t.Cleanup(bridge.Close)
+	t.Cleanup(func() { _ = bridge.Close() })
 
 	conn, err := (&net.Dialer{}).DialContext(ctx, "unix", bridge.SocketPath())
 	if err != nil {
@@ -288,7 +272,7 @@ func TestStartMCPSandboxBridge_CONNECTThroughScanner(t *testing.T) {
 	if err != nil {
 		t.Fatalf("startMCPSandboxBridge: %v", err)
 	}
-	t.Cleanup(bridge.Close)
+	t.Cleanup(func() { _ = bridge.Close() })
 
 	conn, err := (&net.Dialer{}).DialContext(ctx, "unix", bridge.SocketPath())
 	if err != nil {
@@ -363,7 +347,7 @@ func TestStartMCPSandboxBridge_ContextCancelClosesTunnel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("startMCPSandboxBridge: %v", err)
 	}
-	t.Cleanup(bridge.Close)
+	t.Cleanup(func() { _ = bridge.Close() })
 
 	conn, err := (&net.Dialer{}).DialContext(ctx, "unix", bridge.SocketPath())
 	if err != nil {
@@ -424,7 +408,7 @@ func TestStartMCPSandboxBridge_KillSwitchBlocks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("startMCPSandboxBridge: %v", err)
 	}
-	t.Cleanup(bridge.Close)
+	t.Cleanup(func() { _ = bridge.Close() })
 
 	conn, err := (&net.Dialer{}).DialContext(ctx, "unix", bridge.SocketPath())
 	if err != nil {
@@ -469,7 +453,7 @@ func TestMCPSandboxBridgeNeverServesMetrics(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				defer bridge.Close()
+				defer func() { _ = bridge.Close() }()
 				for _, route := range []string{"/health", "/metrics", "/stats"} {
 					conn, err := (&net.Dialer{}).DialContext(ctx, "unix", bridge.SocketPath())
 					if err != nil {
@@ -533,7 +517,7 @@ func TestMCPSandboxBridgeMetricsUsesBoundAddress(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer bridge.Close()
+	defer func() { _ = bridge.Close() }()
 	transport := &http.Transport{Proxy: nil, DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "unix", bridge.SocketPath())
 	}}
@@ -553,5 +537,92 @@ func TestMCPSandboxBridgeMetricsUsesBoundAddress(t *testing.T) {
 		if readErr != nil || resp.StatusCode != http.StatusForbidden || !bytes.Contains(data, []byte("ssrf_private_ip")) {
 			t.Fatalf("agent metrics dial %s = %d, %v, %s", route, resp.StatusCode, readErr, data)
 		}
+	}
+}
+
+func TestMCPSandboxBridgeCloseWaitsForHijackedHandler(t *testing.T) {
+	t.Run("drained", func(t *testing.T) { checkMCPSandboxBridgeClose(t, false) })
+	t.Run("timed out", func(t *testing.T) { checkMCPSandboxBridgeClose(t, true) })
+}
+
+func checkMCPSandboxBridgeClose(t *testing.T, timeout bool) {
+	t.Helper()
+	listener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bridge := &mcpSandboxBridge{listener: listener}
+	release := make(chan struct{})
+	handlerReturned := make(chan struct{})
+	hijacked := make(chan error, 1)
+	bridge.serve(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		defer close(handlerReturned)
+		conn, _, err := http.NewResponseController(w).Hijack()
+		hijacked <- err
+		if err == nil {
+			defer func() { _ = conn.Close() }()
+			<-release
+		}
+	}))
+	defer func() { _ = bridge.Close() }()
+	defer close(release) // Also let the handler exit on a failed assertion.
+
+	client, err := (&net.Dialer{}).DialContext(t.Context(), "tcp", listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = client.Close() }()
+	if err := client.SetDeadline(time.Now().Add(testwait.Deadline(2 * time.Second))); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.WriteString(client, "GET / HTTP/1.1\r\nHost: proxy.example\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-hijacked:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(testwait.Deadline(2 * time.Second)):
+		t.Fatal("handler did not hijack the connection")
+	}
+
+	closed := make(chan error, 1)
+	go func() { closed <- bridge.Close() }()
+	if _, err := client.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
+		t.Fatalf("read after shutdown = %v, want EOF", err)
+	}
+	if timeout {
+		select {
+		case err := <-closed:
+			if !errors.Is(err, httpstream.ErrShutdownIncomplete) || !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("bridge close = %v, want incomplete drain timeout", err)
+			}
+		case <-time.After(testwait.Deadline(serverShutdownTimeout + 2*time.Second)):
+			t.Fatal("bridge did not report the drain timeout")
+		}
+		if err := bridge.Close(); !errors.Is(err, httpstream.ErrShutdownIncomplete) {
+			t.Fatalf("repeat bridge close = %v, want incomplete drain", err)
+		}
+		return
+	}
+	select {
+	case err := <-closed:
+		t.Fatalf("bridge closed while handler was still running: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	release <- struct{}{}
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-handlerReturned:
+		default:
+			t.Fatal("bridge closed before the handler returned")
+		}
+	case <-time.After(testwait.Deadline(2 * time.Second)):
+		t.Fatal("bridge did not close after the handler returned")
 	}
 }

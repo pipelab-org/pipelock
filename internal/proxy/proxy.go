@@ -1700,6 +1700,9 @@ func (p *Proxy) emitReceipt(opts receipt.EmitOpts) error {
 // that was never recorded. The enforced block remains independent of this
 // error.
 func (p *Proxy) emitRequestPolicyReceipt(opts receipt.EmitOpts) error {
+	if p.v3ReceiptsEnabled() {
+		return p.recordEffectRefusal(receiptEffectContext(opts), p.cfgPtr.Load(), opts, boundaryUpstreamSend)
+	}
 	e := p.receiptEmitterPtr.Load()
 	if e == nil && requestPolicyReceiptsConfigured(p.cfgPtr.Load()) {
 		return p.recordReceiptEmitterUnavailable(opts)
@@ -1865,7 +1868,7 @@ func (p *Proxy) emitOutcomeReceipt(cfg *config.Config, opts receipt.EmitOpts, st
 }
 
 func (p *Proxy) emitOutcomeReceiptWithPattern(cfg *config.Config, opts receipt.EmitOpts, pattern string) {
-	if cfg == nil || !cfg.FlightRecorder.RequireReceipts {
+	if !p.legacyReceiptsRequired(cfg) {
 		return
 	}
 	opts = opts.NativeTerminal()
@@ -2143,6 +2146,9 @@ type receiptEmitterStage struct {
 //     while keeping an old receipt emitter would attest the wrong policy
 //     hash for future actions.
 func (p *Proxy) buildReceiptEmitter(cfg *config.Config) (receiptEmitterStage, error) {
+	if p.receiptEffects.enabled {
+		return receiptEmitterStage{}, nil
+	}
 	keyPath := cfg.FlightRecorder.SigningKeyPath
 
 	if keyPath == "" {
@@ -6701,7 +6707,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	if fetchGate.HasContractContext() {
 		fetchAllowReceipt = withContractReceipt(fetchGate, fetchAllowReceipt)
 	}
-	if cfg.FlightRecorder.RequireReceipts {
+	if p.legacyReceiptsRequired(cfg) {
 		if rcptErr := p.emitRequiredReceipt(withReceiptConfig(fetchAllowReceipt, cfg)); rcptErr != nil {
 			blockedErr := newReceiptEmissionBlockedRequest(rcptErr)
 			log.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
@@ -6735,7 +6741,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			verdict = config.ActionWarn
 		}
 		var flushErr error
-		if aborted == nil && (cfg.FlightRecorder.RequireReceipts || selectedReceiptShard.NativeLease != nil) {
+		if aborted == nil && (p.legacyReceiptsRequired(cfg) || selectedReceiptShard.NativeLease != nil) {
 			flushErr = flushResponseBeforeOutcome(w, r, cfg)
 			if flushErr != nil && outcomeReasonClaimsDelivery(outcomeReason, verdict) {
 				delivery.err = flushErr
@@ -7309,7 +7315,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// emitted before egress) above. Emit it here only in the best-effort
 	// path; require_receipts mode has the pre-egress emit as its single
 	// authoritative allow receipt.
-	if !cfg.FlightRecorder.RequireReceipts {
+	if !p.legacyReceiptsRequired(cfg) {
 		emitFetchReceipt(fetchAllowReceipt)
 	}
 	log.LogAllowed(actx, resp.StatusCode, len(body), duration)

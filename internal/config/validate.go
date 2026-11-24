@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"math/big"
 	"mime"
@@ -687,6 +688,15 @@ func (c *Config) ValidateWithWarnings() ([]Warning, error) {
 	}
 	if err := c.validateMCPDataClassLabels(); err != nil {
 		return warnings, err
+	}
+	switch c.FlightRecorder.ReceiptFormat {
+	case "", ReceiptFormatLegacy:
+	case ReceiptFormatV3:
+		if err := c.ValidateReceiptV3(); err != nil {
+			return nil, err
+		}
+	default:
+		return nil, errors.New("flight_recorder.receipt_format must be omitted, legacy, or v3")
 	}
 	if err := c.validateMCPToolPolicy(); err != nil {
 		return warnings, err
@@ -5436,6 +5446,75 @@ func (c *Config) validateSandbox() error {
 	return nil
 }
 
+// ValidateReceiptV3 checks prerequisites for explicit and directory-selected v3.
+func (c *Config) ValidateReceiptV3() error {
+	fr := c.FlightRecorder
+	if c.Defer.Enabled {
+		return errors.New("defer.enabled: receipt_format v3 does not yet support deferred holds; disable defer or use receipt_format: legacy")
+	}
+	if err := validateReceiptV3ToolPolicy("mcp_tool_policy", c.MCPToolPolicy); err != nil {
+		return err
+	}
+	for _, name := range slices.Sorted(maps.Keys(c.Agents)) {
+		if policy := c.Agents[name].MCPToolPolicy; policy != nil {
+			if err := validateReceiptV3ToolPolicy("agents."+name+".mcp_tool_policy", *policy); err != nil {
+				return err
+			}
+		}
+	}
+	switch {
+	case !fr.Enabled || fr.Dir == "" || fr.SigningKeyPath == "":
+		return errors.New("flight_recorder.receipt_format v3 requires flight_recorder.enabled, dir, and signing_key_path")
+	case fr.ReceiptChainCount() > 1:
+		return errors.New("flight_recorder.receipt_format v3 requires at most one flight_recorder.receipt_chains chain")
+	default:
+		return c.validateReceiptV3Evidence()
+	}
+}
+
+func (c *Config) validateReceiptV3Evidence() error {
+	fr := c.FlightRecorder
+	switch {
+	case fr.AnchorConfigured() || c.flightRecorderAnchorHasExplicitSettings():
+		return errors.New("flight_recorder.anchor requires receipt_format: legacy")
+	case fr.EvidenceHealthEnabled() && (fr.EvidenceHealth.Enabled != nil ||
+		c.hasExplicitMappingSettings("flight_recorder", "evidence_health") ||
+		fr.EvidenceSelfAuditIntervalDuration() != DefaultEvidenceHealthSelfAuditInterval ||
+		fr.EvidenceMaxAnchorLagDuration() != DefaultEvidenceHealthMaxAnchorLag):
+		return errors.New("flight_recorder.evidence_health requires receipt_format: legacy")
+	case c.DashboardSnapshot.EnabledWithRecorderDir(fr.Dir) && (c.DashboardSnapshot.Enabled != nil ||
+		c.hasExplicitMappingSettings("dashboard_snapshot") ||
+		c.DashboardSnapshot.Path != "" ||
+		c.DashboardSnapshot.IntervalDuration() != DefaultDashboardSnapshotInterval):
+		return errors.New("dashboard_snapshot requires receipt_format: legacy")
+	default:
+		return nil
+	}
+}
+
+func validateReceiptV3ToolPolicy(path string, policy MCPToolPolicy) error {
+	if err := validateReceiptV3ToolAction(path+".action", policy.Action); err != nil {
+		return err
+	}
+	for i, rule := range policy.Rules {
+		if err := validateReceiptV3ToolAction(fmt.Sprintf("%s.rules[%d].action", path, i), rule.Action); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateReceiptV3ToolAction(path, action string) error {
+	switch action {
+	case ActionRedirect:
+		return fmt.Errorf("%s: receipt_format v3 does not yet support redirect rules; use receipt_format: legacy", path)
+	case ActionDefer:
+		return fmt.Errorf("%s: receipt_format v3 does not yet support deferred holds; use receipt_format: legacy", path)
+	default:
+		return nil
+	}
+}
+
 func (c *Config) validateFlightRecorder(warnings *[]Warning) error {
 	c.FlightRecorder.PostureSignerPublicKey = nil
 	if len(c.FlightRecorder.ReceiptGroupPriorSignerKeys) > 32 {
@@ -5616,6 +5695,10 @@ func (c *Config) validateFlightRecorderAnchor(warnings *[]Warning) error {
 }
 
 func (c *Config) flightRecorderAnchorHasExplicitSettings() bool {
+	return c.hasExplicitMappingSettings("flight_recorder", "anchor")
+}
+
+func (c *Config) hasExplicitMappingSettings(path ...string) bool {
 	if len(c.rawBytes) == 0 {
 		return false
 	}
@@ -5623,10 +5706,11 @@ func (c *Config) flightRecorderAnchorHasExplicitSettings() bool {
 	if err := yaml.Unmarshal(c.rawBytes, &root); err != nil || len(root.Content) == 0 {
 		return false
 	}
-	doc := root.Content[0]
-	flightRecorderNode := mappingValue(doc, "flight_recorder")
-	anchorNode := mappingValue(flightRecorderNode, "anchor")
-	return anchorNode != nil && anchorNode.Kind == yaml.MappingNode && len(anchorNode.Content) > 0
+	node := root.Content[0]
+	for _, field := range path {
+		node = mappingValue(node, field)
+	}
+	return node != nil && node.Kind == yaml.MappingNode && len(node.Content) > 0
 }
 
 func (c *Config) validateDashboardSnapshot() error {

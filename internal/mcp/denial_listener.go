@@ -287,19 +287,20 @@ func (w *mcpListenerDenialWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
-func (w *mcpListenerDenialWriter) Flush() {
+func (w *mcpListenerDenialWriter) Flush() { _ = w.FlushError() }
+
+func (w *mcpListenerDenialWriter) FlushError() error {
 	if !w.wroteHeader {
 		w.WriteHeader(http.StatusOK)
 	}
 	if w.replyOwner == listenerReplyLocal {
-		return
+		return nil
 	}
 	deliver := mcpDeniedDelivery(func([]byte) error { return http.NewResponseController(w.ResponseWriter).Flush() })
 	if d := w.decision(nil); d != nil {
-		_ = finishMCPDenial(d, deliver)
-	} else {
-		_ = deliver(nil)
+		return finishMCPDenial(d, deliver)
 	}
+	return deliver(nil)
 }
 
 func writeMCPHTTPInputResult(opts MCPProxyOpts, br BlockedRequest, w http.ResponseWriter) {

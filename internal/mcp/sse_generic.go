@@ -14,6 +14,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/extract"
+	"github.com/luckyPipewrench/pipelock/internal/httpstream"
 	"github.com/luckyPipewrench/pipelock/internal/jsonnumber"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
@@ -82,6 +83,8 @@ type GenericSSEScanOptions struct {
 	// ConfirmFinding runs before an event with warned findings is forwarded.
 	// A failure terminates the stream before writing that event.
 	ConfirmFinding func(error) error
+	// DeliverFinding wraps delivery of a warned event after ConfirmFinding.
+	DeliverFinding func(finding error, deliver func() (bool, error)) error
 	// OnDroppedDLP receives DLP matches removed by a scoped suppression. It is
 	// observational only and must not alter stream control flow.
 	OnDroppedDLP func(scanner.TextDLPMatch, string)
@@ -548,23 +551,42 @@ func ScanGenericSSEStreamWithOptions(
 			injectionTail.advance([]byte(rollingInjectionText), resetInjectionTail)
 			payloadInjectionTail.advance(event, resetInjectionTail)
 		}
-		if warnedFinding != nil && opts.ConfirmFinding != nil {
-			if err := opts.ConfirmFinding(warnedFinding); err != nil {
+		if err := opts.deliverWarnedEvent(warnedFinding, func() (bool, error) {
+			if err := writeSSEEvent(w, event, reader.LastEventID(), reader.LastEventType(), reader.LastRetry()); err != nil {
+				return false, fmt.Errorf("sse stream write: %w", err)
+			}
+			return flushSSEEvent(flusher, warnedFinding != nil && opts.DeliverFinding != nil)
+		}); err != nil {
+			return err
+		}
+	}
+}
+
+func (o GenericSSEScanOptions) deliverWarnedEvent(finding error, deliver func() (bool, error)) error {
+	if finding != nil {
+		if o.ConfirmFinding != nil {
+			if err := o.ConfirmFinding(finding); err != nil {
 				return fmt.Errorf("sse finding confirmation: %w", err)
 			}
 		}
-		if werr := writeSSEEvent(w, event, reader.LastEventID(), reader.LastEventType(), reader.LastRetry()); werr != nil {
-			// Downstream consumer went away (e.g. the io.Pipe in the
-			// reverse-proxy hijack was closed by the client). Returning
-			// here breaks the loop and lets the goroutine close the
-			// upstream body via its own deferred cleanup, instead of
-			// reading more events into a sink that no longer exists.
-			return fmt.Errorf("sse stream write: %w", werr)
-		}
-		if flusher != nil {
-			flusher.Flush()
+		if o.DeliverFinding != nil {
+			return o.DeliverFinding(finding, deliver)
 		}
 	}
+	_, err := deliver()
+	return err
+}
+
+func flushSSEEvent(flusher http.Flusher, observe bool) (bool, error) {
+	if flusher == nil {
+		return false, nil
+	}
+	if f, ok := flusher.(interface{ FlushError() error }); observe && ok {
+		err := f.FlushError()
+		return err == nil && httpstream.CanObserveFlush(flusher), err
+	}
+	flusher.Flush()
+	return false, nil
 }
 
 // dropSelfMatchingSSEInjectionTail keeps text after findings already reported

@@ -78,6 +78,18 @@ func (o MCPProxyOpts) v3EffectAction(opts receipt.EmitOpts, boundary string) (v3
 	return action, v3.CapturePolicy(digest)
 }
 
+type mcpV3EffectToken = v3.EffectToken
+
+func (o MCPProxyOpts) admitV3CardBatch(ctx context.Context, selected, evidence receipt.EmitOpts, checks []receipt.EmitOpts) (*mcpV3EffectToken, error) {
+	actions := make([]v3.Action, 0, len(checks))
+	for _, check := range checks {
+		action, _ := o.v3EffectAction(withMCPResponseShard(selected, check), mcpDownstreamDeliveryBoundary)
+		actions = append(actions, action)
+	}
+	_, policy := o.v3EffectAction(evidence, mcpDownstreamDeliveryBoundary)
+	return o.receiptEffects.gate.AdmitBatch(ctx, actions, policy)
+}
+
 func (o MCPProxyOpts) admitV3Effect(ctx context.Context, evidence receipt.EmitOpts, boundary string) (*v3.EffectToken, error) {
 	if !o.receiptEffects.enabled {
 		return nil, nil
@@ -233,6 +245,11 @@ type mcpV3WithheldWriter struct{}
 
 func (mcpV3WithheldWriter) WriteMessage([]byte) error { return nil }
 
+func isWithheldV3Reply(writer transport.MessageWriter) bool {
+	_, withheld := writer.(mcpV3WithheldWriter)
+	return withheld
+}
+
 func (o MCPProxyOpts) takeV3Send(id json.RawMessage) *mcpV3Exchange {
 	return o.takeV3SendKey(canonicalID(id))
 }
@@ -344,14 +361,15 @@ func (w *mcpV3LocalWriter) reportDenialFailure(msg []byte, err error) error {
 }
 
 type mcpV3ReplyWriter struct {
-	base         transport.MessageWriter
-	opts         MCPProxyOpts
-	log          io.Writer
-	request      receipt.EmitOpts
-	finished     bool
-	sendDenied   bool
-	onStream     bool
-	takeAdmitted func() (*v3.EffectToken, bool)
+	base                transport.MessageWriter
+	opts                MCPProxyOpts
+	log                 io.Writer
+	request             receipt.EmitOpts
+	finished            bool
+	card                *v3.EffectToken
+	sendDenied          bool
+	streamFlushObserved *bool
+	takeAdmitted        func() (*v3.EffectToken, bool)
 }
 
 var errMCPV3ReplyAdmission = errors.New("MCP reply receipt admission")
@@ -365,10 +383,12 @@ func (w *mcpV3ReplyWriter) WriteMessage(msg []byte) error {
 	evidence := mcpV3ReplyEvidence(w.request)
 	token, err := w.admit(ctx, evidence)
 	if err != nil {
+		logMCPV3Error(w.log, w.card.Refuse(ctx))
 		return fmt.Errorf("%w: %w", errMCPV3ReplyAdmission, err)
 	}
 	if err := ctx.Err(); err != nil {
 		logMCPV3Error(w.log, token.Refuse(ctx))
+		logMCPV3Error(w.log, w.card.Refuse(ctx))
 		return err
 	}
 	if w.sendDenied {
@@ -376,7 +396,9 @@ func (w *mcpV3ReplyWriter) WriteMessage(msg []byte) error {
 	} else {
 		err = writeMCPForwardedMessage(w.base, msg)
 	}
-	logMCPV3Error(w.log, confirmMCPV3Effect(ctx, token, err == nil && (!w.onStream || ctx.Err() == nil)))
+	observed := err == nil && (w.streamFlushObserved == nil || (*w.streamFlushObserved && ctx.Err() == nil))
+	logMCPV3Error(w.log, confirmMCPV3Effect(ctx, token, observed))
+	logMCPV3Error(w.log, confirmMCPV3Effect(ctx, w.card, observed))
 	return err
 }
 
@@ -511,16 +533,17 @@ func (x *mcpV3NetworkExchange) finish() {
 	}
 }
 
-func (x *mcpV3NetworkExchange) streamWriter(base transport.MessageWriter) transport.MessageWriter {
+func (x *mcpV3NetworkExchange) streamWriter(base transport.MessageWriter, observed bool) transport.MessageWriter {
 	if x.send == nil {
 		return base
 	}
-	return &mcpV3NetworkStreamWriter{exchange: x, base: base}
+	return &mcpV3NetworkStreamWriter{exchange: x, base: base, flushObserved: observed}
 }
 
 type mcpV3NetworkStreamWriter struct {
-	exchange *mcpV3NetworkExchange
-	base     transport.MessageWriter
+	exchange      *mcpV3NetworkExchange
+	base          transport.MessageWriter
+	flushObserved bool
 }
 
 func (w *mcpV3NetworkStreamWriter) messageWriter(msg []byte, frame MCPFrame, correlated bool) *mcpV3ReplyWriter {
@@ -529,7 +552,7 @@ func (w *mcpV3NetworkStreamWriter) messageWriter(msg []byte, frame MCPFrame, cor
 	opts := x.opts
 	opts.WarnContext = x.ctx
 	reply := &mcpV3ReplyWriter{
-		base: w.base, opts: opts, log: x.log, onStream: true,
+		base: w.base, opts: opts, log: x.log, streamFlushObserved: &w.flushObserved,
 		request: receipt.EmitOpts{RequestID: id, Method: frame.Method, Target: firstNonEmpty(frame.Method, "mcp://event"), Transport: opts.Transport},
 	}
 	if correlated && isResponse(msg) && id != "" && id == x.send.request.RequestID {

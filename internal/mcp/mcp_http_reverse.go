@@ -822,15 +822,15 @@ func RunHTTPListenerProxy(
 				if dec.intent.handle.settled.CompareAndSwap(false, true) {
 					receiptEmitted = dec.intent.handle.emit(safeLogW, receiptOpts, true) == nil
 				}
-			} else if !dec.skipLegacyReceipt && (emitter != nil || v2Emitter != nil || requestBaseOpts.ReceiptGroup != nil || requestBaseOpts.requireReceipts()) {
+			} else if !dec.skipLegacyReceipt && (emitter != nil || v2Emitter != nil || requestBaseOpts.ReceiptGroup != nil || requestBaseOpts.legacyReceiptsRequired()) {
 				if _, emitErr := requestBaseOpts.emitReceiptDecision(MCPDecision{
 					Receipt:        receiptOpts,
-					RequireReceipt: requestBaseOpts.requireReceipts(),
+					RequireReceipt: requestBaseOpts.legacyReceiptsRequired(),
 					// A blocked outcome closes an intent written durably under
 					// required recording; sync it the same way.
-					Durable: requestBaseOpts.requireReceipts() && dec.intent.Receipt.ActionID != "",
+					Durable: requestBaseOpts.legacyReceiptsRequired() && dec.intent.Receipt.ActionID != "",
 				}); emitErr != nil {
-					logReceiptEmitFailure(safeLogW, emitErr, requestBaseOpts.requireReceipts(), config.ActionBlock)
+					logReceiptEmitFailure(safeLogW, emitErr, requestBaseOpts.legacyReceiptsRequired(), config.ActionBlock)
 				} else if emitter != nil || v2Emitter != nil || requestBaseOpts.ReceiptGroup != nil {
 					receiptEmitted = true
 				}
@@ -1485,7 +1485,7 @@ func RunHTTPListenerProxy(
 			}
 			stateWriter := &listenerStateMessageWriter{state: clientState, writer: streamWriter, opts: reqOpts}
 			reqOpts.nativeSSE = true
-			foundInjection, scanErr := ForwardScanned(transport.NewSSEReader(upResp.Body), effect.streamWriter(stateWriter), safeLogW, NewStrictRequestTracker(), reqOpts)
+			foundInjection, scanErr := ForwardScanned(transport.NewSSEReader(upResp.Body), effect.streamWriter(stateWriter, streamWriter.flusher != nil && httpstream.CanObserveFlush(streamWriter.responseWriter)), safeLogW, NewStrictRequestTracker(), reqOpts)
 			if errors.Is(scanErr, ael.ErrCapacity) {
 				if admission.ActionID != "" {
 					recordTransportAdmissionResult(safeLogW, reqOpts, admission, "cancelled", nativeCapacityReason)
@@ -2046,7 +2046,7 @@ func RunHTTPListenerProxy(
 				v2Emitter := requestBaseOpts.v2ReceiptEmitter()
 				actionID := receipt.NewActionID()
 				receiptEmitted := false
-				if emitter != nil || v2Emitter != nil || requestBaseOpts.ReceiptGroup != nil || requestBaseOpts.requireReceipts() {
+				if emitter != nil || v2Emitter != nil || requestBaseOpts.ReceiptGroup != nil || requestBaseOpts.legacyReceiptsRequired() {
 					if _, emitErr := requestBaseOpts.emitReceiptDecision(MCPDecision{
 						Receipt: requestBaseOpts.withReceiptPolicyHash(receipt.EmitOpts{
 							ActionID:  actionID,
@@ -2061,9 +2061,9 @@ func RunHTTPListenerProxy(
 							// carry the A2A-header attribution.
 							Target: mcpReceiptA2AHeaderTarget,
 						}),
-						RequireReceipt: requestBaseOpts.requireReceipts(),
+						RequireReceipt: requestBaseOpts.legacyReceiptsRequired(),
 					}); emitErr != nil {
-						logReceiptEmitFailure(safeLogW, emitErr, requestBaseOpts.requireReceipts(), config.ActionBlock)
+						logReceiptEmitFailure(safeLogW, emitErr, requestBaseOpts.legacyReceiptsRequired(), config.ActionBlock)
 					} else if emitter != nil || v2Emitter != nil || requestBaseOpts.ReceiptGroup != nil {
 						receiptEmitted = true
 					}
@@ -2526,7 +2526,7 @@ func RunHTTPListenerProxy(
 			revocableWriter := &listenerStateMessageWriter{state: clientState, writer: streamWriter, opts: reqOpts}
 			streamReader := &requestDoneReader{MessageReader: reader, tracker: responseTracker, release: releaseContract}
 			reqOpts.nativeSSE = true
-			foundInjection, scanErr := ForwardScanned(streamReader, effect.streamWriter(revocableWriter), safeLogW, responseTracker, reqOpts)
+			foundInjection, scanErr := ForwardScanned(streamReader, effect.streamWriter(revocableWriter, streamWriter.flusher != nil && httpstream.CanObserveFlush(streamWriter.responseWriter)), safeLogW, responseTracker, reqOpts)
 			if errors.Is(scanErr, ael.ErrCapacity) {
 				streamOutcome := decision.Outcome
 				standalone := streamOutcome.Receipt.ActionID == "" || streamOutcome.handle != nil && streamOutcome.handle.settled.Load()
@@ -2590,6 +2590,20 @@ func RunHTTPListenerProxy(
 			}
 			return
 		}
+		var cardDeliveries []*mcpV3EffectToken
+		var cardAttempted bool
+		reqOpts.bufferedCardDelivery = func(token *mcpV3EffectToken) {
+			cardDeliveries = append(cardDeliveries, token)
+		}
+		defer func() {
+			for _, token := range cardDeliveries {
+				if cardAttempted {
+					logMCPV3Error(safeLogW, confirmMCPV3Effect(effect.ctx, token, effect.framed))
+				} else {
+					logMCPV3Error(safeLogW, token.Refuse(effect.ctx))
+				}
+			}
+		}()
 		responseBlocked := false
 		responseDropped := false
 		reqOpts.responseDropped = func() { responseDropped = true }
@@ -2641,18 +2655,19 @@ func RunHTTPListenerProxy(
 					return
 				}
 				effect.wrote = true
+				cardAttempted = len(cardDeliveries) != 0 && !responseBlocked
 				n, err := w.writeBuffered(output)
 				if err != nil || n != len(output) {
 					return
 				}
-				if responseStatus != "" || !commitBeforeWrite || effect.send != nil {
+				if responseStatus != "" || !commitBeforeWrite || effect.send != nil || cardAttempted {
 					// The known-length body needs no terminal chunk after
 					// this checked flush.
 					if err := http.NewResponseController(w.ResponseWriter).Flush(); err != nil {
 						return
 					}
 				}
-				effect.framed = true
+				effect.framed = httpstream.CanObserveFlush(w.ResponseWriter)
 				if responseStatus != "" {
 					terminalStatus, terminalReason, terminalSize = responseStatus, responseReason, responseSize
 				}

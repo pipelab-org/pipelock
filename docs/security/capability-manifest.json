@@ -379,14 +379,14 @@
       ],
       "implementation": {
         "file": "internal/cli/runtime/mcp.go",
-        "symbol": "mcpProxyCmdWithListenerTimeout"
+        "symbol": "mcpProxyCmdWithReceiptWriter"
       },
       "operator_entry_point": {
         "kind": "command",
         "value": "pipelock mcp proxy",
         "source": {
           "file": "internal/cli/runtime/mcp.go",
-          "symbol": "mcpProxyCmdWithListenerTimeout"
+          "symbol": "mcpProxyCmdWithReceiptWriter"
         }
       }
     },

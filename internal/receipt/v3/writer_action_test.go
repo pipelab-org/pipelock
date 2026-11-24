@@ -769,3 +769,41 @@ func TestStreamWriterStopsAfterDetachedRepairTimeout(t *testing.T) {
 		t.Fatalf("close error = %v, want repair deadline", err)
 	}
 }
+
+func TestStreamWriterUnsealedClosePinsFailedReplay(t *testing.T) {
+	opts := writerTestOptions(t.TempDir())
+	opts.Heartbeat = 0
+	fault := writerReplayFault{}
+	w, err := openStreamWriter(t.Context(), opts, fault.storage(opts.Dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = w.CloseUnsealed(context.WithoutCancel(t.Context())) })
+
+	intent := writerTestIntent("request")
+	policy := CapturePolicy(Digest([]byte("request config")))
+	if err := w.WriteAction(t.Context(), intent, policy); err != nil {
+		t.Fatal(err)
+	}
+	outcome := intent
+	outcome.Phase, outcome.EffectRelation, outcome.OutcomeClass = phaseOutcome, relationAfter, "completed"
+	outcome.Policy = policy.ActionPolicy()
+	w.queueActionRepair(outcome, false)
+	fault = writerReplayFault{step: writerReplayStep{FaultAt: 1, Landing: "full"}}
+	if err := w.replayActionRepairs(t.Context(), false); !errors.Is(err, errWriterReplay) {
+		t.Fatalf("repair replay error = %v, want %v", err, errWriterReplay)
+	}
+	failedStream := w.previous.Stream
+	_ = w.CloseUnsealed(context.WithoutCancel(t.Context()))
+
+	result := verifyWritten(t, opts.Dir, opts.SigningKey.Public().(ed25519.PublicKey))
+	if !hasFinding(result, codeUnconfirmed) {
+		t.Fatal("missing UNCONFIRMED finding")
+	}
+	for _, stream := range result.Histories[0].Streams {
+		if stream.Stream == failedStream && stream.End == "superseded_write_error" && stream.Tip != nil && stream.Tip.Seq == 1 {
+			return
+		}
+	}
+	t.Fatalf("failed replay was not excluded from the stream tip: %+v", result.Histories[0].Streams)
+}

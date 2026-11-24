@@ -39,6 +39,10 @@ func (opts evidenceBindingOptions) chainVerifyOptions(keyHex string) (contractre
 	if err != nil {
 		return contractreceipt.ChainVerifyOptions{}, err
 	}
+	return opts.chainBindings(pub), nil
+}
+
+func (opts evidenceBindingOptions) chainBindings(pub ed25519.PublicKey) contractreceipt.ChainVerifyOptions {
 	return contractreceipt.ChainVerifyOptions{
 		PinnedKey:          pub,
 		ExpectSignerKeyID:  opts.expectSignerKeyID,
@@ -46,7 +50,7 @@ func (opts evidenceBindingOptions) chainVerifyOptions(keyHex string) (contractre
 		ExpectManifestHash: opts.expectManifestHash,
 		ExpectPayloadKind:  contractreceipt.PayloadKind(opts.expectPayloadKind),
 		ExpectHeadHash:     opts.expectHeadHash,
-	}, nil
+	}
 }
 
 // checkBindings applies every Expect* binding to one receipt.

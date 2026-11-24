@@ -25,6 +25,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/coveragecertverify"
 	"github.com/luckyPipewrench/pipelock/internal/evidenceview"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/signingflag"
 )
@@ -192,6 +193,13 @@ func runExpire(cmd *cobra.Command, opts expireOptions, retentionChanged bool) er
 	}
 	if retentionDays < 0 {
 		return errors.New("--retention-days must be non-negative")
+	}
+	switched, err := v3.DirectoryHasV3(dir)
+	if err != nil {
+		return fmt.Errorf("open flight recorder: %w", err)
+	}
+	if switched {
+		return errors.New("evidence expire does not support v3 receipt directories")
 	}
 	if retentionDays == 0 {
 		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "retention disabled for %s; expired 0 old raw escrow sidecar(s)\n", filepath.Clean(dir))

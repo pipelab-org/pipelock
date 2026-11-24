@@ -149,6 +149,19 @@ func (s *Server) executeReloadLocked(newCfg *config.Config, restoringPriorPolicy
 	default:
 	}
 	oldCfg := s.proxy.CurrentConfig()
+	if oldCfg != nil {
+		if err := checkReceiptFormatReload(oldCfg.FlightRecorder, newCfg.FlightRecorder, s.receiptWriter != nil); err != nil {
+			return err
+		}
+	}
+	if s.receiptWriter != nil {
+		if err := newCfg.ValidateReceiptV3(); err != nil {
+			return err
+		}
+		if err := checkV3ReloadCoverage(oldCfg, newCfg, s.hasMCPListen, s.opts.ReverseProxy); err != nil {
+			return err
+		}
+	}
 	if s.receiptShardSet != nil && oldCfg != nil && oldCfg.FlightRecorder.SigningKeyPath != "" &&
 		oldCfg.FlightRecorder.SigningKeyPath == newCfg.FlightRecorder.SigningKeyPath {
 		key, keyErr := signing.LoadPrivateKeyFile(oldCfg.FlightRecorder.SigningKeyPath)
@@ -326,11 +339,15 @@ func (s *Server) executeReloadLocked(newCfg *config.Config, restoringPriorPolicy
 		// requires a signed flight recorder - still validates after the apply.
 		oldFR := oldCfg.FlightRecorder
 		newFR := newCfg.FlightRecorder
+		oldFR.ReceiptFormat = newFR.ReceiptFormat
 		oldFR.RequireReceipts = newFR.RequireReceipts
 		oldFR.EvidenceHealth.SelfAuditInterval = newFR.EvidenceHealth.SelfAuditInterval
 		oldFR.EvidenceHealth.MaxAnchorLag = newFR.EvidenceHealth.MaxAnchorLag
 		oldFR.Anchor = newFR.Anchor
-		if !reflect.DeepEqual(oldFR, newFR) {
+		evidenceHealthChanged := oldFR.EvidenceHealthEnabled() != newFR.EvidenceHealthEnabled()
+		oldFR.EvidenceHealth.Enabled = nil
+		newFR.EvidenceHealth.Enabled = nil
+		if evidenceHealthChanged || !reflect.DeepEqual(oldFR, newFR) {
 			if oldCfg.FlightRecorder.ReceiptChainCount() != newCfg.FlightRecorder.ReceiptChainCount() {
 				liveChains := oldCfg.FlightRecorder.ReceiptChainCount()
 				_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: flight_recorder.receipt_chains changed; restart required; continuing with %d\n", liveChains)
@@ -339,7 +356,7 @@ func (s *Server) executeReloadLocked(newCfg *config.Config, restoringPriorPolicy
 			} else if oldCfg.FlightRecorder.SigningKeyPath != newCfg.FlightRecorder.SigningKeyPath {
 				_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: flight_recorder.signing_key_path changed from %q to %q — receipt chain cannot rotate at runtime, ignoring (restart required)\n",
 					oldCfg.FlightRecorder.SigningKeyPath, newCfg.FlightRecorder.SigningKeyPath)
-			} else if !boolPtrEqual(oldCfg.FlightRecorder.EvidenceHealth.Enabled, newCfg.FlightRecorder.EvidenceHealth.Enabled) {
+			} else if oldFR.Enabled == newFR.Enabled && evidenceHealthChanged {
 				_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: flight_recorder.evidence_health.enabled changed — evidence health loop is built at startup and cannot rebind at runtime, ignoring (restart required)\n")
 			} else {
 				_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: flight_recorder settings changed — recorder is built at startup and cannot rebind at runtime, ignoring (restart required)\n")
@@ -375,7 +392,7 @@ func (s *Server) executeReloadLocked(newCfg *config.Config, restoringPriorPolicy
 		// emitter before publishing the config. Let that recovery run: it either
 		// installs a healthy emitter and applies the enable atomically or rejects
 		// the reload while the old posture remains live.
-		if newCfg.FlightRecorder.RequireReceipts && !s.liveReceiptEmitterReady() {
+		if newCfg.FlightRecorder.RequireReceipts && s.receiptWriter == nil && !s.liveReceiptEmitterReady() {
 			if oldCfg.FlightRecorder.RequireReceipts {
 				_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: flight_recorder.require_receipts is enabled but the current signed receipt emitter is unhealthy — the reload will attempt to rebuild it and will be rejected if recovery fails; the required posture remains fail-closed.\n")
 			} else if s.recorder == nil || strings.TrimSpace(newCfg.FlightRecorder.SigningKeyPath) == "" {
@@ -852,13 +869,6 @@ func cleanDropsWithoutBundleErrors(drops []bundleCoverageDrop, result *rules.Loa
 		clean = append(clean, drop)
 	}
 	return clean
-}
-
-func boolPtrEqual(a, b *bool) bool {
-	if a == nil || b == nil {
-		return a == b
-	}
-	return *a == *b
 }
 
 func reloadRuntimeModeLabel(mode config.RuntimeMode) string {
@@ -1380,11 +1390,28 @@ func preserveLicenseInputsRestartOnly(newCfg, oldCfg *config.Config) {
 	newCfg.LicenseCRLMaxAgeError = oldCfg.LicenseCRLMaxAgeError
 }
 
+func (s *Server) closeReceiptV3() error {
+	return s.finishReceiptV3(false)
+}
+
+func (s *Server) finishReceiptV3(incomplete bool) error {
+	if s.receiptWriter == nil {
+		return nil
+	}
+	err := finishReceiptV3(context.Background(), s.receiptWriter, incomplete)
+	s.receiptWriter = nil
+	if err != nil {
+		return fmt.Errorf("close v3 receipt writer: %w", err)
+	}
+	return nil
+}
+
 // cleanup closes all owned resources. Safe to call multiple times: each
 // field is niled after its close so repeat calls are no-ops. LIFO order
 // mirrors the original RunCmd deferred closures so shutdown sequencing is
 // preserved.
 func (s *Server) cleanup() {
+	_ = s.closeReceiptV3()
 	if s.recorder != nil {
 		_ = s.recorder.Close()
 		s.recorder = nil

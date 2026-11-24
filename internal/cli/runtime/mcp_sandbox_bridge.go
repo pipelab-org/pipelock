@@ -7,6 +7,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -20,11 +21,13 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
+	"github.com/luckyPipewrench/pipelock/internal/httpstream"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/proxy"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
 	"github.com/luckyPipewrench/pipelock/internal/sandbox"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
@@ -39,6 +42,7 @@ type mcpSandboxBridgeStartOptions struct {
 	AuditLogger      *audit.Logger
 	Metrics          *metrics.Metrics
 	MetricsBoundAddr string
+	ReceiptWriter    *v3.StreamWriter
 	ReceiptEmitter   *receipt.Emitter
 	V2ReceiptEmitter *proxydecision.Emitter
 	ReceiptGroup     *mcp.MCPReceiptGroup
@@ -57,6 +61,7 @@ type mcpSandboxBridgeSetupOptions struct {
 	AuditLogger      *audit.Logger
 	Metrics          *metrics.Metrics
 	MetricsBoundAddr string
+	ReceiptWriter    *v3.StreamWriter
 	ReceiptEmitter   *receipt.Emitter
 	V2ReceiptEmitter *proxydecision.Emitter
 	ReceiptGroup     *mcp.MCPReceiptGroup
@@ -72,21 +77,19 @@ type mcpSandboxBridge struct {
 	listener   net.Listener
 	scanner    *scanner.Scanner
 	proxy      *proxy.Proxy
-	acceptDone chan struct{}
-	connWg     sync.WaitGroup
+	server     httpstream.GatedServer
+	serveDone  chan struct{}
 	closeOnce  sync.Once
-	mu         sync.Mutex
-	conns      map[net.Conn]struct{}
-	closed     bool
+	closeErr   error
 }
 
-func setupMCPSandboxBridge(opts mcpSandboxBridgeSetupOptions) (func(), error) {
+func setupMCPSandboxBridge(opts mcpSandboxBridgeSetupOptions) (func() error, error) {
 	if opts.GOOS != "linux" {
 		_, _ = fmt.Fprintf(opts.Stderr,
 			"pipelock: WARNING: MCP sandbox egress bridge is Linux-only; bridge-style MCP servers on %s may need separate egress controls to ensure upstream HTTP(S) traverses pipelock. "+
 				"Configure the MCP server to use pipelock's forward proxy listener via HTTPS_PROXY and disable any built-in proxy bypass.\n",
 			opts.GOOS)
-		return func() {}, nil
+		return func() error { return nil }, nil
 	}
 
 	bridge, err := opts.StartBridge(mcpSandboxBridgeStartOptions{
@@ -98,6 +101,7 @@ func setupMCPSandboxBridge(opts mcpSandboxBridgeSetupOptions) (func(), error) {
 		AuditLogger:      opts.AuditLogger,
 		Metrics:          opts.Metrics,
 		MetricsBoundAddr: opts.MetricsBoundAddr,
+		ReceiptWriter:    opts.ReceiptWriter,
 		ReceiptEmitter:   opts.ReceiptEmitter,
 		V2ReceiptEmitter: opts.V2ReceiptEmitter,
 		ReceiptGroup:     opts.ReceiptGroup,
@@ -147,13 +151,13 @@ func startMCPSandboxBridge(opts mcpSandboxBridgeStartOptions) (*mcpSandboxBridge
 
 	ln, err := (&net.ListenConfig{}).Listen(opts.Context, "unix", bridge.socketPath)
 	if err != nil {
-		bridge.Close()
+		_ = bridge.Close()
 		return nil, fmt.Errorf("MCP sandbox bridge listen: %w", err)
 	}
 	bridge.listener = ln
 
 	if err := os.Chmod(bridge.socketPath, 0o600); err != nil {
-		bridge.Close()
+		_ = bridge.Close()
 		return nil, fmt.Errorf("MCP sandbox bridge socket permissions: %w", err)
 	}
 
@@ -161,7 +165,7 @@ func startMCPSandboxBridge(opts mcpSandboxBridgeStartOptions) (*mcpSandboxBridge
 	egressCfg.ForwardProxy.Enabled = true
 	bridge.scanner, err = scanner.New(egressCfg)
 	if err != nil {
-		bridge.Close()
+		_ = bridge.Close()
 		return nil, fmt.Errorf("create MCP sandbox bridge scanner: %w", err)
 	}
 	if opts.Metrics == nil {
@@ -175,6 +179,7 @@ func startMCPSandboxBridge(opts mcpSandboxBridgeStartOptions) (*mcpSandboxBridge
 	proxyOptions := []proxy.Option{
 		proxy.WithTaintRecorder(opts.Rec),
 		proxy.WithKillSwitch(opts.KillSwitch),
+		proxy.WithV3ReceiptWriter(opts.ReceiptWriter),
 		proxy.WithReceiptEmitter(opts.ReceiptEmitter),
 		proxy.WithV2ReceiptEmitter(opts.V2ReceiptEmitter),
 		proxy.WithEnvelopeEmitter(opts.EnvelopeEmitter),
@@ -182,54 +187,30 @@ func startMCPSandboxBridge(opts mcpSandboxBridgeStartOptions) (*mcpSandboxBridge
 	if opts.ReceiptGroup != nil {
 		groupOption, groupErr := proxy.WithReceiptShardSet(opts.ReceiptGroup.Shards, opts.ReceiptGroup.V2, onRequiredFailure)
 		if groupErr != nil {
-			bridge.Close()
+			_ = bridge.Close()
 			return nil, fmt.Errorf("MCP sandbox bridge receipt group: %w", groupErr)
 		}
 		proxyOptions = append(proxyOptions, groupOption)
 	}
 	p, err := proxy.New(egressCfg, opts.AuditLogger, bridge.scanner, opts.Metrics, proxyOptions...)
 	if err != nil {
-		bridge.Close()
+		_ = bridge.Close()
 		return nil, fmt.Errorf("MCP sandbox bridge proxy init: %w", err)
 	}
 	bridge.proxy = p
 	if err := p.LoadCertCache(egressCfg); err != nil {
-		bridge.Close()
+		_ = bridge.Close()
 		return nil, fmt.Errorf("MCP sandbox bridge TLS interception: %w", err)
 	}
 	if opts.MetricsBoundAddr != "" {
 		p.UpdateMetricsDialTargetFromBoundAddr(opts.MetricsBoundAddr)
 	}
-	handler := p.Handler()
-	bridge.conns = make(map[net.Conn]struct{})
-
-	bridge.acceptDone = make(chan struct{})
+	bridge.serve(p.Handler())
 	go func() {
-		<-opts.Context.Done()
-		bridge.Close()
-	}()
-	go func() {
-		defer close(bridge.acceptDone)
-		for {
-			conn, acceptErr := ln.Accept()
-			if acceptErr != nil {
-				return
-			}
-			if !bridge.trackConn(conn) {
-				_ = conn.Close()
-				return
-			}
-			bridge.connWg.Add(1)
-			go func(conn net.Conn) {
-				defer bridge.connWg.Done()
-				defer bridge.untrackConn(conn)
-				srv := &http.Server{
-					Handler:           handler,
-					ReadHeaderTimeout: 30 * time.Second,
-					IdleTimeout:       30 * time.Second,
-				}
-				_ = srv.Serve(&singleConnListener{conn: conn})
-			}(conn)
+		select {
+		case <-opts.Context.Done():
+			_ = bridge.Close()
+		case <-bridge.serveDone:
 		}
 	}()
 
@@ -253,22 +234,38 @@ func (b *mcpSandboxBridge) SocketPath() string {
 	return b.socketPath
 }
 
-func (b *mcpSandboxBridge) Close() {
+func (b *mcpSandboxBridge) serve(handler http.Handler) {
+	gate := &httpstream.Gate{}
+	b.server = httpstream.GatedServer{
+		Gate: gate,
+		Server: &http.Server{
+			Handler:           gate.Wrap(handler),
+			ReadHeaderTimeout: 30 * time.Second,
+			IdleTimeout:       30 * time.Second,
+		},
+	}
+	b.serveDone = make(chan struct{})
+	go func() {
+		defer close(b.serveDone)
+		_ = b.server.Server.Serve(b.listener)
+	}()
+}
+
+func (b *mcpSandboxBridge) Close() error {
 	if b == nil {
-		return
+		return nil
 	}
 	b.closeOnce.Do(func() {
-		conns := b.markClosed()
-		if b.listener != nil {
+		if b.serveDone != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), serverShutdownTimeout)
+			defer cancel()
+			if err := httpstream.DrainServer(ctx, b.server); err != nil {
+				b.closeErr = errors.Join(httpstream.ErrShutdownIncomplete, err)
+			}
+			<-b.serveDone
+		} else if b.listener != nil {
 			_ = b.listener.Close()
 		}
-		for _, conn := range conns {
-			_ = conn.Close()
-		}
-		if b.acceptDone != nil {
-			<-b.acceptDone
-		}
-		b.connWg.Wait()
 		if b.proxy != nil {
 			b.proxy.Close()
 		} else if b.scanner != nil {
@@ -278,35 +275,5 @@ func (b *mcpSandboxBridge) Close() {
 			_ = os.RemoveAll(b.dir)
 		}
 	})
-}
-
-func (b *mcpSandboxBridge) trackConn(conn net.Conn) bool {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if b.closed {
-		return false
-	}
-	if b.conns != nil {
-		b.conns[conn] = struct{}{}
-	}
-	return true
-}
-
-func (b *mcpSandboxBridge) untrackConn(conn net.Conn) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if b.conns != nil {
-		delete(b.conns, conn)
-	}
-}
-
-func (b *mcpSandboxBridge) markClosed() []net.Conn {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.closed = true
-	conns := make([]net.Conn, 0, len(b.conns))
-	for conn := range b.conns {
-		conns = append(conns, conn)
-	}
-	return conns
+	return b.closeErr
 }

@@ -432,7 +432,7 @@ func mcpOutcomeReceiptOpts(opts receipt.EmitOpts, status string, bytesTransferre
 // single-phase warning for this diagnostic. Keep the legacy single-chain shape.
 func emitMCPStandaloneStreamReceipt(proxyOpts MCPProxyOpts, logW io.Writer, opts receipt.EmitOpts, status, reason string) {
 	if proxyOpts.ReceiptGroup == nil {
-		emitMCPOutcomeReceipt(proxyOpts.receiptEmitter(), proxyOpts.v2ReceiptEmitter(), nil, logW, proxyOpts.withReceiptPolicyHash(opts), status, -1, reason, proxyOpts.requireReceipts())
+		emitMCPOutcomeReceipt(proxyOpts.receiptEmitter(), proxyOpts.v2ReceiptEmitter(), nil, logW, proxyOpts.withReceiptPolicyHash(opts), status, -1, reason, proxyOpts.legacyReceiptsRequired())
 		return
 	}
 	emitMCPStreamDiagnostic(proxyOpts, logW, opts, status, reason)
@@ -448,9 +448,9 @@ func emitMCPStreamDiagnostic(proxyOpts MCPProxyOpts, logW io.Writer, opts receip
 	opts.DecisionPhase = ""
 	opts.Verdict = config.ActionWarn
 	opts.Layer = mcpOutcomeLayer
-	_, err := proxyOpts.emitReceiptDecision(MCPDecision{Receipt: opts, RequireReceipt: proxyOpts.requireReceipts(), RequiredMode: proxyOpts.requireReceipts()})
+	_, err := proxyOpts.emitReceiptDecision(MCPDecision{Receipt: opts, RequireReceipt: proxyOpts.legacyReceiptsRequired(), RequiredMode: proxyOpts.legacyReceiptsRequired()})
 	if err != nil {
-		logReceiptEmitFailure(logW, err, proxyOpts.requireReceipts(), opts.Verdict)
+		logReceiptEmitFailure(logW, err, proxyOpts.legacyReceiptsRequired(), opts.Verdict)
 	}
 }
 

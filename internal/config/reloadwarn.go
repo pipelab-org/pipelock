@@ -383,6 +383,11 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 			Message: "A2A Agent Card drift detection disabled",
 		})
 	}
+	// Only compare explicit selections here. The runtime resolves an omitted
+	// flight_recorder.receipt_format against the live evidence directory.
+	if prior, next := old.FlightRecorder.ReceiptFormat, updated.FlightRecorder.ReceiptFormat; prior != "" && next != "" && prior != next {
+		warnings = append(warnings, advisoryReloadWarning("flight_recorder.receipt_format", "Changing receipt format requires a restart"))
+	}
 	// Turning off fail-closed receipt enforcement is a security downgrade and
 	// belongs with the other "required" contracts. reloadDowngradeRejectReason
 	// already NAMES flight_recorder.require_receipts in the reason it reports,

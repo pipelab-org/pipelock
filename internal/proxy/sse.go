@@ -91,11 +91,58 @@ type sseDeliveryFlusher struct {
 
 func (d sseDeliveryFlusher) Flush() {
 	d.observe()
+	defer d.observe()
 	d.f.Flush()
+}
+
+type sseDeliveryErrorFlusher struct {
+	sseDeliveryFlusher
+}
+
+func (d sseDeliveryErrorFlusher) FlushError() error {
 	d.observe()
+	defer d.observe()
+	return d.f.(interface{ FlushError() error }).FlushError()
+}
+
+func (d sseDeliveryErrorFlusher) CanObserveFlush() bool {
+	return httpstream.CanObserveFlush(d.f)
 }
 
 const nativeSSEFindingRecords = 2
+
+func (p *Proxy) sseFindingDelivery(ctx context.Context, cfg *config.Config, opts receipt.EmitOpts) func(error, func() (bool, error)) error {
+	if !p.v3ReceiptsEnabled() {
+		return nil
+	}
+	return func(finding error, deliver func() (bool, error)) error {
+		opts := opts
+		opts.ActionID = receipt.NewActionID()
+		opts.Verdict, opts.Layer, opts.Pattern = config.ActionWarn, LayerSSEStream, finding.Error()
+		token, err := p.admitEffect(ctx, cfg, opts, boundaryDownstreamDelivery)
+		if err != nil {
+			return fmt.Errorf("%w: admit SSE finding: %w", mcp.ErrReceiptRequired, err)
+		}
+		defer p.settleEffect(ctx, opts, token)
+		var writeErr error
+		confirmErr := token.ConfirmDelivery(ctx, func() (bool, error) {
+			var observed bool
+			observed, writeErr = deliver()
+			return observed, nil
+		})
+		if confirmErr != nil {
+			p.logReceiptEmissionFailure(opts, confirmErr)
+		}
+		return writeErr
+	}
+}
+
+func (p *Proxy) legacySSEFindingConfirmer(cfg *config.Config, opts receipt.EmitOpts, emit func(*config.Config, receipt.EmitOpts) error) func(error) error {
+	if p.v3ReceiptsEnabled() {
+		return nil
+	}
+	return sseFindingReceiptConfirmer(cfg, opts, emit)
+}
 
 // sseFindingReceiptConfirmer admits warned events before their wire write.
 // Errors are receipt failures, not content findings: a warn-mode caller must
@@ -143,7 +190,12 @@ func DispatchSSEScan(
 	if opts.OnDelivery != nil {
 		w = sseDeliveryWriter{w: w, observe: opts.OnDelivery}
 		if flusher != nil {
-			flusher = sseDeliveryFlusher{f: flusher, observe: opts.OnDelivery}
+			wrapped := sseDeliveryFlusher{f: flusher, observe: opts.OnDelivery}
+			if _, ok := flusher.(interface{ FlushError() error }); ok {
+				flusher = sseDeliveryErrorFlusher{wrapped}
+			} else {
+				flusher = wrapped
+			}
 		}
 	}
 	var err error

@@ -95,7 +95,7 @@ func (p *Proxy) recordCredentialAudienceAllow(cfg *config.Config, ctx audit.LogC
 		return nil
 	}
 	recordCredentialAudienceAllow(p.logger, p.metrics, ctx, allow)
-	requireReceipts := cfg != nil && cfg.FlightRecorder.RequireReceipts
+	requireReceipts := p.legacyReceiptsRequired(cfg)
 	extension, err := json.Marshal(map[string]scanner.CredentialAudienceAllow{
 		credentialAudienceReceiptExtensionKey: allow,
 	})
@@ -207,7 +207,7 @@ func (rp *ReverseProxyHandler) recordCredentialAudienceAllow(cfg *config.Config,
 		return nil
 	}
 	recordCredentialAudienceAllow(rp.logger, rp.metrics, ctx, allow)
-	requireReceipts := cfg != nil && cfg.FlightRecorder.RequireReceipts
+	requireReceipts := rp.legacyReceiptsRequired(cfg)
 	extension, err := json.Marshal(map[string]scanner.CredentialAudienceAllow{
 		credentialAudienceReceiptExtensionKey: allow,
 	})

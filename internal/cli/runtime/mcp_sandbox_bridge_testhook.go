@@ -19,6 +19,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
 	"github.com/luckyPipewrench/pipelock/internal/sandbox"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
@@ -32,6 +33,7 @@ type mcpSandboxBridgeStartOptions struct {
 	AuditLogger      *audit.Logger
 	Metrics          *metrics.Metrics
 	MetricsBoundAddr string
+	ReceiptWriter    *v3.StreamWriter
 	ReceiptEmitter   *receipt.Emitter
 	V2ReceiptEmitter *proxydecision.Emitter
 	ReceiptGroup     *mcp.MCPReceiptGroup
@@ -50,6 +52,7 @@ type mcpSandboxBridgeSetupOptions struct {
 	AuditLogger      *audit.Logger
 	Metrics          *metrics.Metrics
 	MetricsBoundAddr string
+	ReceiptWriter    *v3.StreamWriter
 	ReceiptEmitter   *receipt.Emitter
 	V2ReceiptEmitter *proxydecision.Emitter
 	ReceiptGroup     *mcp.MCPReceiptGroup
@@ -64,14 +67,14 @@ type mcpSandboxBridge struct{}
 // setupMCPSandboxBridge deliberately leaves BridgeSocketPath empty in the
 // hardening proof build. sandbox-init then direct-execs the fixture, making
 // the target a direct child of the real Pipelock proxy for the proc check.
-func setupMCPSandboxBridge(opts mcpSandboxBridgeSetupOptions) (func(), error) {
+func setupMCPSandboxBridge(opts mcpSandboxBridgeSetupOptions) (func() error, error) {
 	if os.Getenv("PIPELOCK_SANDBOX_HARDENING_PROOF_MARKER") == "" {
 		return nil, errors.New("mcp hardening proof build refuses non-test sandbox use")
 	}
 	if opts.LaunchConfig == nil {
 		return nil, errors.New("MCP sandbox hardening proof missing launch config")
 	}
-	return func() {}, nil
+	return func() error { return nil }, nil
 }
 
 func startMCPSandboxBridge(mcpSandboxBridgeStartOptions) (*mcpSandboxBridge, error) {

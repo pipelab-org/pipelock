@@ -343,6 +343,8 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 	// shutdown sequencing (reloader → recorder → capture writer →
 	// approver → scanner → emitter → logger → sentry) is preserved.
 	defer s.cleanup()
+	proxyDrainIncomplete := false
+	defer func() { startErr = errors.Join(startErr, s.finishReceiptV3(proxyDrainIncomplete)) }()
 
 	var reloadWG sync.WaitGroup
 	defer reloadWG.Wait()
@@ -362,7 +364,6 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 	var lifecycleWG sync.WaitGroup
 	capacity := s.liveReceiptEmitter().NativeCapacity()
 	watchNativeCapacity(ctx, &lifecycleWG, capacity, cancel, s.opts.Stderr)
-	proxyDrainIncomplete := false
 	var mcpErr, reverseProxyErr, scanAPIErr chan error
 	listenerShutdownTimeout := s.opts.listenerShutdownTimeout
 	if listenerShutdownTimeout <= 0 {
@@ -1177,7 +1178,7 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 				ContractLoaderPtr:        s.proxy.ContractLoaderPtr(),
 				ContractAgent:            edition.ProfileDefault,
 				DialContext:              verifiedDialContext(mcp.NewMetadataSafeDialContext(mcpScannerFn), mcpResolution, s.opts.Stderr),
-			}
+			}.WithV3ReceiptWriter(s.receiptWriter)
 			applyMCPDoWOpts(&listenerOpts, mcpDoWWiring, true)
 			if s.opts.MCPAuthTokenFile != "" {
 				listenerOpts.ListenerBearerTokenFn = func() (string, error) {
@@ -1550,7 +1551,7 @@ func (s *Server) consumeReloads(ctx context.Context, events <-chan config.Reload
 // recorder and emitter exist so that adding an anchor point on hot reload
 // takes effect without rebuilding recorder state.
 func (s *Server) evidenceMonitors(cfg *config.Config) (*evidenceHealthMonitor, *autoAnchorMonitor) {
-	if s.recorder == nil || s.metrics == nil {
+	if s.recorder == nil || s.metrics == nil || s.receiptWriter != nil {
 		return nil, nil
 	}
 	var health *evidenceHealthMonitor

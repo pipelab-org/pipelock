@@ -23,6 +23,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -37,12 +38,14 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/contract/runtime/contractruntimetest"
 	"github.com/luckyPipewrench/pipelock/internal/edition"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
+	"github.com/luckyPipewrench/pipelock/internal/mcp"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
 	"github.com/luckyPipewrench/pipelock/internal/responseencoding"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
+	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
 type v3AppendFaultFile struct {
@@ -153,6 +156,7 @@ func TestV3HTTPTransportParity(t *testing.T) {
 			} {
 				t.Run(fmt.Sprintf("%s/required=%t/%s", surface, required, tc.name), func(t *testing.T) {
 					p, writer, dir, keys := newTestV3HTTPProxy(t, surface, required, tc.fault, func(cfg *config.Config) {
+						cfg.FlightRecorder.RequireReceipts = required
 						if tc.blocked && surface != TransportReverse {
 							cfg.FetchProxy.Monitoring.Blocklist = []string{testLoopbackIP}
 						}
@@ -321,7 +325,7 @@ func exerciseV3Transport(t *testing.T, p *Proxy, surface string, exercise v3Tran
 	}))
 	t.Cleanup(upstream.Close)
 	response := httptest.NewRecorder()
-	var downstream http.ResponseWriter = response
+	var downstream http.ResponseWriter = &v3SSEFlushFaultRecorder{ResponseRecorder: response}
 	if exercise.flushError {
 		downstream = &v3DeliveryObserver{
 			ResponseRecorder: response, beforeHeader: func() {},
@@ -372,6 +376,7 @@ func exerciseV3Transport(t *testing.T, p *Proxy, surface string, exercise v3Tran
 		cache, pool, cfg, _, logger, m := testInterceptSetup(t)
 		cfg.FetchProxy.Monitoring.Blocklist = p.CurrentConfig().FetchProxy.Monitoring.Blocklist
 		cfg.ResponseScanning = p.CurrentConfig().ResponseScanning
+		cfg.FlightRecorder.RequireReceipts = p.CurrentConfig().FlightRecorder.RequireReceipts
 		sc := scanner.MustNew(cfg)
 		t.Cleanup(sc.Close)
 		rt := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
@@ -744,7 +749,7 @@ func TestV3FetchRedirectEvidence(t *testing.T) {
 				contractruntimetest.HTTPEnforceRule("redirect-hop", host, "/final", http.MethodGet),
 			))
 			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+origin+"/start&agent=agent-a", nil)
-			observer := httptest.NewRecorder()
+			observer := &v3SSEFlushFaultRecorder{ResponseRecorder: httptest.NewRecorder()}
 			p.handleFetch(observer, req)
 			if observer.Code != http.StatusOK || hits.Load() != 2 {
 				t.Fatalf("redirect status=%d requests=%d body=%q", observer.Code, hits.Load(), observer.Body)
@@ -1585,7 +1590,7 @@ func TestV3DeliveryAdaptiveRefusalAfterIntent(t *testing.T) {
 			req := httptest.NewRequestWithContext(ctx, http.MethodGet, "http://api.vendor.example", http.NoBody)
 			opts := receipt.EmitOpts{Verdict: config.ActionAllow, Transport: TransportForward, Method: req.Method, Target: req.URL.String()}
 			cfg := adaptiveConfigBlockAll()
-			observer := httptest.NewRecorder()
+			observer := &v3SSEFlushFaultRecorder{ResponseRecorder: httptest.NewRecorder()}
 			checks := 0
 			adaptive := &adaptiveRefusalWriter{
 				ResponseWriter: observer, cfg: &cfg.AdaptiveEnforcement, transport: TransportForward,
@@ -2084,4 +2089,441 @@ func TestV3ForwardBlockedRedirectDelivery(t *testing.T) {
 		actions[2].EffectBoundary != boundaryDownstreamDelivery {
 		t.Fatalf("redirect refusals: %+v", actions)
 	}
+}
+
+func TestV3SSERequiredFindingAdmission(t *testing.T) {
+	for _, fail := range []bool{false, true} {
+		t.Run(fmt.Sprintf("write_failure=%t", fail), func(t *testing.T) {
+			var fault func(string, string) (v3.StreamFile, error)
+			if fail {
+				fault = v3AppendFault(3, true)
+			}
+			p, writer, dir, _ := newTestV3HTTPProxy(t, TransportForward, true, fault, func(cfg *config.Config) {
+				cfg.FlightRecorder.RequireReceipts = true
+				cfg.ResponseScanning.Enabled = true
+				cfg.ResponseScanning.Patterns = []config.ResponseScanPattern{{Name: "response marker", Regex: "POLICY_MARKER"}}
+				cfg.ResponseScanning.SSEStreaming.Enabled = true
+				cfg.ResponseScanning.SSEStreaming.Action = config.ActionWarn
+			})
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://api.vendor.example", http.NoBody)
+			cfg := p.CurrentConfig()
+			opts := receipt.EmitOpts{ActionID: receipt.NewActionID(), Verdict: config.ActionAllow, Transport: TransportForward, Method: req.Method, Target: req.URL.String()}
+			out := &v3SSEFlushFaultRecorder{ResponseRecorder: httptest.NewRecorder()}
+			w, finish := p.startReceiptDelivery(out, req, cfg, opts)
+			defer finish()
+			w.WriteHeader(http.StatusOK)
+			opts.ParentActionID = opts.ActionID
+			clean := "data: {\"text\":\"hello\"}\n\n"
+			warned := "data: {\"text\":\"POLICY_MARKER\"}\n\n"
+			err := DispatchSSEScan(req.Context(), strings.NewReader(clean+warned), w, w.(http.Flusher), p.ScannerPtr().Load(), SSEDispatchOptions{
+				GenericSSE: &cfg.ResponseScanning.SSEStreaming,
+				Generic:    mcp.GenericSSEScanOptions{DeliverFinding: p.sseFindingDelivery(req.Context(), cfg, opts)},
+			})
+			if fail {
+				if !errors.Is(err, mcp.ErrReceiptRequired) || out.Body.String() != clean {
+					t.Fatalf("required receipt failure: err=%v body=%q", err, out.Body.String())
+				}
+				return
+			}
+			if err != nil || out.Body.String() != clean+warned {
+				t.Fatalf("delivery: err=%v body=%q", err, out.Body.String())
+			}
+			finish()
+			if err := writer.Close(t.Context(), nil); err != nil {
+				t.Fatal(err)
+			}
+			actions := readV3TransportActions(t, dir)
+			if !slices.ContainsFunc(actions, func(a v3.Action) bool {
+				return a.Layer == LayerSSEStream && a.Verdict == config.ActionWarn && a.Phase == "outcome" && a.OutcomeClass == "completed"
+			}) {
+				t.Fatalf("missing completed finding receipt: %+v", actions)
+			}
+		})
+	}
+}
+
+func TestV3RequiredAgentCardAcceptance(t *testing.T) {
+	const card = `{"name":"Document helper","description":"Reads documents","skills":[{"id":"read","name":"Read documents","description":"Read a document"}]}`
+	for _, surface := range []string{TransportForward, transportInterceptReceipt} {
+		t.Run(surface, func(t *testing.T) {
+			p, writer, dir, _ := newTestV3HTTPProxy(t, surface, true, v3AppendFault(4, true), func(cfg *config.Config) {
+				cfg.FlightRecorder.RequireReceipts = true
+				cfg.A2AScanning.Enabled = true
+				cfg.A2AScanning.DetectCardDrift = true
+			})
+			rt := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}},
+					ContentLength: int64(len(card)), Body: io.NopCloser(strings.NewReader(card)), Request: req,
+				}, nil
+			})
+			p.client = &http.Client{Transport: rt}
+			target := "https://api.vendor.example" + agentCardPath
+			var handler http.Handler = http.HandlerFunc(p.handleForwardHTTP)
+			if surface == transportInterceptReceipt {
+				target = "https://api.vendor.example:443" + agentCardPath
+				handler = newInterceptHandler(&InterceptContext{
+					TargetHost: "api.vendor.example", TargetPort: "443", Config: p.CurrentConfig(),
+					Scanner: p.ScannerPtr().Load(), Logger: p.logger, Metrics: p.metrics, Proxy: p,
+				}, rt)
+			}
+			for _, want := range []int{http.StatusForbidden, http.StatusOK} {
+				out := &v3SSEFlushFaultRecorder{ResponseRecorder: httptest.NewRecorder()}
+				handler.ServeHTTP(out, httptest.NewRequestWithContext(t.Context(), http.MethodGet, target, http.NoBody))
+				if out.Code != want {
+					t.Fatalf("status=%d want=%d body=%q", out.Code, want, out.Body.String())
+				}
+			}
+			if err := writer.Close(t.Context(), nil); err != nil {
+				t.Fatal(err)
+			}
+			paths, err := filepath.Glob(filepath.Join(dir, "*.receipt-v3.jsonl"))
+			if err != nil || len(paths) != 2 {
+				t.Fatalf("expected original and recovery stream: %v, %v", paths, err)
+			}
+			var actions []v3.Action
+			for _, path := range paths {
+				actions = append(actions, readV3TransportFile(t, path)...)
+			}
+			if !slices.ContainsFunc(actions, func(a v3.Action) bool {
+				return a.Layer == scannerLabelA2ACardDrift && a.Phase == "outcome" && a.OutcomeClass == "completed"
+			}) {
+				t.Fatal("second request did not confirm first-seen baseline adoption")
+			}
+		})
+	}
+}
+
+func TestV3RequiredBufferedResponseFraming(t *testing.T) {
+	for _, surface := range []string{TransportForward, transportInterceptReceipt, TransportReverse} {
+		t.Run(surface, func(t *testing.T) {
+			p, writer, dir, _ := newTestV3HTTPProxy(t, surface, true, nil, func(cfg *config.Config) {
+				cfg.FlightRecorder.RequireReceipts = true
+				cfg.ResponseScanning.Enabled = true
+			})
+			status, body := exerciseV3Transport(t, p, surface, v3TransportExercise{responseBody: "ordinary content"}, func() {})
+			if status != http.StatusOK || body != "ordinary content" {
+				t.Fatalf("response = %d %q", status, body)
+			}
+			if err := writer.Close(t.Context(), nil); err != nil {
+				t.Fatal(err)
+			}
+			assertHandshakeOutcome(t, dir, boundaryDownstreamDelivery, "completed")
+		})
+	}
+}
+
+func TestV3RequestPolicyReceiptRecordsRefusal(t *testing.T) {
+	for _, surface := range []string{TransportForward, TransportReverse} {
+		t.Run(surface, func(t *testing.T) {
+			p, writer, dir, _ := newTestV3HTTPProxy(t, surface, true, nil)
+			emit := p.emitRequestPolicyReceipt
+			if surface == TransportReverse {
+				rp := &ReverseProxyHandler{owner: p, cfgPtr: p.ConfigPtr()}
+				emit = rp.emitRequestPolicyReceipt
+			}
+			opts := receipt.EmitOpts{
+				ActionID: receipt.NewActionID(), Verdict: config.ActionBlock, Layer: blockLayerRequestPolicy,
+				Transport: surface, Method: http.MethodPost, Target: "https://api.vendor.example",
+			}
+			if err := emit(opts); err != nil {
+				t.Fatal(err)
+			}
+			if err := writer.Close(t.Context(), nil); err != nil {
+				t.Fatal(err)
+			}
+			if !slices.ContainsFunc(readV3TransportActions(t, dir), func(a v3.Action) bool {
+				return a.ActionID == opts.ActionID && a.EffectBoundary == boundaryUpstreamSend &&
+					a.Phase == "decision" && a.Verdict == config.ActionBlock
+			}) {
+				t.Fatal("missing request policy refusal for the returned action ID")
+			}
+			opts.ActionID = receipt.NewActionID()
+			if err := emit(opts); err == nil || errors.Is(err, errReceiptEmitterUnavailable) {
+				t.Fatalf("closed writer returned %v, want v3 write failure", err)
+			}
+		})
+	}
+}
+
+type v3SSEFlushFaultRecorder struct {
+	*httptest.ResponseRecorder
+	flushErr error
+	flushes  int
+}
+
+func (w *v3SSEFlushFaultRecorder) FlushError() error {
+	w.flushes++
+	return w.flushErr
+}
+
+func TestV3SSEFindingFailedFlushRemainsUnconfirmed(t *testing.T) {
+	p, writer, dir, _ := newTestV3HTTPProxy(t, TransportForward, true, nil, func(cfg *config.Config) {
+		cfg.FlightRecorder.RequireReceipts = true
+		cfg.ResponseScanning.Enabled = true
+		cfg.ResponseScanning.Patterns = []config.ResponseScanPattern{{Name: "response marker", Regex: "POLICY_MARKER"}}
+		cfg.ResponseScanning.SSEStreaming.Enabled = true
+		cfg.ResponseScanning.SSEStreaming.Action = config.ActionWarn
+	})
+	cfg := p.CurrentConfig()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://api.vendor.example", http.NoBody)
+	opts := receipt.EmitOpts{ActionID: receipt.NewActionID(), Verdict: config.ActionAllow, Transport: TransportForward, Method: req.Method, Target: req.URL.String()}
+	flushErr := errors.New("downstream connection closed")
+	out := &v3SSEFlushFaultRecorder{ResponseRecorder: httptest.NewRecorder(), flushErr: flushErr}
+	w, finish := p.startReceiptDelivery(out, req, cfg, opts)
+	defer finish()
+	w.WriteHeader(http.StatusOK)
+	opts.ParentActionID = opts.ActionID
+	observations := 0
+	err := DispatchSSEScan(req.Context(), strings.NewReader("data: {\"text\":\"POLICY_MARKER\"}\n\n"), w, w.(http.Flusher), p.ScannerPtr().Load(), SSEDispatchOptions{
+		GenericSSE: &cfg.ResponseScanning.SSEStreaming,
+		Generic:    mcp.GenericSSEScanOptions{DeliverFinding: p.sseFindingDelivery(req.Context(), cfg, opts)},
+		OnDelivery: func() { observations++ },
+	})
+	if !errors.Is(err, flushErr) || out.flushes != 1 || observations < 2 {
+		t.Fatalf("stream error = %v, flushes = %d, observations = %d", err, out.flushes, observations)
+	}
+	finish()
+	if err := writer.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	actions := readV3TransportActions(t, dir)
+	if !slices.ContainsFunc(actions, func(action v3.Action) bool {
+		return action.Layer == LayerSSEStream && action.Verdict == config.ActionWarn &&
+			action.Phase == "outcome" && action.OutcomeClass == "attempt_unknown"
+	}) {
+		t.Fatalf("missing unconfirmed SSE warning outcome: %+v", actions)
+	}
+}
+
+func TestV3ConfirmedAgentCardSignatureReceipt(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		fault func(string, string) (v3.StreamFile, error)
+	}{
+		{name: "confirmed"},
+		{name: "unavailable", fault: v3FirstAppendFault(true)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p, writer, dir, _ := newTestV3HTTPProxy(t, TransportForward, true, tc.fault)
+			cfg := p.CurrentConfig()
+			opts := receipt.EmitOpts{
+				ActionID: receipt.NewActionID(), Verdict: config.ActionAllow, Transport: TransportForward,
+				Method: http.MethodGet, Target: "https://api.vendor.example" + agentCardPath,
+			}
+			const signerID = "example-signer"
+			token, err := p.admitV3CardAcceptance(t.Context(), cfg, opts, mcp.AgentCardScanResult{
+				SignatureVerified: true, SignatureKeyID: signerID,
+			})
+			if tc.fault != nil {
+				if err == nil {
+					t.Fatal("accepted an Agent Card signature without its required receipt")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := token.Refuse(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			if err := writer.Close(t.Context(), nil); err != nil {
+				t.Fatal(err)
+			}
+			actions := readV3TransportActions(t, dir)
+			if len(actions) != 2 || actions[1].Layer != scannerLabelA2ACardSignature ||
+				actions[1].Phase != "outcome" || actions[1].OutcomeClass != "not_released" {
+				t.Fatalf("expected only the signature receipt pair, got %+v", actions)
+			}
+		})
+	}
+}
+
+func TestV3SSEPlainFlusherLeavesDeliveryUnknown(t *testing.T) {
+	p, writer, dir, _ := newTestV3HTTPProxy(t, TransportForward, true, nil, func(cfg *config.Config) {
+		cfg.ResponseScanning.Enabled = true
+		cfg.ResponseScanning.Patterns = []config.ResponseScanPattern{{Name: "response marker", Regex: "POLICY_MARKER"}}
+		cfg.ResponseScanning.SSEStreaming.Enabled = true
+		cfg.ResponseScanning.SSEStreaming.Action = config.ActionWarn
+	})
+	cfg := p.CurrentConfig()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://api.vendor.example", http.NoBody)
+	opts := receipt.EmitOpts{ActionID: receipt.NewActionID(), Verdict: config.ActionAllow, Transport: TransportForward, Method: req.Method, Target: req.URL.String()}
+	out := httptest.NewRecorder()
+	const body = "data: {\"text\":\"POLICY_MARKER\"}\n\n"
+	out.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	out.Header().Set("Content-Type", "text/event-stream")
+	w, finish := p.startReceiptDelivery(out, req, cfg, opts)
+	err := DispatchSSEScan(req.Context(), strings.NewReader(body), w, w.(http.Flusher), p.ScannerPtr().Load(), SSEDispatchOptions{
+		GenericSSE: &cfg.ResponseScanning.SSEStreaming,
+		Generic:    mcp.GenericSSEScanOptions{DeliverFinding: p.sseFindingDelivery(req.Context(), cfg, opts)},
+		OnDelivery: func() {},
+	})
+	if err != nil || !out.Flushed {
+		t.Fatalf("SSE delivery: flushed=%v err=%v", out.Flushed, err)
+	}
+	finish()
+	if err := writer.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	warnings := 0
+	for _, action := range readV3TransportActions(t, dir) {
+		if action.Phase != "outcome" || action.EffectBoundary != boundaryDownstreamDelivery {
+			continue
+		}
+		if action.Layer == LayerSSEStream {
+			warnings++
+		}
+		if action.OutcomeClass != "attempt_unknown" {
+			t.Errorf("unobservable delivery recorded as %q at %q", action.OutcomeClass, action.Layer)
+		}
+	}
+	if warnings != 1 {
+		t.Fatalf("warning delivery outcomes = %d, want 1", warnings)
+	}
+}
+
+func TestV3PlainFlusherNonSSELeavesDeliveryUnknown(t *testing.T) {
+	p, writer, dir, _ := newTestV3HTTPProxy(t, TransportForward, true, nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://api.vendor.example", http.NoBody)
+	opts := receipt.EmitOpts{ActionID: receipt.NewActionID(), Verdict: config.ActionAllow, Transport: TransportForward, Method: req.Method, Target: req.URL.String()}
+	out := httptest.NewRecorder()
+	out.Header().Set("Content-Type", "application/json")
+	out.Header().Set("Content-Length", "2")
+	w, finish := p.startReceiptDelivery(out, req, p.CurrentConfig(), opts)
+	if _, err := io.WriteString(w, "{}"); err != nil {
+		t.Fatal(err)
+	}
+	finish()
+	if !out.Flushed {
+		t.Fatal("expected a flush")
+	}
+	if err := writer.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	assertHandshakeOutcome(t, dir, boundaryDownstreamDelivery, "attempt_unknown")
+}
+
+func TestV3SignedCardAcceptanceIndependentOfDelivery(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	card := e2eSignedCard(t, priv, false)
+	for _, surface := range []string{TransportForward, transportInterceptReceipt} {
+		for _, tc := range []struct {
+			name            string
+			required, block bool
+			status          int
+		}{
+			{"required", true, false, http.StatusOK},
+			{"optional", false, false, http.StatusOK},
+			{"post-card block", true, true, http.StatusOK},
+			{"upstream 404", true, false, http.StatusNotFound},
+		} {
+			t.Run(surface+"/"+tc.name, func(t *testing.T) {
+				p, writer, dir, _ := newTestV3HTTPProxy(t, surface, tc.required, nil, func(cfg *config.Config) {
+					cfg.FlightRecorder.RequireReceipts = tc.required
+					cfg.A2AScanning.Enabled = true
+					cfg.A2AScanning.DetectCardDrift = true
+					cfg.A2AScanning.ScanAgentCards = false
+					cfg.A2AScanning.TrustedAgentCardKeys = []config.A2ATrustedCardKey{{KeyID: "k1", PublicKey: signing.EncodePublicKey(pub), AllowedOrigins: []string{"https://api.vendor.example"}}}
+					if tc.block {
+						cfg.ResponseScanning.Enabled = true
+						cfg.ResponseScanning.Action = config.ActionBlock
+						cfg.ResponseScanning.Patterns = []config.ResponseScanPattern{{Name: "card marker", Regex: "Vendor Agent"}}
+					}
+				})
+				rt := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+					return &http.Response{StatusCode: tc.status, Header: http.Header{"Content-Type": {"application/json"}, "Content-Length": {strconv.Itoa(len(card))}}, ContentLength: int64(len(card)), Body: io.NopCloser(bytes.NewReader(card)), Request: req}, nil
+				})
+				p.client = &http.Client{Transport: rt}
+				handler := http.Handler(http.HandlerFunc(p.handleForwardHTTP))
+				if surface == transportInterceptReceipt {
+					handler = newInterceptHandler(&InterceptContext{TargetHost: "api.vendor.example", TargetPort: "443", Config: p.CurrentConfig(), Scanner: p.ScannerPtr().Load(), Logger: p.logger, Metrics: p.metrics, Proxy: p}, rt)
+				}
+				out := &v3SSEFlushFaultRecorder{ResponseRecorder: httptest.NewRecorder()}
+				handler.ServeHTTP(out, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://api.vendor.example"+agentCardPath, http.NoBody))
+				wantStatus := tc.status
+				if tc.block {
+					wantStatus = http.StatusForbidden
+				}
+				if out.Code != wantStatus {
+					t.Fatalf("status = %d, want %d (%s)", out.Code, wantStatus, out.Body.String())
+				}
+				if !tc.block && !bytes.Equal(out.Body.Bytes(), card) {
+					t.Fatalf("delivered body = %q, want signed card", out.Body.Bytes())
+				}
+				if err := writer.Close(t.Context(), nil); err != nil {
+					t.Fatal(err)
+				}
+				counts := make(map[string]int)
+				primaryCompleted, deliveryRefused := false, false
+				for _, action := range readV3TransportActions(t, dir) {
+					if action.Phase == "decision" && action.EffectBoundary == boundaryDownstreamDelivery && action.Layer == responseScanLayer && action.Verdict == config.ActionBlock && action.EffectRelation == "not_attempted" {
+						deliveryRefused = true
+					}
+					if action.Phase == "outcome" && action.EffectBoundary == boundaryDownstreamDelivery && action.Layer == "" {
+						primaryCompleted = action.OutcomeClass == "completed"
+					}
+					if action.Phase == "outcome" && (action.Layer == scannerLabelA2ACardSignature || action.Layer == scannerLabelA2ACardDrift) {
+						counts[action.Layer]++
+						if action.OutcomeClass != "completed" {
+							t.Errorf("%s outcome = %q, want completed", action.Layer, action.OutcomeClass)
+						}
+					}
+				}
+				if tc.block && !deliveryRefused {
+					t.Error("missing downstream delivery refusal")
+				}
+				if !tc.block && !primaryCompleted {
+					t.Error("missing completed primary delivery")
+				}
+				if counts[scannerLabelA2ACardSignature] != 1 || counts[scannerLabelA2ACardDrift] != 1 {
+					t.Fatalf("card outcomes = %v, want one for each check", counts)
+				}
+			})
+		}
+	}
+}
+
+func TestV3InterceptCleanSSEFlushFailureLeavesDeliveryUnknown(t *testing.T) {
+	p, writer, dir, _ := newTestV3HTTPProxy(t, transportInterceptReceipt, true, nil, func(cfg *config.Config) {
+		cfg.FlightRecorder.RequireReceipts = true
+		cfg.ResponseScanning.Enabled = true
+		cfg.ResponseScanning.SSEStreaming.Enabled = true
+	})
+	const event = "data: {\"text\":\"hello\"}\n\n"
+	rt := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode:    http.StatusOK,
+			Header:        http.Header{"Content-Type": {"text/event-stream"}, "Content-Length": {strconv.Itoa(len(event))}},
+			ContentLength: int64(len(event)), Body: io.NopCloser(strings.NewReader(event)), Request: req,
+		}, nil
+	})
+	handler := newInterceptHandler(&InterceptContext{TargetHost: "api.vendor.example", TargetPort: "443", Config: p.CurrentConfig(), Scanner: p.ScannerPtr().Load(), Logger: p.logger, Metrics: p.metrics, Proxy: p}, rt)
+	out := &v3FirstSSEFlushFault{ResponseRecorder: httptest.NewRecorder()}
+	handler.ServeHTTP(out, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://api.vendor.example/sse", http.NoBody))
+	if out.flushes == 0 || out.Body.String() != event {
+		t.Fatalf("expected an attempted event flush, got %d flushes and %q", out.flushes, out.Body.String())
+	}
+	if err := writer.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	assertHandshakeOutcome(t, dir, boundaryDownstreamDelivery, "attempt_unknown")
+}
+
+type v3FirstSSEFlushFault struct {
+	*httptest.ResponseRecorder
+	flushes int
+}
+
+func (w *v3FirstSSEFlushFault) Flush() { _ = w.FlushError() }
+
+func (w *v3FirstSSEFlushFault) FlushError() error {
+	w.flushes++
+	if w.flushes == 1 {
+		return io.ErrClosedPipe
+	}
+	return nil
 }

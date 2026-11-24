@@ -307,12 +307,15 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 	responsePending := false
 	var outcomeStatus, outcomeReason string
 	var outcomeSize int64
+	var cardDelivery *mcpV3EffectToken
 	finishWarnings := func() {}
 	baseWarnContext := opts.warnContext()
 	finishMessage := func() {
 		// A warning summary still needs the response's reservation.
 		finishWarnings()
 		finishWarnings = func() {}
+		logMCPV3Error(logW, cardDelivery.Refuse(opts.warnContext()))
+		cardDelivery = nil
 		if reply, ok := writer.(*mcpV3ReplyWriter); ok {
 			logMCPV3Error(logW, reply.writeDeniedMessage(nil))
 		}
@@ -683,7 +686,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 						Severity:  config.SeverityHigh,
 					}),
 				}); emitErr != nil {
-					logReceiptEmitFailure(logW, emitErr, opts.requireReceipts(), config.ActionBlock)
+					logReceiptEmitFailure(logW, emitErr, opts.legacyReceiptsRequired(), config.ActionBlock)
 				}
 			}
 			// The refused media is content the server sent. Keep the block
@@ -972,7 +975,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					emitTrackedOutcome("error", "tool_poisoning", resp)
 					continue
 				}
-				if emitErr := emitMCPToolScanReceipt(logW, opts, toolResult, config.ActionWarn, trackedOutcome.Receipt); emitErr != nil && opts.requireReceipts() {
+				if emitErr := emitMCPToolScanReceipt(logW, opts, toolResult, config.ActionWarn, trackedOutcome.Receipt); emitErr != nil && opts.legacyReceiptsRequired() {
 					denialAudit = mcpOperationalBlockAudit(scanner.AuditReceiptEmission, "mcp_response", mcpReceiptEmissionReason)
 					resp := blockResponseReason(toolResult.RPCID, "receipt emission failed")
 					if err := writeMCPDenial(opts, denialAudit, writer, resp); err != nil {
@@ -1002,7 +1005,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				// a clean event. Later gates (general response scanning,
 				// inventory reservation) can still refuse delivery, and record
 				// that themselves.
-				if emitErr := emitMCPToolScanReceipt(logW, opts, toolResult, config.ActionAllow, trackedOutcome.Receipt); emitErr != nil && opts.requireReceipts() {
+				if emitErr := emitMCPToolScanReceipt(logW, opts, toolResult, config.ActionAllow, trackedOutcome.Receipt); emitErr != nil && opts.legacyReceiptsRequired() {
 					denialAudit = mcpOperationalBlockAudit(scanner.AuditReceiptEmission, "mcp_response", mcpReceiptEmissionReason)
 					captureToolScan(config.ActionBlock)
 					resolveToolInventory(config.ActionBlock)
@@ -1052,7 +1055,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		} else {
 			a2aOpts := opts.a2aResponseOpts(respScanOpts)
 			a2aOpts.Method = trackedMethod
-			if opts.requireReceipts() {
+			if opts.requireReceipts() || opts.receiptEffects.enabled {
 				a2aOpts.ConfirmCardAcceptance = func(candidate AgentCardScanResult) error {
 					selected := trackedOutcome.Receipt
 					if eventAdmission.NativeLease != nil {
@@ -1061,20 +1064,17 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					if !selected.ShardSelected && opts.ReceiptGroup != nil && opts.ReceiptGroup.Shards != nil {
 						selected = opts.ReceiptGroup.Shards.Admit(selected)
 					}
-					if candidate.SignatureVerified {
-						baselineReceiptErr = confirmMCPResponseEffect(logW, opts, selected, receipt.EmitOpts{ActionID: receipt.NewActionID(), Verdict: config.ActionAllow, Layer: "a2a_card_signature", Pattern: "verified key_id=" + candidate.SignatureKeyID, Transport: opts.Transport, Target: "mcp://response", RequestID: canonicalID(frame.ID)})
-						if baselineReceiptErr != nil {
-							return baselineReceiptErr
-						}
-					}
-					if !candidate.FirstSeen && !candidate.DriftAdopted {
-						return nil
-					}
-					baselineReceiptErr = confirmMCPResponseEffect(logW, opts, selected, receipt.EmitOpts{ActionID: receipt.NewActionID(), Verdict: config.ActionAllow, Layer: "a2a_card_drift", Pattern: "Agent Card baseline accepted", Transport: opts.Transport, Target: "mcp://response", RequestID: canonicalID(frame.ID)})
+					cardDelivery, baselineReceiptErr = confirmMCPCardAcceptance(opts.warnContext(), logW, opts, selected, receipt.EmitOpts{
+						Verdict: config.ActionAllow, Transport: opts.Transport, Target: "mcp://response", RequestID: canonicalID(frame.ID),
+					}, candidate)
 					return baselineReceiptErr
 				}
 			}
 
+			a2aOpts.OnCardBaselineCommitted = func() {
+				logMCPV3Error(logW, confirmMCPV3Effect(opts.warnContext(), cardDelivery, true))
+				cardDelivery = nil
+			}
 			a2aOpts.OnCardDriftAdopted = func() {
 				const detail = "a2a: Agent Card descriptive drift adopted"
 				_, _ = fmt.Fprintf(logW, "pipelock: a2a response: %s\n", detail)
@@ -1142,9 +1142,27 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				}
 				continue
 			}
-			if err := writer.WriteMessage(line); err != nil {
+			if reply, ok := writer.(*mcpV3ReplyWriter); ok && cardDelivery != nil {
+				reply.card, cardDelivery = cardDelivery, nil
+			}
+			writeErr := writer.WriteMessage(line)
+			if cardDelivery != nil {
+				ctx := opts.warnContext()
+				switch {
+				case writeErr == nil && opts.bufferedCardDelivery != nil:
+					opts.bufferedCardDelivery(cardDelivery)
+				case opts.listenerOwnsResponseOutcome:
+					logMCPV3Error(logW, cardDelivery.SettleOnExit(ctx))
+				case isWithheldV3Reply(writer):
+					logMCPV3Error(logW, cardDelivery.Refuse(ctx))
+				default:
+					logMCPV3Error(logW, confirmMCPV3Effect(ctx, cardDelivery, writeErr == nil))
+				}
+				cardDelivery = nil
+			}
+			if writeErr != nil {
 				releaseToolInventory()
-				return foundInjection, fmt.Errorf("writing line: %w", err)
+				return foundInjection, fmt.Errorf("writing line: %w", writeErr)
 			}
 			commitToolInventory()
 			emitTrackedOutcome(mcpResponseStatus(line), "complete", line)
@@ -1304,13 +1322,13 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		}
 		_, emitErr := opts.emitReceiptDecision(MCPDecision{
 			Receipt:        originalReceiptOpts,
-			RequireReceipt: opts.requireReceipts() && effectiveAction != config.ActionBlock,
+			RequireReceipt: opts.legacyReceiptsRequired() && effectiveAction != config.ActionBlock,
 		})
 		receiptFailureBlock := false
 		originalReceiptPersisted := emitErr != nil && errors.Is(emitErr, errMCPV2ReceiptEmit)
 		if emitErr != nil {
-			logReceiptEmitFailure(logW, emitErr, opts.requireReceipts(), effectiveAction)
-			if opts.requireReceipts() {
+			logReceiptEmitFailure(logW, emitErr, opts.legacyReceiptsRequired(), effectiveAction)
+			if opts.legacyReceiptsRequired() {
 				if effectiveAction != config.ActionBlock {
 					outbound = blockResponseReason(verdict.ID, "receipt emission failed")
 					effectiveAction = config.ActionBlock
@@ -1599,10 +1617,10 @@ func emitMCPToolScanReceipt(
 			Pattern:   pattern,
 			Severity:  config.SeverityHigh,
 		})),
-		RequireReceipt: opts.requireReceipts() && verdict != config.ActionBlock,
+		RequireReceipt: opts.legacyReceiptsRequired() && verdict != config.ActionBlock,
 	})
 	if err != nil {
-		logReceiptEmitFailure(logW, err, opts.requireReceipts(), verdict)
+		logReceiptEmitFailure(logW, err, opts.legacyReceiptsRequired(), verdict)
 	}
 	return err
 }

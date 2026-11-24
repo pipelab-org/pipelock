@@ -1932,6 +1932,11 @@ type AgentSessionProf struct {
 	AnomalyAction string `yaml:"anomaly_action,omitempty"`
 }
 
+const (
+	ReceiptFormatLegacy = "legacy"
+	ReceiptFormatV3     = "v3"
+)
+
 // BudgetConfig defines per-agent request budgets. Zero values mean unlimited.
 type BudgetConfig struct {
 	MaxRequestsPerSession      int                `yaml:"max_requests_per_session,omitempty"`
@@ -1957,6 +1962,7 @@ type BudgetConfig struct {
 
 // FlightRecorder configures the tamper-evident evidence recording system.
 type FlightRecorder struct {
+	ReceiptFormat               string                       `yaml:"receipt_format,omitempty" json:"-"` // restart-only
 	Enabled                     bool                         `yaml:"enabled"`
 	Dir                         string                       `yaml:"dir"`
 	ReceiptChains               int                          `yaml:"receipt_chains" json:"-"`                  // independent signed receipt chains (0=legacy default of 1; restart-only)
@@ -1977,6 +1983,14 @@ type FlightRecorder struct {
 	Completeness                FlightRecorderCompleteness   `yaml:"completeness" json:"-"`                    // restart-only evidence completeness knobs
 	EvidenceHealth              FlightRecorderEvidenceHealth `yaml:"evidence_health" json:"-"`                 // process-local evidence health monitoring
 	Anchor                      FlightRecorderAnchor         `yaml:"anchor" json:"-"`                          // optional runtime receipt-chain anchoring
+}
+
+// EffectiveReceiptFormat returns the configured format with the legacy default.
+func (f FlightRecorder) EffectiveReceiptFormat() string {
+	if f.ReceiptFormat == "" {
+		return ReceiptFormatLegacy
+	}
+	return f.ReceiptFormat
 }
 
 // ReceiptChainCount resolves the legacy omitted/zero setting to one chain.

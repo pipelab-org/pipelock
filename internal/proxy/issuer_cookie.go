@@ -57,7 +57,7 @@ const issuerCookieMaxLoggedName = 256
 // must treat as fail-closed. With require_receipts off it always returns nil
 // and emission stays best-effort.
 func (p *Proxy) recordIssuerCookieAllow(cfg *config.Config, ctx audit.LogContext, pattern, cookieName, target, requestID, agent, method string, selected ...receipt.EmitOpts) error {
-	requireReceipts := cfg != nil && cfg.FlightRecorder.RequireReceipts
+	requireReceipts := p.legacyReceiptsRequired(cfg)
 	fail := func(err error) error {
 		if requireReceipts {
 			return err

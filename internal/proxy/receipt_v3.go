@@ -12,6 +12,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/mcp"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -35,6 +36,22 @@ func WithV3ReceiptWriter(writer *v3.StreamWriter) Option {
 	return func(p *Proxy) {
 		p.receiptEffects = proxyReceiptEffects{gate: v3.NewEffectGate(writer), enabled: writer != nil}
 	}
+}
+
+func (p *Proxy) v3ReceiptsEnabled() bool {
+	return p != nil && p.receiptEffects.enabled
+}
+
+func (p *Proxy) legacyReceiptsRequired(cfg *config.Config) bool {
+	return cfg != nil && cfg.FlightRecorder.RequireReceipts && !p.v3ReceiptsEnabled()
+}
+
+func (rp *ReverseProxyHandler) legacyReceiptsRequired(cfg *config.Config) bool {
+	return rp.owner.legacyReceiptsRequired(cfg)
+}
+
+func (ic *InterceptContext) legacyReceiptsRequired() bool {
+	return ic.Proxy.legacyReceiptsRequired(ic.Config)
 }
 
 type proxyEffectToken = v3.EffectToken
@@ -63,10 +80,16 @@ func (p *Proxy) refuseEffect(ctx context.Context, cfg *config.Config, opts recei
 		return
 	}
 	opts.ActionID = receipt.NewActionID()
+	_ = p.recordEffectRefusal(ctx, cfg, opts, boundary)
+}
+
+func (p *Proxy) recordEffectRefusal(ctx context.Context, cfg *config.Config, opts receipt.EmitOpts, boundary string) error {
 	action, policy := prepareV3TransportReceipt(cfg, opts, boundary)
-	if err := p.receiptEffects.gate.Refuse(ctx, action, policy); err != nil {
+	err := p.receiptEffects.gate.Refuse(ctx, action, policy)
+	if err != nil {
 		p.logReceiptEmissionFailure(opts, err)
 	}
+	return err
 }
 
 func prepareV3TransportReceipt(cfg *config.Config, opts receipt.EmitOpts, boundary string) (v3.Action, v3.PolicySnapshot) {
@@ -115,6 +138,25 @@ func (p *Proxy) settleEffect(ctx context.Context, opts receipt.EmitOpts, token *
 	if err := token.SettleOnExit(ctx); err != nil {
 		p.logReceiptEmissionFailure(opts, err)
 	}
+}
+
+func (p *Proxy) admitV3CardAcceptance(ctx context.Context, cfg *config.Config, opts receipt.EmitOpts, candidate mcp.AgentCardScanResult) (*proxyEffectToken, error) {
+	var checks []receipt.EmitOpts
+	if candidate.SignatureVerified {
+		signature := opts
+		signature.Layer = scannerLabelA2ACardSignature
+		signature.Pattern = "verified key_id=" + candidate.SignatureKeyID
+		checks = append(checks, signature)
+	}
+	if candidate.FirstSeen || candidate.DriftAdopted {
+		opts.Layer = scannerLabelA2ACardDrift
+		opts.Pattern = "Agent Card baseline accepted"
+		checks = append(checks, opts)
+	}
+	_, policy := prepareV3TransportReceipt(cfg, opts, boundaryDownstreamDelivery)
+	parent := opts
+	parent.ActionID = opts.ParentActionID
+	return p.receiptEffects.gate.AdmitBatch(ctx, receiptSupportingActions(cfg, parent, boundaryDownstreamDelivery, checks), policy)
 }
 
 type reverseReceiptEffectKey struct{}

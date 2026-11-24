@@ -151,6 +151,7 @@ type MCPProxyOpts struct {
 	responseDropped func()
 	// The HTTP listener keeps the outcome handle through its response adapter.
 	listenerOwnsResponseOutcome bool
+	bufferedCardDelivery        func(*mcpV3EffectToken)
 	// A buffered listener response cannot settle on the buffer write.
 	bufferedResponseOutcome func(status, reason string, size int64)
 	// Modern HTTP lists enforce structural contracts independently of drift trust.
@@ -939,6 +940,10 @@ func (o MCPProxyOpts) receiptEmitter() *receipt.Emitter {
 	return o.ReceiptEmitter
 }
 
+func (o MCPProxyOpts) legacyReceiptsRequired() bool {
+	return !o.receiptEffects.enabled && o.requireReceipts()
+}
+
 func (o MCPProxyOpts) requireReceipts() bool {
 	if o.RequireReceiptsFn != nil {
 		return o.RequireReceiptsFn()
@@ -969,10 +974,10 @@ func (o MCPProxyOpts) emitMCPReceiptDecision(d MCPDecision, admit bool) ([]byte,
 		if admit && o.ReceiptGroup.Shards != nil && d.Receipt.ActionID != "" && !d.Receipt.ShardSelected {
 			d.Receipt = o.ReceiptGroup.Shards.Admit(d.Receipt)
 		}
-		if o.requireReceipts() && d.Receipt.ActionID != "" {
+		if o.legacyReceiptsRequired() && d.Receipt.ActionID != "" {
 			d.RequireReceipt = true
 		}
-		d.RequiredMode = o.requireReceipts()
+		d.RequiredMode = o.legacyReceiptsRequired()
 		return EmitMCPGroupDecision(*o.ReceiptGroup, nil, d)
 	}
 	return EmitMCPDecision(o.receiptEmitter(), o.v2ReceiptEmitter(), nil, d)

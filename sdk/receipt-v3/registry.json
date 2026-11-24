@@ -82,6 +82,18 @@
     ]
   },
   "emit_attribution": {
+    "internal/mcp/receipt_v3.go/(*mcpV3ReplyWriter).admit/Admit/d930c207f6adb938": {
+      "when": "Before releasing an MCP reply without an existing admission token.",
+      "fields": "Uses the MCP reply decision and its parent action ID. The adapter supplies tool classification, sanitized target, policy snapshot, caller identity when verified, and available decision attribution."
+    },
+    "internal/mcp/receipt_v3.go/(*mcpV3ReplyWriter).admit/AdmitDenialDelivery/953cadd13264d9c4": {
+      "when": "Before delivering an MCP denial after the send was refused.",
+      "fields": "Uses the MCP reply decision and its parent action ID. The adapter supplies tool classification, sanitized target, policy snapshot, caller identity when verified, and available decision attribution."
+    },
+    "internal/mcp/receipt_v3.go/(MCPProxyOpts).refuseV3Reply/Refuse/f61b9bc1f2181314": {
+      "when": "When MCP withholds the downstream reply.",
+      "fields": "Uses the MCP reply decision and its parent action ID. The adapter supplies tool classification, sanitized target, policy snapshot, caller identity when verified, and available decision attribution."
+    },
     "internal/cli/runtime/mcp.go/recoverDeferredActions/EmitDeferredResolutionReceipt/1085a3de444e8017": {
       "fields": "`phase` is resolution. `hold` carries the original defer id as `hold.id` and records `hold.resolution_policy` and `hold.resolution_source`. The original hold carries `hold.policy` and any `hold.parent`. Set `hold.correction:true` when a later block replaces an allow. `session` is the authority session id and original id, omitted when empty. `taint` records authority user-broad, decision allow, and reason `defer_resolution`. An `ask` resolution requires the retained `approval_api` channel and `observed:true`. Omit `ask` for other resolution verdicts. `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision. `caller.authn` is `none`.",
       "when": "When `recoverDeferredActions` selects this receipt call"
@@ -198,11 +210,11 @@
       "fields": "Set `phase`, `effect_relation`, and `outcome_class` from the observed result. Use the original intent action ID. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Include `redaction` when the applied rewrite carries a summary. Omit `checker` and `normalization`.",
       "when": "Recording the HTTP input receipt fails before the admitted request can be sent."
     },
-    "internal/mcp/mcp_http_reverse.go/RunHTTPListenerProxy/emitReceiptDecision/83b5e9ce36219075": {
+    "internal/mcp/mcp_http_reverse.go/RunHTTPListenerProxy/emitReceiptDecision/7c6b9d3db7fa199a": {
       "fields": "`phase` and `effect_relation` record that no release is attempted, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `taint` and `session` are copied when the intent or tool decision set them, and omitted when it did not.",
       "when": "`reqA2ACfg != nil && reqA2ACfg.Enabled` and `!headerResult.Clean`. Records `ActionBlock`"
     },
-    "internal/mcp/mcp_http_reverse.go/RunHTTPListenerProxy/emitReceiptDecision/a35d255ec4bc178f": {
+    "internal/mcp/mcp_http_reverse.go/RunHTTPListenerProxy/emitReceiptDecision/5baf0f37a2e44c75": {
       "fields": "Use the intent action ID and its outcome fields when an intent exists. Otherwise set `phase` and `effect_relation` from the standalone refusal. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Include `contract` when the decision sets the contract gate result. Include `redaction` when the applied rewrite carries a summary. Omit `checker` and `normalization`.",
       "when": "The HTTP listener refuses a request without a tracked outcome handle. Close an existing intent or record a standalone refusal."
     },
@@ -238,23 +250,15 @@
       "fields": "`phase` and `effect_relation` come from the response delivery decision. `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision. `caller.authn` is `none`. `taint`, `session`, `contract`, `redaction`, `shield`, `checker`, and `normalization` are omitted. The response shard and parent action id are copied from the tracked intent.",
       "when": "`mediaResult.Changed`. Records `ActionStrip`"
     },
-    "internal/mcp/proxy.go/ForwardScanned/confirmMCPResponseEffect/fd70af366c26a517": {
-      "fields": "`phase` and `effect_relation` come from the response delivery decision. `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision. `caller.authn` is `none`. `taint`, `session`, `contract`, `redaction`, `shield`, `checker`, and `normalization` are omitted. The response shard and parent action id are copied from the tracked intent.",
-      "when": "`opts.requireReceipts()` and `candidate.SignatureVerified`. Records `ActionAllow`"
-    },
-    "internal/mcp/proxy.go/ForwardScanned/confirmMCPResponseEffect/4213a5279419a95c": {
-      "fields": "`phase` and `effect_relation` come from the response delivery decision. `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision. `caller.authn` is `none`. `taint`, `session`, `contract`, `redaction`, `shield`, `checker`, and `normalization` are omitted. The response shard and parent action id are copied from the tracked intent.",
-      "when": "otherwise after `isToolsList && !toolCfg.HeaderContractsOnly` and `opts.requireReceipts()`. Records `ActionAllow`"
-    },
     "internal/mcp/proxy.go/ForwardScanned/emitMCPToolScanReceipt/63383da7c00a973a": {
       "fields": "`phase` and `effect_relation` come from the tools/list delivery decision. `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision. `caller.authn` is `none`. `taint` and `session` are omitted. `checker.surface` is `mcp_tool_description`, `selection` is `configured`, and `mode` is that surface's decision-time mode. `config_hash` is `sha256:` plus the decision-time injection-policy digest. `disposition` is `passed` for `benign`, `flagged` for `finding`, `error` for `incomplete`, and `not_run` for `off` or `not_assessed`. Omit `checker` when the assessment status is `partial` or the policy digest was not retained. `normalization` is included only when that scan built a text-normalization view, and omitted otherwise.",
       "when": "`toolResult.IsToolsList && !toolResult.Clean` and `toolAction == config.ActionBlock`"
     },
-    "internal/mcp/proxy.go/ForwardScanned/emitMCPToolScanReceipt/c25708a43e53f0d1": {
+    "internal/mcp/proxy.go/ForwardScanned/emitMCPToolScanReceipt/6a86b2a09d70c301": {
       "fields": "`phase` and `effect_relation` come from the tools/list delivery decision. `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision. `caller.authn` is `none`. `taint` and `session` are omitted. `checker.surface` is `mcp_tool_description`, `selection` is `configured`, and `mode` is that surface's decision-time mode. `config_hash` is `sha256:` plus the decision-time injection-policy digest. `disposition` is `passed` for `benign`, `flagged` for `finding`, `error` for `incomplete`, and `not_run` for `off` or `not_assessed`. Omit `checker` when the assessment status is `partial` or the policy digest was not retained. `normalization` is included only when that scan built a text-normalization view, and omitted otherwise.",
       "when": "`toolCfg != nil` and `toolResult.IsToolsList && !toolResult.Clean`"
     },
-    "internal/mcp/proxy.go/ForwardScanned/emitMCPToolScanReceipt/253b9290091141be": {
+    "internal/mcp/proxy.go/ForwardScanned/emitMCPToolScanReceipt/373b8a466ab26e16": {
       "fields": "`phase` and `effect_relation` come from the tools/list delivery decision. `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision. `caller.authn` is `none`. `taint` and `session` are omitted. `checker.surface` is `mcp_tool_description`, `selection` is `configured`, and `mode` is that surface's decision-time mode. `config_hash` is `sha256:` plus the decision-time injection-policy digest. `disposition` is `passed` for `benign`, `flagged` for `finding`, `error` for `incomplete`, and `not_run` for `off` or `not_assessed`. Omit `checker` when the assessment status is `partial` or the policy digest was not retained. `normalization` is included only when that scan built a text-normalization view, and omitted otherwise.",
       "when": "`toolCfg != nil` and `toolAcknowledged && toolResult.Clean`"
     },
@@ -262,11 +266,11 @@
       "fields": "`phase` and `effect_relation` record that no release is attempted, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `taint` and `session` are copied when the intent or tool decision set them, and omitted when it did not.",
       "when": "`mediaResult.Blocked`. Records `ActionBlock`"
     },
-    "internal/mcp/proxy.go/ForwardScanned/emitReceiptDecision/7de616e0dcc5f6d1": {
+    "internal/mcp/proxy.go/ForwardScanned/emitReceiptDecision/674c7ed56cb1b5b5": {
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `taint` and `session` are copied when the intent or tool decision set them, and omitted when it did not.",
       "when": "When `ForwardScanned` selects this receipt call"
     },
-    "internal/mcp/proxy.go/ForwardScanned/emitReceiptDecision/4eab870c16b495b4": {
+    "internal/mcp/proxy.go/ForwardScanned/emitReceiptDecision/15fdefacbf4fd1c7": {
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `taint` and `session` are copied when the intent or tool decision set them, and omitted when it did not.",
       "when": "`emitErr != nil` and `opts.requireReceipts()`"
     },
@@ -410,7 +414,7 @@
       "fields": "`phase` and `effect_relation` record that no release is attempted, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "When `handleConnect` selects this receipt call"
     },
-    "internal/proxy/forward.go/(*Proxy).handleConnect/emitOutcomeReceipt/6f92002975cb6035": {
+    "internal/proxy/forward.go/(*Proxy).handleConnect/emitOutcomeReceipt/f630c3466dd17a6c": {
       "fields": "`phase`, `effect_relation`, and `outcome_class` from the observed completion, refusal, or transport error, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, and the action ID is the original decision's, `caller.authn` is `none`, `contract` is included when this call sets the contract gate result, and omitted otherwise.",
       "when": "An admitted CONNECT tunnel ends and its required opening intent has a correlated outcome."
     },
@@ -422,7 +426,7 @@
       "fields": "`phase` and `effect_relation` record that no release is attempted, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "When `handleConnect` selects this receipt call"
     },
-    "internal/proxy/forward.go/(*Proxy).handleConnect/emitRequiredReceipt/ae27039512f1ecc4": {
+    "internal/proxy/forward.go/(*Proxy).handleConnect/emitRequiredReceipt/7fdfae56770e80fc": {
       "fields": "`phase` and `effect_relation` from the decision that gates dialing, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "`cfg.FlightRecorder.RequireReceipts`"
     },
@@ -449,14 +453,6 @@
     "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/confirmResponseDecision/50e2d1900e73db36": {
       "fields": "`phase` and `effect_relation` from the decision that gates client delivery or stops the response, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `shield` is included when the response summary is in scope, and omitted otherwise, `checker` follows the checker mapping when this call's injection assessment and decision-time policy digest are both in scope, and is omitted otherwise, including a partial assessment. `normalization` is included only when that decision built a text-normalization view, and omitted otherwise.",
       "when": "`cfg.FlightRecorder.RequireReceipts`"
-    },
-    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/confirmResponseDecision/a78376088056b796": {
-      "fields": "`phase` and `effect_relation` from the decision that gates client delivery or stops the response, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `shield` is included when the response summary is in scope, and omitted otherwise, `checker` follows the checker mapping when this call's injection assessment and decision-time policy digest are both in scope, and is omitted otherwise, including a partial assessment. `normalization` is included only when that decision built a text-normalization view, and omitted otherwise.",
-      "when": "`isA2A && len(respBody) > 0` and `cfg.FlightRecorder.RequireReceipts`. Records `ActionAllow`"
-    },
-    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/confirmResponseDecision/0ad3e2dff79c8e1e": {
-      "fields": "`phase` and `effect_relation` from the decision that gates client delivery or stops the response, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `shield` is included when the response summary is in scope, and omitted otherwise, `redaction` is included when an applied rewrite carries its summary, and omitted otherwise, `checker` follows the checker mapping when this call's injection assessment and decision-time policy digest are both in scope, and is omitted otherwise, including a partial assessment. `normalization` is included only when that decision built a text-normalization view, and omitted otherwise.",
-      "when": "`cardResult.SignatureVerified` and otherwise after `a2aResponseDecisionBlocks(cfg, a2aResult, false)`. Records `ActionAllow`"
     },
     "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/confirmResponseDecision/d778615028204812": {
       "fields": "`phase` and `effect_relation` from the decision that gates client delivery or stops the response, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `shield` is included when the response summary is in scope, and omitted otherwise, `checker` follows the checker mapping when this call's injection assessment and decision-time policy digest are both in scope, and is omitted otherwise, including a partial assessment. `normalization` is included only when that decision built a text-normalization view, and omitted otherwise.",
@@ -530,7 +526,7 @@
       "fields": "`phase` and `effect_relation` record that no release is attempted, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `redaction` is included when an applied rewrite carries its summary, and omitted otherwise.",
       "when": "`envEmitter != nil` and `envErr != nil`. Records `ActionBlock`"
     },
-    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/emitForwardReceipt/110dc41b460a9847": {
+    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/emitForwardReceipt/77f8696c30d341b7": {
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `contract` is included when this call sets the contract gate result, and omitted otherwise, `redaction` is included when an applied rewrite carries its summary, and omitted otherwise.",
       "when": "`!cfg.FlightRecorder.RequireReceipts`"
     },
@@ -574,7 +570,7 @@
       "fields": "`phase` and `effect_relation` record that no release is attempted, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `redaction` is included when an applied rewrite carries its summary, and omitted otherwise.",
       "when": "otherwise after `IsSSEStreamScanError(err)` and otherwise after `IsSSEStreamFinding(err) && sseAction == config.ActionWarn`. Records `ActionBlock`"
     },
-    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/emitForwardReceipt/6d9a7bd5ede21080": {
+    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/emitForwardReceipt/bd79e323572f8489": {
       "fields": "`phase` and `effect_relation` from the decision that gates client delivery or stops the response, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `contract` is included when this call sets the contract gate result, and omitted otherwise, `redaction` is included when an applied rewrite carries its summary, and omitted otherwise, `checker` follows the checker mapping when this call's injection assessment and decision-time policy digest are both in scope, and is omitted otherwise, including a partial assessment. `normalization` is included only when that decision built a text-normalization view, and omitted otherwise.",
       "when": "`fwdRespExempt && cfg.ResponseScanning.Enabled && !responseHeadersDeclareSVG(resp.Header)` and `!cfg.FlightRecorder.RequireReceipts`"
     },
@@ -593,10 +589,6 @@
     "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/emitForwardReceipt/d2cda25a45792e47": {
       "fields": "`phase` and `effect_relation` record that no release is attempted, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `shield` is included when the response summary is in scope, and omitted otherwise, `checker` follows the checker mapping when this call's injection assessment and decision-time policy digest are both in scope, and is omitted otherwise, including a partial assessment. `normalization` is included only when that decision built a text-normalization view, and omitted otherwise.",
       "when": "`shieldBlocked != nil`. Records `ActionBlock`"
-    },
-    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/emitForwardReceipt/e772833f6357ff03": {
-      "fields": "`phase` and `effect_relation` from the decision that gates client delivery or stops the response, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `shield` is included when the response summary is in scope, and omitted otherwise, `redaction` is included when an applied rewrite carries its summary, and omitted otherwise, `checker` follows the checker mapping when this call's injection assessment and decision-time policy digest are both in scope, and is omitted otherwise, including a partial assessment. `normalization` is included only when that decision built a text-normalization view, and omitted otherwise.",
-      "when": "`cardResult.SignatureVerified` and `a2aResponseDecisionBlocks(cfg, a2aResult, false)`. Records `ActionAllow`"
     },
     "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/emitForwardReceipt/d799caff81fa35a6": {
       "fields": "`phase` and `effect_relation` record that no release is attempted, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `shield` is included when the response summary is in scope, and omitted otherwise, `redaction` is included when an applied rewrite carries its summary, and omitted otherwise, `checker` follows the checker mapping when this call's injection assessment and decision-time policy digest are both in scope, and is omitted otherwise, including a partial assessment. `normalization` is included only when that decision built a text-normalization view, and omitted otherwise.",
@@ -646,7 +638,7 @@
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "When `handleForwardHTTP` selects this receipt call"
     },
-    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/emitRequiredReceipt/726af1e98c66fcd9": {
+    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/emitRequiredReceipt/cfb241a7823ca0d9": {
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "`cfg.FlightRecorder.RequireReceipts`"
     },
@@ -658,7 +650,7 @@
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "When `handleForwardHTTP` selects this receipt call"
     },
-    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/sseFindingReceiptConfirmer/83beed215ddfd725": {
+    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/legacySSEFindingConfirmer/a2167bc33018d09f": {
       "fields": "`phase` and `effect_relation` from the warning before delivery of the inspected SSE event, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "Required receipts and a warning on an inspected SSE event"
     },
@@ -701,14 +693,6 @@
     "internal/proxy/intercept.go/newInterceptHandler/interceptConfirmResponseOrBlock/0b5544cf1842136c": {
       "fields": "`phase` and `effect_relation` from the decision that gates client delivery or stops the response, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`. Copy `taint` and `session` when the decision set them.",
       "when": "When `newInterceptHandler` selects this receipt call"
-    },
-    "internal/proxy/intercept.go/newInterceptHandler/interceptConfirmResponseOrBlock/739351668e094d76": {
-      "fields": "`phase` and `effect_relation` from the decision that gates client delivery or stops the response, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`. Copy `taint` and `session` when the decision set them.",
-      "when": "`isA2A` and `ic.Config.FlightRecorder.RequireReceipts`. Records `ActionAllow`"
-    },
-    "internal/proxy/intercept.go/newInterceptHandler/interceptConfirmResponseOrBlock/e7768eb9d9a33ebf": {
-      "fields": "`phase` and `effect_relation` from the decision that gates client delivery or stops the response, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `redaction` is included when an applied rewrite carries its summary, and omitted otherwise. Copy `taint` and `session` when the decision set them.",
-      "when": "`isA2A` and `cardResult.SignatureVerified`. Records `ActionAllow`"
     },
     "internal/proxy/intercept.go/newInterceptHandler/interceptConfirmResponseOrBlock/81f90afd91a4e2fe": {
       "fields": "`phase` and `effect_relation` from the decision that gates client delivery or stops the response, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`. Copy `taint` and `session` when the decision set them.",
@@ -842,10 +826,6 @@
       "fields": "`phase` and `effect_relation` record that no release is attempted, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `redaction` is included when an applied rewrite carries its summary, and omitted otherwise. Copy `taint` and `session` when the decision set them.",
       "when": "`mediaVerdict.Blocked`. Records `ActionBlock`"
     },
-    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitResponseReceipt/54c4a71043bd17b3": {
-      "fields": "`phase` and `effect_relation` from the decision that gates client delivery or stops the response, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `redaction` is included when an applied rewrite carries its summary, and omitted otherwise. Copy `taint` and `session` when the decision set them.",
-      "when": "`isA2A` and `cardResult.SignatureVerified`. Records `ActionAllow`"
-    },
     "internal/proxy/intercept.go/newInterceptHandler/interceptEmitResponseReceipt/ee19cbbdf00219d6": {
       "fields": "`phase` and `effect_relation` record that no release is attempted, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `redaction` is included when an applied rewrite carries its summary, and omitted otherwise. Copy `taint` and `session` when the decision set them.",
       "when": "`isA2A` and `a2aRespResult.ScanError != \"\"`. Records `ActionBlock`"
@@ -890,7 +870,7 @@
       "fields": "`phase` and `effect_relation` record that no release is attempted, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`. Copy `taint` and `session` when the decision set them.",
       "when": "`isA2A` and `!a2aHdrResult.Clean`. Records `ActionBlock`"
     },
-    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceiptOrBlock/d6789753a56931c3": {
+    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceiptOrBlock/41a7798749686385": {
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `redaction` is included when an applied rewrite carries its summary, and omitted otherwise. Copy `taint` and `session` when the decision set them.",
       "when": "`ic.Config != nil && ic.Config.FlightRecorder.RequireReceipts`"
     },
@@ -934,7 +914,7 @@
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`. Copy `taint` and `session` when the decision set them.",
       "when": "The intercept rescan allowed the request (`rescanned.Allowed`); one receipt per relief kind it used, joined DLP view, issuer entropy, or exact query-replay entropy"
     },
-    "internal/proxy/intercept.go/newInterceptHandler/sseFindingReceiptConfirmer/623a116a47293fdd": {
+    "internal/proxy/intercept.go/newInterceptHandler/legacySSEFindingConfirmer/a490e426107135f4": {
       "fields": "`phase` and `effect_relation` from the warning before delivery of the inspected SSE event, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`. Copy `taint` and `session` when the decision set them.",
       "when": "Required receipts and a warning on an inspected SSE event"
     },
@@ -1062,7 +1042,7 @@
       "fields": "`phase` and `effect_relation` record that no release is attempted, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `checker` follows the checker mapping when this call's injection assessment and decision-time policy digest are both in scope, and is omitted otherwise, including a partial assessment. `normalization` is included only when that decision built a text-normalization view, and omitted otherwise.",
       "when": "`hiddenInjectionFound && !surface.readabilityOK`. Records `ActionBlock`"
     },
-    "internal/proxy/proxy.go/(*Proxy).handleFetch/emitFetchReceipt/9f1fb56639f582c2": {
+    "internal/proxy/proxy.go/(*Proxy).handleFetch/emitFetchReceipt/c9d8440988387516": {
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `contract` is included when this call sets the contract gate result, and omitted otherwise.",
       "when": "`!cfg.FlightRecorder.RequireReceipts`"
     },
@@ -1102,7 +1082,7 @@
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "When `handleFetch` selects this receipt call"
     },
-    "internal/proxy/proxy.go/(*Proxy).handleFetch/emitRequiredReceipt/557d3a5a22a016f1": {
+    "internal/proxy/proxy.go/(*Proxy).handleFetch/emitRequiredReceipt/1e70869f7151cf3a": {
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "`cfg.FlightRecorder.RequireReceipts`"
     },
@@ -1130,7 +1110,7 @@
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `contract` is included when this call sets the contract gate result, and omitted otherwise.",
       "when": "`rp.reqPolicyFn != nil`"
     },
-    "internal/proxy/reverse.go/(*ReverseProxyHandler).ServeHTTP/emitRequiredReceipt/f95a326723184e0f": {
+    "internal/proxy/reverse.go/(*ReverseProxyHandler).ServeHTTP/emitRequiredReceipt/96813ac5a4a2887d": {
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "`cfg.FlightRecorder.RequireReceipts`"
     },
@@ -1318,7 +1298,7 @@
       "fields": "`phase` and `effect_relation` from the decision that gates client delivery or stops the response, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`, `checker` follows the checker mapping when this call's injection assessment and decision-time policy digest are both in scope, and is omitted otherwise, including a partial assessment. `normalization` is included only when that decision built a text-normalization view, and omitted otherwise.",
       "when": "`cfg.FlightRecorder.RequireReceipts && cfg.ResponseScanning.Enabled && revRespSizeExempt` and `err != nil`. Records `ActionBlock`"
     },
-    "internal/proxy/reverse.go/(*ReverseProxyHandler).modifyResponse/sseFindingReceiptConfirmer/f898f63e63a92114": {
+    "internal/proxy/reverse.go/(*ReverseProxyHandler).modifyResponse/legacySSEFindingConfirmer/cfcd9ac0a675b0e2": {
       "fields": "`phase` and `effect_relation` from the warning before delivery of the inspected SSE event, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "Required receipts and a warning on an inspected SSE event"
     },
@@ -1438,7 +1418,7 @@
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "When `handleClientTextResult` selects this receipt call"
     },
-    "internal/proxy/websocket.go/(*Proxy).handleWebSocket/emitOutcomeReceipt/a2c094b27e0d4653": {
+    "internal/proxy/websocket.go/(*Proxy).handleWebSocket/emitOutcomeReceipt/7d45d1b1f77878f0": {
       "fields": "`phase`, `effect_relation`, and `outcome_class` from the observed completion, refusal, or transport error, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, and the action ID is the original decision's, `caller.authn` is `none`, `contract` is included when this call sets the contract gate result, and omitted otherwise.",
       "when": "`cfg.FlightRecorder.RequireReceipts` and `!outcomeEmitted`. Records `ActionAllow`"
     },
@@ -1450,7 +1430,7 @@
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "When `handleWebSocket` selects this receipt call"
     },
-    "internal/proxy/websocket.go/(*Proxy).handleWebSocket/emitRequiredReceipt/34207aa30182ed5d": {
+    "internal/proxy/websocket.go/(*Proxy).handleWebSocket/emitRequiredReceipt/481edad1b2232742": {
       "fields": "`phase` and `effect_relation` from the decision that gates the request or frame send, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "`cfg.FlightRecorder.RequireReceipts`"
     },
@@ -1533,6 +1513,38 @@
     "internal/proxy/reverse.go/(*ReverseProxyHandler).modifyResponse/emitReverseStreamReceipt/cc259a3759fc6c36": {
       "fields": "`phase` and `effect_relation` from the decision that gates client delivery or stops the response, `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision, `caller.authn` is `none`.",
       "when": "`HasSingleSSEContentType(resp.Header)` and `IsSSEStreamScanError(err)`. Records `ActionBlock`"
+    },
+    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/sseFindingDelivery/1490975f9c542364": {
+      "fields": "Uses the event warning, the request policy snapshot, available request attribution and the parent action ID. Settles from the event write and observed flush.",
+      "when": "When enabled v3 receipts admit a warned SSE event before its write."
+    },
+    "internal/proxy/intercept.go/newInterceptHandler/sseFindingDelivery/77dba1eeb887d360": {
+      "fields": "Uses the event warning, the request policy snapshot, available request attribution and the parent action ID. Settles from the event write and observed flush.",
+      "when": "When enabled v3 receipts admit a warned SSE event before its write."
+    },
+    "internal/proxy/proxy.go/(*Proxy).emitRequestPolicyReceipt/recordEffectRefusal/7359a85299cbe14d": {
+      "fields": "Uses the returned action ID, the sanitized request target, request policy rule name and decision-time policy snapshot.",
+      "when": "When request policy refuses an upstream request with v3 receipts enabled."
+    },
+    "internal/proxy/reverse.go/(*ReverseProxyHandler).emitRequestPolicyReceipt/recordEffectRefusal/727e7272828a900f": {
+      "fields": "Uses the returned action ID, the sanitized request target, request policy rule name and decision-time policy snapshot.",
+      "when": "When request policy refuses an upstream request with v3 receipts enabled."
+    },
+    "internal/proxy/reverse.go/(*ReverseProxyHandler).modifyResponse/sseFindingDelivery/639a2a2c38680665": {
+      "fields": "Uses the event warning, the request policy snapshot, available request attribution and the parent action ID. Settles from the event write and observed flush.",
+      "when": "When enabled v3 receipts admit a warned SSE event before its write."
+    },
+    "internal/mcp/proxy.go/ForwardScanned/confirmMCPCardAcceptance/bafe8854f60c7b85": {
+      "fields": "Uses the deciding request policy snapshot, available caller and request attribution, and the parent action ID. Signature evidence names the verified key ID. Baseline evidence records first appearance or accepted drift. The transport sets the outcome from downstream delivery or refusal.",
+      "when": "Before accepting a verified Agent Card or adopting its baseline while v3 receipts are active, including optional mode."
+    },
+    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/admitV3CardAcceptance/4ba0647c0670131a": {
+      "fields": "Uses the deciding request policy snapshot, available caller and request attribution, and the parent action ID. Signature evidence names the verified key ID. Baseline evidence records first appearance or accepted drift. The transport sets the outcome from downstream delivery or refusal.",
+      "when": "Before accepting a verified Agent Card or adopting its baseline while v3 receipts are active, including optional mode."
+    },
+    "internal/proxy/intercept.go/newInterceptHandler/admitV3CardAcceptance/e12897d20ee65328": {
+      "fields": "Uses the deciding request policy snapshot, available caller and request attribution, and the parent action ID. Signature evidence names the verified key ID. Baseline evidence records first appearance or accepted drift. The transport sets the outcome from downstream delivery or refusal.",
+      "when": "Before accepting a verified Agent Card or adopting its baseline while v3 receipts are active, including optional mode."
     }
   },
   "emit_exclusions": {
@@ -1555,15 +1567,15 @@
     "internal/mcp/pipeline_decision.go/emitMCPEnvelopeDecision/EmitMCPDecision/cae74696673187dc": "Envelope-only emission supplies no receipt writer.",
     "internal/playground/liverun.go/(*LiveRun).AssembleAndVerify/EmitSessionClose/ede7c6d69595561b": "Replay capture and playground artifacts retain their existing format.",
     "internal/playground/liverun.go/StartLiveRun/EmitSessionOpen/c5be03925512e69f": "Replay capture and playground artifacts retain their existing format.",
-    "internal/proxy/forward.go/(*Proxy).handleConnect/emitReceipt/4f0d9ae01f90f103": "Records a capacity-stop terminal diagnostic for the CONNECT tunnel without a matching action intent.",
-    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/emitForwardReceipt/6e42437d83c31c63": "Records a capacity-stop terminal diagnostic for the forward HTTP download without a matching action intent.",
-    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/emitForwardReceipt/3aaa0aaf7a3c644e": "Records a capacity-stop terminal diagnostic for the forward HTTP SSE without a matching action intent.",
+    "internal/proxy/forward.go/(*Proxy).handleConnect/emitReceipt/361113f4323f1107": "Records a capacity-stop terminal diagnostic for the CONNECT tunnel without a matching action intent.",
+    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/emitForwardReceipt/fb692c71ca72a59c": "Records a capacity-stop terminal diagnostic for the forward HTTP download without a matching action intent.",
+    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/emitForwardReceipt/eb065529d1f7d428": "Records a capacity-stop terminal diagnostic for the forward HTTP SSE without a matching action intent.",
     "internal/proxy/intercept.go/newInterceptHandler/recordCredentialAudienceAllow/8d3dad8910b74a71": "Records the credential-audience observation in audit and metrics when the interception context has no receipt writer.",
     "internal/proxy/intercept.go/newInterceptHandler/recordCredentialAudienceAllow/a23a54f57f52ad94": "Records the credential-audience observation in audit and metrics when the interception context has no receipt writer.",
-    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceipt/87ef30aa507e6d63": "Records a capacity-stop terminal diagnostic for the intercepted HTTP download without a matching action intent.",
+    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceipt/55135c90bc419e9b": "Records a capacity-stop terminal diagnostic for the intercepted HTTP download without a matching action intent.",
     "internal/proxy/intercept.go/newInterceptHandler/interceptEmitResponseReceipt/e43239ca79d90dad": "Records a capacity-stop terminal diagnostic for the intercepted HTTP SSE without a matching action intent.",
     "internal/proxy/proxy.go/(*Proxy).Reload/EmitSessionOpen/98acd481235304fd": "Legacy stream lifecycle or transcript bookkeeping, represented by v3 control records.",
-    "internal/proxy/reverse.go/(*ReverseProxyHandler).modifyResponse/emitReceipt/455030b1ffc12808": "Records a capacity-stop terminal diagnostic for the reverse HTTP SSE without a matching action intent.",
+    "internal/proxy/reverse.go/(*ReverseProxyHandler).modifyResponse/emitReceipt/cab241b12c849bbe": "Records a capacity-stop terminal diagnostic for the reverse HTTP SSE without a matching action intent.",
     "internal/receipt/content.go/validateRetainedContent/ActionRecord/0f2bce3edd581eb4": "Unsigned sample used for content validation. It is never emitted.",
     "internal/receipt/content.go/validateRetainedContent/Receipt/e1c5cb36cb4769d4": "Unsigned sample used for content validation. It is never emitted.",
     "internal/receipt/emitter.go/(*Emitter).EmitSessionOpen/EmitDurable/6fb3e3d6930be2f4": "Legacy stream lifecycle or transcript bookkeeping, represented by v3 control records.",
@@ -1578,11 +1590,22 @@
     "sdk/verifiers/python/tests/fixtures/produce_receipt_groups.go/closeGroup/EmitTranscriptRoot/ab18d6fa98ee9fc8": "This tool generates example or test evidence outside the launch profile.",
     "sdk/verifiers/python/tests/fixtures/produce_recovery_group_fixture.go/closeGroup/EmitSessionClose/0db98555353efa14": "This tool generates example or test evidence outside the launch profile.",
     "sdk/verifiers/python/tests/fixtures/produce_recovery_group_fixture.go/closeGroup/EmitTranscriptRoot/ab18d6fa98ee9fc8": "This tool generates example or test evidence outside the launch profile.",
-    "tools/gen-shadow-example/main.go/run/EmitBatch/7f91898363de41f6": "This tool generates example or test evidence outside the launch profile."
+    "tools/gen-shadow-example/main.go/run/EmitBatch/7f91898363de41f6": "This tool generates example or test evidence outside the launch profile.",
+    "internal/mcp/response_receipt.go/confirmMCPCardAcceptance/confirmMCPResponseEffect/af458c732b8b48dd": "Writes legacy Agent Card evidence. V3 uses the Agent Card delivery admission batch.",
+    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/confirmResponseDecision/08de6951e2bcd60a": "Writes legacy Agent Card evidence. V3 uses the Agent Card delivery admission batch.",
+    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/confirmResponseDecision/c059e9e77d038bb5": "Writes legacy Agent Card evidence. V3 uses the Agent Card delivery admission batch.",
+    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/emitForwardReceipt/f3a404095cd1e234": "Writes legacy Agent Card evidence. V3 uses the Agent Card delivery admission batch.",
+    "internal/proxy/intercept.go/newInterceptHandler/interceptConfirmResponseOrBlock/42878ea8ed935ca4": "Writes legacy Agent Card evidence. V3 uses the Agent Card delivery admission batch.",
+    "internal/proxy/intercept.go/newInterceptHandler/interceptConfirmResponseOrBlock/e0da7c8f0ad2828c": "Writes legacy Agent Card evidence. V3 uses the Agent Card delivery admission batch.",
+    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitResponseReceipt/b592cb884d298b03": "Writes legacy Agent Card evidence. V3 uses the Agent Card delivery admission batch."
   },
   "emit_forwarders": {
+    "internal/mcp/receipt_v3.go/(MCPProxyOpts).admitV3Effect/Admit/08f2bf06b46e00c1": "The shared receipt adapter forwards the boundary and decision attribution supplied by the producer to the v3 effect gate.",
+    "internal/proxy/receipt_v3.go/(*Proxy).admitEffect/Admit/620d94a6c5568b96": "The shared receipt adapter forwards the boundary and decision attribution supplied by the producer to the v3 effect gate.",
+    "internal/proxy/receipt_v3.go/(*Proxy).admitEffect/AdmitBatch/7d591e25e2cda537": "The shared receipt adapter forwards the boundary and decision attribution supplied by the producer to the v3 effect gate.",
+    "internal/proxy/receipt_v3.go/(*Proxy).recordEffectRefusal/Refuse/905452abd909d4b8": "The shared receipt adapter forwards the boundary and decision attribution supplied by the producer to the v3 effect gate.",
     "internal/cli/runtime/dlp_warn_emit.go/emitDLPWarn/EmitDLPWarning/93492e0a1b6236dc": "Uses the scanner warning context. Effect attribution belongs to the enclosing mediation decision.",
-    "internal/cli/runtime/mcp.go/mcpProxyCmdWithListenerTimeout/emitDLPWarn/2629976f919e4606": "Uses the scanner warning context. Effect attribution belongs to the enclosing mediation decision.",
+    "internal/cli/runtime/mcp.go/mcpProxyCmdWithReceiptWriter/emitDLPWarn/2629976f919e4606": "Uses the scanner warning context. Effect attribution belongs to the enclosing mediation decision.",
     "internal/cli/runtime/mcp_sandbox_bridge.go/startMCPSandboxBridge/emitDLPWarn/6d2a21c2abaeb1f5": "Uses the scanner warning context. Effect attribution belongs to the enclosing mediation decision.",
     "internal/cli/runtime/server.go/NewServer/emitDLPWarn/a64cc4fd6a4c8330": "Uses the scanner warning context. Effect attribution belongs to the enclosing mediation decision.",
     "internal/cli/runtime/server_reload.go/(*Server).executeReloadLocked/emitDLPWarn/a64cc4fd6a4c8330": "Uses the scanner warning context. Effect attribution belongs to the enclosing mediation decision.",
@@ -1605,8 +1628,8 @@
     "internal/mcp/opts.go/(MCPProxyOpts).emitMCPReceiptDecision/EmitMCPGroupDecision/d0a40ceb9150e45a": "Carries the selected MCP decision, policy and transport attribution to the v1 or v2 writer.",
     "internal/mcp/opts.go/(MCPProxyOpts).emitReceiptDecision/emitMCPReceiptDecision/b95eaca33c752136": "Carries the effect boundary and decision context selected by its caller.",
     "internal/mcp/outcome.go/(TrackedRequestOutcome).settle/settleResult/4331ecca10652210": "Passes the caller's observed status, size and reason to the tracked outcome settlement.",
-    "internal/mcp/outcome.go/(TrackedRequestOutcome).settleResult/emitMCPBlockedOutcomeReceipt/2717074d9f4f981a": "Passes the caller's blocked outcome and original intent to the writer when there is no tracked writer handle.",
-    "internal/mcp/outcome.go/(TrackedRequestOutcome).settleResult/emitMCPOutcomeReceipt/81511a9960797d1d": "Passes the caller's observed outcome and original intent to the writer when there is no tracked writer handle.",
+    "internal/mcp/outcome.go/(TrackedRequestOutcome).settleResult/emitMCPBlockedOutcomeReceipt/f5773791f3146a78": "Passes the caller's blocked outcome and original intent to the writer when there is no tracked writer handle.",
+    "internal/mcp/outcome.go/(TrackedRequestOutcome).settleResult/emitMCPOutcomeReceipt/46a3290668727238": "Passes the caller's observed outcome and original intent to the writer when there is no tracked writer handle.",
     "internal/mcp/outcome.go/(*mcpOutcomeHandle).emit/emitMCPV2Decision/9dba973033f3cb80": "Mirrors the supplied outcome on the paired v2 writer for required recording or a block.",
     "internal/mcp/outcome.go/(*mcpOutcomeHandle).emit/write/069d9efbeb80ce13": "Writes the terminal outcome through the v1 emitter that wrote the intent.",
     "internal/mcp/outcome.go/(*mcpOutcomeHandle).emit/write/f0ee796ccb56fd6c": "Retries the same v1 outcome only when the chain did not advance.",
@@ -1618,13 +1641,13 @@
     "internal/mcp/pipeline_decision.go/emitMCPOutcome/EmitMCPDecision/eb775056b5d86901": "Carries the selected MCP decision, policy and transport attribution to the v1 or v2 writer.",
     "internal/mcp/pipeline_decision.go/emitMCPOutcome/EmitMCPGroupDecision/197779fd7df2721c": "Carries the selected MCP decision, policy and transport attribution to the v1 or v2 writer.",
     "internal/mcp/pipeline_decision.go/emitMCPOutcomeReceipt/emitMCPOutcome/f95c6d8417d748e4": "Carries the effect boundary and decision context selected by its caller.",
-    "internal/mcp/pipeline_decision.go/emitMCPStandaloneStreamReceipt/emitMCPOutcomeReceipt/e7dd944eb382b80c": "Carries the effect boundary and decision context selected by its caller.",
+    "internal/mcp/pipeline_decision.go/emitMCPStandaloneStreamReceipt/emitMCPOutcomeReceipt/51e8d64018f3048a": "Carries the effect boundary and decision context selected by its caller.",
     "internal/mcp/pipeline_decision.go/emitMCPV2Decision/Emit/57bb4d29217b7fea": "Carries the selected MCP decision, policy and transport attribution to the v1 or v2 writer.",
     "internal/mcp/pipeline_decision.go/emitMCPV2Decision/EmitDurable/1926001d71cf12c7": "Carries the selected MCP decision, policy and transport attribution to the v1 or v2 writer.",
     "internal/mcp/pipeline_decision.go/EmitMCPGroupDecision/emitMCPDecision/94871cc3af6b7843": "Passes the supplied decision and its attribution to the paired writers selected for its shard.",
     "internal/mcp/pipeline_decision.go/emitMCPStandaloneStreamReceipt/emitMCPStreamDiagnostic/c0c92be862f1b1c1": "Passes stream diagnostics to the single-phase warning writer for grouped recorders.",
-    "internal/mcp/pipeline_decision.go/emitMCPStreamDiagnostic/emitReceiptDecision/320350b79591571a": "Passes the caller's stream diagnostic to the selected writer as a single-phase warning.",
-    "internal/mcp/proxy.go/emitMCPToolScanReceipt/emitReceiptDecision/dc946fe88cb490bd": "Carries the effect boundary and decision context selected by its caller.",
+    "internal/mcp/pipeline_decision.go/emitMCPStreamDiagnostic/emitReceiptDecision/88bca5215f825119": "Passes the caller's stream diagnostic to the selected writer as a single-phase warning.",
+    "internal/mcp/proxy.go/emitMCPToolScanReceipt/emitReceiptDecision/3131d98507c2861f": "Carries the effect boundary and decision context selected by its caller.",
     "internal/mcp/response_receipt.go/confirmMCPResponseEffect/emitReceiptDecision/9f3251d32c5350e6": "Carries the effect boundary and decision context selected by its caller.",
     "internal/mcp/taint.go/emitMCPToolReceipt/emitAdmittedReceiptDecision/2e5b75e1010d4e11": "Passes the caller's tool decision and its original shard admission to the shared writer.",
     "internal/proxy/credential_audience.go/(*Proxy).emitAllowPathReceipt/emitCredentialAudienceReceiptWithFallback/588d17e86a5ec874": "Carries the effect boundary and decision context selected by its caller.",
@@ -1657,8 +1680,8 @@
     "internal/proxy/intercept.go/interceptEmitBoundaryReceipt/Emit/6c6e302ac0466c19": "Carries the producer's selected decision and attribution to the v1 or v2 writer.",
     "internal/proxy/intercept.go/interceptEmitBoundaryReceipt/emitReceiptWithEmitter/bdc2b1c9bb080b6b": "Carries the producer's selected decision and attribution to the v1 or v2 writer.",
     "internal/proxy/intercept.go/interceptEmitBoundaryReceipt/emitV2/952c742f3c900b81": "Carries the producer's selected decision and attribution to the v1 or v2 writer.",
-    "internal/proxy/intercept.go/interceptEmitReceiptOrBlock/interceptEmitReceipt/c3e313737a3051e2": "Carries the producer's selected decision and attribution to the v1 or v2 writer.",
-    "internal/proxy/intercept.go/interceptEmitReceiptOrBlock/interceptEmitRequiredReceipt/2aa797e89e98787a": "Carries the effect boundary and decision context selected by its caller.",
+    "internal/proxy/intercept.go/interceptEmitReceiptOrBlock/interceptEmitReceipt/f739c6a013cb0139": "Carries the producer's selected decision and attribution to the v1 or v2 writer.",
+    "internal/proxy/intercept.go/interceptEmitReceiptOrBlock/interceptEmitRequiredReceipt/391ea67ea1d511e4": "Carries the effect boundary and decision context selected by its caller.",
     "internal/proxy/intercept.go/interceptEmitRequiredReceipt/EmitDurable/ed5ee45ab7e33d95": "Carries the producer's selected decision and attribution to the v1 or v2 writer.",
     "internal/proxy/intercept.go/interceptEmitRequiredReceipt/emitRequiredReceiptWithEmitter/5c852283c38621f0": "Carries the producer's selected decision and attribution to the v1 or v2 writer.",
     "internal/proxy/intercept.go/interceptEmitRequiredReceipt/emitRequiredV2/f3d6fe961780e60d": "Carries the producer's selected decision and attribution to the v1 or v2 writer.",
@@ -1686,8 +1709,8 @@
     "internal/proxy/proxy.go/(*Proxy).emitRequiredReceiptWithEmitter/emitRequiredV2Receipt/14afe9243447f2b1": "Carries the effect boundary and decision context selected by its caller.",
     "internal/proxy/proxy.go/(*Proxy).handleFetch/emitReceiptWithEmitter/14d873cb5b97b06b": "Copies the transport decision's evidence options. The calling decision determines the boundary.",
     "internal/proxy/proxy.go/(*Proxy).recordShieldIntervention/confirmShieldIntervention/f81b616de6591c12": "Carries the effect boundary and decision context selected by its caller.",
-    "internal/proxy/response_receipt.go/(*Proxy).confirmResponseDecision/emitAllowPathReceipt/a091c0dbe6cce9fc": "Carries the effect boundary and decision context selected by its caller.",
-    "internal/proxy/response_receipt.go/(*ReverseProxyHandler).confirmResponseDecision/emitAllowPathReceipt/ab86c97fa711755a": "Carries the effect boundary and decision context selected by its caller.",
+    "internal/proxy/response_receipt.go/(*Proxy).confirmResponseDecision/emitAllowPathReceipt/5250e78014fd7ffc": "Carries the effect boundary and decision context selected by its caller.",
+    "internal/proxy/response_receipt.go/(*ReverseProxyHandler).confirmResponseDecision/emitAllowPathReceipt/8f473110ce45b4c7": "Carries the effect boundary and decision context selected by its caller.",
     "internal/proxy/response_receipt.go/(*Proxy).confirmResponseDecision/emitReceipt/479ed8f4c84c9a1d": "Carries the effect boundary and decision context selected by its caller.",
     "internal/proxy/response_receipt.go/(*ReverseProxyHandler).confirmResponseDecision/emitReceipt/5ea4d5f16375f446": "Carries the effect boundary and decision context selected by its caller.",
     "internal/proxy/reverse.go/(*ReverseProxyHandler).emitObservedOutcomeReceipt/emitOutcomeReceiptWithPattern/31b7a74ed9468c47": "Carries the effect boundary and decision context selected by its caller.",
@@ -1738,9 +1761,16 @@
     "internal/proxy/reverse.go/(*ReverseProxyHandler).emitRecordedReceipt/emitLegacyRecordedReceipt/56535e2e707d6638": "Forwards the caller's selected reverse-proxy receipt to the legacy writer after v3 refusal handling.",
     "internal/proxy/reverse.go/(*ReverseProxyHandler).modifyResponse/emitLegacyRecordedReceipt/49319ccec9e21dc8": "Carries the effect boundary and decision context selected by its caller.",
     "internal/proxy/reverse.go/(*ReverseProxyHandler).modifyResponse/emitReceipt/ad0544692308fd07": "Forwards the SSE callback's selected response decision to the legacy writer after v3 refusal handling, without updating response headers.",
-    "internal/proxy/reverse.go/(*ReverseProxyHandler).modifyResponse/emitReverseReceipt/7fb3aa66db57510f": "Forwards the SSE callback's selected response decision to the existing reverse response receipt helper when v3 receipt effects are disabled."
+    "internal/proxy/reverse.go/(*ReverseProxyHandler).modifyResponse/emitReverseReceipt/7fb3aa66db57510f": "Forwards the SSE callback's selected response decision to the existing reverse response receipt helper when v3 receipt effects are disabled.",
+    "internal/proxy/receipt_v3.go/(*Proxy).refuseEffect/recordEffectRefusal/61a6afc580d1e325": "The shared receipt adapter forwards decision attribution and the producer boundary to the receipt emitter.",
+    "internal/proxy/sse.go/(*Proxy).legacySSEFindingConfirmer/sseFindingReceiptConfirmer/46d9a19dc80806ed": "The shared receipt adapter forwards decision attribution and the producer boundary to the receipt emitter.",
+    "internal/mcp/receipt_v3.go/(MCPProxyOpts).admitV3CardBatch/AdmitBatch/c4caa5d6d38146cd": "Admits the signature and baseline checks with the request policy and attribution supplied by the Agent Card producer.",
+    "internal/proxy/receipt_v3.go/(*Proxy).admitV3CardAcceptance/AdmitBatch/0ed04b1b137c0426": "Admits the signature and baseline checks with the request policy and attribution supplied by the Agent Card producer."
   },
   "emit_sites": {
+    "internal/mcp/receipt_v3.go/(*mcpV3ReplyWriter).admit/Admit/d930c207f6adb938": "downstream_delivery",
+    "internal/mcp/receipt_v3.go/(*mcpV3ReplyWriter).admit/AdmitDenialDelivery/953cadd13264d9c4": "downstream_delivery",
+    "internal/mcp/receipt_v3.go/(MCPProxyOpts).refuseV3Reply/Refuse/f61b9bc1f2181314": "downstream_delivery",
     "internal/cli/runtime/mcp.go/recoverDeferredActions/EmitDeferredResolutionReceipt/1085a3de444e8017": "approval_prompt",
     "internal/mcp/defer_resolution.go/(*deferredReceiptSettlement).commitRelease/settleResult/fe65a6480ec69bdd": "upstream_send",
     "internal/mcp/defer_resolution.go/(*deferredReceiptSettlement).commitRelease/emitMCPToolReceipt/9527a1f960a23f9e": "upstream_send",
@@ -1770,8 +1800,8 @@
     "internal/mcp/mcp_http_input.go/scanHTTPInputDecision/emitMCPToolReceipt/e439f7d1f5545aed": "upstream_send",
     "internal/mcp/mcp_http_input.go/scanHTTPInputDecision/emitMCPToolReceipt/f44eabec3facd474": "redirect_dispatch",
     "internal/mcp/mcp_http_input.go/scanHTTPInputDecision/settle/cdacee5d3858833f": "upstream_send",
-    "internal/mcp/mcp_http_reverse.go/RunHTTPListenerProxy/emitReceiptDecision/83b5e9ce36219075": "none",
-    "internal/mcp/mcp_http_reverse.go/RunHTTPListenerProxy/emitReceiptDecision/a35d255ec4bc178f": "upstream_send",
+    "internal/mcp/mcp_http_reverse.go/RunHTTPListenerProxy/emitReceiptDecision/7c6b9d3db7fa199a": "none",
+    "internal/mcp/mcp_http_reverse.go/RunHTTPListenerProxy/emitReceiptDecision/5baf0f37a2e44c75": "upstream_send",
     "internal/mcp/mcp_http_reverse.go/RunHTTPListenerProxy/settle/aacccbedc8926a3a": "upstream_send",
     "internal/mcp/mcp_http_reverse.go/RunHTTPListenerProxy/settle/b66eccc27290a009": "upstream_send",
     "internal/mcp/mcp_http_reverse.go/RunHTTPListenerProxy/settle/0f47b009c2366607": "upstream_send",
@@ -1780,14 +1810,12 @@
     "internal/mcp/outcome.go/recordTransportAdmissionResult/emitReceiptDecision/d8703e9682a44e42": "upstream_send",
     "internal/mcp/outcome.go/trackMCPOutcome/settle/0c363f159765438e": "upstream_send",
     "internal/mcp/proxy.go/ForwardScanned/confirmMCPResponseEffect/42a32a294c9efefb": "downstream_delivery",
-    "internal/mcp/proxy.go/ForwardScanned/confirmMCPResponseEffect/fd70af366c26a517": "downstream_delivery",
-    "internal/mcp/proxy.go/ForwardScanned/confirmMCPResponseEffect/4213a5279419a95c": "downstream_delivery",
     "internal/mcp/proxy.go/ForwardScanned/emitMCPToolScanReceipt/63383da7c00a973a": "downstream_delivery",
-    "internal/mcp/proxy.go/ForwardScanned/emitMCPToolScanReceipt/c25708a43e53f0d1": "downstream_delivery",
-    "internal/mcp/proxy.go/ForwardScanned/emitMCPToolScanReceipt/253b9290091141be": "downstream_delivery",
+    "internal/mcp/proxy.go/ForwardScanned/emitMCPToolScanReceipt/6a86b2a09d70c301": "downstream_delivery",
+    "internal/mcp/proxy.go/ForwardScanned/emitMCPToolScanReceipt/373b8a466ab26e16": "downstream_delivery",
     "internal/mcp/proxy.go/ForwardScanned/emitReceiptDecision/d682a6909d8e4643": "none",
-    "internal/mcp/proxy.go/ForwardScanned/emitReceiptDecision/7de616e0dcc5f6d1": "upstream_send",
-    "internal/mcp/proxy.go/ForwardScanned/emitReceiptDecision/4eab870c16b495b4": "upstream_send",
+    "internal/mcp/proxy.go/ForwardScanned/emitReceiptDecision/674c7ed56cb1b5b5": "upstream_send",
+    "internal/mcp/proxy.go/ForwardScanned/emitReceiptDecision/15fdefacbf4fd1c7": "upstream_send",
     "internal/mcp/proxy.go/emitMCPTimeoutReply/settle/b7f8a9dac4807988": "upstream_send",
     "internal/mcp/proxy.go/ForwardScanned/settle/5086740b7d6288bf": "downstream_delivery",
     "internal/mcp/proxy.go/emitPendingIncompleteOutcomes/settle/2be7d15c848dc9b1": "upstream_send",
@@ -1823,18 +1851,16 @@
     "internal/mcp/proxy_ws.go/RunWSProxy/settle/d4520d61e7fe7b9a": "upstream_send",
     "internal/proxy/bodyscan.go/(*Proxy).evalHeaderDLP/recordCredentialAudienceAllows/9c82ca7412ec77dc": "upstream_send",
     "internal/proxy/forward.go/(*Proxy).handleConnect/emitForwardDenial/2c491386d87dec0b": "none",
-    "internal/proxy/forward.go/(*Proxy).handleConnect/emitOutcomeReceipt/6f92002975cb6035": "tunnel_open",
+    "internal/proxy/forward.go/(*Proxy).handleConnect/emitOutcomeReceipt/f630c3466dd17a6c": "tunnel_open",
     "internal/proxy/forward.go/(*Proxy).handleConnect/emitRecordedReceipt/2ed05bb432b1ecc8": "tunnel_open",
     "internal/proxy/forward.go/(*Proxy).handleConnect/emitRequestPolicyReceipt/58c76ccbed0e20bf": "none",
-    "internal/proxy/forward.go/(*Proxy).handleConnect/emitRequiredReceipt/ae27039512f1ecc4": "tunnel_open",
+    "internal/proxy/forward.go/(*Proxy).handleConnect/emitRequiredReceipt/7fdfae56770e80fc": "tunnel_open",
     "internal/proxy/forward.go/(*Proxy).handleConnect/recordCredentialAudienceAllows/12f1b18b4f6ac421": "tunnel_open",
     "internal/proxy/forward.go/(*Proxy).handleConnect/recordIssuerQueryAllow/3bbb7d20b1f8cb9a": "tunnel_open",
     "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/recordIssuerQueryAllow/a17e293745b6254e": "upstream_send",
     "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/confirmResponseDecision/e9eb6cd967ee7c94": "downstream_delivery",
     "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/confirmResponseDecision/e054483f17a07858": "downstream_delivery",
     "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/confirmResponseDecision/50e2d1900e73db36": "downstream_delivery",
-    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/confirmResponseDecision/a78376088056b796": "downstream_delivery",
-    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/confirmResponseDecision/0ad3e2dff79c8e1e": "downstream_delivery",
     "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/confirmResponseDecision/d778615028204812": "downstream_delivery",
     "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/confirmResponseDecision/facaba1a6ae8d77b": "downstream_delivery",
     "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/confirmResponseDecision/f6d57b59ce717e92": "downstream_delivery",
@@ -1853,7 +1879,7 @@
     "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/emitForwardReceipt/7593c2ab5ec49abe": "none",
     "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/emitForwardReceipt/9be35ceb3de72fb9": "none",
     "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/emitForwardReceipt/50e8c62c0428c9a4": "none",
-    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/emitForwardReceipt/110dc41b460a9847": "upstream_send",
+    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/emitForwardReceipt/77f8696c30d341b7": "upstream_send",
     "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/emitForwardReceipt/cd8f05a358132738": "none",
     "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/emitForwardReceipt/cfdc5434c35da2d8": "none",
     "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/emitForwardReceipt/b1736ca44cb15eff": "none",
@@ -1864,12 +1890,11 @@
     "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/emitForwardReceipt/c742f2ec2274ddc0": "none",
     "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/emitForwardReceipt/57a794b610edc044": "none",
     "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/emitForwardReceipt/2ac1053476a4a1bd": "none",
-    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/emitForwardReceipt/6d9a7bd5ede21080": "downstream_delivery",
+    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/emitForwardReceipt/bd79e323572f8489": "downstream_delivery",
     "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/emitForwardReceipt/cc86f3e970e237ca": "none",
     "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/emitForwardReceipt/dcce38fe8f413f7f": "none",
     "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/emitForwardReceipt/de36e57bce734540": "none",
     "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/emitForwardReceipt/d2cda25a45792e47": "none",
-    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/emitForwardReceipt/e772833f6357ff03": "downstream_delivery",
     "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/emitForwardReceipt/d799caff81fa35a6": "none",
     "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/emitForwardReceipt/361f055a9f01623f": "none",
     "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/emitForwardReceipt/ae4c982b32f21bae": "none",
@@ -1882,10 +1907,10 @@
     "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/emitForwardReceipt/a760573e87698f88": "none",
     "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/emitOutcomeReceiptWithPattern/6cc623550ad8bbeb": "upstream_send",
     "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/emitRequestPolicyReceipt/58c76ccbed0e20bf": "upstream_send",
-    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/emitRequiredReceipt/726af1e98c66fcd9": "upstream_send",
+    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/emitRequiredReceipt/cfb241a7823ca0d9": "upstream_send",
     "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/recordCredentialAudienceAllows/9fcb17b39a993c64": "upstream_send",
     "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/recordCredentialAudienceAllows/779ee30dda14b30d": "upstream_send",
-    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/sseFindingReceiptConfirmer/83beed215ddfd725": "downstream_delivery",
+    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/legacySSEFindingConfirmer/a2167bc33018d09f": "downstream_delivery",
     "internal/proxy/intercept.go/interceptEmitOutcomeReceipt/emitReceiptFailureMarker/8a2f204c09932d4b": "none",
     "internal/proxy/intercept.go/interceptEmitOutcomeReceipt/emitReceiptFailureMarker/da1f63d2a6715682": "none",
     "internal/proxy/intercept.go/interceptEmitBoundaryReceipt/recordReceiptEmitterUnavailable/2f68b1b625715da6": "none",
@@ -1896,8 +1921,6 @@
     "internal/proxy/intercept.go/newInterceptHandler/interceptConfirmResponseOrBlock/bdce2ff68e260371": "downstream_delivery",
     "internal/proxy/intercept.go/newInterceptHandler/interceptConfirmResponseOrBlock/6a9f423602c275dc": "downstream_delivery",
     "internal/proxy/intercept.go/newInterceptHandler/interceptConfirmResponseOrBlock/0b5544cf1842136c": "downstream_delivery",
-    "internal/proxy/intercept.go/newInterceptHandler/interceptConfirmResponseOrBlock/739351668e094d76": "downstream_delivery",
-    "internal/proxy/intercept.go/newInterceptHandler/interceptConfirmResponseOrBlock/e7768eb9d9a33ebf": "downstream_delivery",
     "internal/proxy/intercept.go/newInterceptHandler/interceptConfirmResponseOrBlock/81f90afd91a4e2fe": "downstream_delivery",
     "internal/proxy/intercept.go/newInterceptHandler/interceptConfirmResponseOrBlock/3a6ebeba232c308d": "downstream_delivery",
     "internal/proxy/intercept.go/newInterceptHandler/interceptEmitOutcomeReceipt/cd9ec34fe74f06b7": "upstream_send",
@@ -1931,7 +1954,6 @@
     "internal/proxy/intercept.go/newInterceptHandler/interceptEmitResponseReceipt/d965d524db82e30e": "none",
     "internal/proxy/intercept.go/newInterceptHandler/interceptEmitResponseReceipt/338d405a8f4f278d": "none",
     "internal/proxy/intercept.go/newInterceptHandler/interceptEmitResponseReceipt/9d30f38908ed4966": "none",
-    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitResponseReceipt/54c4a71043bd17b3": "downstream_delivery",
     "internal/proxy/intercept.go/newInterceptHandler/interceptEmitResponseReceipt/ee19cbbdf00219d6": "none",
     "internal/proxy/intercept.go/newInterceptHandler/interceptEmitResponseReceipt/20af76a006ed6c0a": "none",
     "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceipt/9625d77695bb13d3": "none",
@@ -1943,7 +1965,7 @@
     "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceipt/4942688ba6f23599": "none",
     "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceipt/852a5523cb851e23": "none",
     "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceipt/f45eb8268c908e50": "none",
-    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceiptOrBlock/d6789753a56931c3": "upstream_send",
+    "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceiptOrBlock/41a7798749686385": "upstream_send",
     "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceiptOrBlock/83b7e586e830a88b": "downstream_delivery",
     "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceiptOrBlock/421996d819e3653a": "downstream_delivery",
     "internal/proxy/intercept.go/newInterceptHandler/interceptEmitReceiptOrBlock/fe83aa7e9eb1bdd3": "downstream_delivery",
@@ -1954,7 +1976,7 @@
     "internal/proxy/intercept.go/newInterceptHandler/recordCredentialAudienceAllows/1284b7b23eccedcd": "upstream_send",
     "internal/proxy/intercept.go/newInterceptHandler/recordIssuerCookieAllows/bf0273741aa75c01": "upstream_send",
     "internal/proxy/issuer_query.go/(*InterceptContext).recordIssuerQueryAllows/recordIssuerQueryAllow/b442f4dc34e00618": "upstream_send",
-    "internal/proxy/intercept.go/newInterceptHandler/sseFindingReceiptConfirmer/623a116a47293fdd": "downstream_delivery",
+    "internal/proxy/intercept.go/newInterceptHandler/legacySSEFindingConfirmer/a490e426107135f4": "downstream_delivery",
     "internal/proxy/proxy.go/New/emitRequestPolicyReceipt/ac55326aa747e25e": "upstream_send",
     "internal/proxy/proxy.go/New/recordCredentialAudienceAllows/e017953e66d75c69": "upstream_send",
     "internal/proxy/proxy.go/New/recordIssuerQueryAllow/94ca872f085b7afb": "upstream_send",
@@ -1986,7 +2008,7 @@
     "internal/proxy/proxy.go/(*Proxy).handleFetch/emitFetchReceipt/4a5a08fd2227a9eb": "none",
     "internal/proxy/proxy.go/(*Proxy).handleFetch/emitFetchReceipt/060922bbe9831998": "none",
     "internal/proxy/proxy.go/(*Proxy).handleFetch/emitFetchReceipt/79ceed6c2b40e4f1": "none",
-    "internal/proxy/proxy.go/(*Proxy).handleFetch/emitFetchReceipt/9f1fb56639f582c2": "upstream_send",
+    "internal/proxy/proxy.go/(*Proxy).handleFetch/emitFetchReceipt/c9d8440988387516": "upstream_send",
     "internal/proxy/proxy.go/(*Proxy).handleFetch/emitFetchReceipt/a0e73e4db1f87177": "none",
     "internal/proxy/proxy.go/(*Proxy).handleFetch/emitFetchReceipt/c657c9872cd3c85a": "none",
     "internal/proxy/proxy.go/(*Proxy).handleFetch/emitFetchReceipt/e85d1916234daf6c": "none",
@@ -1996,14 +2018,14 @@
     "internal/proxy/proxy.go/(*Proxy).handleFetch/emitFetchReceipt/eb43beaf564c1796": "none",
     "internal/proxy/proxy.go/(*Proxy).handleFetch/emitOutcomeReceiptWithPattern/d18adbbc9b035e76": "upstream_send",
     "internal/proxy/proxy.go/(*Proxy).handleFetch/emitRequestPolicyReceipt/9821bdfaa9c8e8e4": "upstream_send",
-    "internal/proxy/proxy.go/(*Proxy).handleFetch/emitRequiredReceipt/557d3a5a22a016f1": "upstream_send",
+    "internal/proxy/proxy.go/(*Proxy).handleFetch/emitRequiredReceipt/1e70869f7151cf3a": "upstream_send",
     "internal/proxy/proxy.go/(*Proxy).handleFetch/recordCredentialAudienceAllows/cba714afa7ad8fa4": "upstream_send",
     "internal/proxy/requestpolicy.go/(*Proxy).finalizeRequestPolicyDecision/Emit/e3516408daa30543": "none",
     "internal/proxy/reverse.go/(*reverseOutcomeTracker).EmitOnce/emitObservedOutcomeReceipt/dc5cf995d10ef8c6": "upstream_send",
     "internal/proxy/reverse.go/(*reverseOutcomeTracker).EmitOnce/emitOutcomeReceipt/da14800d4ef940b9": "upstream_send",
     "internal/proxy/reverse.go/(*ReverseProxyHandler).ServeHTTP/emitRecordedReceipt/94857fb87da9ce5b": "upstream_send",
     "internal/proxy/reverse.go/(*ReverseProxyHandler).ServeHTTP/emitRequestPolicyReceipt/864f53335872e65e": "upstream_send",
-    "internal/proxy/reverse.go/(*ReverseProxyHandler).ServeHTTP/emitRequiredReceipt/f95a326723184e0f": "upstream_send",
+    "internal/proxy/reverse.go/(*ReverseProxyHandler).ServeHTTP/emitRequiredReceipt/96813ac5a4a2887d": "upstream_send",
     "internal/proxy/reverse.go/(*ReverseProxyHandler).ServeHTTP/emitReverseReceipt/1f6ee7f9ddf63750": "none",
     "internal/proxy/reverse.go/(*ReverseProxyHandler).ServeHTTP/emitReverseReceipt/535e91014b9a9ed3": "none",
     "internal/proxy/reverse.go/(*ReverseProxyHandler).ServeHTTP/emitReverseReceipt/e78f3053d1ecbdf1": "none",
@@ -2050,7 +2072,7 @@
     "internal/proxy/reverse.go/(*ReverseProxyHandler).modifyResponse/emitReverseReceipt/2133e92e830cb0b7": "downstream_delivery",
     "internal/proxy/reverse.go/(*ReverseProxyHandler).modifyResponse/emitReverseReceipt/cc17b43e9904e858": "downstream_delivery",
     "internal/proxy/reverse.go/(*ReverseProxyHandler).modifyResponse/emitReverseReceipt/cd1c8e7cc152dbf7": "downstream_delivery",
-    "internal/proxy/reverse.go/(*ReverseProxyHandler).modifyResponse/sseFindingReceiptConfirmer/f898f63e63a92114": "downstream_delivery",
+    "internal/proxy/reverse.go/(*ReverseProxyHandler).modifyResponse/legacySSEFindingConfirmer/cfcd9ac0a675b0e2": "downstream_delivery",
     "internal/proxy/reverse.go/(*ReverseProxyHandler).scanRequest/emitRecordedReceipt/94857fb87da9ce5b": "upstream_send",
     "internal/proxy/reverse.go/(*ReverseProxyHandler).scanRequest/emitReverseReceipt/b770261193ba05e8": "none",
     "internal/proxy/reverse.go/(*ReverseProxyHandler).scanRequest/emitReverseReceipt/726945b5d1a22af7": "none",
@@ -2080,10 +2102,10 @@
     "internal/proxy/websocket.go/(*wsRelay).handleClientTextFindings/emitFrameReceipt/76964153bd9db221": "upstream_send",
     "internal/proxy/websocket.go/(*wsRelay).handleClientTextFindings/emitFrameReceipt/2739f1c6180a9c84": "upstream_send",
     "internal/proxy/websocket.go/(*wsRelay).handleClientTextResult/recordCredentialAudienceAllows/588e8af4cc39d80b": "upstream_send",
-    "internal/proxy/websocket.go/(*Proxy).handleWebSocket/emitOutcomeReceipt/a2c094b27e0d4653": "upstream_send",
+    "internal/proxy/websocket.go/(*Proxy).handleWebSocket/emitOutcomeReceipt/7d45d1b1f77878f0": "upstream_send",
     "internal/proxy/websocket.go/(*Proxy).handleWebSocket/emitOutcomeReceipt/c9562714aa65176b": "none",
     "internal/proxy/websocket.go/(*Proxy).handleWebSocket/emitRequestPolicyReceipt/58c76ccbed0e20bf": "upstream_send",
-    "internal/proxy/websocket.go/(*Proxy).handleWebSocket/emitRequiredReceipt/34207aa30182ed5d": "upstream_send",
+    "internal/proxy/websocket.go/(*Proxy).handleWebSocket/emitRequiredReceipt/481edad1b2232742": "upstream_send",
     "internal/proxy/websocket.go/(*Proxy).handleWebSocket/recordCredentialAudienceAllows/b6c47f2687c45993": "upstream_send",
     "internal/proxy/websocket.go/(*wsRelay).scanClientMessageBodyWithSurface/recordCredentialAudienceAllows/3f21682276eab651": "upstream_send",
     "internal/proxy/websocket.go/(*wsRelay).upstreamToClient/confirmResponseDecision/1ff4bb636b3f3e7b": "downstream_delivery",
@@ -2103,7 +2125,15 @@
     "internal/mcp/proxy.go/ForwardScanned/settle/2999892428bde960": "upstream_send",
     "internal/proxy/intercept_taint.go/refuseInterceptTaint/interceptEmitReceipt/3727ae1d7f179453": "none",
     "internal/proxy/reverse.go/(*ReverseProxyHandler).modifyResponse/emitReverseStreamReceipt/5785e62d3d5d9515": "downstream_delivery",
-    "internal/proxy/reverse.go/(*ReverseProxyHandler).modifyResponse/emitReverseStreamReceipt/cc259a3759fc6c36": "downstream_delivery"
+    "internal/proxy/reverse.go/(*ReverseProxyHandler).modifyResponse/emitReverseStreamReceipt/cc259a3759fc6c36": "downstream_delivery",
+    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/sseFindingDelivery/1490975f9c542364": "downstream_delivery",
+    "internal/proxy/intercept.go/newInterceptHandler/sseFindingDelivery/77dba1eeb887d360": "downstream_delivery",
+    "internal/proxy/proxy.go/(*Proxy).emitRequestPolicyReceipt/recordEffectRefusal/7359a85299cbe14d": "upstream_send",
+    "internal/proxy/reverse.go/(*ReverseProxyHandler).emitRequestPolicyReceipt/recordEffectRefusal/727e7272828a900f": "upstream_send",
+    "internal/proxy/reverse.go/(*ReverseProxyHandler).modifyResponse/sseFindingDelivery/639a2a2c38680665": "downstream_delivery",
+    "internal/mcp/proxy.go/ForwardScanned/confirmMCPCardAcceptance/bafe8854f60c7b85": "downstream_delivery",
+    "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/admitV3CardAcceptance/4ba0647c0670131a": "downstream_delivery",
+    "internal/proxy/intercept.go/newInterceptHandler/admitV3CardAcceptance/e12897d20ee65328": "downstream_delivery"
   },
   "enums": {
     "action_policy_source": [

@@ -5,6 +5,7 @@ package mcp
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
@@ -19,6 +20,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
@@ -404,4 +406,54 @@ func TestAgentCardReevaluationConfirmsCurrentAdoption(t *testing.T) {
 			})
 		}
 	}
+}
+
+func TestMCPV3AgentCardAcceptance(t *testing.T) {
+	t.Run("required", func(t *testing.T) { testMCPV3AgentCardAcceptance(t, true) })
+	t.Run("optional", func(t *testing.T) { testMCPV3AgentCardAcceptance(t, false) })
+}
+
+func testMCPV3AgentCardAcceptance(t *testing.T, required bool) {
+	t.Helper()
+	row := v3MCPMatrixRow{required: required, scenario: "intent write fail"}
+	writerOpts := mcpMatrixWriterOptions(t, row, transportMCPStdio, func() {}, nil)
+	writer, err := v3.OpenStreamWriter(t.Context(), writerOpts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = writer.Close(context.Background(), nil) })
+	sc, cfg := newMCPScannerWithMediaPolicy(t)
+	cfg.A2AScanning.Enabled = true
+	cfg.A2AScanning.DetectCardDrift = true
+	opts := MCPProxyOpts{
+		RequireReceipts: required, Scanner: sc, Transport: transportMCPStdio,
+		A2ACfg: &cfg.A2AScanning, CardBaseline: NewCardBaseline(8),
+		A2ACardURL: "https://api.vendor.example/.well-known/agent-card.json",
+	}.WithV3ReceiptWriter(writer)
+	payload := `{"jsonrpc":"2.0","id":42,"result":` + receiptCardBody + "}\n"
+	for _, wantError := range []bool{true, false} {
+		tracker := NewRequestTracker()
+		tracker.TrackOutcome(json.RawMessage("42"), TrackedRequestOutcome{Method: "agent/getAuthenticatedExtendedCard"})
+		var out, log bytes.Buffer
+		_, err := ForwardScanned(transport.NewStdioReader(strings.NewReader(payload)), transport.NewStdioWriter(&out), &log, tracker, opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if blocked := strings.Contains(out.String(), "receipt emission failed"); blocked != wantError || out.Len() == 0 {
+			t.Fatalf("want failed confirmation %t, got %s (%s)", wantError, out.String(), log.String())
+		}
+	}
+	if err := writer.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	actions, err := decodeMCPMatrixActions(writerOpts.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, action := range actions {
+		if action.Layer == "a2a_card_drift" && action.Phase == "outcome" && action.OutcomeClass == "completed" {
+			return
+		}
+	}
+	t.Fatal("second request did not confirm first-seen baseline adoption")
 }

@@ -15,6 +15,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/httpstream"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 )
 
@@ -25,6 +26,7 @@ type v3DeliveryWriter struct {
 	request  *http.Request
 	options  receipt.EmitOpts
 	token    *proxyEffectToken
+	card     *proxyEffectToken
 	denied   error
 	writeErr error
 	status   int
@@ -197,22 +199,39 @@ func (w *v3DeliveryWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	return conn, buf, err
 }
 
+// completeCardAcceptance settles checks for a baseline change already applied.
+func (w *v3DeliveryWriter) completeCardAcceptance(ctx context.Context) {
+	w.proxy.confirmObservedEffect(ctx, w.options, w.card, true)
+	w.card = nil
+}
+
 func (w *v3DeliveryWriter) finish() {
+	ctx := w.request.Context()
+	if w.card != nil && w.token == nil {
+		w.proxy.refuseAdmittedEffect(ctx, w.options, w.card)
+		w.card = nil
+	}
 	if w.token == nil {
 		return
 	}
-	ctx := w.request.Context()
-	err := w.token.ConfirmDelivery(ctx, func() (bool, error) {
-		if w.hijacked || w.writeErr != nil || ctx.Err() != nil {
-			return false, w.writeErr
+	complete, flushErr := w.observeDelivery()
+	for _, token := range []*proxyEffectToken{w.token, w.card} {
+		if token != nil {
+			if err := token.ConfirmDelivery(ctx, func() (bool, error) { return complete, flushErr }); err != nil {
+				w.proxy.logReceiptEmissionFailure(w.options, err)
+			}
 		}
-		_, framed := responseFrameLength(w.request, w.status, w.Header())
-		err := flushOutcomeResponse(w.ResponseWriter, w.request, w.cfg, true)
-		return framed && w.framed && (w.request.Method == http.MethodHead || w.written == w.length), err
-	})
-	if err != nil {
-		w.proxy.logReceiptEmissionFailure(w.options, err)
 	}
+}
+
+func (w *v3DeliveryWriter) observeDelivery() (bool, error) {
+	if w.hijacked || w.writeErr != nil || w.request.Context().Err() != nil {
+		return false, w.writeErr
+	}
+	_, framed := responseFrameLength(w.request, w.status, w.Header())
+	err := flushOutcomeResponse(w.ResponseWriter, w.request, w.cfg, true)
+	observed := httpstream.CanObserveFlush(w.ResponseWriter)
+	return observed && framed && w.framed && (w.request.Method == http.MethodHead || w.written == w.length), err
 }
 
 func setReceiptDeliveryShield(w http.ResponseWriter, summary *receipt.ShieldSummary) {
