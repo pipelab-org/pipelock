@@ -1361,3 +1361,101 @@ func TestMCPV3HeldSendRefusalDownstreamEvidence(t *testing.T) {
 		}
 	})
 }
+
+func TestMCPV3HeldBridgePOSTOwnsResponse(t *testing.T) {
+	const parentID, childID = "1", "2"
+	writer, writerOpts := openMCPV3RegressionWriter(t, deferred.SurfaceMCPHTTPUpstream)
+	opts := nativeDeferredOptions(t, nil).WithV3ReceiptWriter(writer)
+	opts.Transport = deferred.SurfaceMCPHTTPUpstream
+	opts.PolicyCfg = deferApprovalPolicy(config.DeferResolverProfile{})
+	opts.PolicyCfg.Rules[0].ResolutionPolicy.ResolverProfile = ""
+	opts.DeferManager = deferred.NewManager(deferred.Config{Enabled: true, Timeout: testwait.Deadline(time.Minute)})
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	childArrived, replyToChild := make(chan struct{}), make(chan struct{})
+	finishChild := sync.OnceFunc(func() { close(replyToChild) })
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		payload, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		switch id := canonicalID(ParseMCPFrame(payload).ID); id {
+		case parentID:
+			select {
+			case <-childArrived:
+			case <-r.Context().Done():
+				return
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			if _, err := io.WriteString(w, "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"reply\":\"parent POST\"}}\n\n"+
+				"data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/message\",\"params\":{\"data\":\"server event\"}}\n\n"); err != nil {
+				t.Error(err)
+			}
+		case childID:
+			close(childArrived)
+			select {
+			case <-replyToChild:
+			case <-r.Context().Done():
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			if _, err := io.WriteString(w, `{"jsonrpc":"2.0","id":2,"result":{"reply":"child POST"}}`); err != nil {
+				t.Error(err)
+			}
+		default:
+			t.Errorf("unexpected upstream ID %q", id)
+		}
+	}))
+	defer upstream.Close()
+	defer finishChild()
+	in, feed := io.Pipe()
+	defer func() { _ = in.Close(); _ = feed.Close() }()
+	var out lockedHTTPBuffer
+	done := make(chan error, 1)
+	go func() { done <- RunHTTPProxy(ctx, in, &out, io.Discard, upstream.URL, nil, opts) }()
+
+	parentMessage := strings.Replace(heldNativeCall, `"echo"`, `"send_tool"`, 1)
+	childMessage := strings.Replace(parentMessage, `"id":1`, `"id":2`, 1)
+	if _, err := io.WriteString(feed, parentMessage+"\n"+childMessage+"\n"); err != nil {
+		t.Fatal(err)
+	}
+	testwait.For(t, 5*time.Second, func() bool { return opts.DeferManager.HeldCount() == 2 }, "parent and child holds")
+	holds := opts.DeferManager.Snapshot()
+	slices.SortFunc(holds, func(a, b deferred.HeldAction) int { return a.CascadeDepth - b.CascadeDepth })
+	parent, child := holds[0].ActionID, holds[1].ActionID
+	childDone := parkedV3Approval(t, ctx, opts.DeferManager, child)
+	parentDone := make(chan error, 1)
+	go func() { parentDone <- opts.DeferManager.Resolve(parent, config.ActionAllow, deferred.SourceOperator) }()
+	if err := awaitHeldTest(t, parentDone); err != nil {
+		t.Fatal(err)
+	}
+	finishChild()
+	if result := awaitHeldTest(t, childDone); result.decision != config.ActionAllow || result.err != nil {
+		t.Fatalf("child resolution = %+v", result)
+	}
+	if err := feed.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := awaitHeldTest(t, done); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := out.String(); strings.Contains(got, "parent POST") ||
+		!strings.Contains(got, "child POST") || !strings.Contains(got, "server event") {
+		t.Fatalf("downstream should have the child's own reply and server event, got %q", got)
+	}
+	var replyIntents int
+	for _, action := range verifiedMCPV3RegressionActions(t, writer, writerOpts) {
+		if action.EffectBoundary == mcpDownstreamDeliveryBoundary && action.Phase == "intent" && action.RequestID == childID {
+			replyIntents++
+			if action.ParentActionID != child {
+				t.Fatalf("child reply parent = %q, want %q", action.ParentActionID, child)
+			}
+		}
+	}
+	if replyIntents != 1 {
+		t.Fatalf("child reply intents = %d, want 1", replyIntents)
+	}
+}

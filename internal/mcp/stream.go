@@ -67,7 +67,7 @@ func logMCPIncompleteResponse(logW io.Writer, opts MCPProxyOpts, method string, 
 }
 
 func emitTrackedStreamError(ctx context.Context, logW io.Writer, tracker *RequestTracker, id json.RawMessage, opts MCPProxyOpts, err error) {
-	outcome, pending := consumeTrackedRequestOutcome(tracker, id)
+	outcome, pending := consumeTrackedRequestOutcome(tracker, id, opts)
 	// A consumed unary reply already owns its terminal outcome. A stream
 	// can have separate evidence for its lifetime after the reply settles.
 	if !pending && !opts.nativeSSE && !isRPCNotification(id) && errors.Is(err, ael.ErrCapacity) {

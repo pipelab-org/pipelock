@@ -26,7 +26,7 @@ func TestRequestTracker_ClaimRejectedOutcome(t *testing.T) {
 		{"no-receipt-metadata", NewStrictRequestTracker(id), id},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, ok := tc.tracker.claimRejectedOutcome(tc.id); ok {
+			if _, ok := tc.tracker.claimRejectedOutcome(tc.id, nil); ok {
 				t.Fatal("claimed rejection without trusted receipt metadata")
 			}
 		})
@@ -35,28 +35,28 @@ func TestRequestTracker_ClaimRejectedOutcome(t *testing.T) {
 	tr := NewRequestTracker()
 	want := TrackedRequestOutcome{Receipt: receipt.EmitOpts{ActionID: receipt.NewActionID()}, Method: methodToolsCall}
 	tr.TrackOutcome(id, want)
-	if got, ok := tr.claimRejectedOutcome(id); !ok || !reflect.DeepEqual(got, want) {
+	if got, ok := tr.claimRejectedOutcome(id, nil); !ok || !reflect.DeepEqual(got, want) {
 		t.Fatal("first rejection did not preserve trusted metadata")
 	}
 	tr.TrackOutcome(id, want)
-	if _, ok := tr.claimRejectedOutcome(id); ok {
+	if _, ok := tr.claimRejectedOutcome(id, nil); ok {
 		t.Fatal("retracking a pending request reset its rejection bound")
 	}
 	if got, ok := tr.Consume(id); !ok || !reflect.DeepEqual(got, want) {
 		t.Fatal("rejection consumed or changed trusted request metadata")
 	}
-	if _, ok := tr.claimRejectedOutcome(id); ok {
+	if _, ok := tr.claimRejectedOutcome(id, nil); ok {
 		t.Fatal("claimed rejection after request consumption")
 	}
 	tr.TrackOutcome(id, want)
-	if _, ok := tr.claimRejectedOutcome(id); !ok {
+	if _, ok := tr.claimRejectedOutcome(id, nil); !ok {
 		t.Fatal("new request inherited the consumed request's rejection bound")
 	}
 	if got := tr.DrainPendingOutcomes(); len(got) != 1 || !reflect.DeepEqual(got[0].Outcome, want) {
 		t.Fatal("rejection changed pending timeout metadata")
 	}
 	tr.TrackOutcome(id, want)
-	if _, ok := tr.claimRejectedOutcome(id); !ok {
+	if _, ok := tr.claimRejectedOutcome(id, nil); !ok {
 		t.Fatal("new request inherited the drained request's rejection bound")
 	}
 }

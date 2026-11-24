@@ -44,7 +44,7 @@ func emitRequestScopedTimeout(
 		_ = c.Close()
 	}
 	if len(id) != 0 {
-		outcome, ok := consumeTrackedRequestOutcome(tracker, id)
+		outcome, ok := consumeTrackedRequestOutcome(tracker, id, opts)
 		if ok {
 			emitMCPTimeoutReply(writer, logW, id, outcome, opts)
 		}
@@ -63,7 +63,7 @@ func emitContractRefusedOutcome(logW io.Writer, outcome TrackedRequestOutcome, g
 }
 
 func emitTrackedIncompleteOutcome(logW io.Writer, tracker *RequestTracker, id json.RawMessage, reason string, opts MCPProxyOpts) {
-	outcome, ok := consumeTrackedRequestOutcome(tracker, id)
+	outcome, ok := consumeTrackedRequestOutcome(tracker, id, opts)
 	if !ok {
 		return
 	}
@@ -89,7 +89,10 @@ func settleBridgeNotificationScanError(ctx context.Context, logW io.Writer, opts
 	outcome.settle(logW, opts, status, -1, reason)
 }
 
-func consumeTrackedRequestOutcome(tracker *RequestTracker, id json.RawMessage) (TrackedRequestOutcome, bool) {
+func consumeTrackedRequestOutcome(tracker *RequestTracker, id json.RawMessage, opts MCPProxyOpts) (TrackedRequestOutcome, bool) {
+	if opts.v3POST != nil {
+		return tracker.takeOwnedOutcome(id, opts.v3POST.registration)
+	}
 	if tracker == nil {
 		return TrackedRequestOutcome{}, true
 	}
@@ -716,6 +719,7 @@ func RunHTTPProxy(
 						respReader, sendErr := httpClient.SendMessageWithOptions(releaseCtx, deferredReq.ForwardMessage, messageOpts)
 						if v3Hold {
 							heldOpts.confirmV3HeldSend(releaseCtx, safeLogW, exchange, roundTripConfirmed && wrote())
+							releaseOpts = releaseOpts.withV3POST(exchange, registration)
 							if sendErr != nil || deferredReq.IsNotification {
 								heldOpts.unbindV3Send(exchange)
 							} else {
@@ -1111,6 +1115,7 @@ func RunHTTPProxy(
 			fwdOpts.nativeSSE = true
 			fwdOpts.WarnContext = ctx
 		}
+		fwdOpts = fwdOpts.withV3POST(effect, registration)
 		foundInjection, scanErr := ForwardScanned(fwdOpts.withResponseTimeout(respReader), wireClientOut, safeLogW, tracker, fwdOpts)
 		if awaitReply && !acknowledged {
 			fwdOpts.finishV3Send(ctx, safeLogW, effect, true)
@@ -1172,7 +1177,7 @@ func RunHTTPProxy(
 		if httpClient.SessionID() != "" {
 			getStreamOnce.Do(func() {
 				getOpts := fwdOpts
-				getOpts.v3Session = nil
+				getOpts.v3Session, getOpts.v3POST = nil, nil
 				startGETStream(ctx, httpClient, wireClientOut, safeLogW, getOpts, getResponseTracker, &wg)
 			})
 		}

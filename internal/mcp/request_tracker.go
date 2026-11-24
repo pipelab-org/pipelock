@@ -231,7 +231,7 @@ func (t *RequestTracker) Validate(id json.RawMessage) bool {
 // claimRejectedOutcome consumes a paired request when its attributable
 // response was denied. A legacy diagnostic retains the pending correlation
 // and can be written at most once.
-func (t *RequestTracker) claimRejectedOutcome(id json.RawMessage) (TrackedRequestOutcome, bool) {
+func (t *RequestTracker) claimRejectedOutcome(id json.RawMessage, expected *requestRegistration) (TrackedRequestOutcome, bool) {
 	if t == nil {
 		return TrackedRequestOutcome{}, false
 	}
@@ -242,7 +242,7 @@ func (t *RequestTracker) claimRejectedOutcome(id json.RawMessage) (TrackedReques
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	request, ok := t.pending[key]
-	if !ok || request.rejectionOutcomeClaimed || request.outcome.Receipt.ActionID == "" {
+	if !ok || expected != nil && request.registration != expected || request.rejectionOutcomeClaimed || request.outcome.Receipt.ActionID == "" {
 		return TrackedRequestOutcome{}, false
 	}
 	if request.outcome.handle != nil {

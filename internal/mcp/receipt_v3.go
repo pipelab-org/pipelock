@@ -315,6 +315,38 @@ type mcpV3Session struct {
 	closed  bool
 }
 
+// mcpV3POST scopes a bridge response reader to its own registration
+// and send. Outstanding request IDs are still reserved across the session.
+type mcpV3POST struct {
+	exchange     *mcpV3Exchange
+	registration *requestRegistration
+}
+
+func (o MCPProxyOpts) withV3POST(exchange *mcpV3Exchange, registration *requestRegistration) MCPProxyOpts {
+	if exchange != nil {
+		o.v3POST = &mcpV3POST{exchange: exchange, registration: registration}
+	}
+	return o
+}
+
+func (p *mcpV3POST) ownsID(id json.RawMessage) bool {
+	return p.registration != nil && p.exchange.request.RequestID == canonicalID(id)
+}
+
+func (o MCPProxyOpts) consumeMCPResponse(tracker *RequestTracker, id json.RawMessage) (TrackedRequestOutcome, bool) {
+	if o.v3POST == nil {
+		return tracker.Consume(id)
+	}
+	s := o.v3Session
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	x := o.v3POST.exchange
+	if !o.v3POST.ownsID(id) || x.reserved || s.pending[x.request.RequestID] != x {
+		return TrackedRequestOutcome{}, false
+	}
+	return tracker.takeOwnedOutcome(id, o.v3POST.registration)
+}
+
 func (o MCPProxyOpts) withV3Session() MCPProxyOpts {
 	if o.receiptEffects.enabled {
 		o.v3Session = &mcpV3Session{pending: make(map[string]*mcpV3Exchange)}
@@ -439,10 +471,18 @@ func isWithheldV3Reply(writer transport.MessageWriter) bool {
 }
 
 func (o MCPProxyOpts) takeV3Send(id json.RawMessage) *mcpV3Exchange {
-	return o.takeV3SendKey(canonicalID(id))
+	var expected *mcpV3Exchange
+	if o.v3POST != nil {
+		expected = o.v3POST.exchange
+	}
+	return o.takeV3SendMatching(canonicalID(id), expected)
 }
 
 func (o MCPProxyOpts) takeV3SendKey(key string) *mcpV3Exchange {
+	return o.takeV3SendMatching(key, nil)
+}
+
+func (o MCPProxyOpts) takeV3SendMatching(key string, expected *mcpV3Exchange) *mcpV3Exchange {
 	if o.v3Session == nil {
 		return nil
 	}
@@ -450,7 +490,7 @@ func (o MCPProxyOpts) takeV3SendKey(key string) *mcpV3Exchange {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	x := s.pending[key]
-	if x != nil && x.reserved {
+	if expected != nil && x != expected || x != nil && x.reserved {
 		return nil
 	}
 	delete(s.pending, key)
