@@ -59,6 +59,22 @@ func TestRequestTracker_ClaimRejectedOutcome(t *testing.T) {
 	if _, ok := tr.claimRejectedOutcome(id, nil); !ok {
 		t.Fatal("new request inherited the drained request's rejection bound")
 	}
+
+	t.Run("registration identity", func(t *testing.T) {
+		tracker := NewRequestTracker()
+		stale := tracker.trackOutcome(id, want)
+		tracker.removeOwnedOutcome(id, stale)
+		current := tracker.trackOutcome(id, want)
+		if stale == nil || current == nil || stale == current {
+			t.Fatal("fixture did not replace the request registration")
+		}
+		if _, ok := tracker.claimRejectedOutcome(id, stale); ok {
+			t.Fatal("stale registration claimed the replacement request")
+		}
+		if got, ok := tracker.claimRejectedOutcome(id, current); !ok || !reflect.DeepEqual(got, want) {
+			t.Fatal("current registration could not claim its request")
+		}
+	})
 }
 
 func TestRequestTracker_TrackAndValidate(t *testing.T) {
