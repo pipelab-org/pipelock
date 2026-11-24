@@ -1154,7 +1154,16 @@ func TestMCPV3HeldClosureDuringAdmission(t *testing.T) {
 func TestMCPV3HeldSessionSettleDoesNotMisreportReservedExchange(t *testing.T) {
 	for _, duringAdmit := range []bool{false, true} {
 		t.Run(fmt.Sprintf("during_admit=%t", duringAdmit), func(t *testing.T) {
-			writer, writerOpts := openMCPV3RegressionWriter(t, deferred.SurfaceMCPStdio)
+			writingIntent, continueIntent := make(chan struct{}), make(chan struct{})
+			resumeIntent := sync.OnceFunc(func() { close(continueIntent) })
+			defer resumeIntent()
+			writer, writerOpts := heldFaultWriter(t, func(a v3.Action) bool {
+				if duringAdmit && a.Phase == "intent" && a.EffectBoundary == mcpUpstreamSendBoundary {
+					close(writingIntent)
+					<-continueIntent
+				}
+				return false
+			})
 			opts := (MCPProxyOpts{Transport: deferred.SurfaceMCPStdio}).WithV3ReceiptWriter(writer).withV3Session()
 			manager := deferred.NewManager(deferred.Config{Enabled: true, Timeout: testwait.Deadline(time.Minute)})
 			requestID := json.RawMessage("1")
@@ -1165,21 +1174,30 @@ func TestMCPV3HeldSessionSettleDoesNotMisreportReservedExchange(t *testing.T) {
 					return
 				}
 				if duringAdmit {
-					var wg sync.WaitGroup
-					wg.Add(1)
+					type admissionResult struct {
+						exchange *mcpV3Exchange
+						err      error
+					}
+					result := make(chan admissionResult, 1)
 					go func() {
-						defer wg.Done()
-						testwait.For(t, 5*time.Second, func() bool {
-							opts.v3Session.mu.Lock()
-							defer opts.v3Session.mu.Unlock()
-							return opts.v3Session.pending[canonicalID(requestID)] != nil
-						}, "reserved exchange bound before settle")
-						opts.settleV3Session(t.Context(), io.Discard)
+						exchange, err := opts.admitV3HeldSend(t.Context(), heldV3Evidence(res, requestID, opts), release)
+						result <- admissionResult{exchange: exchange, err: err}
 					}()
-					exchange, err := opts.admitV3HeldSend(t.Context(), heldV3Evidence(res, requestID, opts), release)
-					wg.Wait()
-					if err == nil {
-						opts.refuseV3HeldIntent(t.Context(), exchange, release)
+					awaitHeldTest(t, writingIntent)
+					opts.v3Session.mu.Lock()
+					reserved := opts.v3Session.pending[canonicalID(requestID)]
+					opts.v3Session.mu.Unlock()
+					if reserved == nil {
+						t.Error("intent persistence started without reserving the exchange")
+					}
+					opts.settleV3Session(t.Context(), io.Discard)
+					resumeIntent()
+					got := awaitHeldTest(t, result)
+					if got.exchange != nil || !errors.Is(got.err, context.Canceled) {
+						t.Errorf("admission across session settle = %p, %v; want nil, context.Canceled", got.exchange, got.err)
+						if got.exchange != nil {
+							opts.refuseV3HeldIntent(t.Context(), got.exchange, release)
+						}
 					}
 					return
 				}
