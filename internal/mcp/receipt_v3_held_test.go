@@ -113,6 +113,15 @@ func TestMCPV3HeldRequestsAndNotifications(t *testing.T) {
 			writer, writerOpts := openMCPV3RegressionWriter(t, surface)
 			opts := nativeDeferredOptions(t, nil).WithV3ReceiptWriter(writer)
 			opts.Transport = surface
+			beforePolicy := strings.Repeat("a", 64)
+			afterPolicy := strings.Repeat("b", 64)
+			var revisionChanged atomic.Bool
+			opts.PolicyHashFn = func() string {
+				if revisionChanged.Load() {
+					return afterPolicy
+				}
+				return beforePolicy
+			}
 			opts.ListenerShutdownTimeout = testwait.Deadline(time.Second)
 			opts.DeferManager = deferred.NewManager(deferred.Config{Enabled: true, Timeout: testwait.Deadline(time.Minute)})
 			ctx, cancel := context.WithCancel(t.Context())
@@ -154,6 +163,7 @@ func TestMCPV3HeldRequestsAndNotifications(t *testing.T) {
 				messages = append(messages, heldNativeCall)
 			}
 			for _, msg := range messages {
+				revisionChanged.Store(false)
 				if _, err := io.WriteString(feed, msg+"\n"); err != nil {
 					t.Fatal(err)
 				}
@@ -165,6 +175,7 @@ func TestMCPV3HeldRequestsAndNotifications(t *testing.T) {
 					t.Fatalf("sent before approval: %q", sent)
 				default:
 				}
+				revisionChanged.Store(true)
 				if err := opts.DeferManager.Resolve(held.DeferID, config.ActionAllow, deferred.SourceOperator); err != nil {
 					t.Fatal(err)
 				}
@@ -180,7 +191,17 @@ func TestMCPV3HeldRequestsAndNotifications(t *testing.T) {
 			if err := awaitHeldTest(t, proxyDone); err != nil {
 				t.Fatal(err)
 			}
-			assertHeldEvidence(t, verifiedMCPV3RegressionActions(t, writer, writerOpts), want)
+			actions := verifiedMCPV3RegressionActions(t, writer, writerOpts)
+			assertHeldEvidence(t, actions, want)
+			for _, a := range actions {
+				if a.Phase != "hold" && (a.Phase != "intent" || a.EffectBoundary != mcpUpstreamSendBoundary) {
+					continue
+				}
+				if a.Layer != mcpReceiptLayerInput || a.Pattern != "fixture hold" || a.Severity != config.SeverityHigh ||
+					a.Policy.Hash != "sha256:"+beforePolicy {
+					t.Errorf("%s attribution = %q/%q/%q, policy %q", a.Phase, a.Layer, a.Pattern, a.Severity, a.Policy.Hash)
+				}
+			}
 		})
 	}
 }
@@ -218,6 +239,14 @@ func heldFaultWriter(t *testing.T, fail func(v3.Action) bool) (*v3.StreamWriter,
 	}
 	t.Cleanup(func() { _ = writer.Close(context.Background(), nil) })
 	return writer, opts
+}
+
+func heldV3Evidence(res deferred.Resolution, id json.RawMessage, opts MCPProxyOpts) receipt.EmitOpts {
+	return opts.withReceiptPolicyHash(receipt.EmitOpts{
+		ActionID: res.ParentActionID, Target: firstNonEmpty(res.Target, res.Method), Method: res.Method,
+		RequestID: canonicalID(id), Transport: opts.Transport, Verdict: config.ActionAllow,
+		SessionID: res.Authority.SessionID, SessionIDOriginal: res.Authority.SessionIDOriginal,
+	})
 }
 
 func v3ManagerAction(opts MCPProxyOpts, id string, resolve func(deferred.Resolution, deferred.Release)) deferred.HeldAction {

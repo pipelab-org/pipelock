@@ -813,6 +813,9 @@ func ForwardScannedInput(
 			}
 			if opts.receiptEffects.enabled {
 				v3Evidence = opts.withReceiptPolicyHash(receiptOpts.receiptOptions())
+				if receiptVerdict == config.ActionDefer {
+					return nil
+				}
 			}
 			if err := emitMCPToolReceipt(receiptOpts); err != nil {
 				return err
@@ -1632,11 +1635,7 @@ func ForwardScannedInput(
 			receiptResolutionPolicy = deferred.ReceiptPolicyString(manager.Policy(), policyVerdict.ResolutionPolicy)
 			receiptSessionID = captureSessionID(opts.Transport)
 			receiptSessionIDOriginal = captureSessionIDOriginal(opts.Transport)
-			var deferReceiptErr error
-			if !v3Hold {
-				deferReceiptErr = emitToolReceipt(config.ActionDefer)
-			}
-			if deferReceiptErr != nil {
+			if deferReceiptErr := emitToolReceipt(config.ActionDefer); deferReceiptErr != nil {
 				denialAudit = mcpOperationalBlockAudit(scanner.AuditReceiptEmission, "mcp_input", mcpReceiptEmissionReason)
 				sendMCPDenial(opts, denialAudit, BlockedRequest{
 					ID:             verdict.ID,
@@ -1670,6 +1669,7 @@ func ForwardScannedInput(
 			var finishDeniedRelease func()
 			var taskRefusal string
 			var v3Release deferred.Release
+			var v3HeldEvidence receipt.EmitOpts
 			heldOpts, releaseHeldAdmission, holdErr := opts.splitDeferredAdmission()
 			heldCallbacks.Add(1)
 			finishHeldAdmission := func() {
@@ -1815,7 +1815,7 @@ func ForwardScannedInput(
 						var exchange *mcpV3Exchange
 						if v3Hold {
 							var admitErr error
-							exchange, admitErr = heldOpts.admitV3HeldSend(releaseCtx, heldV3Evidence(res, heldID, heldOpts), v3Release)
+							exchange, admitErr = heldOpts.admitV3HeldSend(releaseCtx, v3HeldEvidence, v3Release)
 							releaseErr := errors.Join(admitErr, releaseCtx.Err(), v3Release.ApprovalContext.Err())
 							if releaseErr == nil {
 								releaseErr = heldOpts.commitV3HeldSend(exchange, v3Release, &readyToCorrelate)
@@ -1830,7 +1830,7 @@ func ForwardScannedInput(
 								if heldNotification {
 									dropMCPDenial(denialOpts, mcpReceiptMcpInputDenialAudit(), "input")
 								} else {
-									br := mcpV3HeldSendDenial(heldAuthorityFrame, heldV3Evidence(res, heldID, heldOpts), exchange, releaseErr)
+									br := mcpV3HeldSendDenial(heldAuthorityFrame, v3HeldEvidence, exchange, releaseErr)
 									sendMCPDenial(denialOpts, mcpReceiptMcpInputDenialAudit(), br, blockedCh)
 								}
 								return
@@ -1905,11 +1905,8 @@ func ForwardScannedInput(
 				},
 			}
 			if v3Hold {
-				evidence := heldV3Evidence(deferred.Resolution{
-					ParentActionID: actionID, Target: heldToolName, Method: verdict.Method,
-					Authority: heldAction.Authority,
-				}, heldID, heldOpts)
-				heldOpts.setupV3Hold(&heldAction, evidence)
+				v3Evidence.RequestID, v3Evidence.Method = canonicalID(heldID), verdict.Method
+				v3HeldEvidence = heldOpts.setupV3Hold(&heldAction, v3Evidence)
 				resolve := heldAction.ResolveWithReleaseRefusal
 				heldAction.ResolveWithReleaseRefusal = nil
 				heldAction.ResolveReceipt = func(res deferred.Resolution, release deferred.Release) {

@@ -440,6 +440,7 @@ func RunHTTPProxy(
 			deferredReq := decision.Deferred
 			v3Hold := fwdOpts.receiptEffects.enabled
 			var v3Release deferred.Release
+			var v3HeldEvidence receipt.EmitOpts
 			// gateBlock carries a release-time upstream gate denial from
 			// Prepare to Resolve for this hold.
 			var gateBlock *BlockedRequest
@@ -685,7 +686,7 @@ func RunHTTPProxy(
 						var roundTripConfirmed bool
 						if v3Hold {
 							var admitErr error
-							exchange, admitErr = heldOpts.admitV3HeldSend(releaseCtx, heldV3Evidence(res, deferredReq.ID, heldOpts), v3Release)
+							exchange, admitErr = heldOpts.admitV3HeldSend(releaseCtx, v3HeldEvidence, v3Release)
 							releaseCtx, wrote = observeMCPHTTPWrite(releaseCtx)
 							messageOpts.ObserveRoundTrip = func(err error) { roundTripConfirmed = err == nil }
 							releaseErr := errors.Join(admitErr, releaseCtx.Err(), v3Release.ApprovalContext.Err())
@@ -705,7 +706,7 @@ func RunHTTPProxy(
 								if deferredReq.IsNotification {
 									dropMCPDenial(denialOpts, mcpReceiptMcpInputDenialAudit(), "input")
 								} else {
-									br := mcpV3HeldSendDenial(deferredReq.authorityFrame, heldV3Evidence(res, deferredReq.ID, heldOpts), exchange, releaseErr)
+									br := mcpV3HeldSendDenial(deferredReq.authorityFrame, v3HeldEvidence, exchange, releaseErr)
 									inputMCPDenial(denialOpts, mcpReceiptMcpInputDenialAudit(), &br)
 									_ = deliverMCPInputResult(denialOpts, br, heldOpts.v3SendDenialWriter(wireClientOut, safeLogW, br))
 								}
@@ -842,7 +843,7 @@ func RunHTTPProxy(
 				},
 			}
 			if v3Hold {
-				heldOpts.setupV3Hold(&heldAction, decision.v3Evidence)
+				v3HeldEvidence = heldOpts.setupV3Hold(&heldAction, decision.v3Evidence)
 				resolve := heldAction.ResolveWithReleaseRefusal
 				heldAction.ResolveWithReleaseRefusal = nil
 				heldAction.ResolveReceipt = func(res deferred.Resolution, release deferred.Release) {

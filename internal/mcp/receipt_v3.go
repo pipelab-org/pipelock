@@ -129,15 +129,7 @@ func observeMCPHTTPWrite(ctx context.Context) (context.Context, func() bool) {
 	return httptrace.WithClientTrace(ctx, trace), written.Load
 }
 
-func heldV3Evidence(res deferred.Resolution, id json.RawMessage, opts MCPProxyOpts) receipt.EmitOpts {
-	return opts.withReceiptPolicyHash(receipt.EmitOpts{
-		ActionID: res.ParentActionID, Target: firstNonEmpty(res.Target, res.Method), Method: res.Method,
-		RequestID: canonicalID(id), Transport: opts.Transport, Verdict: config.ActionAllow,
-		SessionID: res.Authority.SessionID, SessionIDOriginal: res.Authority.SessionIDOriginal,
-	})
-}
-
-func (o MCPProxyOpts) setupV3Hold(held *deferred.HeldAction, evidence receipt.EmitOpts) {
+func (o MCPProxyOpts) setupV3Hold(held *deferred.HeldAction, evidence receipt.EmitOpts) receipt.EmitOpts {
 	evidence.ActionID = held.ActionID
 	evidence.Target = firstNonEmpty(evidence.Target, firstNonEmpty(held.Target, held.Method))
 	action, policy := o.v3EffectAction(evidence, "approval_prompt")
@@ -190,6 +182,8 @@ func (o MCPProxyOpts) setupV3Hold(held *deferred.HeldAction, evidence receipt.Em
 			return err
 		},
 	}
+	evidence.Verdict = config.ActionAllow
+	return evidence
 }
 
 // refuseV3HoldAdmission records rejections that never started a hold write.
