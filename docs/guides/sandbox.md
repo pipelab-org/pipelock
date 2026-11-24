@@ -1,5 +1,7 @@
 # Sandbox launch posture
 
+For flags and examples, see the [`pipelock sandbox` CLI reference](../cli/sandbox.md).
+
 `pipelock sandbox` applies three independent Linux containment layers at launch: a network namespace, Landlock filesystem rules, and a seccomp filter on `linux/amd64`. The launch status is evidence from the child after it applies those layers; a preflight result is only a capability probe.
 
 ## Child environment restrictions
