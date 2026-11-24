@@ -3144,3 +3144,29 @@ func TestMCPV3AgentCardSignatureDeliveryOutcome(t *testing.T) {
 		})
 	}
 }
+
+func TestMCPV3HeldErrorReplyReportsAdmissionFailure(t *testing.T) {
+	writer, _ := heldFaultWriter(t, func(a v3.Action) bool {
+		return a.Phase == "intent" && a.EffectBoundary == mcpDownstreamDeliveryBoundary
+	})
+	opts := (MCPProxyOpts{Transport: deferred.SurfaceMCPHTTPUpstream}).WithV3ReceiptWriter(writer)
+	var failures []error
+	opts.onLocalV3ReplyFailure = func(err error) { failures = append(failures, err) }
+	var delivered bool
+	base := heldWireWriter(func([]byte) error {
+		delivered = true
+		return nil
+	})
+	heldSend := &mcpV3Exchange{request: receipt.EmitOpts{
+		ActionID: receipt.NewActionID(), RequestID: "1", Target: "echo",
+		Method: methodToolsCall, Transport: opts.Transport,
+	}}
+	reply := opts.localV3ReplyWriter(base, io.Discard, heldSend)
+	err := reply.WriteMessage(blockResponseReason(json.RawMessage("1"), "upstream response failed"))
+	if !errors.Is(err, errMCPV3ReplyAdmission) || delivered {
+		t.Fatalf("held error reply: err=%v delivered=%t", err, delivered)
+	}
+	if len(failures) != 1 || !errors.Is(failures[0], errMCPV3ReplyAdmission) {
+		t.Fatalf("held error reply failure handler received %v", failures)
+	}
+}

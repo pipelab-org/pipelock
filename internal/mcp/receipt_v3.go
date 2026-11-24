@@ -579,7 +579,7 @@ func (w *mcpV3LocalWriter) replyWriter(id json.RawMessage) mcpV3ReplyWriter {
 
 func (w *mcpV3LocalWriter) WriteMessage(msg []byte) error {
 	reply := w.replyWriter(ParseMCPFrame(msg).ID)
-	return writeMCPForwardedMessage(&reply, msg)
+	return w.reportDenialFailure(msg, writeMCPForwardedMessage(&reply, msg))
 }
 
 func (w *mcpV3LocalWriter) writeDeniedMessage(msg []byte) error {
