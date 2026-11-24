@@ -1323,7 +1323,10 @@ func TestMCPV3HeldSendRefusalDownstreamEvidence(t *testing.T) {
 			defer func() { _ = in.Close(); _ = feed.Close() }()
 			upstream := httptest.NewServer(tc.handler)
 			upstream.Config.ErrorLog = log.New(io.Discard, "", 0)
-			defer upstream.Close()
+			defer func() {
+				cancel()
+				upstream.Close()
+			}()
 			var out lockedHTTPBuffer
 			done := make(chan error, 1)
 			go func() { done <- RunHTTPProxy(ctx, in, &out, io.Discard, upstream.URL, nil, opts) }()
@@ -1332,7 +1335,11 @@ func TestMCPV3HeldSendRefusalDownstreamEvidence(t *testing.T) {
 			}
 			testwait.For(t, 5*time.Second, func() bool { return opts.DeferManager.HeldCount() == 1 }, "held bridge call")
 			held := opts.DeferManager.Snapshot()[0]
-			if err := opts.DeferManager.Resolve(held.DeferID, config.ActionAllow, deferred.SourceOperator); err != nil {
+			resolved := make(chan error, 1)
+			go func() {
+				resolved <- opts.DeferManager.Resolve(held.DeferID, config.ActionAllow, deferred.SourceOperator)
+			}()
+			if err := awaitHeldTest(t, resolved); err != nil {
 				t.Fatal(err)
 			}
 			testwait.For(t, 5*time.Second, func() bool { return strings.Contains(out.String(), tc.message) }, "error reply")
