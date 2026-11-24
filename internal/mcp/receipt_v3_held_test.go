@@ -531,17 +531,11 @@ func TestMCPV3HeldSiblingsAndSweeps(t *testing.T) {
 			manager := deferred.NewManager(deferred.Config{Enabled: true, Timeout: testwait.Deadline(time.Minute)})
 			const parent, sibling, child = "z-parent", "sibling", "a-child"
 			sends := make(chan string, 2)
-			parentConfirmed := make(chan struct{})
-			childResolved := make(chan struct{})
 			resolve := func(res deferred.Resolution, release deferred.Release) {
 				if res.FinalDecision != config.ActionAllow {
 					return
 				}
 				id := res.DeferID
-				if id == child {
-					close(childResolved)
-					awaitHeldTest(t, parentConfirmed)
-				}
 				evidence := heldV3Evidence(res, json.RawMessage(fmt.Sprintf("%q", id)), opts)
 				exchange, err := opts.admitV3HeldSend(t.Context(), evidence, release)
 				if err != nil {
@@ -551,16 +545,8 @@ func TestMCPV3HeldSiblingsAndSweeps(t *testing.T) {
 				if err := opts.commitV3HeldSend(exchange, release, nil); err != nil {
 					t.Errorf("commitV3HeldSend: %v", err)
 				}
-				if id == parent {
-					// The child can record its resolution as soon as the parent
-					// commits, even while the parent has no send outcome.
-					awaitHeldTest(t, childResolved)
-				}
 				opts.confirmV3HeldSend(t.Context(), io.Discard, exchange, true)
 				sends <- id
-				if id == parent {
-					close(parentConfirmed)
-				}
 			}
 			root := v3ManagerAction(opts, parent, resolve)
 			root.RulePolicy.AllowOn.ToolInventoryBaseline = false
@@ -599,6 +585,12 @@ func TestMCPV3HeldSiblingsAndSweeps(t *testing.T) {
 				t.Fatal("sweep released unresolved lineage")
 			}
 			if err := manager.Resolve(parent, config.ActionAllow, deferred.SourceOperator); err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := manager.Held(child); !ok {
+				t.Fatal("child did not remain held after the parent committed")
+			}
+			if err := manager.Resolve(child, config.ActionAllow, deferred.SourceOperator); err != nil {
 				t.Fatal(err)
 			}
 			if got := []string{awaitHeldTest(t, sends), awaitHeldTest(t, sends)}; !slices.Equal(got, []string{parent, child}) {
@@ -1598,13 +1590,13 @@ func TestMCPV3HeldSweepDecisionPolicy(t *testing.T) {
 	reloadHash := "sha256:" + strings.Repeat("b", 64)
 	for _, tc := range []struct {
 		name, policyHash, source string
-		parked                   bool
+		afterParent              bool
 	}{
 		{name: "reload_without_snapshot", source: deferred.SourcePolicyReload},
 		{name: "reload_with_snapshot", policyHash: reloadHash, source: deferred.SourcePolicyReload},
-		{name: "retained_reload", policyHash: reloadHash, source: deferred.SourcePolicyReload, parked: true},
+		{name: "child_reload", policyHash: reloadHash, source: deferred.SourcePolicyReload, afterParent: true},
 		{name: "inventory", source: deferred.SourceToolInventory},
-		{name: "retained_inventory", source: deferred.SourceToolInventory, parked: true},
+		{name: "child_inventory", source: deferred.SourceToolInventory, afterParent: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			writer, writerOpts := openMCPV3RegressionWriter(t, deferred.SurfaceMCPStdio)
@@ -1612,7 +1604,7 @@ func TestMCPV3HeldSweepDecisionPolicy(t *testing.T) {
 			manager := deferred.NewManager(deferred.Config{Enabled: true, Timeout: testwait.Deadline(time.Minute)})
 			const parentID, heldID = "parent", "held"
 			settled := make(chan struct{})
-			if tc.parked {
+			if tc.afterParent {
 				parent := v3ManagerAction(opts, parentID, func(_ deferred.Resolution, release deferred.Release) { release.Commit() })
 				parent.RulePolicy.AllowOn.ToolInventoryBaseline = false
 				if err := manager.Hold(parent); err != nil {
@@ -1625,6 +1617,11 @@ func TestMCPV3HeldSweepDecisionPolicy(t *testing.T) {
 			})
 			if err := manager.Hold(held); err != nil {
 				t.Fatal(err)
+			}
+			if tc.afterParent {
+				if err := manager.Resolve(parentID, config.ActionAllow, deferred.SourceOperator); err != nil {
+					t.Fatal(err)
+				}
 			}
 			switch {
 			case tc.source == deferred.SourceToolInventory:
@@ -1639,14 +1636,6 @@ func TestMCPV3HeldSweepDecisionPolicy(t *testing.T) {
 					}
 					return deferred.ReloadDecision{Decision: decision, PolicyHash: tc.policyHash}, nil
 				})
-			}
-			if tc.parked {
-				if _, ok := manager.Held(heldID); !ok {
-					t.Fatal("sweep released the child before parent commit")
-				}
-				if err := manager.Resolve(parentID, config.ActionAllow, deferred.SourceOperator); err != nil {
-					t.Fatal(err)
-				}
 			}
 			awaitHeldTest(t, settled)
 

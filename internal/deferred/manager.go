@@ -196,8 +196,7 @@ type HeldAction struct {
 	lineage            *holdLineage
 	admissionBlock     string
 	parkedApprovals    int
-	sweepApproval      holdSweepApproval // protected by Manager.mu
-	decidingPolicyHash string            // set when takeHold claims the resolution
+	decidingPolicyHash string // set when takeHold claims the resolution
 }
 
 // Resolution is delivered exactly once for a held action.

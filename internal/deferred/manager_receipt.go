@@ -157,17 +157,11 @@ type holdResolveMode uint8
 const (
 	resolveNoWait holdResolveMode = iota
 	resolveWait
-	resolveSweepResume
 )
 
 type holdResolveRequest struct {
 	expected   *HeldAction
 	mode       holdResolveMode
-	policyHash string
-}
-
-type holdSweepApproval struct {
-	source     string
 	policyHash string
 }
 
@@ -179,18 +173,7 @@ func (m *Manager) takeHold(ctx context.Context, id, decision, source string, req
 	if held == nil || held.state != StateHeld || (request.expected != nil && held != request.expected) {
 		return nil, "", "", ErrNotFound
 	}
-	if request.mode == resolveSweepResume {
-		if held.sweepApproval.source == "" {
-			return nil, "", "", nil
-		}
-		source, request.policyHash = held.sweepApproval.source, held.sweepApproval.policyHash
-	}
-	// Policy reload and tool inventory both reevaluate permission to release
-	// this hold. The last decision applied under mu supersedes either source;
-	// their policy revisions and inventory observations have no common clock.
-	sweep := request.mode == resolveNoWait && (source == SourceToolInventory || source == SourcePolicyReload)
-	held.sweepApproval = holdSweepApproval{}
-	if sweep && decision == config.ActionDefer {
+	if request.mode == resolveNoWait && decision == config.ActionDefer {
 		return nil, "", "", nil
 	}
 	for {
@@ -233,9 +216,6 @@ func (m *Manager) takeHold(ctx context.Context, id, decision, source string, req
 			break
 		}
 		if request.mode != resolveWait {
-			if sweep {
-				held.sweepApproval = holdSweepApproval{source: source, policyHash: request.policyHash}
-			}
 			return nil, "", "", nil
 		}
 		changed := m.changed
@@ -252,7 +232,6 @@ func (m *Manager) takeHold(ctx context.Context, id, decision, source string, req
 		held.parkedApprovals--
 	}
 
-	held.sweepApproval = holdSweepApproval{}
 	held.decidingPolicyHash = request.policyHash
 	held.state = StateResolving
 	delete(m.holds, id)
@@ -284,27 +263,11 @@ func (m *Manager) closeReceiptLineageLocked(held *HeldAction, committed bool) {
 	}
 	node.closed = true
 	node.committed = committed
-	if committed {
-		m.resumeSweepApprovalsLocked(node)
-	} else {
+	if !committed {
 		m.markLineageBlockedLocked(node)
 	}
 	m.removeSessionHoldLocked(held.Authority.SessionID, held.DeferID)
 	m.notifyHoldChangeLocked()
-}
-
-// A retained sweep approval only becomes eligible when its direct parent
-// commits: that parent already passed the barrier for every earlier ancestor.
-// Its resolver must run independently of the parent's upstream send.
-func (m *Manager) resumeSweepApprovalsLocked(parent *holdLineage) {
-	for _, child := range m.holds {
-		if child.state != StateHeld || child.lineage == nil || child.lineage.parent != parent || child.sweepApproval.source == "" {
-			continue
-		}
-		go func() {
-			_, _ = m.resolveAppliedContext(context.Background(), child.DeferID, config.ActionAllow, "", holdResolveRequest{expected: child, mode: resolveSweepResume})
-		}()
-	}
 }
 
 func (m *Manager) markLineageBlockedLocked(node *holdLineage) {
@@ -313,9 +276,6 @@ func (m *Manager) markLineageBlockedLocked(node *holdLineage) {
 		for parent := candidate.parent; parent != nil; parent = parent.parent {
 			if parent == node {
 				candidate.blocked = true
-				if child := m.holds[candidate.id]; child != nil && child.lineage == candidate {
-					child.sweepApproval = holdSweepApproval{}
-				}
 				break
 			}
 		}

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -364,14 +365,14 @@ func TestReceiptHoldReloadCannotResolveReusedID(t *testing.T) {
 	}
 }
 
-func TestReceiptHoldRetainsSweepApproval(t *testing.T) {
+func TestReceiptHoldSweepLeavesChildForOperator(t *testing.T) {
 	for _, source := range []string{SourceToolInventory, SourcePolicyReload} {
 		t.Run(source, func(t *testing.T) {
 			for _, tc := range []struct {
 				name, decision, source string
 				commit, expired        bool
 			}{
-				{name: "commit", decision: config.ActionAllow, source: source, commit: true},
+				{name: "commit", decision: config.ActionAllow, source: SourceOperator, commit: true},
 				{name: "refuse", decision: config.ActionBlock, source: SourceCascade},
 				{name: "expired", decision: config.ActionBlock, source: SourceTimeout, commit: true, expired: true},
 			} {
@@ -379,11 +380,15 @@ func TestReceiptHoldRetainsSweepApproval(t *testing.T) {
 					m := NewManager(Config{Enabled: true, Timeout: time.Minute})
 					parent := receiptAdmissionFixture("parent")
 					child := receiptAdmissionFixture("child")
+					child.RulePolicy.AllowOn.Approval = true
 					child.RulePolicy.AllowOn.ToolInventoryBaseline = true
 					child.RulePolicy.AllowOn.PolicyPermits = true
 					parentReady := make(chan struct{})
 					finishParent := make(chan struct{})
 					parent.ResolveReceipt = func(_ Resolution, release Release) {
+						if release.Commit == nil {
+							return
+						}
 						if tc.commit {
 							release.Commit()
 						} else {
@@ -444,13 +449,21 @@ func TestReceiptHoldRetainsSweepApproval(t *testing.T) {
 					case <-time.After(testwait.Deadline(time.Second)):
 						t.Fatal("parent did not reach the send boundary")
 					}
+					if tc.commit {
+						if _, ok := m.Held(child.DeferID); !ok {
+							t.Fatal("child did not remain held after the parent committed")
+						}
+						if _, err := m.ResolveApprovalResult(child.DeferID, config.ActionAllow, SourceOperator); err != nil {
+							t.Fatal(err)
+						}
+					}
 					select {
 					case res := <-results:
 						if res.FinalDecision != tc.decision || res.ResolutionSource != tc.source {
 							t.Fatalf("child = %q/%q, want %q/%q", res.FinalDecision, res.ResolutionSource, tc.decision, tc.source)
 						}
 					case <-time.After(testwait.Deadline(time.Second)):
-						t.Fatal("child did not settle after parent decided; sweep result was delivered once")
+						t.Fatal("child did not settle after the final decision")
 					}
 					if !tc.commit {
 						if err := <-parentDone; err != nil {
@@ -709,51 +722,49 @@ func TestReceiptCascadeSweepKeepsReplacementHold(t *testing.T) {
 	}
 }
 
-func TestReceiptHoldLatestSweepRevokesApproval(t *testing.T) {
-	m := NewManager(Config{Enabled: true, Timeout: testwait.Deadline(time.Minute)})
-	parent := receiptAdmissionFixture("parent")
-	parent.ResolveReceipt = func(res Resolution, release Release) {
-		if res.FinalDecision == config.ActionAllow {
-			release.Commit()
+func TestReceiptHoldReloadDefersChildAfterParentCommits(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m := NewManager(Config{Enabled: true, Timeout: time.Minute})
+		parent := receiptAdmissionFixture("parent")
+		parent.RulePolicy.AllowOn.PolicyPermits = true
+		parentCommitted := false
+		parent.ResolveReceipt = func(res Resolution, release Release) {
+			if res.FinalDecision == config.ActionAllow {
+				release.Commit()
+				parentCommitted = true
+			}
 		}
-	}
-	child := receiptAdmissionFixture("child")
-	child.RulePolicy.AllowOn.PolicyPermits = true
-	resolved := make(chan Resolution, 1)
-	child.ResolveReceipt = func(res Resolution, release Release) {
-		if res.FinalDecision == config.ActionAllow {
-			release.Commit()
+		child := receiptAdmissionFixture("child")
+		child.RulePolicy.AllowOn.PolicyPermits = true
+		for _, held := range []HeldAction{parent, child} {
+			if err := m.Hold(held); err != nil {
+				t.Fatal(err)
+			}
 		}
-		resolved <- res
-	}
-	for _, held := range []HeldAction{parent, child} {
-		if err := m.Hold(held); err != nil {
-			t.Fatal(err)
-		}
-	}
-	defer m.ResolveAll(config.ActionBlock, SourceCancel)
+		defer m.ResolveAll(config.ActionBlock, SourceCancel)
 
-	for _, decision := range []string{config.ActionAllow, config.ActionDefer} {
 		m.ResolvePolicyReload(func(h HeldAction) (string, error) {
 			if h.DeferID == child.DeferID {
-				return decision, nil
+				return config.ActionAllow, nil
 			}
 			return config.ActionDefer, nil
 		})
-	}
-	m.mu.Lock()
-	hasApproval := m.holds[child.DeferID].sweepApproval.source != ""
-	m.mu.Unlock()
-	if err := m.Resolve(parent.DeferID, config.ActionAllow, SourceOperator); err != nil {
-		t.Fatal(err)
-	}
-	if hasApproval {
-		res := receiveReceiptFixture(t, resolved)
-		t.Fatalf("newer defer left the sweep approval active: child resolved as %q", res.FinalDecision)
-	}
-	if _, ok := m.Held(child.DeferID); !ok {
-		t.Fatal("child did not remain held after the parent committed")
-	}
+		var evaluatedChild bool
+		m.ResolvePolicyReload(func(h HeldAction) (string, error) {
+			if h.DeferID == parent.DeferID {
+				return config.ActionAllow, nil
+			}
+			evaluatedChild = true
+			if !parentCommitted {
+				t.Error("reload evaluated the child before the parent committed")
+			}
+			return config.ActionDefer, nil
+		})
+		synctest.Wait()
+		if _, ok := m.Held(child.DeferID); !ok || !evaluatedChild {
+			t.Fatalf("child held=%t evaluated=%t, want both", ok, evaluatedChild)
+		}
+	})
 }
 
 func TestReceiptHoldSweepSequences(t *testing.T) {
@@ -767,6 +778,7 @@ func TestReceiptHoldSweepSequences(t *testing.T) {
 		parentBlock    = "parent-block"
 	)
 	events := []string{policyAllow, policyDefer, inventoryAllow, inventoryDefer, inventoryBlock, parentCommit, parentBlock}
+	var cases int
 	var enumerate func([]string, bool)
 	enumerate = func(sequence []string, decided bool) {
 		if len(sequence) == 3 {
@@ -781,85 +793,91 @@ func TestReceiptHoldSweepSequences(t *testing.T) {
 			for _, policyPermitted := range []bool{false, true} {
 				for _, inventoryPermitted := range []bool{false, true} {
 					name := fmt.Sprintf("%s/policy=%t/inventory=%t", strings.Join(next, "_"), policyPermitted, inventoryPermitted)
+					cases++
 					t.Run(name, func(t *testing.T) {
-						m := NewManager(Config{Enabled: true, Timeout: testwait.Deadline(time.Minute)})
-						parent := receiptAdmissionFixture("parent")
-						parent.ResolveReceipt = func(res Resolution, release Release) {
-							if res.FinalDecision == config.ActionAllow {
-								release.Commit()
-							}
-						}
-						child := receiptAdmissionFixture("child")
-						child.RulePolicy.AllowOn.PolicyPermits = policyPermitted
-						child.RulePolicy.AllowOn.ToolInventoryBaseline = inventoryPermitted
-						resolved := make(chan Resolution, 2)
-						child.ResolveReceipt = func(res Resolution, release Release) {
-							if res.FinalDecision == config.ActionAllow {
-								release.Commit()
-							}
-							resolved <- res
-						}
-						for _, held := range []HeldAction{parent, child} {
-							if err := m.Hold(held); err != nil {
-								t.Fatal(err)
-							}
-						}
-						defer m.ResolveAll(config.ActionBlock, SourceCancel)
-
-						var committed, sent, blocked, latestPermitted bool
-						for _, step := range next {
-							switch step {
-							case policyAllow, policyDefer:
-								latestPermitted = step == policyAllow && policyPermitted
-								m.ResolvePolicyReload(func(h HeldAction) (string, error) {
-									if h.DeferID == child.DeferID && step == policyAllow {
-										return config.ActionAllow, nil
-									}
-									return config.ActionDefer, nil
-								})
-							case inventoryAllow, inventoryDefer, inventoryBlock:
-								decision := config.ActionDefer
-								switch step {
-								case inventoryAllow:
-									decision = config.ActionAllow
-								case inventoryBlock:
-									decision = config.ActionBlock
+						synctest.Test(t, func(t *testing.T) {
+							m := NewManager(Config{Enabled: true, Timeout: time.Minute})
+							parent := receiptAdmissionFixture("parent")
+							parent.ResolveReceipt = func(res Resolution, release Release) {
+								if res.FinalDecision == config.ActionAllow {
+									release.Commit()
 								}
-								latestPermitted = step == inventoryAllow && inventoryPermitted
-								blocked = blocked || (!sent && step == inventoryBlock && inventoryPermitted)
-								m.ResolveToolInventory(child.Authority.SessionID, decision)
-							case parentCommit, parentBlock:
-								committed = step == parentCommit
-								blocked = blocked || !committed
-								decision := config.ActionBlock
-								if committed {
-									decision = config.ActionAllow
+							}
+							child := receiptAdmissionFixture("child")
+							child.RulePolicy.AllowOn.PolicyPermits = policyPermitted
+							child.RulePolicy.AllowOn.ToolInventoryBaseline = inventoryPermitted
+							resolved := make(chan Resolution, 2)
+							child.ResolveReceipt = func(res Resolution, release Release) {
+								if res.FinalDecision == config.ActionAllow {
+									release.Commit()
 								}
-								if err := m.Resolve(parent.DeferID, decision, SourceOperator); err != nil {
+								resolved <- res
+							}
+							for _, held := range []HeldAction{parent, child} {
+								if err := m.Hold(held); err != nil {
 									t.Fatal(err)
 								}
 							}
-							if !sent && !blocked && committed && latestPermitted {
-								if got := receiveReceiptFixture(t, resolved); got.FinalDecision != config.ActionAllow {
-									t.Fatalf("after %s child resolved as %q, want allow", step, got.FinalDecision)
+							defer m.ResolveAll(config.ActionBlock, SourceCancel)
+
+							var committed, settled bool
+							for _, step := range next {
+								var decision, source string
+								switch step {
+								case policyAllow, policyDefer:
+									if committed && step == policyAllow && policyPermitted {
+										decision, source = config.ActionAllow, SourcePolicyReload
+									}
+									m.ResolvePolicyReload(func(h HeldAction) (string, error) {
+										if h.DeferID == child.DeferID && step == policyAllow {
+											return config.ActionAllow, nil
+										}
+										return config.ActionDefer, nil
+									})
+								case inventoryAllow, inventoryDefer, inventoryBlock:
+									inventoryDecision := config.ActionDefer
+									switch step {
+									case inventoryAllow:
+										inventoryDecision = config.ActionAllow
+										if committed && inventoryPermitted {
+											decision, source = config.ActionAllow, SourceToolInventory
+										}
+									case inventoryBlock:
+										inventoryDecision = config.ActionBlock
+										if inventoryPermitted {
+											decision, source = config.ActionBlock, SourceToolInventory
+										}
+									}
+									m.ResolveToolInventory(child.Authority.SessionID, inventoryDecision)
+								case parentCommit, parentBlock:
+									committed = step == parentCommit
+									parentDecision := config.ActionAllow
+									if !committed {
+										parentDecision = config.ActionBlock
+										decision, source = config.ActionBlock, SourceCascade
+									}
+									if err := m.Resolve(parent.DeferID, parentDecision, SourceOperator); err != nil {
+										t.Fatal(err)
+									}
 								}
-								sent = true
+								synctest.Wait()
+								if !settled && decision != "" {
+									got := receiveReceiptFixture(t, resolved)
+									if got.FinalDecision != decision || got.ResolutionSource != source {
+										t.Fatalf("after %s child resolved as %q/%q, want %q/%q", step, got.FinalDecision, got.ResolutionSource, decision, source)
+									}
+									settled = true
+								}
+								select {
+								case got := <-resolved:
+									t.Fatalf("after %s unexpected child resolution %q/%q", step, got.FinalDecision, got.ResolutionSource)
+								default:
+								}
+								if _, held := m.Held(child.DeferID); held == settled {
+									t.Fatalf("after %s child held=%t, want %t", step, held, !settled)
+								}
 							}
-							m.mu.Lock()
-							current := m.holds[child.DeferID]
-							retained := current != nil && current.sweepApproval.source != ""
-							m.mu.Unlock()
-							wantHeld := !sent && !blocked
-							if (current != nil) != wantHeld || retained != (wantHeld && !committed && latestPermitted) {
-								t.Fatalf("after %s child held=%t retained=%t, model held=%t permitted=%t committed=%t",
-									step, current != nil, retained, wantHeld, latestPermitted, committed)
-							}
-						}
-						for len(resolved) != 0 {
-							if got := <-resolved; got.FinalDecision != config.ActionBlock {
-								t.Fatalf("unexpected child send: %+v", got)
-							}
-						}
+						})
 					})
 				}
 			}
@@ -867,4 +885,5 @@ func TestReceiptHoldSweepSequences(t *testing.T) {
 		}
 	}
 	enumerate(nil, false)
+	t.Logf("checked %d sweep sequences", cases)
 }
