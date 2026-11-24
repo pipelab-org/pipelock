@@ -6,6 +6,7 @@ package mcp
 import (
 	"encoding/json"
 	"reflect"
+	"strconv"
 	"sync"
 	"testing"
 
@@ -408,5 +409,25 @@ func TestRequestTrackerOutcomeOwnership(t *testing.T) {
 	tracker.removeOwnedOutcome(id, owner)
 	if got, ok := tracker.Consume(id); !ok || got.handle != nil {
 		t.Fatal("reuse after ambiguity acquired an outcome or lost correlation")
+	}
+}
+
+func TestRequestTrackerKeepsPinnedRegistrationAtCapacity(t *testing.T) {
+	tracker := NewRequestTracker()
+	pinned := json.RawMessage("0")
+	registration := tracker.trackOutcome(pinned, TrackedRequestOutcome{pinned: true})
+	if registration == nil {
+		t.Fatal("pinned registration was refused")
+	}
+	for i := 1; i < maxTrackedRequests; i++ {
+		if tracker.trackOutcome(json.RawMessage(strconv.Itoa(i)), TrackedRequestOutcome{}) == nil {
+			t.Fatalf("registration %d refused below capacity", i)
+		}
+	}
+	if got := tracker.trackOutcome(json.RawMessage(strconv.Itoa(maxTrackedRequests)), TrackedRequestOutcome{}); got != nil {
+		t.Fatal("tracker evicted a pinned registration to admit a newcomer")
+	}
+	if _, ok := tracker.takeOwnedOutcome(pinned, registration); !ok {
+		t.Fatal("pinned registration lost ownership at capacity")
 	}
 }

@@ -66,6 +66,8 @@ var errMCPOutcomeRegistration = errors.New("could not reserve a pending receipt 
 // does not need to transfer a legacy response budget.
 func trackMCPAdmittedOutcome(logW io.Writer, opts MCPProxyOpts, tracker *RequestTracker, id json.RawMessage, outcome TrackedRequestOutcome, requireRegistration bool) (*requestRegistration, error) {
 	if outcome.Receipt.NativeLease == nil {
+		// A v3 send must not reach upstream after its registration is evicted.
+		outcome.pinned = requireRegistration
 		registration := trackMCPOutcome(logW, opts, tracker, id, outcome)
 		if registration == nil && requireRegistration {
 			return nil, errMCPOutcomeRegistration

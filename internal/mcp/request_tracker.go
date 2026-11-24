@@ -50,8 +50,11 @@ type TrackedRequestOutcome struct {
 	handle  *mcpOutcomeHandle
 	// Method is the JSON-RPC method of the matching request, used by
 	// response-side A2A routing (Agent Card vs field-aware body scan).
-	Method           string
-	ownsNativeLease  bool
+	Method          string
+	ownsNativeLease bool
+	// pinned marks a v3 registration that must stay owned until its response
+	// correlates: capacity eviction refuses a newcomer instead of evicting it.
+	pinned           bool
 	readyToCorrelate *atomic.Bool // set at the commit boundary for held v3 sends
 }
 
@@ -183,7 +186,7 @@ func (t *RequestTracker) registerOutcome(id json.RawMessage, outcome TrackedRequ
 		oldest := t.order[0]
 		evicted := t.pending[oldest].outcome
 		_, remembered := t.ambiguousIDs[oldest]
-		if evicted.ownsNativeLease || (outcome.ownsNativeLease && !remembered && len(t.ambiguousIDs) >= maxTrackedRequests) {
+		if evicted.ownsNativeLease || evicted.pinned || (outcome.ownsNativeLease && !remembered && len(t.ambiguousIDs) >= maxTrackedRequests) {
 			return nil, nil, ""
 		}
 		t.markAmbiguous(oldest)
