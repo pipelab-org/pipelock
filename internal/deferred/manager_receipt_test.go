@@ -240,3 +240,64 @@ func TestReceiptHoldAdmissionBlockEnforcedInTakeHold(t *testing.T) {
 		m.ResolveAll(config.ActionBlock, SourceCancel)
 	})
 }
+
+func TestReceiptHoldCancelledParkedWaiterDoesNotStrandBlockedChild(t *testing.T) {
+	m := NewManager(Config{Enabled: true, Timeout: testwait.Deadline(time.Minute), MaxPending: 2, MaxPendingPerSession: 2})
+	ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(5*time.Second))
+	defer cancel()
+
+	resolved := make(chan Resolution, 2)
+	makeHeld := func(id string) HeldAction {
+		h := receiptAdmissionFixture(id)
+		h.RulePolicy = config.DeferResolutionPolicy{AllowOn: config.DeferAllowOn{Approval: true}}
+		h.ResolveReceipt = func(res Resolution, _ Release) { resolved <- res }
+		return h
+	}
+	if err := m.Hold(makeHeld("parent")); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Hold(makeHeld("child")); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate a parked approval waiter being preempted across parent's
+	// finishReceiptHold (which skips children with parkedApprovals > 0), then
+	// exiting with ctx.Err() once parkedApprovals drops back to 0.
+	m.mu.Lock()
+	m.holds["child"].parkedApprovals = 1
+	m.mu.Unlock()
+
+	if err := m.Resolve("parent", config.ActionBlock, SourceOperator); err != nil {
+		t.Fatalf("resolve parent: %v", err)
+	}
+	parentRes := <-resolved
+	if parentRes.DeferID != "parent" || parentRes.FinalDecision != config.ActionBlock {
+		t.Fatalf("parent resolution = %+v", parentRes)
+	}
+
+	m.mu.Lock()
+	m.holds["child"].parkedApprovals = 0
+	m.mu.Unlock()
+
+	cancelledCtx, cancelOp := context.WithCancel(ctx)
+	cancelOp()
+	if _, err := m.ResolveApprovalResultContext(cancelledCtx, "child", config.ActionAllow, SourceOperator); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled approval = %v, want context.Canceled", err)
+	}
+
+	select {
+	case childRes := <-resolved:
+		if childRes.DeferID != "child" || childRes.FinalDecision != config.ActionBlock || childRes.ResolutionSource != SourceCascade {
+			t.Fatalf("child resolution = %+v, want block/%s", childRes, SourceCascade)
+		}
+	case <-time.After(testwait.Deadline(500 * time.Millisecond)):
+		m.ResolveAll(config.ActionBlock, SourceCancel)
+		t.Fatal("cascade-blocked child remained stranded in StateHeld after parked approval cancelled")
+	}
+
+	testwait.ForContext(t, ctx, func() bool {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		return m.reservations == 0 && len(m.holds) == 0 && len(m.lineage) == 0
+	}, "released child capacity and lineage")
+}

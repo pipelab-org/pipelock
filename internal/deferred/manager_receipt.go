@@ -172,6 +172,9 @@ func (m *Manager) takeHold(ctx context.Context, id, decision, source string, wai
 		}
 		if decision == config.ActionAllow {
 			if err := ctx.Err(); err != nil {
+				if held.parkedApprovals == 0 {
+					m.scheduleBlockedResolveLocked(held)
+				}
 				return nil, "", "", err
 			}
 		}
@@ -257,6 +260,25 @@ func (m *Manager) markLineageBlockedLocked(node *holdLineage) {
 			}
 		}
 	}
+}
+
+func (m *Manager) scheduleBlockedResolveLocked(held *HeldAction) {
+	var source string
+	switch {
+	case held.admissionBlock != "":
+		source = held.admissionBlock
+	case held.lineage != nil && held.lineage.blocked:
+		source = SourceCascade
+	default:
+		return
+	}
+	if held.timer != nil {
+		held.timer.Stop()
+	}
+	id := held.DeferID
+	held.timer = time.AfterFunc(0, func() {
+		_ = m.Resolve(id, config.ActionBlock, source)
+	})
 }
 
 func (m *Manager) closeReceiptLineage(held *HeldAction, committed bool) {
