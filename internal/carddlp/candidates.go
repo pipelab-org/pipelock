@@ -52,14 +52,13 @@ func visit(text string, view candidateView, yield func(Candidate) bool) bool {
 			for at < len(text) && digit(text[at]) {
 				groupStart := at
 				for at < len(text) && digit(text[at]) && n < MaxDigits {
-					digits[n] = text[at]
+					digits[n] = text[at] - '0'
 					n++
 					at++
 					if view.openEdges && n >= MinDigits {
 						groups[count] = at - groupStart
 						if count == 0 || (legacySeparators || dottedSeparators && dots > 0 && (count != 1 || at-start != n+1 || numericDashTail(text, at)) || canonicalSeparators && canonical(groups[:count+1])) {
-							value := string(digits[:n])
-							if ValidCardNumber(value) && yield(Candidate{Start: start, End: at, Digits: value, PublicExample: IsPublicTestPAN(value)}) {
+							if validCardDigits(digits[:n]) && yield(candidateFromDigits(digits[:n], start, at)) {
 								return true
 							}
 						}
@@ -71,8 +70,7 @@ func visit(text string, view candidateView, yield func(Candidate) bool) bool {
 				groups[count] = at - groupStart
 				count++
 				if !view.openEdges && n >= MinDigits && rightBoundary(text, at) && (view.allGroups || count == 1 || legacySeparators || dottedSeparators && dots > 0 && (count != 2 || at-start != n+1 || numericDashTail(text, at)) || canonicalSeparators && canonical(groups[:count])) {
-					value := string(digits[:n])
-					if ValidCardNumber(value) && yield(Candidate{Start: start, End: at, Digits: value, PublicExample: IsPublicTestPAN(value)}) {
+					if validCardDigits(digits[:n]) && yield(candidateFromDigits(digits[:n], start, at)) {
 						return true
 					}
 				}
@@ -165,4 +163,13 @@ func numericDashTail(text string, at int) bool {
 		at++
 	}
 	return dash && at < len(text) && digit(text[at])
+}
+
+func candidateFromDigits(digits []byte, start, end int) Candidate {
+	var ascii [MaxDigits]byte
+	for i, d := range digits {
+		ascii[i] = d + '0'
+	}
+	value := string(ascii[:len(digits)])
+	return Candidate{Start: start, End: end, Digits: value, PublicExample: IsPublicTestPAN(value)}
 }

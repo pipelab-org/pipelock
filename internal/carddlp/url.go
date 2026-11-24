@@ -7,13 +7,26 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 // URLPattern is the supported scheme-prefixed text URL grammar. Bare dotted
 // prose is intentionally excluded. Keep every consumer on this one grammar.
 const URLPattern = `(?i)\b(?:https?|wss?|s?ftp|ftps|file)://[^\s"'<>\\]+`
 
-var urlTokenRE = regexp.MustCompile(URLPattern)
+var (
+	// Both probes derive from the sole URL grammar. The first only locates
+	// a scheme ending at a known delimiter; the second keeps the full match
+	// anchored so a malformed candidate cannot rescan the remaining body.
+	urlSchemePrefixRE = regexp.MustCompile(strings.SplitN(URLPattern, "://", 2)[0] + "://$")
+	// The prefix probe already checked the original word boundary. Repeating
+	// it after slicing would change Unicode simple-fold schemes such as ſftp.
+	urlTokenStartRE = regexp.MustCompile(`\A(?:` + strings.Replace(URLPattern, `\b`, "", 1) + `)`)
+)
+
+// https is the longest scheme in URLPattern. The grammar parity test checks
+// this bound independently, including future edits to that grammar.
+const maxURLSchemeRunes = len("https")
 
 // URLSpan locates an embedded URL in the supplied text, using byte offsets.
 type URLSpan struct{ Start, End int }
@@ -21,15 +34,35 @@ type URLSpan struct{ Start, End int }
 // URLSpans extracts URLs, dropping sentence punctuation and unmatched closers.
 func URLSpans(text string) []URLSpan {
 	var spans []URLSpan
-	for _, loc := range urlTokenRE.FindAllStringIndex(text, -1) {
-		end := loc[1]
-		token := text[loc[0]:end]
+	for at := 0; at < len(text); {
+		next := strings.Index(text[at:], "://")
+		if next < 0 {
+			break
+		}
+		colon := at + next
+		// Keep a full rune of preceding context so the probe cannot invent a
+		// word boundary at the beginning of its bounded window.
+		probeStart := max(0, colon-(maxURLSchemeRunes+1)*utf8.UTFMax)
+		loc := urlSchemePrefixRE.FindStringIndex(text[probeStart : colon+3])
+		if loc == nil {
+			at = colon + 1
+			continue
+		}
+		start := probeStart + loc[0]
+		full := urlTokenStartRE.FindStringIndex(text[start:])
+		if full == nil {
+			at = colon + 1
+			continue
+		}
+		end := start + full[1]
+		at = end
+		token := text[start:end]
 		balance := map[byte]int{
 			')': strings.Count(token, ")") - strings.Count(token, "("),
 			']': strings.Count(token, "]") - strings.Count(token, "["),
 			'}': strings.Count(token, "}") - strings.Count(token, "{"),
 		}
-		for end > loc[0] {
+		for end > start {
 			last := text[end-1]
 			if strings.ContainsRune(".,;:", rune(last)) {
 				end--
@@ -42,7 +75,7 @@ func URLSpans(text string) []URLSpan {
 			}
 			break
 		}
-		spans = append(spans, URLSpan{loc[0], end})
+		spans = append(spans, URLSpan{start, end})
 	}
 	return spans
 }

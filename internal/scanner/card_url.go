@@ -40,9 +40,34 @@ func appendHostnameCardTargets(targets []dlpTarget, hostname string) []dlpTarget
 }
 
 func (s *Scanner) textURLCardMatches(ctx context.Context, text string, decodes *decodingMemo) []TextDLPMatch {
-	if !strings.Contains(text, textURLTokenSeparator) {
+	if len(s.dlpCardPatternIndices) == 0 || !strings.Contains(text, textURLTokenSeparator) {
 		return nil
 	}
+	if decodes != nil {
+		// URL reconstruction spends scan-local terminal allowance. Its result
+		// must not enter the pure decoded-match cache, including an empty result.
+		decodes.urlCardWork++
+	}
+	// URL reconstruction adds card views, not another all-pattern scan. Keep
+	// terminal admission on that exact partition while sharing pure decodes.
+	if decodes != nil && decodes.cardSource {
+		if decodes.urlCardDecodes == nil {
+			urlDecodes := textDecodingMemo(decodes.shared, decodes.reassemblyInbound, decodes.assembledAllowance, decodes.reassemblyKindInsensitive)
+			urlDecodes.scanCtx, urlDecodes.scanStop = ctx, decodes.scanStop
+			// As for the ordinary card-only pass, decoder work uses inbound
+			// accounting; final terminal policy keeps the parent direction.
+			urlDecodes.inbound = true
+			urlDecodes.reassemblyPlan = decodes.reassemblyPlan
+			urlDecodes.reassemblyPatternLimit = textDLPCardPatterns
+			urlDecodes.reassemblyPatterns = textDLPCardPatterns
+			urlDecodes.reassemblyPatternSelected = true
+			urlDecodes.cardText = true
+			urlDecodes.minimumDecodedBytes = carddlp.MinDigits
+			decodes.urlCardDecodes = urlDecodes
+		}
+		return s.textURLCardMatches(ctx, text, decodes.urlCardDecodes)
+	}
+
 	var matches []TextDLPMatch
 	for _, loc := range textURLTokens(text) {
 		if ctx.Err() != nil {
@@ -65,6 +90,12 @@ func (s *Scanner) textURLCardMatches(ctx context.Context, text string, decodes *
 
 		for _, target := range targets {
 			view := normalize.ForDLP(target.text)
+			// This partition contains only Luhn validators, all of which need
+			// MinDigits ASCII digits. Decoded and reconstructed targets above
+			// remain independent; a short raw target cannot hide a longer one.
+			if !hasMinimumASCIIDigits(view, carddlp.MinDigits) {
+				continue
+			}
 			for _, id := range s.dlpCardPatternIndices {
 				p := *s.dlpPatterns[id]
 				p.cardURL = true

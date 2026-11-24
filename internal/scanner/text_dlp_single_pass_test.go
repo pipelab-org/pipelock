@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -152,6 +153,22 @@ func singlePassInputs() []singlePassInput {
 			// A card view that differs keeps the two-memo path.
 			add(sName+"/"+cName+"/cardview", text, text+"\x1f")
 		}
+	}
+	// Card matching must use the source before ordinary DLP erases controls.
+	for _, sep := range []string{"\t", "\r", "\n", " ", "-", "."} {
+		card := singlePassCard[:4] + sep + singlePassCard[4:]
+		add("card/boundary/"+strconv.Quote(sep), card, card)
+		encoded := base64.StdEncoding.EncodeToString([]byte(card))
+		add("card/boundary-encoded/"+strconv.Quote(sep), encoded, encoded)
+	}
+	urlCard := "https://api.vendor.example/path/" + singlePassCard[:4] + "." + singlePassCard[4:]
+	encodedURL := base64.StdEncoding.EncodeToString([]byte(urlCard))
+	add("card/decoded-url", encodedURL, encodedURL)
+	unicodeCard := strings.Map(func(r rune) rune { return '０' + r - '0' }, singlePassCard)
+	add("card/unicode", unicodeCard, unicodeCard)
+	for _, card := range []string{singlePassCard, unicodeCard} {
+		text := "https://api.vendor.example/pay?part=" + card[:len(card)/2] + "&rest=" + card[len(card)/2:]
+		add("card/url/"+card, text, text)
 	}
 	// Outbound inspection limits (entity depth, percent depth, decode work)
 	// sit between the non-card and card findings; receipts report the first

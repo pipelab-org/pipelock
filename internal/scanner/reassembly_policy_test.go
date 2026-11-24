@@ -98,7 +98,7 @@ func TestPolicyInboundSignal(t *testing.T) {
 		if r.Incomplete || r.Clean != inbound || HasInspectionLimit(r.Matches) == inbound {
 			t.Fatal("wrong directional result", r)
 		}
-		if inbound && (len(r.Matches) != 1 || !r.Matches[0].IsInformational() || !r.Matches[0].Warn || CardRunAction(r.Matches, config.ActionBlock) != config.ActionWarn) {
+		if inbound && (len(r.Matches) != 0 || len(r.InformationalMatches) != 1 || !r.InformationalMatches[0].IsInformational() || !r.InformationalMatches[0].Warn || CardRunAction(r.InformationalMatches, config.ActionBlock) != config.ActionWarn) {
 			t.Fatal("partial signal enforces or is absent", r)
 		}
 	}

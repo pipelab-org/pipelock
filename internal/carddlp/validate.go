@@ -21,7 +21,12 @@ func ValidCardNumber(s string) bool {
 		digits[n] = s[i] - '0'
 		n++
 	}
-	if n < MinDigits || !ValidCardIssuer(digits[:n], n) {
+	return validCardDigits(digits[:n])
+}
+
+func validCardDigits(digits []byte) bool {
+	n := len(digits)
+	if n < MinDigits || !ValidCardIssuer(digits, n) {
 		return false
 	}
 	sum := 0

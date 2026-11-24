@@ -3,11 +3,25 @@
 
 package normalize
 
-import "strings"
+import (
+	"strings"
+	"unicode/utf8"
+)
 
 // ForCardText applies the credential Unicode folding without deleting table
 // or line boundaries. Dots and visible separators retain their spelling.
 func ForCardText(s string) string {
+	plain := true
+	for i := range len(s) {
+		if s[i] >= utf8.RuneSelf || s[i] < ' ' && s[i] != '\t' && s[i] != '\n' && s[i] != '\r' || s[i] == 0x7f {
+			plain = false
+			break
+		}
+	}
+	if plain {
+		return s
+	}
+
 	if !strings.ContainsAny(s, "\t\n\r") {
 		return ForDLP(s)
 	}

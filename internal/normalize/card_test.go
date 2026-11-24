@@ -11,6 +11,8 @@ func TestForCardText(t *testing.T) {
 		{"１２３４\u200b５６７８\t９０\x009\n１２\r３４", "12345678\t909\n12\r34"},
 		{"1234-5678/9012_3456", "1234-5678/9012_3456"},
 		{"１２３４\u200b５６７８", "12345678"},
+		{"a\x00b\tc\nd\re\x7ff", "ab\tc\nd\ref"},
+		{"plain ASCII\twith table\r\nlines", "plain ASCII\twith table\r\nlines"},
 	} {
 		if got := ForCardText(tc.input); got != tc.want {
 			t.Errorf("got %q want %q", got, tc.want)

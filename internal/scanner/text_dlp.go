@@ -798,9 +798,10 @@ func (s *Scanner) scanTextDLPViews(ctx context.Context, text, cardView string, o
 	// the same order. Keyword-gated patterns judge a candidate's context from
 	// transforms the memo has registered so far, and the second pass used to
 	// see the first pass's transforms; keep two passes for them.
-	if textDLPSinglePass && text == cardView && !s.hasDLPKeywords() && !s.hasGenericCardPatterns() {
+	if textDLPSinglePass && text == cardView && !s.hasDLPKeywords() {
 		opts.patterns = textDLPAllPatterns
 		opts.mergedClasses = true
+		originalDecodes.cardSource = true
 		original = s.scanTextForDLPWithDecodes(ctx, text, opts, originalDecodes)
 		opts.mergedClasses = false
 		opts.patterns = textDLPCardPatterns
@@ -1246,45 +1247,9 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 
 	// Check raw text against DLP patterns (before URL decoding).
 	// This catches secrets that aren't URL-encoded.
-	indices := s.dlpPreFilter.patternsToCheckInView(cleaned, positions)
-	if opts.patterns == textDLPCardPatterns {
-		indices = s.dlpCardPatternIndices
-	}
-	for _, idx := range indices {
-		if decodes.stopRequested() {
-			break
-		}
-		p := s.dlpPatterns[idx]
-		if !opts.patterns.includes(p.genericCard) {
-			continue
-		}
-		var example textByteSpan
-		pattern := p.withPublicExamples(cleaned, &example)
-		start, end, ok := pattern.matchPositionedSpanWithDecodes(cleaned, text, decodes, positions)
-		if example.end > 0 {
-			matches = append(matches, p.textDLPFinding(cleaned, "", example.start, example.end, true))
-		}
-		if ok {
-			matches = append(matches, TextDLPMatch{
-				keywordGated:                        p.keywords != nil,
-				genericCard:                         p.genericCard,
-				cardPrefixRetry:                     p.cardPrefixRetry,
-				PatternName:                         p.name,
-				Severity:                            p.severity,
-				Bundle:                              p.bundle,
-				BundleVersion:                       p.bundleVersion,
-				Warn:                                p.warn,
-				credentialAudienceHosts:             p.credentialAudienceHosts,
-				credentialAudienceAuthorizationOnly: p.credentialAudienceAuthorizationOnly,
-				credentialAudienceCarrierMask:       p.credentialAudienceCarrierMask,
-				credentialAudienceGitHosts:          p.credentialAudienceGitHosts,
-				credentialAudienceRegistryHosts:     p.credentialAudienceRegistryHosts,
-				valueIdentity:                       sha256.Sum256([]byte(cleaned[start:end])),
-				hasValueIdentity:                    true,
-				span:                                newMatchSpan(start, end, ViewDLPNormalized, p.name, p.bundle, p.bundleVersion),
-			})
-		}
-	}
+	lowered := dlpLoweredBytes{positions: positions}
+	lowered.add(cleaned)
+	matches = append(matches, s.matchDLPPatternsLoweredWithDecodes(cleaned, "", text, &lowered, opts.patterns, decodes)...)
 	// Iterative URL-decode and re-check DLP patterns (catches %2D → - etc.).
 	// Uses IterativeDecode to defeat multi-layer encoding.
 	if !decodes.stopRequested() {
@@ -1318,24 +1283,20 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 		}
 	}
 
-	if opts.patterns == textDLPCardPatterns && !decodes.stopRequested() {
-		matches = append(matches, s.textURLCardMatches(ctx, cleaned, decodes)...)
-	}
-
 	// Dot-collapse check: catches secrets split across DNS subdomains
 	// (e.g. "sk-ant-api03.AABBCCDD.EEFFGGHH.evil.com" → "sk-ant-api03AABBCCDDEEFFGGHH...").
 	// Only applied when text contains dots that could be subdomain separators.
 	if !decodes.stopRequested() && opts.patterns != textDLPCardPatterns && strings.Contains(cleaned, ".") {
 		dotless := removeHostnameDots(cleaned)
 		if dotless != cleaned {
-			matches = append(matches, opts.patterns.selectMatches(s.matchDLPPatternsWithDecodes(dotless, "subdomain", cleaned, decodes, positions, matchingSubdomain))...)
+			matches = append(matches, textDLPNonCardPatterns.selectMatches(s.matchDLPPatternsWithDecodes(dotless, "subdomain", cleaned, decodes, positions, matchingSubdomain))...)
 		}
 	}
 
 	if !decodes.stopRequested() && opts.patterns != textDLPCardPatterns && len(segmentViews) > 1 {
 		compacted, offsets, joined := decodes.compactWhitespaceWithView(cleaned, positions)
 		decodes.registerKeywordTransform(cleaned, compacted, "projection")
-		matches = append(matches, opts.patterns.selectMatches(s.matchDLPPatternsInWhitespaceView(compacted, cleaned, offsets, decodes, joined))...)
+		matches = append(matches, textDLPNonCardPatterns.selectMatches(s.matchDLPPatternsInWhitespaceView(compacted, cleaned, offsets, decodes, joined))...)
 	}
 
 	// Hostname exfiltration: extract URL hostnames from the text and run the
@@ -1492,14 +1453,30 @@ func (s *Scanner) matchDLPPatternsLowered(text, encoding, proseSource string, lo
 }
 
 func (s *Scanner) matchDLPPatternsWithDecodes(text, encoding, source string, decodes *decodingMemo, parent *matchingView, kind matchingTransform) []TextDLPMatch {
-	text = decodes.normalize(text)
+	cardInput := text
+	if decodes != nil && decodes.cardText {
+		text = normalize.ForCardText(text)
+	} else {
+		text = normalize.ForDLP(text)
+	}
 	lowered := dlpLoweredBytes{positions: parent.transformed(kind, text)}
 	lowered.add(text)
 	patterns := textDLPAllPatterns
 	if decodes != nil && decodes.cardText {
 		patterns = textDLPCardPatterns
+	} else if kind == matchingSubdomain || decodes != nil && decodes.cardSource {
+		patterns = textDLPNonCardPatterns
 	}
-	return s.matchDLPPatternsLoweredWithDecodes(text, encoding, source, &lowered, patterns, decodes)
+	matches := s.matchDLPPatternsLoweredWithDecodes(text, encoding, source, &lowered, patterns, decodes)
+	if decodes != nil && decodes.cardSource && kind != matchingSubdomain {
+		// A transform's prose context can precede that transform. Cards instead
+		// inspect the actual decoded candidate before ordinary control stripping.
+		cardText := normalize.ForCardText(cardInput)
+		var cardLowered dlpLoweredBytes
+		cardLowered.add(cardText)
+		matches = append(matches, s.matchDLPPatternsLoweredWithDecodes(cardText, encoding, cardInput, &cardLowered, textDLPCardPatterns, decodes)...)
+	}
+	return matches
 }
 
 func (s *Scanner) matchDLPPatternsLoweredWithDecodes(text, encoding, proseSource string, lowered *dlpLoweredBytes, patterns textDLPPatternSet, decodes *decodingMemo) []TextDLPMatch {
@@ -1512,6 +1489,20 @@ func (s *Scanner) matchDLPPatternsLoweredWithDecodes(text, encoding, proseSource
 		if lowered.preparedASCII != nil {
 			foldedInput = lowered.preparedASCII
 		}
+	}
+	// Raw matching and URL reconstruction consume the same card projection.
+	// Keep it local to this exact source and normalization depth.
+	var projected string
+	projectionReady := false
+	cardProjection := func() string {
+		if !projectionReady {
+			projected = text
+			if patterns != textDLPCardPatterns && strings.ContainsAny(proseSource, "\t\n\r") {
+				projected = normalize.ForCardText(proseSource)
+			}
+			projectionReady = true
+		}
+		return projected
 	}
 	var shape dlpShapeSummary
 	var candidates []int
@@ -1533,11 +1524,28 @@ func (s *Scanner) matchDLPPatternsLoweredWithDecodes(text, encoding, proseSource
 		if !p.cardPrefixRetry && s.dlpPreFilter.shapeRejects(p.shapeGate, text, &shape) {
 			continue
 		}
-		var example textByteSpan
-		pattern := p.withPublicExamples(text, &example)
-		start, end, ok := pattern.matchPositionedSpanInPreparedView(text, proseSource, foldedInput, decodes, positions)
-		if example.end > 0 {
-			matches = append(matches, p.textDLPFinding(text, encoding, example.start, example.end, true))
+		var projectedFolded asciiFoldedInput
+		matchText, matchPositions, matchFolded := text, positions, foldedInput
+		if p.genericCard && decodes != nil && decodes.cardSource {
+			// Every card validator needs at least MinDigits decimal digits.
+			// Preserving controls cannot add digits to the ordinary folded view.
+			if !hasMinimumASCIIDigits(text, carddlp.MinDigits) {
+				continue
+			}
+			matchText = cardProjection()
+			if matchText != text {
+				matchPositions, matchFolded = nil, &projectedFolded
+			}
+		}
+		pattern := p
+		var example *textByteSpan
+		if p.genericCard {
+			example = &textByteSpan{}
+			pattern = p.withPublicExamples(matchText, example)
+		}
+		start, end, ok := pattern.matchPositionedSpanInPreparedView(matchText, proseSource, matchFolded, decodes, matchPositions)
+		if example != nil && example.end > 0 {
+			matches = append(matches, p.textDLPFinding(matchText, encoding, example.start, example.end, true))
 		}
 		if ok {
 			matches = append(matches, TextDLPMatch{
@@ -1555,18 +1563,22 @@ func (s *Scanner) matchDLPPatternsLoweredWithDecodes(text, encoding, proseSource
 				credentialAudienceCarrierMask:       p.credentialAudienceCarrierMask,
 				credentialAudienceGitHosts:          p.credentialAudienceGitHosts,
 				credentialAudienceRegistryHosts:     p.credentialAudienceRegistryHosts,
-				valueIdentity:                       sha256.Sum256([]byte(text[start:end])),
+				valueIdentity:                       sha256.Sum256([]byte(matchText[start:end])),
 				hasValueIdentity:                    true,
 				span:                                newMatchSpan(start, end, dlpViewLabel(encoding), p.name, p.bundle, p.bundleVersion),
 			})
 		}
 	}
-	if patterns == textDLPCardPatterns && strings.Contains(text, textURLTokenSeparator) {
+	urlText := text
+	if decodes != nil && decodes.cardSource && patterns != textDLPNonCardPatterns && strings.Contains(text, textURLTokenSeparator) && strings.ContainsAny(proseSource, "\t\n\r") {
+		urlText = cardProjection()
+	}
+	if (patterns == textDLPCardPatterns || patterns == textDLPAllPatterns && decodes != nil && decodes.cardSource) && strings.Contains(urlText, textURLTokenSeparator) {
 		ctx := context.Background()
 		if decodes != nil && decodes.scanCtx != nil {
 			ctx = decodes.scanCtx
 		}
-		urlMatches := s.textURLCardMatches(ctx, text, decodes)
+		urlMatches := s.textURLCardMatches(ctx, urlText, decodes)
 		for i := range urlMatches {
 			if encoding != "" {
 				urlMatches[i].Encoded = encoding
@@ -1592,6 +1604,9 @@ func (s *Scanner) matchDLPPatternsInWhitespaceView(text, proseSource string, off
 			return matches
 		}
 		p := s.dlpPatterns[idx]
+		if p.genericCard {
+			continue
+		}
 		if start, end, ok := p.matchSpanInPositionedJoin(text, proseSource, offsets, view); ok {
 			if p.credentialURLWhitespaceGrammar && !credentialURLWhitespaceMatchAllowed(text, proseSource, offsets, start, end) {
 				continue
