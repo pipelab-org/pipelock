@@ -65,7 +65,7 @@ func TestCardPresentationProperties(t *testing.T) {
 				}
 			}
 		}
-		for _, text := range []string{"F27=" + pan[:4] + "." + pan[4:], pan[:8] + "\t" + pan[8:], pan[:8] + "\n" + pan[8:], strings.Join(groups, ","), pan[:8] + " " + pan[8:]} {
+		for _, text := range []string{"F27=" + pan[:4] + "." + pan[4:], pan[:8] + "\t" + pan[8:], pan[:8] + "\n" + pan[8:], strings.Join(groups, ",")} {
 			for _, value := range []string{text, base64.StdEncoding.EncodeToString([]byte(text)), reassemblyBang(base64.StdEncoding.EncodeToString([]byte(text)))} {
 				got := s.ScanTextForDLP(t.Context(), value)
 				if !got.Clean || len(got.Findings()) != 0 {

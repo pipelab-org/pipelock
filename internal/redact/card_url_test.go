@@ -37,3 +37,14 @@ func TestCardURLPresentation(t *testing.T) {
 		}
 	}
 }
+
+func TestLegacyCardRedactionUnion(t *testing.T) {
+	pan := cardtest.Issuer("4019", 16)
+	invalid := pan[:15] + string('0'+(pan[15]-'0'+1)%10)
+	m := NewDefaultMatcher()
+	for _, value := range []string{invalid, cardtest.Grouped(invalid, " "), invalid[:8] + "-" + invalid[8:], invalid[:12] + " " + invalid[12:], pan[:6] + " - " + pan[6:], pan[:4] + "   " + pan[4:]} {
+		if len(m.Scan(value)) == 0 {
+			t.Errorf("legacy shape lost: %q", value)
+		}
+	}
+}

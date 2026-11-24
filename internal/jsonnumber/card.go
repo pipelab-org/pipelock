@@ -43,7 +43,10 @@ const ShippedCardPattern = `\b(?:\d{14,19}|\d{4}(?:[ ._/-]{1,2}\d{4}){2}[ ._/-]{
 // LegacyCardPattern remains recognized in existing operator preset copies.
 const LegacyCardPattern = `\b\d{4}(?:[- ]?\d){11,15}\b`
 
-var shippedCardRule = regexp.MustCompile(LegacyCardPattern)
+var (
+	shippedCardRule         = regexp.MustCompile(LegacyCardPattern)
+	shippedPresentationRule = regexp.MustCompile(ShippedCardPattern)
+)
 
 // IsShippedCardPattern reports whether regex is the canonical card rule. Only
 // that rule retries shorter candidates; an operator regex that merely carries
@@ -71,7 +74,9 @@ func (run CardRun) EnforcesShippedRule() bool {
 	if run.Enforces(shippedCardRule) {
 		return true
 	}
-	return carddlp.Visit(run.SpaceCandidate, false, func(c carddlp.Candidate) bool { return c.Start == 0 && c.End == len(run.SpaceCandidate) })
+	// Typed scalar joins keep their existing whole-piece grammar; literal
+	// leaf matching separately retains every legacy space/dash presentation.
+	return run.Enforces(shippedPresentationRule)
 }
 
 type cardPiece struct {

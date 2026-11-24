@@ -81,11 +81,14 @@ func TestCardFragmentTextBoundaries(t *testing.T) {
 	s := MustNew(cfg)
 	t.Cleanup(s.Close)
 	pan := cardtest.Issuer("4019", 16)
-	for _, sep := range []string{".", "\t", "\n", "\r", " "} {
+	for _, sep := range []string{".", "\t", "\n", "\r"} {
 		parts := []fragment{{data: []byte(pan[:8] + sep)}, {data: []byte(pan[8:])}}
 		if got := scanFragmentsForSecrets(t.Context(), s, parts); len(got) > 0 {
 			t.Errorf("column seam %q enforced: %+v", sep, got)
 		}
+	}
+	if got := scanFragmentsForSecrets(t.Context(), s, []fragment{{data: []byte(pan[:8] + " ")}, {data: []byte(pan[8:])}}); len(got) == 0 {
+		t.Fatal("space seam lost enforcement")
 	}
 	if got := scanFragmentsForSecrets(t.Context(), s, []fragment{{data: []byte(pan[:8])}, {data: []byte(pan[8:])}}); len(got) == 0 {
 		t.Fatal("contiguous card seam not enforced")

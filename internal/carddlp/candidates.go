@@ -12,12 +12,13 @@ type Candidate struct {
 	PublicExample bool
 }
 
-// Visit calls yield for every issuer/Luhn-valid contiguous or canonically
-// grouped candidate. Reconstructed URL views additionally admit arbitrary
+// Visit calls yield for every issuer/Luhn-valid contiguous or grouped
+// candidate. Space/dash groupings retain the legacy text contract; a single
+// dot only joins canonical groups. Reconstructed URL views admit arbitrary
 // groupings. A false return continues enumeration; true stops it. Each digit
 // group starts independently, so rejected prefixes cannot swallow neighbors.
 // At most 19 digit groups can precede any separator run, so both modes
-// take O(len(text)) work. Text mode limits separators to two characters.
+// take O(len(text)) work. Text mode never joins tab or line boundaries.
 func Visit(text string, reconstructed bool, yield func(Candidate) bool) bool {
 	return visit(text, candidateView{allGroups: reconstructed}, yield)
 }
@@ -46,7 +47,8 @@ func visit(text string, view candidateView, yield func(Candidate) bool) bool {
 		if view.openEdges || leftBoundary(text, start) {
 			var digits [MaxDigits]byte
 			var groups [MaxDigits]int
-			n, count, at, canonicalSeparators := 0, 0, start, true
+			n, count, at, dots := 0, 0, start, 0
+			canonicalSeparators, legacySeparators, dottedSeparators := true, true, true
 			for at < len(text) && digit(text[at]) {
 				groupStart := at
 				for at < len(text) && digit(text[at]) && n < MaxDigits {
@@ -55,7 +57,7 @@ func visit(text string, view candidateView, yield func(Candidate) bool) bool {
 					at++
 					if view.openEdges && n >= MinDigits {
 						groups[count] = at - groupStart
-						if count == 0 || canonicalSeparators && canonical(groups[:count+1]) {
+						if count == 0 || (legacySeparators || dottedSeparators && dots > 0 && (count != 1 || at-start != n+1 || numericDashTail(text, at)) || canonicalSeparators && canonical(groups[:count+1])) {
 							value := string(digits[:n])
 							if ValidCardNumber(value) && yield(Candidate{Start: start, End: at, Digits: value, PublicExample: IsPublicTestPAN(value)}) {
 								return true
@@ -68,15 +70,20 @@ func visit(text string, view candidateView, yield func(Candidate) bool) bool {
 				}
 				groups[count] = at - groupStart
 				count++
-				if !view.openEdges && n >= MinDigits && rightBoundary(text, at) && (view.allGroups || count == 1 || canonicalSeparators && canonical(groups[:count])) {
+				if !view.openEdges && n >= MinDigits && rightBoundary(text, at) && (view.allGroups || count == 1 || legacySeparators || dottedSeparators && dots > 0 && (count != 2 || at-start != n+1 || numericDashTail(text, at)) || canonicalSeparators && canonical(groups[:count])) {
 					value := string(digits[:n])
 					if ValidCardNumber(value) && yield(Candidate{Start: start, End: at, Digits: value, PublicExample: IsPublicTestPAN(value)}) {
 						return true
 					}
 				}
 				sepStart := at
-				for at < len(text) && ((view.allGroups && urlSeparator(text[at])) || (!view.allGroups && separator(text[at]) && at-sepStart < 2)) {
+				for at < len(text) && ((view.allGroups && urlSeparator(text[at])) || (!view.allGroups && separator(text[at]) && (at-sepStart < 2 || text[at] == ' ' || text[at] == '-'))) {
 					canonicalSeparators = canonicalSeparators && text[at] != ','
+					legacySeparators = legacySeparators && (text[at] == ' ' || text[at] == '-')
+					dottedSeparators = dottedSeparators && (text[at] == ' ' || text[at] == '-' || text[at] == '.')
+					if text[at] == '.' {
+						dots++
+					}
 					at++
 				}
 				if at == sepStart || at == len(text) || !digit(text[at]) || n == MaxDigits {
@@ -146,4 +153,16 @@ func rightBoundary(s string, at int) bool {
 // barriers; query-value concatenation is built by the URL parser separately.
 func urlSeparator(b byte) bool {
 	return b == ' ' || b >= '!' && b <= '/' || b >= ':' && b <= '@' || b >= '[' && b <= '`' || b >= '{' && b <= '~'
+}
+
+// A following dash and numeric group keeps a dotted prefix in a grouped
+// number, including a Luhn-valid shorter prefix before an invalid suffix.
+// This does not join an isolated decimal or cross a tab/line boundary.
+func numericDashTail(text string, at int) bool {
+	dash := false
+	for at < len(text) && (text[at] == ' ' || text[at] == '-') {
+		dash = dash || text[at] == '-'
+		at++
+	}
+	return dash && at < len(text) && digit(text[at])
 }

@@ -22,7 +22,7 @@ func TestCandidateEnumeration(t *testing.T) {
 		{"order" + pan, 0},
 		{"9" + pan, 0},
 		{pan + "9", 0},
-		{pan[:8] + " " + pan[8:], 0},
+		{pan[:8] + " " + pan[8:], 1},
 		{pan[:4] + "." + pan[4:], 0},
 		{pan[:4] + "\t" + pan[4:], 0},
 		{pan + " 12/28", 1},
@@ -180,5 +180,45 @@ func TestDecoderWindowAdmission(t *testing.T) {
 	}
 	if !VisitWindow(text, func(c Candidate) bool { return c.Digits == pan }) {
 		t.Fatal("artificial window boundary suppressed lane admission")
+	}
+}
+
+func TestLegacySpaceDashPresentations(t *testing.T) {
+	for _, size := range []int{15, 16} {
+		prefix := "4019"
+		if size == 15 {
+			prefix = "3719"
+		}
+		pan := cardtest.Issuer(prefix, size)
+		for a := 1; a < size; a++ {
+			for b := a; b < size; b++ {
+				groups := []string{pan[:a], pan[a:]}
+				if b > a {
+					groups = []string{pan[:a], pan[a:b], pan[b:]}
+				}
+				for _, sep := range []string{" ", "-", " - ", "  ", "   "} {
+					text := strings.Join(groups, sep)
+					if !Visit(text, false, func(c Candidate) bool { return c.Digits == pan }) {
+						t.Errorf("lost size=%d grouping=%d,%d separator=%q", size, a, b, sep)
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestDottedPrefixBeforeNumericDashTail(t *testing.T) {
+	pan := cardtest.Issuer("4019", 16)
+	for _, tail := range []string{"-692", " - 692", "   -   692"} {
+		text := pan[:6] + "." + pan[6:] + tail
+		if !Visit(text, false, func(c Candidate) bool { return c.Digits == pan }) {
+			t.Errorf("valid shorter prefix lost before %q", tail)
+		}
+	}
+	for _, tail := range []string{"", "-word", "-", "  ", "	-692"} {
+		text := pan[:6] + "." + pan[6:] + tail
+		if Visit(text, false, func(c Candidate) bool { return c.Digits == pan }) {
+			t.Errorf("decimal was joined before %q", tail)
+		}
 	}
 }
