@@ -14,11 +14,11 @@ import (
 	session "github.com/luckyPipewrench/pipelock/internal/session"
 )
 
-func deferredAdmissionError(manager *deferred.Manager, requireReceipts bool) error {
+func deferredAdmissionError(manager *deferred.Manager, requireJournal bool) error {
 	if manager == nil || !manager.Enabled() {
 		return deferred.ErrDisabled
 	}
-	if requireReceipts && manager.JournalPath() == "" {
+	if requireJournal && manager.JournalPath() == "" {
 		return errors.New("a deferred action journal is required with required receipts (configure flight_recorder.dir)")
 	}
 	return nil
@@ -213,6 +213,9 @@ type holdFailureResolution struct {
 // error message plus any receipt gap. Shared by the stdio and HTTP-forward
 // defer paths.
 func emitHoldFailureResolution(opts MCPProxyOpts, logW io.Writer, holdErr error, hf holdFailureResolution) (string, error) {
+	if opts.receiptEffects.enabled {
+		return opts.refuseV3HoldAdmission(hf, holdErr)
+	}
 	source := deferred.HoldFailureSource(holdErr)
 	cascadeDepth := 0
 	parentDeferID := ""

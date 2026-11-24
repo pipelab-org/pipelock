@@ -332,6 +332,10 @@ func mcpReceiptParityOpts(
 }
 
 func buildDeferManager(cfg *config.Config, warningWriter io.Writer) *deferred.Manager {
+	return buildDeferManagerWithJournal(cfg, warningWriter, deferJournalPath(cfg))
+}
+
+func buildDeferManagerWithJournal(cfg *config.Config, warningWriter io.Writer, journalPath string) *deferred.Manager {
 	if cfg == nil || !cfg.Defer.Enabled {
 		return nil
 	}
@@ -348,7 +352,7 @@ func buildDeferManager(cfg *config.Config, warningWriter io.Writer) *deferred.Ma
 		MaxPendingPerSession: cfg.Defer.MaxPendingPerSession,
 		MaxPendingBytes:      cfg.Defer.MaxPendingBytes,
 		MaxCascadeDepth:      cfg.Defer.MaxCascadeDepth,
-		JournalPath:          deferJournalPath(cfg),
+		JournalPath:          journalPath,
 		JournalWriteGuard: func(write func() error) error {
 			return recorder.WithEvidenceWriterCeremonyLock(cfg.FlightRecorder.Dir, write)
 		},
@@ -1619,13 +1623,19 @@ Key-free evidence capture:
 				policyAction = policyCfg.Action
 			}
 			a2aCardBaseline := mcp.NewCardBaseline(1000)
-			deferManager := buildDeferManager(cfg, cmd.ErrOrStderr())
-			if err := recoverDeferredActions(deferManager, deferJournalPath(cfg), mcp.MCPProxyOpts{
-				Scanner: sc, ReceiptEmitter: receiptEmitter, V2ReceiptEmitter: v2ReceiptEmitter,
-				ReceiptGroup: receiptGroup, PolicyHash: captureConfigHash,
-				AuditMode: !cfg.EnforceEnabled(),
-			}, cmd.ErrOrStderr()); err != nil {
-				return err
+			var deferManager *deferred.Manager
+			if receiptWriter != nil {
+				// Opening the stream has already recovered any v3 holds.
+				deferManager = buildDeferManagerWithJournal(cfg, cmd.ErrOrStderr(), "")
+			} else {
+				deferManager = buildDeferManager(cfg, cmd.ErrOrStderr())
+				if err := recoverDeferredActions(deferManager, deferJournalPath(cfg), mcp.MCPProxyOpts{
+					Scanner: sc, ReceiptEmitter: receiptEmitter, V2ReceiptEmitter: v2ReceiptEmitter,
+					ReceiptGroup: receiptGroup, PolicyHash: captureConfigHash,
+					AuditMode: !cfg.EnforceEnabled(),
+				}, cmd.ErrOrStderr()); err != nil {
+					return err
+				}
 			}
 			stopOperatorAPI, err := startMCPOperatorAPI(heartbeatCtx, cfg, deferManager, auditLogger, cmd.ErrOrStderr(), &operatorSessions)
 			if err != nil {

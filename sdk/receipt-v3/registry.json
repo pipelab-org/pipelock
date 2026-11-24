@@ -322,11 +322,11 @@
       "fields": "Set `phase`, `effect_relation`, and `outcome_class` from the observed result. Use the original intent action ID. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Copy `taint` and `session` when the decision set them. Include `redaction` when the applied rewrite carries a summary. Omit `checker` and `normalization`.",
       "when": "The HTTP bridge observes a stream error for a tracked request."
     },
-    "internal/mcp/input.go/ForwardScannedInput/ensure/3dd11dc2f968cdbf": {
+    "internal/mcp/input.go/ForwardScannedInput/ensure/1761e6ad50cfe588": {
       "fields": "`phase` is resolution. `hold` carries the original defer id as `hold.id` and records `hold.resolution_policy` and `hold.resolution_source`. The original hold carries `hold.policy` and any `hold.parent`. Set `hold.correction:true` when a later block replaces an allow. `session` is the authority session id and original id, omitted when empty. `taint` records authority user-broad, decision allow, and reason `defer_resolution`. An `ask` resolution requires the retained `approval_api` channel and `observed:true`. Omit `ask` for other resolution verdicts. `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision. `caller.authn` is `none`.",
       "when": "`config.ActionDefer`"
     },
-    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/ensure/c9d0d78ab05e3cd5": {
+    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/ensure/9f146a1028ce4263": {
       "fields": "`phase` is resolution. `hold` carries the original defer id as `hold.id` and records `hold.resolution_policy` and `hold.resolution_source`. The original hold carries `hold.policy` and any `hold.parent`. Set `hold.correction:true` when a later block replaces an allow. `session` is the authority session id and original id, omitted when empty. `taint` records authority user-broad, decision allow, and reason `defer_resolution`. An `ask` resolution requires the retained `approval_api` channel and `observed:true`. Omit `ask` for other resolution verdicts. `policy.source` is `request_snapshot` with the digest of the config revision that decided this action, retained from that revision; otherwise `unavailable` and `hash` is omitted. A hash read at emit from the live resolver is not that revision. `caller.authn` is `none`.",
       "when": "`decision.Deferred != nil`"
     },
@@ -334,7 +334,7 @@
       "fields": "Set `phase` to `resolution` and carry the original hold action ID and `hold.id`. Record `hold.resolution_policy` and `hold.resolution_source`. Set `hold.correction:true` when a block replaces an allow. Copy the authority `session` when present. Set `taint` to user-broad authority, allow, and `defer_resolution`. Omit `ask` for these allow and block resolutions. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Omit `checker` and `normalization`.",
       "when": "The stdio deferred release journal calls back with the allow or its corrective block."
     },
-    "internal/mcp/input.go/ForwardScannedInput/ensure/663bec4b98b32dad": {
+    "internal/mcp/input.go/ForwardScannedInput/ensure/5d5b495e74923e2c": {
       "fields": "Set `phase` to `resolution` and carry the original hold action ID and `hold.id`. Record `hold.resolution_policy` and `hold.resolution_source`. Set `hold.correction:true` for the block replacing the release allow. Copy the authority `session` when present. Set `taint` to user-broad authority, allow, and `defer_resolution`. Omit `ask` for these allow and block resolutions. Set `policy.source` to `request_snapshot` with the digest of the deciding revision if retained. Otherwise use `unavailable` and omit `hash`. `caller.authn` is `none`. Omit `checker` and `normalization`.",
       "when": "Writing a released stdio request fails and the final resolution is corrected to a cancellation block."
     },
@@ -1545,6 +1545,42 @@
     "internal/proxy/intercept.go/newInterceptHandler/admitV3CardAcceptance/e12897d20ee65328": {
       "fields": "Uses the deciding request policy snapshot, available caller and request attribution, and the parent action ID. Signature evidence names the verified key ID. Baseline evidence records first appearance or accepted drift. The transport sets the outcome from downstream delivery or refusal.",
       "when": "Before accepting a verified Agent Card or adopting its baseline while v3 receipts are active, including optional mode."
+    },
+    "internal/mcp/input.go/ForwardScannedInput/admitV3HeldSend/af18bed001ca6138": {
+      "fields": "Request-time MCP decision and authority attribution from the held call, when available.",
+      "when": "An approved held stdio request or notification has cleared the local release gates."
+    },
+    "internal/mcp/input.go/ForwardScannedInput/confirmV3HeldSend/fa3a08d355ed354b": {
+      "fields": "Request-time MCP decision and authority attribution from the held call, when available.",
+      "when": "The stdio writer returned success for the held message."
+    },
+    "internal/mcp/input.go/ForwardScannedInput/refuseV3HeldIntent/80f5c2e9b0a72086": {
+      "fields": "Request-time MCP decision and authority attribution from the held call, when available.",
+      "when": "Cancellation withheld the held stdio send after its intent was confirmed."
+    },
+    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/admitV3HeldSend/184c00831b4d2456": {
+      "fields": "Request-time MCP decision and authority attribution from the held call, when available.",
+      "when": "An approved held bridge request or notification has cleared the local release gates."
+    },
+    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/confirmV3HeldSend/ceb014ad43ab0243": {
+      "fields": "Request-time MCP decision and authority attribution from the held call, when available.",
+      "when": "The HTTP bridge observed the return from a held send."
+    },
+    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/refuseV3HeldIntent/99e90926bc72cd94": {
+      "fields": "Request-time MCP decision and authority attribution from the held call, when available.",
+      "when": "Cancellation withheld the held bridge send after its intent was confirmed."
+    },
+    "internal/mcp/receipt_v3.go/(MCPProxyOpts).refuseV3HoldAdmission/Refuse/ce6a2157d50c8247": {
+      "fields": "Request-time MCP decision and authority attribution from the held call, when available.",
+      "when": "A proposed hold was refused before its hold record began persisting."
+    },
+    "internal/mcp/receipt_v3.go/(MCPProxyOpts).setupV3Hold/RecordApproval/528ac8407b73a820": {
+      "fields": "Request-time MCP decision and authority attribution from the held call, when available.",
+      "when": "A hold resolves to allow, block, or ask, including a correcting block after a pre-intent refusal."
+    },
+    "internal/mcp/receipt_v3.go/(MCPProxyOpts).setupV3Hold/RecordApproval/b911cbba2c22a98c": {
+      "fields": "Request-time MCP decision and authority attribution from the held call, when available.",
+      "when": "A hold and its optional parent are confirmed before the hold is exposed to approval."
     }
   },
   "emit_exclusions": {
@@ -1765,7 +1801,9 @@
     "internal/proxy/receipt_v3.go/(*Proxy).refuseEffect/recordEffectRefusal/61a6afc580d1e325": "The shared receipt adapter forwards decision attribution and the producer boundary to the receipt emitter.",
     "internal/proxy/sse.go/(*Proxy).legacySSEFindingConfirmer/sseFindingReceiptConfirmer/46d9a19dc80806ed": "The shared receipt adapter forwards decision attribution and the producer boundary to the receipt emitter.",
     "internal/mcp/receipt_v3.go/(MCPProxyOpts).admitV3CardBatch/AdmitBatch/c4caa5d6d38146cd": "Admits the signature and baseline checks with the request policy and attribution supplied by the Agent Card producer.",
-    "internal/proxy/receipt_v3.go/(*Proxy).admitV3CardAcceptance/AdmitBatch/0ed04b1b137c0426": "Admits the signature and baseline checks with the request policy and attribution supplied by the Agent Card producer."
+    "internal/proxy/receipt_v3.go/(*Proxy).admitV3CardAcceptance/AdmitBatch/0ed04b1b137c0426": "Admits the signature and baseline checks with the request policy and attribution supplied by the Agent Card producer.",
+    "internal/mcp/defer_resolution.go/emitHoldFailureResolution/refuseV3HoldAdmission/8b9fd7b73dbf38ce": "Delegates v3 admission rejections to the approval-prompt producer.",
+    "internal/mcp/receipt_v3.go/(MCPProxyOpts).admitV3HeldSend/AdmitHeld/7d9f8862082670d7": "Passes the held upstream-send action and captured policy to the v3 effect gate."
   },
   "emit_sites": {
     "internal/mcp/receipt_v3.go/(*mcpV3ReplyWriter).admit/Admit/d930c207f6adb938": "downstream_delivery",
@@ -1828,10 +1866,10 @@
     "internal/mcp/stream.go/recordListenerStreamError/emitMCPStandaloneStreamReceipt/05856a303fae6b29": "downstream_delivery",
     "internal/mcp/stream.go/recordListenerStreamError/settle/c273355d175e15c5": "downstream_delivery",
     "internal/mcp/stream.go/emitTrackedStreamError/settle/738a7d7a473c7a47": "downstream_delivery",
-    "internal/mcp/input.go/ForwardScannedInput/ensure/3dd11dc2f968cdbf": "approval_prompt",
-    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/ensure/c9d0d78ab05e3cd5": "approval_prompt",
+    "internal/mcp/input.go/ForwardScannedInput/ensure/1761e6ad50cfe588": "approval_prompt",
+    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/ensure/9f146a1028ce4263": "approval_prompt",
     "internal/mcp/input.go/ForwardScannedInput/commitRelease/ac5a92a77795e6c8": "approval_prompt",
-    "internal/mcp/input.go/ForwardScannedInput/ensure/663bec4b98b32dad": "approval_prompt",
+    "internal/mcp/input.go/ForwardScannedInput/ensure/5d5b495e74923e2c": "approval_prompt",
     "internal/mcp/input.go/ForwardScannedInput/settle/8f85b96720eff599": "upstream_send",
     "internal/mcp/input.go/ForwardScannedInput/settle/a6db5cf144a74d21": "upstream_send",
     "internal/mcp/input.go/ForwardScannedInput/settle/db70b24ca0483e23": "upstream_send",
@@ -2133,7 +2171,16 @@
     "internal/proxy/reverse.go/(*ReverseProxyHandler).modifyResponse/sseFindingDelivery/639a2a2c38680665": "downstream_delivery",
     "internal/mcp/proxy.go/ForwardScanned/confirmMCPCardAcceptance/bafe8854f60c7b85": "downstream_delivery",
     "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/admitV3CardAcceptance/4ba0647c0670131a": "downstream_delivery",
-    "internal/proxy/intercept.go/newInterceptHandler/admitV3CardAcceptance/e12897d20ee65328": "downstream_delivery"
+    "internal/proxy/intercept.go/newInterceptHandler/admitV3CardAcceptance/e12897d20ee65328": "downstream_delivery",
+    "internal/mcp/input.go/ForwardScannedInput/admitV3HeldSend/af18bed001ca6138": "upstream_send",
+    "internal/mcp/input.go/ForwardScannedInput/confirmV3HeldSend/fa3a08d355ed354b": "upstream_send",
+    "internal/mcp/input.go/ForwardScannedInput/refuseV3HeldIntent/80f5c2e9b0a72086": "upstream_send",
+    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/admitV3HeldSend/184c00831b4d2456": "upstream_send",
+    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/confirmV3HeldSend/ceb014ad43ab0243": "upstream_send",
+    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/refuseV3HeldIntent/99e90926bc72cd94": "upstream_send",
+    "internal/mcp/receipt_v3.go/(MCPProxyOpts).refuseV3HoldAdmission/Refuse/ce6a2157d50c8247": "approval_prompt",
+    "internal/mcp/receipt_v3.go/(MCPProxyOpts).setupV3Hold/RecordApproval/528ac8407b73a820": "approval_prompt",
+    "internal/mcp/receipt_v3.go/(MCPProxyOpts).setupV3Hold/RecordApproval/b911cbba2c22a98c": "approval_prompt"
   },
   "enums": {
     "action_policy_source": [

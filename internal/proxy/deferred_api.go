@@ -224,7 +224,7 @@ func (h *SessionAPIHandler) handleDeferredResolve(w http.ResponseWriter, r *http
 	if action == deferredActionDeny {
 		input = config.ActionBlock
 	}
-	decision, err := mgr.ResolveApprovalResult(deferID, input, deferred.SourceOperator)
+	decision, err := mgr.ResolveApprovalResultContext(r.Context(), deferID, input, deferred.SourceOperator)
 	if err != nil {
 		if errors.Is(err, deferred.ErrNotFound) {
 			h.logSessionAdmin(logAction+"_conflict", clientIP, deferID, "already resolved", http.StatusConflict)

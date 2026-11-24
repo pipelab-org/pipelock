@@ -85,11 +85,14 @@ func TestRuntimeReceiptV3Reload(t *testing.T) {
 			t.Fatal(err)
 		}
 		cfg.Defer.Enabled = true
-		if err := s.Reload(cfg); err == nil || !strings.Contains(err.Error(), "deferred holds") {
-			t.Fatalf("reload with deferred holds = %v", err)
-		}
-		if s.receiptWriter != writer {
-			t.Fatal("rejected reload replaced the live writer")
+		for _, enabled := range []bool{true, true, false, false} {
+			cfg.Defer.Enabled = enabled
+			if err := s.Reload(cfg); err != nil {
+				t.Fatalf("reload with defer.enabled=%t: %v", enabled, err)
+			}
+			if s.receiptWriter != writer || s.currentConfig().Defer.Enabled != enabled {
+				t.Fatal("reload did not apply defer.enabled with the original receipt writer")
+			}
 		}
 	})
 	for _, feature := range []struct {
@@ -130,8 +133,8 @@ func TestRuntimeReceiptV3Reload(t *testing.T) {
 				t.Fatalf("omitted format after cutover = %v, %v", selected, err)
 			}
 			cfg.Defer.Enabled = true
-			if _, err := receiptV3Selected(cfg); err == nil || !strings.Contains(err.Error(), "deferred holds") {
-				t.Fatalf("directory-selected v3 with deferred manager = %v", err)
+			if selected, err := receiptV3Selected(cfg); err != nil || !selected {
+				t.Fatalf("directory-selected v3 with deferred manager = %t, %v", selected, err)
 			}
 		} else if err == nil || !strings.Contains(err.Error(), "new evidence directory") {
 			t.Fatalf("legacy format after cutover = %v, %v", selected, err)

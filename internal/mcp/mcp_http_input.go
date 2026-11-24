@@ -129,7 +129,6 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	// downstream gates (DoW, taint) see the redacted args while
 	// ID / Method / ToolCallName stay stable.
 	frame := ParseMCPFrame(msg)
-	v3DeferRefused := false
 	baselineIdentity := mcpFrameBaselineIdentity(frame)
 	defer func() {
 		if result.Blocked != nil && result.Blocked.SyntheticResponse != nil {
@@ -264,7 +263,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 				result.v3Evidence.ActionID, result.v3Evidence.ParentActionID = "", ""
 			}
 		}
-		if v3DeferRefused {
+		if opts.receiptEffects.enabled && result.Deferred != nil {
 			return
 		}
 		if err := emitMCPToolReceipt(receiptOpts); err != nil && requiredReceipt && result.Blocked == nil {
@@ -971,7 +970,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	// Deferral stores its correlation ID before the receipt finalizer runs.
 	// Metadata must share that ID with the deferred receipt and its resolution.
 	if effectiveAction == config.ActionDefer && actionID == "" &&
-		(IsA2AMethod(verdict.Method) || (requireReceipts && isRequiredReceiptMetadataMethod(verdict.Method))) {
+		(opts.receiptEffects.enabled || IsA2AMethod(verdict.Method) || (requireReceipts && isRequiredReceiptMetadataMethod(verdict.Method))) {
 		actionID = receipt.NewActionID()
 	}
 
@@ -1256,16 +1255,6 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		result.Blocked = br
 		return result
 	case config.ActionDefer:
-		if opts.receiptEffects.enabled {
-			v3DeferRefused = true
-			denialAudit = mcpInputGateBlockAudit(scanner.AuditMCPDefer, mcpV3DeferRefusal, audit.BlockClassConfigMismatch)
-			receiptVerdict = config.ActionBlock
-			result.Blocked = &BlockedRequest{
-				ID: verdict.ID, IsNotification: isNotification,
-				LogMessage: mcpV3DeferRefusal, ErrorCode: -32002, ErrorMessage: mcpV3DeferRefusal,
-			}
-			return result
-		}
 		manager := opts.deferManager()
 		if err := deferred.ValidateAction(opts.Transport, config.ActionDefer); err != nil {
 			denialAudit = mcpInputGateBlockAudit(scanner.AuditMCPDefer, mcpDeferUnsupportedReason, audit.BlockClassConfigMismatch)
@@ -1281,7 +1270,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			}
 			return result
 		}
-		if err := deferredAdmissionError(manager, requireReceipts); err != nil {
+		if err := deferredAdmissionError(manager, requireReceipts && !opts.receiptEffects.enabled); err != nil {
 			denialAudit = mcpInputGateBlockAudit(scanner.AuditMCPDefer, mcpDeferDisabledReason, audit.BlockClassConfigMismatch)
 			_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s) [%v]\n", joinStrings(reasons), err)
 			recordAdaptiveSignal(session.SignalBlock)

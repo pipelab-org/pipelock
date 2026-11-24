@@ -130,7 +130,7 @@ func maybeStartDeferApprovalResolver(
 			_ = manager.Resolve(held.DeferID, config.ActionBlock, deferred.SourceApproval)
 			return
 		}
-		_ = manager.ResolveApproval(held.DeferID, decision)
+		_, _ = manager.ResolveApprovalResultContext(ctx, held.DeferID, decision, deferred.SourceApproval)
 	})
 }
 

@@ -6,6 +6,7 @@ package mcp
 import (
 	"encoding/json"
 	"sync"
+	"sync/atomic"
 
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
@@ -49,8 +50,9 @@ type TrackedRequestOutcome struct {
 	handle  *mcpOutcomeHandle
 	// Method is the JSON-RPC method of the matching request, used by
 	// response-side A2A routing (Agent Card vs field-aware body scan).
-	Method          string
-	ownsNativeLease bool
+	Method           string
+	ownsNativeLease  bool
+	readyToCorrelate *atomic.Bool // set at the commit boundary for held v3 sends
 }
 
 func (o TrackedRequestOutcome) releaseNativeLease() {
@@ -304,7 +306,7 @@ func (t *RequestTracker) Consume(id json.RawMessage) (TrackedRequestOutcome, boo
 	defer t.mu.Unlock()
 
 	request, ok := t.pending[key]
-	if !ok {
+	if !ok || request.outcome.readyToCorrelate != nil && !request.outcome.readyToCorrelate.Load() {
 		return TrackedRequestOutcome{}, false
 	}
 	t.remove(key)
