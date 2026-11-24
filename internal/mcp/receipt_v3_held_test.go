@@ -1288,52 +1288,61 @@ func TestMCPV3HeldSendRefusalDownstreamEvidence(t *testing.T) {
 		}
 	})
 
-	t.Run("bridge_send_failure_links_error_reply_to_held_send", func(t *testing.T) {
-		writer, writerOpts := openMCPV3RegressionWriter(t, deferred.SurfaceMCPHTTPUpstream)
-		opts := nativeDeferredOptions(t, nil).WithV3ReceiptWriter(writer)
-		opts.Transport = deferred.SurfaceMCPHTTPUpstream
-		opts.ListenerShutdownTimeout = testwait.Deadline(time.Second)
-		opts.DeferManager = deferred.NewManager(deferred.Config{Enabled: true, Timeout: testwait.Deadline(time.Minute)})
-		ctx, cancel := context.WithCancel(t.Context())
-		defer cancel()
-		in, feed := io.Pipe()
-		defer func() { _ = in.Close(); _ = feed.Close() }()
-		upstream := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+	for _, tc := range []struct {
+		name, message string
+		handler       http.HandlerFunc
+	}{
+		{name: "send", message: "upstream HTTP request failed", handler: func(http.ResponseWriter, *http.Request) {
 			panic(http.ErrAbortHandler)
-		}))
-		upstream.Config.ErrorLog = log.New(io.Discard, "", 0)
-		defer upstream.Close()
-		var out lockedHTTPBuffer
-		done := make(chan error, 1)
-		go func() { done <- RunHTTPProxy(ctx, in, &out, io.Discard, upstream.URL, nil, opts) }()
-		if _, err := io.WriteString(feed, heldNativeCall+"\n"); err != nil {
-			t.Fatal(err)
-		}
-		testwait.For(t, 5*time.Second, func() bool { return opts.DeferManager.HeldCount() == 1 }, "held bridge call")
-		held := opts.DeferManager.Snapshot()[0]
-		if err := opts.DeferManager.Resolve(held.DeferID, config.ActionAllow, deferred.SourceOperator); err != nil {
-			t.Fatal(err)
-		}
-		testwait.For(t, 5*time.Second, func() bool { return strings.Contains(out.String(), "upstream HTTP request failed") }, "error reply")
-		_ = feed.Close()
-		if err := awaitHeldTest(t, done); err != nil {
-			t.Fatal(err)
-		}
-		var downstream []v3.Action
-		for _, a := range verifiedMCPV3RegressionActions(t, writer, writerOpts) {
-			if a.EffectBoundary == mcpDownstreamDeliveryBoundary {
-				downstream = append(downstream, a)
+		}},
+		{name: "response", message: "upstream HTTP response failed", handler: func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Content-Length", "128")
+			if _, err := io.WriteString(w, "{"); err != nil {
+				t.Error(err)
 			}
-		}
-		if len(downstream) == 0 {
-			t.Fatal("held bridge error reply has no downstream_delivery receipt")
-		}
-		for _, a := range downstream {
-			if a.ParentActionID != held.ActionID {
-				t.Fatalf("held bridge error reply not linked to held send %q: %+v", held.ActionID, a)
+		}},
+		{name: "timeout", message: "upstream response timeout", handler: func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			if err := http.NewResponseController(w).Flush(); err != nil {
+				t.Error(err)
 			}
-		}
-	})
+			<-r.Context().Done()
+		}},
+	} {
+		t.Run("bridge_"+tc.name+"_failure_links_error_reply_to_held_send", func(t *testing.T) {
+			writer, writerOpts := openMCPV3RegressionWriter(t, deferred.SurfaceMCPHTTPUpstream)
+			opts := nativeDeferredOptions(t, nil).WithV3ReceiptWriter(writer)
+			opts.Transport = deferred.SurfaceMCPHTTPUpstream
+			opts.InputCfg.ResponseTimeoutSeconds = 1
+			opts.ListenerShutdownTimeout = testwait.Deadline(time.Second)
+			opts.DeferManager = deferred.NewManager(deferred.Config{Enabled: true, Timeout: testwait.Deadline(time.Minute)})
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			in, feed := io.Pipe()
+			defer func() { _ = in.Close(); _ = feed.Close() }()
+			upstream := httptest.NewServer(tc.handler)
+			upstream.Config.ErrorLog = log.New(io.Discard, "", 0)
+			defer upstream.Close()
+			var out lockedHTTPBuffer
+			done := make(chan error, 1)
+			go func() { done <- RunHTTPProxy(ctx, in, &out, io.Discard, upstream.URL, nil, opts) }()
+			if _, err := io.WriteString(feed, heldNativeCall+"\n"); err != nil {
+				t.Fatal(err)
+			}
+			testwait.For(t, 5*time.Second, func() bool { return opts.DeferManager.HeldCount() == 1 }, "held bridge call")
+			held := opts.DeferManager.Snapshot()[0]
+			if err := opts.DeferManager.Resolve(held.DeferID, config.ActionAllow, deferred.SourceOperator); err != nil {
+				t.Fatal(err)
+			}
+			testwait.For(t, 5*time.Second, func() bool { return strings.Contains(out.String(), tc.message) }, "error reply")
+			_ = feed.Close()
+			if err := awaitHeldTest(t, done); err != nil {
+				t.Fatal(err)
+			}
+			assertHeldReplyParent(t, verifiedMCPV3RegressionActions(t, writer, writerOpts), held.ActionID)
+		})
+	}
 
 	t.Run("bridge_intent_failure_links_error_reply_without_duplicate_decision", func(t *testing.T) {
 		writer, writerOpts := heldFaultWriter(t, func(a v3.Action) bool {

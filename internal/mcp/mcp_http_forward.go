@@ -789,7 +789,7 @@ func RunHTTPProxy(
 								settleBridgeNotificationScanError(releaseCtx, safeLogW, releaseOpts, releaseOutcome, scanErr)
 							} else if outcome, pending := tracker.takeOwnedOutcome(deferredReq.ID, registration); pending {
 								errResp := upstreamErrorResponse(deferredReq.ID, fmt.Errorf("upstream HTTP response failed"))
-								_ = safeClientOut.WriteMessage(errResp)
+								_ = localReply.WriteMessage(errResp)
 								status, reason, size := "error", "scan_error", int64(len(errResp))
 								streamReason := httpstream.Reason(releaseCtx, scanErr)
 								switch {
