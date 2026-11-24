@@ -712,7 +712,11 @@ func TestReceiptCascadeSweepKeepsReplacementHold(t *testing.T) {
 func TestReceiptHoldLatestSweepRevokesApproval(t *testing.T) {
 	m := NewManager(Config{Enabled: true, Timeout: testwait.Deadline(time.Minute)})
 	parent := receiptAdmissionFixture("parent")
-	parent.ResolveReceipt = func(_ Resolution, release Release) { release.Commit() }
+	parent.ResolveReceipt = func(res Resolution, release Release) {
+		if res.FinalDecision == config.ActionAllow {
+			release.Commit()
+		}
+	}
 	child := receiptAdmissionFixture("child")
 	child.RulePolicy.AllowOn.PolicyPermits = true
 	resolved := make(chan Resolution, 1)
