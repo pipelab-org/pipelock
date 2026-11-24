@@ -286,7 +286,7 @@ followers accept a message.
 fleet-wide kill signal. `stale_policy.strict_deny_all` is the **enforced**
 fail-closed stale-bundle behavior: a follower re-evaluates its active bundle each
 poll interval and, once that bundle is missing, unreadable, or past its grace
-window, engages an independent `conductor_stale` kill-switch source that **denies
+window, engages an independent `conductor_stale` kill switch source that **denies
 all traffic across every transport** (forward, CONNECT, WebSocket, MCP) until a
 fresh in-grace bundle applies. The `conductor_stale` source is OR-composed and
 independent of the remote-kill source — clearing one does not clear the other.
@@ -371,7 +371,7 @@ are pruned at startup.
   is checked when the bundle is verified and applied, so an expired bundle never
   applies. Under `stale_policy.strict_deny_all` (the default), a follower that
   loses contact with Conductor past the grace window engages an independent
-  `conductor_stale` kill-switch source and **denies all traffic** until a fresh
+  `conductor_stale` kill switch source and **denies all traffic** until a fresh
   in-grace bundle applies; on proven license revocation or expiry, teardown under
   a strict policy engages that same fail-closed source before the enforcer stops,
   closing the teardown window. Under `continue_last_known_good` the follower keeps

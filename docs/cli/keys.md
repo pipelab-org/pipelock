@@ -52,7 +52,7 @@ For each key purpose the report shows:
 | `recovery-root` | Deployment trust root pinned in the roster. Used for recovery operations (root transition, emergency rotation). |
 | `policy-bundle-signing` | Conductor leader-side signer; the follower verifies via the trust roster. Signs policy bundles distributed to followers. |
 | `policy-bundle-rollback` | Conductor threshold key; verified via the roster. Authorizes a one-shot rollback to a lower policy-bundle version. Deploy independent approver keys, not a single signer. |
-| `remote-kill-signing` | Conductor threshold key; verified via the roster. Signs remote kill-switch state messages. |
+| `remote-kill-signing` | Conductor threshold key; verified via the roster. Signs remote kill switch state messages. |
 | `trust-root-rotation` | Reserved Conductor threshold key; verified via the roster. No shipped operator workflow consumes it yet. |
 | `audit-batch-signing` | Follower private key at `flight_recorder.signing_key_path`; `conductor.audit_signing_key_id` names the audit signer. The Conductor audit sink enrolls/trusts the public half and verifies Conductor-bound audit batch envelopes. |
 | `enrollment-token-signing` | Reserved Conductor key; verified via the roster. No shipped operator workflow consumes it yet. |

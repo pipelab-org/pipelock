@@ -84,7 +84,7 @@ The endpoint returns a JSON object:
 |---|---|
 | `message_id` / `message_hash` | Identity and content hash of the kill message. |
 | `org_id` / `fleet_id` / `audience` | The kill's scope. |
-| `state` | The kill-switch state the message asserts. This list only includes `active` messages; fresh `inactive` resume messages are not reported as active kills. |
+| `state` | The kill switch state the message asserts. This list only includes `active` messages; fresh `inactive` resume messages are not reported as active kills. |
 | `counter` | Replay counter. |
 | `reason` | Operator-supplied reason. |
 | `not_before` / `expires_at` | The validity window. Only kills valid at the current time are listed. |

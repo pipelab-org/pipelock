@@ -34,7 +34,7 @@ There's no fallback to an old file value or an inline token when file loading fa
 
 A successful runtime config load stores a private token snapshot. Ordinary file rotation
 takes effect after SIGHUP or a config-file reload; token-file changes alone aren't
-watched. A failed reload retains the previously accepted token and kill-switch
+watched. A failed reload retains the previously accepted token and kill switch
 activation state. Removing the file setting and all other token inputs disables
 the API. Encrypted systemd credentials are materialized per service invocation:
 replacing their encrypted source requires a service restart to change the running

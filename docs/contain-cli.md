@@ -45,7 +45,7 @@ sudo pipelock contain run -- codex --ask-for-approval never
 
 Before it starts the tool, `contain run` fails closed unless every containment probe passes:
 
-- system users, systemd service, nftables owner-match rules, wrappers, CA bundle, loopback proxy, `NO_PROXY`, binary-integrity pin, allow-list enforcement, and registered tool targets must all be healthy;
+- system users, systemd service, nftables owner-match rules, wrappers, CA bundle, loopback proxy, `NO_PROXY`, binary-integrity pin, allowlist enforcement, and registered tool targets must all be healthy;
 - the direct-egress canary from `pipelock-agent` must fail while the operator can still reach the internet, proving the negative probe is meaningful rather than a generic outage;
 - a transient service launched as `pipelock-agent` must not see operator canaries in either `/tmp` or `/var/tmp`, proving the launch has private temporary directories;
 - the agent network namespace must differ from the host namespace, reject a host loopback canary, and reach the namespace-bound Pipelock proxy socket;
@@ -269,7 +269,7 @@ Before replacing the service binary, writing the system unit, restarting Pipeloc
 4. Migrate the user-mode systemd unit (if present), write and enable the system unit running as `pipelock-proxy`, then export the Pipelock CA.
 5. Bootstrap the combined CA bundle at `/etc/pipelock/combined-ca.pem` from the system trust store plus the Pipelock CA.
 6. Install the private agent network namespace and its socket-activated proxy bridge, add the Pipelock CA to the contained agent's per-user NSS database so Chromium-family browsers trust it, then install the nftables containment ruleset: deny direct outbound traffic from the agent user while allowing the operator and `pipelock-proxy` to reach the internet. When `containment.agent_listener` is set, a preceding log-and-drop rule restricts its host loopback address and port to `pipelock-proxy` and root. Browser trust requires `certutil` (`libnss3-tools` on Debian/Ubuntu, `mozilla-nss-tools` on SUSE, `nss` on Arch, or `nss-tools` on Red Hat-family distributions); installation fails rather than reporting ready when it cannot be established. Raw-egress drops are classed in nft logs (`direct_dns_blocked` or `not_routing_through_pipelock`) and counted before the terminal drop.
-7. Write `/etc/pipelock/contain/tools.list`, the runtime allow-list consumed by `plk-launch`.
+7. Write `/etc/pipelock/contain/tools.list`, the runtime allowlist consumed by `plk-launch`.
 8. Write the node undici proxy shim at `/etc/pipelock/contain/undici-shim.cjs` (see [Runtime contract](#runtime-contract)).
 9. Drop the `plk-launch` wrapper, the root-owned contained launcher, and one wrapper per registered tool into `/usr/local/bin/`.
 10. Drop the known-good `pipelock-curl` / `pipelock-python` / `pipelock-node` wrappers into `/usr/local/bin/`.
@@ -373,7 +373,7 @@ pipelock contain verify
 | 8 | `cc_agent_egress_denied` | A DNS-free direct outbound canary from `pipelock-agent` reports that its TCP dial did not complete and coincides with an increment in the exact managed catch-all nftables DROP counter. |
 | 9 | `operator_egress_reachable` | The same canary from the operator user is allowed (proves the rule scopes correctly). |
 | 10 | `binary_integrity_pin` | The installed pipelock binary hash matches `/etc/pipelock/integrity/binary-pin.sha256`. |
-| 11 | `cc_launch_allow_list_enforced` | `plk-launch` rejects tools that are not in the registered allow-list. |
+| 11 | `cc_launch_allow_list_enforced` | `plk-launch` rejects tools that are not in the registered allowlist. |
 | 12 | `listed_tool_targets_resolvable` | Every entry in `tools.list` resolves to an executable absolute path in the agent user's PATH. |
 | 13 | `managed_config_metrics` | The managed config keeps metrics on a dedicated numeric loopback port or verifies a current, source-scoped remote metrics exception. It skips only when the config file is missing or permission is denied, and reports unknown for any other read failure. |
 | 14 | `launch_env_allow_list` | `plk-launch` clears the operator environment with `env -i` before exec, so operator variables sudo leaves standing (e.g. `DISPLAY`, `XAUTHORITY`, `SUDO_*`) do not reach the contained agent. Fails if the launcher reverted to plain `env` or dropped the posture-proof forward. |

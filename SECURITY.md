@@ -73,7 +73,7 @@ Severity is based on exploitability against shipped Pipelock versions, impact on
 **Critical**
 
 - Ed25519 signature forgery or a receipt-verification bypass that lets forged evidence verify under a trusted key
-- Remote unauthenticated deactivation of the kill-switch or equivalent emergency control
+- Remote unauthenticated deactivation of the kill switch or equivalent emergency control
 - Fail-open behavior that lets blocked egress proceed across multiple mediated transports without operator opt-in
 
 **High**

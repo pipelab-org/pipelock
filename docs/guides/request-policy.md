@@ -259,7 +259,7 @@ absent from the list still reaches the host: `TRACE` and `OPTIONS` are accepted 
 validation, and any verb the validator does not recognise is rejected at load rather than
 silently blocked. A rule naming the write verbs a registry actually uses is the posture
 this rail can express today. If you need a true fetch-only boundary, terminate it where
-an allow-list exists, such as the registry's own credentials or an upstream gateway, and
+an allowlist exists, such as the registry's own credentials or an upstream gateway, and
 treat this rule as defence in depth rather than the boundary itself.
 
 
