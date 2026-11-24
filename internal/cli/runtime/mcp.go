@@ -2023,7 +2023,7 @@ Key-free evidence capture:
 				if bridgeErr != nil {
 					return bridgeErr
 				}
-				defer closeBridge()
+				defer func() { runErr = errors.Join(runErr, closeBridge()) }()
 
 				sandboxLaunch, sErr := sandbox.PrepareSandboxLaunch(launchCfg)
 				if sErr != nil {

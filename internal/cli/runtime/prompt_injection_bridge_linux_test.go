@@ -72,7 +72,7 @@ func TestPromptInjectionDetectionSandboxBridgeWarnAudit(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			t.Cleanup(bridge.Close)
+			t.Cleanup(func() { _ = bridge.Close() })
 
 			conn, err := (&net.Dialer{}).DialContext(ctx, "unix", bridge.SocketPath())
 			if err != nil {
