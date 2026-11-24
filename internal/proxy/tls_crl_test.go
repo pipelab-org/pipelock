@@ -434,11 +434,11 @@ func testTLSCRLHTTPSClient(t *testing.T, schannel bool) {
 	if schannel {
 		// Select the built-in client even if Git's OpenSSL curl precedes it on PATH.
 		curl := filepath.Join(os.Getenv("SystemRoot"), "System32", "curl.exe")
-		version, err := exec.CommandContext(t.Context(), curl, "--version").CombinedOutput() //nolint:gosec // G204: Windows-only test selects the built-in client under SystemRoot.
+		version, err := exec.CommandContext(t.Context(), curl, "--version").CombinedOutput() // #nosec G204 G702 -- the Windows-only test runs the built-in curl under SystemRoot.
 		if err != nil || !strings.Contains(strings.ToLower(string(version)), "schannel") {
 			t.Fatalf("native Schannel curl unavailable: %v: %s", err, version)
 		}
-		output, err := exec.CommandContext(t.Context(), curl, "--silent", "--show-error", "--fail", "--max-time", "15", "--noproxy", "", "--proxy", proxyURL.String(), "--cacert", cfg.TLSInterception.CACertPath, upstream.URL).CombinedOutput() //nolint:gosec // G204: Windows-only test selects the built-in client under SystemRoot.
+		output, err := exec.CommandContext(t.Context(), curl, "--silent", "--show-error", "--fail", "--max-time", "15", "--noproxy", "", "--proxy", proxyURL.String(), "--cacert", cfg.TLSInterception.CACertPath, upstream.URL).CombinedOutput() // #nosec G204 G702 -- the Windows-only test runs the built-in curl under SystemRoot.
 		if err != nil || string(output) != testTLSCRLBody {
 			t.Fatalf("Schannel HTTPS request: %v: %s", err, output)
 		}
