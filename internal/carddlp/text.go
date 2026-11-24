@@ -16,7 +16,7 @@ import (
 // first and last digit remain inside the returned original span.
 func VisitText(text string, yield func(Candidate) bool) bool {
 	if normalize.ForCardText(text) == text {
-		return Visit(text, false, yield)
+		return visitTextView(text, yield)
 	}
 	var view strings.Builder
 	var starts, ends []int
@@ -30,7 +30,7 @@ func VisitText(text string, yield func(Candidate) bool) bool {
 		}
 		at += size
 	}
-	return Visit(view.String(), false, func(c Candidate) bool {
+	return visitTextView(view.String(), func(c Candidate) bool {
 		c.Start, c.End = starts[c.Start], ends[c.End-1]
 		return yield(c)
 	})

@@ -132,7 +132,7 @@ const (
 // HasShippedCardCandidate shares the bounded candidate language with the
 // terminal decoder's admission check. The full lane still confirms every span.
 func HasShippedCardCandidate(text string, validate func(string) bool) bool {
-	return carddlp.Visit(text, false, func(c carddlp.Candidate) bool { return validate(text[c.Start:c.End]) })
+	return carddlp.VisitWindow(text, func(c carddlp.Candidate) bool { return validate(text[c.Start:c.End]) })
 }
 
 // ValidCardNumber applies the card issuer ranges and Luhn checksum used by

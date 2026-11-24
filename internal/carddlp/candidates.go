@@ -19,16 +19,31 @@ type Candidate struct {
 // At most 19 digit groups can precede any separator run, so both modes
 // take O(len(text)) work. Text mode limits separators to two characters.
 func Visit(text string, reconstructed bool, yield func(Candidate) bool) bool {
+	return visit(text, candidateView{allGroups: reconstructed}, yield)
+}
+
+// VisitWindow conservatively admits partial decoder windows. Window edges and
+// digit groups may be artificial, so they cannot reject a candidate. Findings
+// must always be confirmed by Visit on the complete lane before enforcement.
+func VisitWindow(text string, yield func(Candidate) bool) bool {
+	return visit(text, candidateView{openEdges: true}, yield)
+}
+
+type candidateView struct{ allGroups, openEdges bool }
+
+func visit(text string, view candidateView, yield func(Candidate) bool) bool {
 	for start := 0; start < len(text); {
 		if !digit(text[start]) {
 			start++
 			continue
 		}
-		next := start
-		for next < len(text) && digit(text[next]) {
-			next++
+		next := start + 1
+		if !view.openEdges {
+			for next < len(text) && digit(text[next]) {
+				next++
+			}
 		}
-		if leftBoundary(text, start) {
+		if view.openEdges || leftBoundary(text, start) {
 			var digits [MaxDigits]byte
 			var groups [MaxDigits]int
 			n, count, at, canonicalSeparators := 0, 0, start, true
@@ -38,20 +53,29 @@ func Visit(text string, reconstructed bool, yield func(Candidate) bool) bool {
 					digits[n] = text[at]
 					n++
 					at++
+					if view.openEdges && n >= MinDigits {
+						groups[count] = at - groupStart
+						if count == 0 || canonicalSeparators && canonical(groups[:count+1]) {
+							value := string(digits[:n])
+							if ValidCardNumber(value) && yield(Candidate{Start: start, End: at, Digits: value, PublicExample: IsPublicTestPAN(value)}) {
+								return true
+							}
+						}
+					}
 				}
 				if at < len(text) && digit(text[at]) {
 					break
 				}
 				groups[count] = at - groupStart
 				count++
-				if n >= MinDigits && rightBoundary(text, at) && (reconstructed || count == 1 || canonicalSeparators && canonical(groups[:count])) {
+				if !view.openEdges && n >= MinDigits && rightBoundary(text, at) && (view.allGroups || count == 1 || canonicalSeparators && canonical(groups[:count])) {
 					value := string(digits[:n])
 					if ValidCardNumber(value) && yield(Candidate{Start: start, End: at, Digits: value, PublicExample: IsPublicTestPAN(value)}) {
 						return true
 					}
 				}
 				sepStart := at
-				for at < len(text) && ((reconstructed && urlSeparator(text[at])) || (!reconstructed && separator(text[at]) && at-sepStart < 2)) {
+				for at < len(text) && ((view.allGroups && urlSeparator(text[at])) || (!view.allGroups && separator(text[at]) && at-sepStart < 2)) {
 					canonicalSeparators = canonicalSeparators && text[at] != ','
 					at++
 				}

@@ -495,8 +495,7 @@ type compiledPattern struct {
 	// relaxSingleGluedBoundary joins candidateHasLeftBoundary. A miss is still
 	// a finding when exactly one preceding rune caused it and the family
 	// strength check passes. Longer prose prefixes keep failing that check.
-	relaxSingleGluedBoundary    bool
-	checkSourceBoundaryInJoined bool
+	relaxSingleGluedBoundary bool
 	// gluedDigitExtendsNumber refuses a glued ASCII digit. In front of a card
 	// or an SSN that digit lengthens the number instead of disguising it.
 	gluedDigitExtendsNumber bool
@@ -770,9 +769,6 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 				return nil, fmt.Errorf("compile DLP pattern %q without left boundary: %w", p.Name, err)
 			}
 			cp.relaxSingleGluedBoundary = true
-		} else if p.Regex == config.TogetherAIKeyRegex {
-			cp.withoutLeftBoundary = mustCompileScannerRegexp("(?i)" + config.TogetherAIKeyBodyRegex)
-			cp.checkSourceBoundaryInJoined = true
 		} else if body, rejectDigit, ok := gluedWordBoundaryBody(p.Regex); ok {
 			if !strings.HasPrefix(body, "(?i)") {
 				body = "(?i)" + body

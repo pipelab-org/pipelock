@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/luckyPipewrench/pipelock/internal/carddlp"
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
 )
 
@@ -77,30 +78,8 @@ func (s *Scanner) textURLCardMatches(ctx context.Context, text string, decodes *
 // and userinfo scanning. Sentence punctuation is removed only when unbalanced.
 func textURLTokens(text string) []textByteSpan {
 	var tokens []textByteSpan
-	for _, loc := range textURLTokenRe.FindAllStringIndex(text, -1) {
-		end := loc[1]
-		for end > loc[0] {
-			last := text[end-1]
-			if strings.ContainsRune(".,;:", rune(last)) {
-				end--
-				continue
-			}
-			open := byte(0)
-			switch last {
-			case ')':
-				open = '('
-			case ']':
-				open = '['
-			case '}':
-				open = '{'
-			}
-			if open != 0 && strings.Count(text[loc[0]:end], string(last)) > strings.Count(text[loc[0]:end], string(open)) {
-				end--
-				continue
-			}
-			break
-		}
-		tokens = append(tokens, textByteSpan{loc[0], end})
+	for _, loc := range carddlp.URLSpans(text) {
+		tokens = append(tokens, textByteSpan{loc.Start, loc.End})
 	}
 	return tokens
 }

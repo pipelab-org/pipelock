@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/luckyPipewrench/pipelock/internal/carddlp"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -497,6 +498,16 @@ func scanAddedLines(addedLines map[string][]addedLine, patterns []CompiledDLPPat
 					}
 				}
 				if regexMatched {
+					if cp.cardPrefixRetry {
+						carddlp.VisitText(al.content, func(c carddlp.Candidate) bool {
+							if !c.PublicExample {
+								spans = append(spans, redact.Match{Start: c.Start, End: c.End})
+							}
+							return false
+						})
+						hits = append(hits, cp)
+						continue
+					}
 					// Spans are found on the original line, so redaction
 					// already applied for another pattern cannot hide part
 					// of this match. Every match is redacted, accepted by

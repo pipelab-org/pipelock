@@ -472,7 +472,8 @@ const (
 	// coding the request-policy path does not decode is blocked by default,
 	// separate from on_parse_error. The field is present in Defaults().
 	// Bumped for the shipped Google route ID-only path-entropy scope.
-	goldenHashDefaults = "8aeda589039d7746fffab6a4f8bfd50235945decff4353ba535367d9a5592d1f"
+	// Bumped for the boundary-preserving canonical card candidate grammar.
+	goldenHashDefaults = "15334e17940eebe55667848b5058d51daa30720113bfc546f62aa74dc18cb9ac"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -723,7 +724,8 @@ const (
 	// Re-bumped with goldenHashDefaults for the Vault service base64url body.
 	// Re-bumped for request_policy.on_undecodable_encoding. The rich fixture
 	// omits request_policy, so ApplyDefaults fills the new field.
-	goldenHashRichConfig = "0eeded31e5050acc3c540e62b11a5c521c66cfc393902041e898e8856c4deb6c"
+	// Re-bumped with goldenHashDefaults for the canonical card grammar.
+	goldenHashRichConfig = "f72f80402a7c7e31fd60965cd1fcc6c2b19b98c0c350877a471fadb690c129d8"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It
@@ -1306,8 +1308,8 @@ func TestCanonicalPolicyHash_NewToolAdmissionVocabularyGolden(t *testing.T) {
 		// Gateway carrier, the publisher SDK Together host and the JWT sign-in
 		// bearer carrier, matching the default and rich-config goldens above.
 		// They inherit the RFC 9110 default URI limit of 8000 octets.
-		{name: "admit remains warn", admission: NewToolAdmit, wantHash: "69a6653b28276e948198197c31d542fc1831b6b71390210b01ffe1dfead87311"},
-		{name: "withhold remains block", admission: NewToolWithhold, wantHash: "f37135be6b146984bc253dc8b7bf4e64b7d6b00553d14395893aa6fd4cc4e9bc"},
+		{name: "admit remains warn", admission: NewToolAdmit, wantHash: "0a18066285624b1056eaeb2c84fb2de6fdbdd8b487790ce4f3417da4893fccf9"},
+		{name: "withhold remains block", admission: NewToolWithhold, wantHash: "43556ac5e426ef6d430b43b4652d59241aecf598824d52e93d96a6ec539c2982"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

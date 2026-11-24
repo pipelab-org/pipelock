@@ -37,7 +37,7 @@ func TestReassemblyScanAllowance(t *testing.T) {
 			}
 			r := finishAssembled(TextDLPResult{Clean: true}, memos...)
 			partial := false
-			for _, match := range r.Matches {
+			for _, match := range r.Findings() {
 				partial = partial || match.PatternName == PartialEncodedContentPattern
 			}
 			if inbound {

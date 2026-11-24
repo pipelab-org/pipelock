@@ -222,7 +222,7 @@ func TestReassemblyKeywordUnknownSource(t *testing.T) {
 		if !inbound && !HasInspectionLimit(result.Matches) {
 			t.Fatal("unknown outbound context did not refuse")
 		}
-		if inbound && (len(result.Matches) == 0 || result.Matches[0].PatternName != PartialEncodedContentPattern || HasInspectionLimit(result.Matches)) {
+		if inbound && (len(result.InformationalMatches) == 0 || result.InformationalMatches[0].PatternName != PartialEncodedContentPattern || HasInspectionLimit(result.Matches)) {
 			t.Fatalf("unknown inbound context lost partial warning: %+v", result)
 		}
 	}

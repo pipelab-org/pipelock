@@ -146,19 +146,6 @@ func (p *compiledPattern) matchSpanInPositionedView(text, source string, view *m
 	// can glue a date to a clock (2026-12-30 23:59:59) and manufacture an
 	// SSN-shaped run; the source still has the space, so it is not confirmed.
 	if p.providerPrefixRE == nil {
-		if p.checkSourceBoundaryInJoined {
-			for _, loc := range p.re.FindAllStringIndex(text, -1) {
-				body := p.withoutLeftBoundary.FindStringIndex(text[loc[0]:loc[1]])
-				if body == nil {
-					continue
-				}
-				start, end := loc[0]+body[0], loc[0]+body[1]
-				if p.accepts(text, start, end) && p.candidateBoundaryConfirmedInSource(source, text[start:end]) {
-					return start, end, true
-				}
-			}
-			return 0, 0, false
-		}
 		return p.firstJoinedGluedSpan(text, source)
 	}
 
@@ -577,21 +564,4 @@ func firstWIFCandidate(text string, accept func(start, end int) bool) (int, int,
 		runStart = i + 1
 	}
 	return run(runStart, len(text))
-}
-
-// candidateBoundaryConfirmedInSource retains the strict left context of
-// opaque provider tokens even when a transformed view removed punctuation.
-func (p *compiledPattern) candidateBoundaryConfirmedInSource(source, candidate string) bool {
-	for from := 0; from <= len(source)-len(candidate); {
-		at := strings.Index(source[from:], candidate)
-		if at < 0 {
-			return false
-		}
-		at += from
-		if p.candidateHasLeftBoundary(source, [2]int{at, at + len(candidate)}) {
-			return true
-		}
-		from = at + 1
-	}
-	return false
 }

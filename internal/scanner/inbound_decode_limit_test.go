@@ -97,8 +97,8 @@ func TestInboundDecodeLimitWarns(t *testing.T) {
 				if !r.Clean || r.Incomplete || HasEnforcingMatch(r.Matches) || HasInspectionLimit(r.Matches) {
 					t.Fatalf("inbound limit warning must not refuse: clean=%v incomplete=%v matches=%v", r.Clean, r.Incomplete, matchNamesOf(r.Matches))
 				}
-				if !OnlyInformational(r.Matches) {
-					t.Fatalf("limit warning is not informational: %v", matchNamesOf(r.Matches))
+				if len(r.Matches) != 0 || !OnlyInformational(r.InformationalMatches) {
+					t.Fatalf("limit warning is not informational: %v", matchNamesOf(r.Findings()))
 				}
 			})
 		}
@@ -205,7 +205,7 @@ func TestInboundDecodeWorkLimitsWarn(t *testing.T) {
 					scanCtx = ctx
 				}
 				r := sc.ScanTextForDLPInbound(scanCtx, tc.text)
-				if !hasPartial(r) || !r.Clean || r.Incomplete || !OnlyInformational(r.Matches) {
+				if !hasPartial(r) || !r.Clean || r.Incomplete || len(r.Matches) != 0 || !OnlyInformational(r.InformationalMatches) {
 					t.Errorf("inbound budget stop: shared=%v clean=%v incomplete=%v matches=%v", shared, r.Clean, r.Incomplete, matchNamesOf(r.Matches))
 				}
 			}
@@ -282,7 +282,7 @@ func TestInboundDecodeLimitSameNamedFinding(t *testing.T) {
 	})
 	r := sc.ScanTextForDLPInbound(t.Context(), "REVIEW_SENTINEL "+entityChain(maxHTMLEntityDecodePasses+1, false))
 	finding, partial := false, 0
-	for _, match := range r.Matches {
+	for _, match := range r.Findings() {
 		if match.PatternName != PartialEncodedContentPattern {
 			continue
 		}
@@ -323,7 +323,7 @@ func TestInboundDecodeTaggedCandidateLimitWarns(t *testing.T) {
 	}
 	sc := decodeLimitScanner(t)
 	r := sc.ScanTextForDLPInbound(t.Context(), text)
-	if !r.Clean || !hasPartial(r) || !OnlyInformational(r.Matches) {
+	if !r.Clean || !hasPartial(r) || len(r.Matches) != 0 || !OnlyInformational(r.InformationalMatches) {
 		t.Fatalf("tag candidate cap lost warning: clean=%v matches=%v", r.Clean, matchNamesOf(r.Matches))
 	}
 	if r := sc.ScanTextForDLP(t.Context(), text); !r.Clean || HasInspectionLimit(r.Matches) || hasPartial(r) {

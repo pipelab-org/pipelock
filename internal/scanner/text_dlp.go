@@ -17,6 +17,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/luckyPipewrench/pipelock/internal/carddlp"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/extract"
 	"github.com/luckyPipewrench/pipelock/internal/jsonnumber"
@@ -28,7 +29,7 @@ import (
 // can be run through the pre-DNS structural exfil check. Conservative on
 // purpose: only scheme-prefixed URLs are extracted, so arbitrary dotted text
 // is not treated as a hostname.
-var textURLTokenRe = regexp.MustCompile(`(?i)\b(?:https?|wss?|s?ftp|ftps|file)://[^\s"'<>\\]+`)
+var textURLTokenRe = regexp.MustCompile(carddlp.URLPattern)
 
 // textURLTokenSeparator is a literal every textURLTokenRe match contains.
 // Text without it holds no URL token, so callers skip the regex.
@@ -1549,6 +1550,21 @@ func (s *Scanner) matchDLPPatternsLoweredWithDecodes(text, encoding, proseSource
 			})
 		}
 	}
+	if patterns == textDLPCardPatterns && strings.Contains(text, textURLTokenSeparator) {
+		ctx := context.Background()
+		if decodes != nil && decodes.scanCtx != nil {
+			ctx = decodes.scanCtx
+		}
+		urlMatches := s.textURLCardMatches(ctx, text, decodes)
+		for i := range urlMatches {
+			if encoding != "" {
+				urlMatches[i].Encoded = encoding
+				urlMatches[i].span.ViewLabel = spanViewLabel(urlMatches[i].span.ViewLabel, encoding)
+			}
+		}
+		matches = append(matches, urlMatches...)
+	}
+
 	return matches
 }
 
@@ -1985,13 +2001,16 @@ func deduplicateMatches(matches []TextDLPMatch) []TextDLPMatch {
 	}
 
 	type key struct {
-		name    string
-		encoded string
+		name          string
+		encoded       string
+		partialNotice bool
 	}
 	index := make(map[key]int, len(matches))
 	result := make([]TextDLPMatch, 0, len(matches))
 	for _, m := range matches {
-		k := key{name: m.PatternName, encoded: m.Encoded}
+		// Inspection notices carry independent evidence even when a configured
+		// enforcing pattern happens to use the reserved notice name.
+		k := key{name: m.PatternName, encoded: m.Encoded, partialNotice: m.informational && m.PatternName == PartialEncodedContentPattern}
 		if i, ok := index[k]; ok {
 			if result[i].IsInformational() && !m.IsInformational() {
 				result[i] = m

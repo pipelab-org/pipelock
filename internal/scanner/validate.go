@@ -444,14 +444,14 @@ func ContextualPatternMatches(text string, re *regexp.Regexp, validate func(stri
 		return false
 	}
 	if cardPrefixRetry {
-		text = normalize.ForCardText(text)
+		return carddlp.VisitText(text, func(c carddlp.Candidate) bool {
+			return !c.PublicExample && (validate == nil || validate(c.Digits)) &&
+				(keywords == nil || keywords.Matches(text, c.Start, c.End))
+		})
 	}
 	p := compiledPattern{re: re, validate: validate, cardPrefixRetry: cardPrefixRetry, wifOverlapRetry: wifOverlapRetry, keywords: keywords}
 	if keywords != nil {
 		normalized := normalize.ForDLP(text)
-		if cardPrefixRetry {
-			normalized = normalize.ForCardText(text)
-		}
 		_, _, matched := p.matchSpanWithDecodes(normalized, text, nil)
 		return matched
 	}

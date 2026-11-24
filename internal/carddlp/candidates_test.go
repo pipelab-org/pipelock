@@ -165,3 +165,14 @@ func TestTextSpanProjection(t *testing.T) {
 		t.Fatal("joined a table boundary")
 	}
 }
+
+func TestDecoderWindowAdmission(t *testing.T) {
+	pan := cardtest.Issuer("4019", 16)
+	text := "8" + pan + "9"
+	if Visit(text, false, func(Candidate) bool { return true }) {
+		t.Fatal("enforced a partial numeric window")
+	}
+	if !VisitWindow(text, func(c Candidate) bool { return c.Digits == pan }) {
+		t.Fatal("artificial window boundary suppressed lane admission")
+	}
+}

@@ -255,7 +255,7 @@ dlp:
       regex: 'r8_[a-f0-9]{40}\b'
       severity: critical
     - name: "Together AI Key"
-      regex: '(?:^|[^A-Za-z0-9_.-])tok_[a-z0-9]{40,}\b'
+      regex: 'tok_[a-z0-9]{40,}\b'
       severity: critical
     - name: "Pinecone API Key"
       regex: 'pcsk_[a-zA-Z0-9]{36,}\b'
