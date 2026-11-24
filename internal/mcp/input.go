@@ -1855,6 +1855,7 @@ func ForwardScannedInput(
 							if !heldNotification {
 								sendMCPDenial(denialOpts, mcpDeferredDenialAudit(res), BlockedRequest{
 									ID: heldID, ErrorCode: -32603, ErrorMessage: "pipelock: upstream write failed",
+									v3ReplyParent: exchange,
 								}, blockedCh)
 							}
 							_, _ = fmt.Fprintf(logW, "pipelock: input forward error: %v\n", err)

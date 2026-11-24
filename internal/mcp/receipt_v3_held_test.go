@@ -897,7 +897,8 @@ func TestMCPV3HeldStdioReleaseFailures(t *testing.T) {
 			if err := opts.DeferManager.Resolve(held.DeferID, config.ActionAllow, deferred.SourceOperator); err != nil {
 				t.Fatal(err)
 			}
-			if refusal := awaitHeldTest(t, denied); canonicalID(refusal.ID) != "1" || refusal.ErrorCode == 0 {
+			refusal := awaitHeldTest(t, denied)
+			if canonicalID(refusal.ID) != "1" || refusal.ErrorCode == 0 {
 				t.Fatalf("unexpected client error: %+v", refusal)
 			}
 			if err := feed.Close(); err != nil {
@@ -911,6 +912,15 @@ func TestMCPV3HeldStdioReleaseFailures(t *testing.T) {
 					t.Fatalf("peer saw %q", msg)
 				}
 				want = append(want, heldAttempt(held.ActionID, "attempt_unknown")...)
+				out := heldWireWriter(func(msg []byte) error {
+					if !strings.Contains(string(msg), "upstream write failed") {
+						t.Fatalf("unexpected downstream reply: %s", msg)
+					}
+					return nil
+				})
+				if err := deliverMCPInputResult(opts, refusal, opts.v3SendDenialWriter(out, io.Discard, refusal)); err != nil {
+					t.Fatal(err)
+				}
 			case "intent":
 				want = append(want, heldAttempt(held.ActionID, "not_released")[1])
 			case "duplicate":
@@ -919,8 +929,29 @@ func TestMCPV3HeldStdioReleaseFailures(t *testing.T) {
 			if len(sends) != 0 {
 				t.Fatal("refused held bytes reached the peer")
 			}
-			assertHeldEvidence(t, verifiedHeldActions(t, writer, writerOpts, failure == "intent"), want)
+			actions := verifiedHeldActions(t, writer, writerOpts, failure == "intent")
+			assertHeldEvidence(t, actions, want)
+			if failure == "send" {
+				assertHeldReplyParent(t, actions, held.ActionID)
+			}
 		})
+	}
+}
+
+func assertHeldReplyParent(t *testing.T, actions []v3.Action, parent string) {
+	t.Helper()
+	var phases []string
+	for _, a := range actions {
+		if a.EffectBoundary != mcpDownstreamDeliveryBoundary || (a.Phase != "intent" && a.Phase != "outcome") {
+			continue
+		}
+		if a.ParentActionID != parent {
+			t.Fatalf("held error reply %s has parent %q, want %q", a.Phase, a.ParentActionID, parent)
+		}
+		phases = append(phases, a.Phase)
+	}
+	if !slices.Equal(phases, []string{"intent", "outcome"}) {
+		t.Fatalf("held error reply receipt phases: %v, want [intent outcome]", phases)
 	}
 }
 
