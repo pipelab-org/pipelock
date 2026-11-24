@@ -158,8 +158,8 @@ func TestReceiptHoldAdmissionBlockEnforcedInTakeHold(t *testing.T) {
 		m.mu.Unlock()
 		if !lineageBlocked {
 			close(releaseConfirm)
-			<-admitDone
-			t.Fatal("ResolveAll during admission did not mark lineage blocked")
+			admitErr := <-admitDone
+			t.Fatalf("ResolveAll during admission did not mark lineage blocked (HoldContext: %v)", admitErr)
 		}
 		close(releaseConfirm)
 		if err := <-admitDone; err != nil {
