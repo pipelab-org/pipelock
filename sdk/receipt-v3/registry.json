@@ -1574,8 +1574,8 @@
       "fields": "Request-time MCP decision and authority attribution from the held call, when available.",
       "when": "A proposed hold was refused before its hold record began persisting."
     },
-    "internal/mcp/receipt_v3.go/(MCPProxyOpts).setupV3Hold/RecordApproval/528ac8407b73a820": {
-      "fields": "Request-time MCP decision and authority attribution from the held call, when available.",
+    "internal/mcp/receipt_v3.go/(MCPProxyOpts).setupV3Hold/RecordApproval/303677f473e4d501": {
+      "fields": "Keep the held call authority attribution. For a policy reload, use the captured deciding revision digest when supplied. For an inventory decision or a reload without that digest, set policy.source to unavailable and omit policy.hash. For other resolutions, use the held call policy snapshot when available.",
       "when": "A hold resolves to allow, block, or ask, including a correcting block after a pre-intent refusal."
     },
     "internal/mcp/receipt_v3.go/(MCPProxyOpts).setupV3Hold/RecordApproval/b911cbba2c22a98c": {
@@ -2179,7 +2179,7 @@
     "internal/mcp/mcp_http_forward.go/RunHTTPProxy/confirmV3HeldSend/ceb014ad43ab0243": "upstream_send",
     "internal/mcp/mcp_http_forward.go/RunHTTPProxy/refuseV3HeldIntent/71f02d6317ebdb33": "upstream_send",
     "internal/mcp/receipt_v3.go/(MCPProxyOpts).refuseV3HoldAdmission/Refuse/ce6a2157d50c8247": "approval_prompt",
-    "internal/mcp/receipt_v3.go/(MCPProxyOpts).setupV3Hold/RecordApproval/528ac8407b73a820": "approval_prompt",
+    "internal/mcp/receipt_v3.go/(MCPProxyOpts).setupV3Hold/RecordApproval/303677f473e4d501": "approval_prompt",
     "internal/mcp/receipt_v3.go/(MCPProxyOpts).setupV3Hold/RecordApproval/b911cbba2c22a98c": "approval_prompt"
   },
   "enums": {
