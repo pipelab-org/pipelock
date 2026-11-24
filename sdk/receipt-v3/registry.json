@@ -1546,9 +1546,9 @@
       "fields": "Uses the deciding request policy snapshot, available caller and request attribution, and the parent action ID. Signature evidence names the verified key ID. Baseline evidence records first appearance or accepted drift. The transport sets the outcome from downstream delivery or refusal.",
       "when": "Before accepting a verified Agent Card or adopting its baseline while v3 receipts are active, including optional mode."
     },
-    "internal/mcp/input.go/ForwardScannedInput/admitV3HeldSend/af18bed001ca6138": {
-      "fields": "Request-time MCP decision and authority attribution from the held call, when available.",
-      "when": "An approved held stdio request or notification has cleared the local release gates."
+    "internal/mcp/input.go/ForwardScannedInput/admitV3HeldSend/b5b024d7ba1eb824": {
+      "fields": "The held request scan and policy snapshot supply decision and authority attribution.",
+      "when": "After an approved held stdio request or notification clears the pre-intent release gates, before commit-to-send."
     },
     "internal/mcp/input.go/ForwardScannedInput/confirmV3HeldSend/fa3a08d355ed354b": {
       "fields": "Request-time MCP decision and authority attribution from the held call, when available.",
@@ -1558,9 +1558,9 @@
       "fields": "Request-time MCP decision and authority attribution from the held call, when available.",
       "when": "Cancellation or a closed session withheld the held stdio send after its intent was confirmed."
     },
-    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/admitV3HeldSend/184c00831b4d2456": {
-      "fields": "Request-time MCP decision and authority attribution from the held call, when available.",
-      "when": "An approved held bridge request or notification has cleared the local release gates."
+    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/admitV3HeldSend/878ce769dcfc22e8": {
+      "fields": "The held request scan and policy snapshot supply decision and authority attribution.",
+      "when": "After an approved held bridge request or notification clears the pre-intent release gates, before commit-to-send."
     },
     "internal/mcp/mcp_http_forward.go/RunHTTPProxy/confirmV3HeldSend/ceb014ad43ab0243": {
       "fields": "Request-time MCP decision and authority attribution from the held call, when available.",
@@ -2172,10 +2172,10 @@
     "internal/mcp/proxy.go/ForwardScanned/confirmMCPCardAcceptance/bafe8854f60c7b85": "downstream_delivery",
     "internal/proxy/forward.go/(*Proxy).handleForwardHTTP/admitV3CardAcceptance/4ba0647c0670131a": "downstream_delivery",
     "internal/proxy/intercept.go/newInterceptHandler/admitV3CardAcceptance/e12897d20ee65328": "downstream_delivery",
-    "internal/mcp/input.go/ForwardScannedInput/admitV3HeldSend/af18bed001ca6138": "upstream_send",
+    "internal/mcp/input.go/ForwardScannedInput/admitV3HeldSend/b5b024d7ba1eb824": "upstream_send",
     "internal/mcp/input.go/ForwardScannedInput/confirmV3HeldSend/fa3a08d355ed354b": "upstream_send",
     "internal/mcp/input.go/ForwardScannedInput/refuseV3HeldIntent/d19a879e439bc163": "upstream_send",
-    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/admitV3HeldSend/184c00831b4d2456": "upstream_send",
+    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/admitV3HeldSend/878ce769dcfc22e8": "upstream_send",
     "internal/mcp/mcp_http_forward.go/RunHTTPProxy/confirmV3HeldSend/ceb014ad43ab0243": "upstream_send",
     "internal/mcp/mcp_http_forward.go/RunHTTPProxy/refuseV3HeldIntent/71f02d6317ebdb33": "upstream_send",
     "internal/mcp/receipt_v3.go/(MCPProxyOpts).refuseV3HoldAdmission/Refuse/ce6a2157d50c8247": "approval_prompt",
