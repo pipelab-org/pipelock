@@ -614,7 +614,7 @@ func (w *StreamWriter) close(ctx context.Context, operational *Recorder, seal bo
 		w.closeErr = errors.Join(w.closeErr, w.active.file.Close())
 		w.active.file = nil
 	}
-	if seal && w.previous != nil && w.previous.Ended == endedWriteError && w.fatal == nil {
+	if w.previous != nil && w.previous.Ended == endedWriteError && w.fatal == nil {
 		// A failed close is part of the unconfirmed tail, even if all its
 		// bytes landed. Publish a successor that identifies that tail.
 		w.fatal = w.publishOpen(repairCtx)
