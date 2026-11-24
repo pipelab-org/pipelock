@@ -629,8 +629,12 @@ func TestReceiptHoldAllowWhenSettlementFails(t *testing.T) {
 			if (wantErr != nil && !errors.Is(err, failure)) || (wantErr == nil && err != nil) {
 				t.Fatalf("resolution error = %v, want %v", err, wantErr)
 			}
-			if wantErr == nil && applied != config.ActionBlock {
-				t.Fatalf("resolved %q, want block", applied)
+			wantApplied := config.ActionBlock
+			if wantErr != nil {
+				wantApplied = ""
+			}
+			if applied != wantApplied {
+				t.Fatalf("applied decision = %q, want %q", applied, wantApplied)
 			}
 			if tc.name == "callback_omits_commit" {
 				result = corrected
