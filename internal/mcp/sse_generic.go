@@ -446,6 +446,7 @@ func ScanGenericSSEStreamWithOptions(
 
 		resetFieldTail := false
 		if !skipTailDLP && !resetDLPTail {
+			var warnErr error
 			for _, view := range fieldTail.Views(frame) {
 				result, droppedMatches := keepUnsuppressedDLP(sc.ScanTextForDLP(ctx, view.Joined), opts.Target, opts.Suppress)
 				if err := checkSSEDLPContext(ctx); err != nil {
@@ -457,13 +458,19 @@ func ScanGenericSSEStreamWithOptions(
 				}
 				findingErr := sseDLPFindingError(result.Findings(), "cross-event dlp")
 				if scanner.CardRunAction(result.Findings(), cfg.Action) == config.ActionWarn {
-					onFinding(findingErr)
-					// Warn-only evidence is reported once, just like a warn
-					// action on an enforcing match: discard the reported tail.
+					// A warn-only field must not skip a later field of this
+					// event. The warning is delivered once, after every field
+					// has been scanned, and only when none of them enforces.
+					if warnErr == nil {
+						warnErr = findingErr
+					}
 					resetFieldTail = true
-					break
+					continue
 				}
 				return findingErr
+			}
+			if warnErr != nil {
+				onFinding(warnErr)
 			}
 		}
 		// Warn and an exempt response domain log a finding and continue. They

@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/cardtest"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/testwait"
@@ -2262,5 +2263,27 @@ func TestGenericSSEFieldTailWarnCallback(t *testing.T) {
 	err := ScanGenericSSEStreamWithOptions(t.Context(), strings.NewReader(body), &out, nil, sc, enabledSSECfg(), GenericSSEScanOptions{OnFinding: func(e error) { findings = append(findings, e) }})
 	if err != nil || len(findings) != 1 || out.String() != body {
 		t.Fatalf("field-tail warning err=%v findings=%v out=%q", err, findings, out.String())
+	}
+}
+
+// A warn-only field must not hide an enforcing card carried by a later field
+// of the same event. Paths are sorted, so the warning field is visited first.
+func TestGenericSSEFieldTailWarnDoesNotSkipEnforcingSibling(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.DLP.ScanEnv = false
+	cfg.DLP.Patterns = append(cfg.DLP.Patterns, config.DLPPattern{
+		Name: "Custom token", Regex: `TOKEN[0-9]{8}`, Severity: config.SeverityHigh, Action: config.ActionWarn,
+	})
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	pan := cardtest.Issuer("4019", 16)
+	body := "data: {\"a\":\"TOKEN1234\",\"z\":\"" + pan[:8] + "\"}\n\n" +
+		"data: {\"a\":\"5678\",\"z\":\"" + pan[8:] + "\"}\n\n"
+	var out bytes.Buffer
+	var findings []error
+	err := ScanGenericSSEStreamWithOptions(t.Context(), strings.NewReader(body), &out, nil, sc, enabledSSECfg(), GenericSSEScanOptions{OnFinding: func(e error) { findings = append(findings, e) }})
+	if err == nil {
+		t.Fatalf("sibling card was forwarded findings=%v out=%q", findings, out.String())
 	}
 }
