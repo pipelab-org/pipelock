@@ -21,7 +21,7 @@ The `--` separator and command are required, including for a dry run. Arguments 
 | `--best-effort-reason TEXT` | Reason for the command-line override. |
 | `--best-effort-expiry DURATION_OR_TIME` | Admission expiry as a duration or RFC3339 timestamp. It doesn't stop an already running child. |
 | `--env KEY` or `--env KEY=VALUE` | Pass an inherited value or an explicit value; repeatable. An unset bare name is omitted. Some names are refused. |
-| `--dry-run` | Check capabilities and configuration without launching. Exit 0 means capabilities OK, 1 degraded, and 2 unavailable. |
+| `--dry-run` | Check capabilities and configuration without launching. Exit 0 means capabilities OK, 1 degraded, and 2 error (`ERROR`), which includes an unusable workspace. Argument errors, such as a refused `--env` name, also exit 1 before any check runs and print no JSON, so read the output, not only the exit code. |
 | `--json` | Print the dry-run result as JSON. |
 | `-h, --help` | Show command help. |
 | `--home DIR` | Global Pipelock home; defaults to `PIPELOCK_HOME` or `~/.pipelock`. |
