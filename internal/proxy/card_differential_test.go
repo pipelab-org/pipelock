@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -33,7 +32,7 @@ const (
 	cardMainGolden   = "testdata/card-main-a689c65b1.jsonl.gz"
 )
 
-var recordCardMain = flag.String("card-record-main", "", "write main oracle to this path (requires pinned main HEAD)")
+var recordCardMain = flag.String("card-record-main", "", "write main oracle to this path (requires a detached checkout of the pinned main revision)")
 
 type (
 	cardOracleHeader struct {
@@ -138,12 +137,9 @@ func TestCardMainDifferential(t *testing.T) {
 	header := cardOracleHeader{cardMainRevision, cardCorpusHash(cases), len(cases)}
 	got := cardOracleVerdicts(t, cases)
 	if *recordCardMain != "" {
-		head, err := exec.CommandContext(t.Context(), "git", "rev-parse", "HEAD").Output()
-		if err != nil || strings.TrimSpace(string(head)) != cardMainRevision {
-			t.Fatal("golden must be recorded against the pinned main checkout")
-		}
-		if err := exec.CommandContext(t.Context(), "git", "diff", "--quiet", "HEAD", "--", ".").Run(); err != nil {
-			t.Fatal("recording requires unmodified main production files")
+		head, err := cardCheckoutHead()
+		if err != nil || head != cardMainRevision {
+			t.Fatalf("golden must be recorded from a detached checkout of %s: head %q, %v", cardMainRevision, head, err)
 		}
 		f, err := os.OpenFile(filepath.Clean(*recordCardMain), os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 		if err != nil {
@@ -244,5 +240,42 @@ func TestCardMainDifferential(t *testing.T) {
 	t.Logf("corpus=%d unapproved-losses=%d elapsed=%s sha256=%s", len(cases), failures, time.Since(started), header.CorpusSHA256)
 	if failures > 0 {
 		t.Fatalf("%d unapproved main-to-branch losses", failures)
+	}
+}
+
+// cardCheckoutHead reads HEAD from the enclosing Git checkout without running
+// another program, so this package keeps ordinary test caching.
+func cardCheckoutHead() (string, error) {
+	dir, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	for {
+		dotGit := filepath.Join(dir, ".git")
+		info, statErr := os.Stat(dotGit)
+		if statErr == nil {
+			gitDir := dotGit
+			if !info.IsDir() {
+				pointer, readErr := os.ReadFile(filepath.Clean(dotGit))
+				if readErr != nil {
+					return "", readErr
+				}
+				target, ok := strings.CutPrefix(strings.TrimSpace(string(pointer)), "gitdir: ")
+				if !ok {
+					return "", fmt.Errorf("unrecognized .git file in %s", dir)
+				}
+				if !filepath.IsAbs(target) {
+					target = filepath.Join(dir, target)
+				}
+				gitDir = target
+			}
+			head, readErr := os.ReadFile(filepath.Clean(filepath.Join(gitDir, "HEAD")))
+			return strings.TrimSpace(string(head)), readErr
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", fmt.Errorf("no Git checkout above the test directory")
+		}
+		dir = parent
 	}
 }
