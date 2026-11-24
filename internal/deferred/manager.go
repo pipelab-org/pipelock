@@ -443,7 +443,6 @@ func (m *Manager) publishHoldLocked(action *HeldAction) {
 	action.state = StateHeld
 	sessionID := action.Authority.SessionID
 	m.sessionHolds[sessionID] = append(m.sessionHolds[sessionID], action.DeferID)
-	id := action.DeferID
 	delay := time.Until(action.Deadline)
 	source := SourceTimeout
 	switch {
@@ -455,9 +454,17 @@ func (m *Manager) publishHoldLocked(action *HeldAction) {
 	case action.lineage != nil && action.lineage.blocked:
 		delay, source = 0, SourceCascade
 	}
-	action.timer = time.AfterFunc(delay, func() {
-		_ = m.Resolve(id, config.ActionBlock, source)
+	m.scheduleResolveLocked(action, delay, source)
+}
+
+func (m *Manager) scheduleResolveLocked(held *HeldAction, delay time.Duration, source string) {
+	held.timer = time.AfterFunc(delay, func() {
+		m.resolveHeld(held, config.ActionBlock, source)
 	})
+}
+
+func (m *Manager) resolveHeld(held *HeldAction, decision, source string) {
+	_, _ = m.resolveAppliedContext(context.Background(), held.DeferID, decision, source, held, false)
 }
 
 func (m *Manager) journalRejectedHold(action HeldAction, source string) {
@@ -488,10 +495,10 @@ func (m *Manager) Resolve(deferID, finalDecision, source string) error {
 // a journal failure can each close an allow, and callers that surface the
 // outcome to an operator must report that one, not the request.
 func (m *Manager) resolveApplied(deferID, finalDecision, source string) (string, error) {
-	return m.resolveAppliedContext(context.Background(), deferID, finalDecision, source, true)
+	return m.resolveAppliedContext(context.Background(), deferID, finalDecision, source, nil, true)
 }
 
-func (m *Manager) resolveAppliedContext(ctx context.Context, deferID, finalDecision, source string, wait bool) (string, error) {
+func (m *Manager) resolveAppliedContext(ctx context.Context, deferID, finalDecision, source string, expected *HeldAction, wait bool) (string, error) {
 	if m == nil {
 		return "", ErrDisabled
 	}
@@ -502,7 +509,7 @@ func (m *Manager) resolveAppliedContext(ctx context.Context, deferID, finalDecis
 		source = SourceContext
 	}
 
-	held, finalDecision, source, err := m.takeHold(ctx, deferID, finalDecision, source, wait)
+	held, finalDecision, source, err := m.takeHold(ctx, deferID, finalDecision, source, expected, wait)
 	if err != nil || held == nil {
 		return "", err
 	}
@@ -654,9 +661,9 @@ func (m *Manager) ResolveAll(finalDecision, source string) {
 		return
 	}
 	m.mu.Lock()
-	ids := make([]string, 0, len(m.holds))
+	holds := make([]*HeldAction, 0, len(m.holds))
 	markedAdmitting := false
-	for id, held := range m.holds {
+	for _, held := range m.holds {
 		if held.state == stateAdmitting && finalDecision != config.ActionAllow {
 			if held.admissionBlock == "" {
 				held.admissionBlock = source
@@ -667,15 +674,15 @@ func (m *Manager) ResolveAll(finalDecision, source string) {
 			}
 		}
 		if held.state == StateHeld {
-			ids = append(ids, id)
+			holds = append(holds, held)
 		}
 	}
 	if markedAdmitting {
 		m.notifyHoldChangeLocked()
 	}
 	m.mu.Unlock()
-	for _, id := range ids {
-		_, _ = m.resolveAppliedContext(context.Background(), id, finalDecision, source, false)
+	for _, held := range holds {
+		m.resolveHeld(held, finalDecision, source)
 	}
 }
 
@@ -726,7 +733,7 @@ func (m *Manager) HeldCount() int {
 }
 
 func (m *Manager) Held(deferID string) (HeldAction, bool) {
-	held, err := m.snapshotOne(deferID)
+	held, _, err := m.snapshotOne(deferID)
 	if err != nil {
 		return HeldAction{}, false
 	}
@@ -739,7 +746,7 @@ func (m *Manager) ResolveToolInventory(sessionID, finalDecision string) {
 	}
 	for _, held := range m.sweepSnapshot() {
 		if held.Authority.SessionID == sessionID && held.RulePolicy.AllowOn.ToolInventoryBaseline {
-			_, _ = m.resolveAppliedContext(context.Background(), held.DeferID, finalDecision, SourceToolInventory, false)
+			m.resolveHeld(held, finalDecision, SourceToolInventory)
 		}
 	}
 }
@@ -771,14 +778,14 @@ func (m *Manager) ResolveApprovalResult(deferID, finalDecision, source string) (
 
 // ResolveApprovalResultContext lets a parked approval withdraw without settling the hold.
 func (m *Manager) ResolveApprovalResultContext(ctx context.Context, deferID, finalDecision, source string) (string, error) {
-	held, err := m.snapshotOne(deferID)
+	held, expected, err := m.snapshotOne(deferID)
 	if err != nil {
 		return "", err
 	}
 	decision := approvalDecision(held.RulePolicy, finalDecision)
 	// Report what was applied, not what was asked: a kill switch that activated
 	// before release, or a release gate that refused, closes an approved hold.
-	return m.resolveAppliedContext(ctx, deferID, decision, source, true)
+	return m.resolveAppliedContext(ctx, deferID, decision, source, expected, true)
 }
 
 // approvalDecision maps an approval input onto the terminal decision, enforcing
@@ -811,37 +818,41 @@ func (m *Manager) ResolvePolicyReload(evaluate ReloadEvaluator) {
 		return
 	}
 	for _, held := range m.sweepSnapshot() {
-		decision, err := evaluate(held)
+		snapshot, current, err := m.snapshotOne(held.DeferID)
+		if err != nil || current != held {
+			continue
+		}
+		decision, err := evaluate(snapshot)
 		if err != nil {
-			_ = m.Resolve(held.DeferID, config.ActionBlock, SourcePolicyReload)
+			m.resolveHeld(held, config.ActionBlock, SourcePolicyReload)
 			continue
 		}
 		switch decision {
 		case config.ActionAllow:
 			if held.RulePolicy.AllowOn.PolicyPermits {
-				_, _ = m.resolveAppliedContext(context.Background(), held.DeferID, config.ActionAllow, SourcePolicyReload, false)
+				m.resolveHeld(held, config.ActionAllow, SourcePolicyReload)
 			}
 		case config.ActionBlock:
-			_ = m.Resolve(held.DeferID, config.ActionBlock, SourcePolicyReload)
+			m.resolveHeld(held, config.ActionBlock, SourcePolicyReload)
 		case config.ActionDefer:
 			continue
 		default:
-			_ = m.Resolve(held.DeferID, config.ActionBlock, SourcePolicyReload)
+			m.resolveHeld(held, config.ActionBlock, SourcePolicyReload)
 		}
 	}
 }
 
-func (m *Manager) snapshotOne(deferID string) (HeldAction, error) {
+func (m *Manager) snapshotOne(deferID string) (HeldAction, *HeldAction, error) {
 	if m == nil {
-		return HeldAction{}, ErrDisabled
+		return HeldAction{}, nil, ErrDisabled
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	held := m.holds[deferID]
 	if held == nil || held.state != StateHeld {
-		return HeldAction{}, ErrNotFound
+		return HeldAction{}, nil, ErrNotFound
 	}
-	return heldSnapshot(held), nil
+	return heldSnapshot(held), held, nil
 }
 
 func heldSnapshot(held *HeldAction) HeldAction {
@@ -856,9 +867,16 @@ func heldSnapshot(held *HeldAction) HeldAction {
 	return cp
 }
 
-func (m *Manager) sweepSnapshot() []HeldAction {
-	holds := m.Snapshot()
-	slices.SortFunc(holds, func(a, b HeldAction) int {
+func (m *Manager) sweepSnapshot() []*HeldAction {
+	m.mu.Lock()
+	holds := make([]*HeldAction, 0, len(m.holds))
+	for _, held := range m.holds {
+		if held.state == StateHeld {
+			holds = append(holds, held)
+		}
+	}
+	m.mu.Unlock()
+	slices.SortFunc(holds, func(a, b *HeldAction) int {
 		if a.CascadeDepth != b.CascadeDepth {
 			return a.CascadeDepth - b.CascadeDepth
 		}

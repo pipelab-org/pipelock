@@ -152,11 +152,14 @@ func (m *Manager) notifyHoldChangeLocked() {
 	m.changed = make(chan struct{})
 }
 
-func (m *Manager) takeHold(ctx context.Context, id, decision, source string, wait bool) (*HeldAction, string, string, error) {
+func (m *Manager) takeHold(ctx context.Context, id, decision, source string, expected *HeldAction, wait bool) (*HeldAction, string, string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	// Bind the wait to this admission even if an ID is later reused.
 	held := m.holds[id]
+	if expected != nil && held != expected {
+		return nil, "", "", ErrNotFound
+	}
 	for {
 		if held == nil || m.holds[id] != held || held.state != StateHeld {
 			return nil, "", "", ErrNotFound
@@ -275,10 +278,7 @@ func (m *Manager) scheduleBlockedResolveLocked(held *HeldAction) {
 	if held.timer != nil {
 		held.timer.Stop()
 	}
-	id := held.DeferID
-	held.timer = time.AfterFunc(0, func() {
-		_ = m.Resolve(id, config.ActionBlock, source)
-	})
+	m.scheduleResolveLocked(held, 0, source)
 }
 
 func (m *Manager) closeReceiptLineage(held *HeldAction, committed bool) {
@@ -294,13 +294,13 @@ func (m *Manager) finishReceiptHold(held *HeldAction) {
 		// Keep waiters closed if a callback exits unexpectedly.
 		m.closeReceiptLineageLocked(held, false)
 	}
-	var descendants []string
+	var descendants []*HeldAction
 	if node.blocked {
-		for id, child := range m.holds {
+		for _, child := range m.holds {
 			if child.state == StateHeld && child.lineage != nil && child.lineage.blocked && child.parkedApprovals == 0 {
 				for parent := child.lineage.parent; parent != nil; parent = parent.parent {
 					if parent == node {
-						descendants = append(descendants, id)
+						descendants = append(descendants, child)
 						break
 					}
 				}
@@ -311,8 +311,8 @@ func (m *Manager) finishReceiptHold(held *HeldAction) {
 	m.pruneLineageLocked(node)
 	m.freeReservationLocked(held)
 	m.mu.Unlock()
-	for _, id := range descendants {
-		_ = m.Resolve(id, config.ActionBlock, SourceCascade)
+	for _, child := range descendants {
+		m.resolveHeld(child, config.ActionBlock, SourceCascade)
 	}
 }
 

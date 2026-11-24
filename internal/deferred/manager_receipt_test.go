@@ -333,3 +333,30 @@ func TestReceiptHoldStepUpHonorsDeadline(t *testing.T) {
 		})
 	}
 }
+
+func TestReceiptHoldReloadCannotResolveReusedID(t *testing.T) {
+	m := NewManager(Config{Enabled: true, Timeout: time.Minute})
+	const id = "reused"
+	original := receiptAdmissionFixture(id)
+	if err := m.Hold(original); err != nil {
+		t.Fatal(err)
+	}
+	replacement := receiptAdmissionFixture(id)
+	defer m.ResolveAll(config.ActionBlock, SourceCancel)
+
+	m.ResolvePolicyReload(func(h HeldAction) (string, error) {
+		if h.DeferID != id {
+			t.Fatalf("evaluated hold %q, want %q", h.DeferID, id)
+		}
+		if err := m.Resolve(id, config.ActionBlock, SourceOperator); err != nil {
+			t.Fatal(err)
+		}
+		if err := m.Hold(replacement); err != nil {
+			t.Fatal(err)
+		}
+		return config.ActionBlock, nil
+	})
+	if _, ok := m.Held(id); !ok {
+		t.Fatal("stale policy evaluation resolved the replacement hold")
+	}
+}
