@@ -412,7 +412,6 @@ func TestReceiptHoldSweepLeavesChildForOperator(t *testing.T) {
 						}
 					}
 					defer m.ResolveAll(config.ActionBlock, SourceCancel)
-					defer close(finishParent)
 					swept := make(chan struct{})
 					go func() {
 						defer close(swept)
@@ -442,8 +441,25 @@ func TestReceiptHoldSweepLeavesChildForOperator(t *testing.T) {
 						current.Deadline = time.Now().Add(-time.Second)
 						m.mu.Unlock()
 					}
-					parentDone := make(chan error, 1)
-					go func() { parentDone <- m.Resolve(parent.DeferID, config.ActionAllow, SourceOperator) }()
+					ctx, cancel := context.WithCancel(t.Context())
+					parentDone := make(chan struct{})
+					var childDone chan struct{}
+					var parentErr, childErr error
+					defer func() {
+						cancel()
+						close(finishParent)
+						receiveReceiptFixture(t, parentDone)
+						if parentErr != nil {
+							t.Errorf("parent approval: %v", parentErr)
+						}
+						if childDone != nil {
+							receiveReceiptFixture(t, childDone)
+						}
+					}()
+					go func() {
+						defer close(parentDone)
+						parentErr = m.Resolve(parent.DeferID, config.ActionAllow, SourceOperator)
+					}()
 					select {
 					case <-parentReady:
 					case <-time.After(testwait.Deadline(time.Second)):
@@ -453,8 +469,14 @@ func TestReceiptHoldSweepLeavesChildForOperator(t *testing.T) {
 						if _, ok := m.Held(child.DeferID); !ok {
 							t.Fatal("child did not remain held after the parent committed")
 						}
-						if _, err := m.ResolveApprovalResult(child.DeferID, config.ActionAllow, SourceOperator); err != nil {
-							t.Fatal(err)
+						childDone = make(chan struct{})
+						go func() {
+							defer close(childDone)
+							_, childErr = m.ResolveApprovalResultContext(ctx, child.DeferID, config.ActionAllow, SourceOperator)
+						}()
+						receiveReceiptFixture(t, childDone)
+						if childErr != nil {
+							t.Fatalf("child approval: %v", childErr)
 						}
 					}
 					select {
@@ -464,11 +486,6 @@ func TestReceiptHoldSweepLeavesChildForOperator(t *testing.T) {
 						}
 					case <-time.After(testwait.Deadline(time.Second)):
 						t.Fatal("child did not settle after the final decision")
-					}
-					if !tc.commit {
-						if err := <-parentDone; err != nil {
-							t.Fatal(err)
-						}
 					}
 				})
 			}
