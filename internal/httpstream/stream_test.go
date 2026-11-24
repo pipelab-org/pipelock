@@ -103,6 +103,9 @@ func TestCanObserveFlushThroughResponseWriters(t *testing.T) {
 		{"error flusher", observable, true},
 		{"transparent wrapper", flushUnwrapper{observable}, true},
 		{"plain flusher overrides underlying", plainFlushWrapper{flushUnwrapper{observable}}, false},
+		{"observability override", flushObservationOverride{observable}, false},
+		{"flush error wrapper over observable writer", flushErrorWrapper{flushUnwrapper{observable}}, true},
+		{"flush error wrapper over plain flusher", flushErrorWrapper{flushUnwrapper{httptest.NewRecorder()}}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := CanObserveFlush(tc.writer); got != tc.want {
@@ -123,3 +126,17 @@ type plainFlushWrapper struct {
 }
 
 func (plainFlushWrapper) Flush() {}
+
+type flushObservationOverride struct {
+	failedFlushWriter
+}
+
+func (flushObservationOverride) CanObserveFlush() bool { return false }
+
+type flushErrorWrapper struct {
+	flushUnwrapper
+}
+
+func (w flushErrorWrapper) FlushError() error {
+	return http.NewResponseController(w.ResponseWriter).Flush()
+}

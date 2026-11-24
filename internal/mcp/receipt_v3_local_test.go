@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -2984,14 +2985,32 @@ func TestMCPV3ListenerCancelledSendAbortsResponse(t *testing.T) {
 }
 
 func TestMCPV3ListenerAgentCardBufferedDelivery(t *testing.T) {
+	t.Run("baseline", func(t *testing.T) {
+		cfg := config.Defaults().A2AScanning
+		cfg.Enabled, cfg.DetectCardDrift = true, true
+		assertMCPV3ListenerAgentCardDelivery(t, "https://api.vendor.example/.well-known/agent-card.json",
+			receiptCardBody, &cfg, "a2a_card_drift")
+	})
+	t.Run("signed", func(t *testing.T) {
+		pub, priv, err := ed25519.GenerateKey(nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		card := signCard(t, baseCard(), priv, edHeader())
+		assertMCPV3ListenerAgentCardDelivery(t, testCardURL, string(card), sigScanCfg(pub, true), "a2a_card_signature")
+	})
+}
+
+func assertMCPV3ListenerAgentCardDelivery(t *testing.T, cardURL, cardBody string, a2a *config.A2AScanning, layer string) {
+	t.Helper()
 	const cardRequest = `{"jsonrpc":"2.0","id":42,"method":"agent/getAuthenticatedExtendedCard"}`
-	const cardResponse = `{"jsonrpc":"2.0","id":42,"result":` + receiptCardBody + "}"
 	opts, _, client := localMCPReceiptFixture(t, v3MCPMatrixRow{required: true}, deferred.SurfaceMCPHTTPListener)
-	a2a := config.Defaults().A2AScanning
-	a2a.Enabled, a2a.DetectCardDrift = true, true
-	opts.A2ACfg = &a2a
-	opts.CardBaseline = NewCardBaseline(8)
-	opts.A2ACardURL = "https://api.vendor.example/.well-known/agent-card.json"
+	opts.A2ACardURL = cardURL
+	opts.A2ACfg = a2a
+	if a2a.DetectCardDrift {
+		opts.CardBaseline = NewCardBaseline(8)
+	}
+	cardResponse := `{"jsonrpc":"2.0","id":42,"result":` + cardBody + "}"
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, cardResponse)
@@ -3020,7 +3039,7 @@ func TestMCPV3ListenerAgentCardBufferedDelivery(t *testing.T) {
 		var card, delivery bool
 		for _, action := range actions {
 			if action.Phase == "outcome" && action.EffectBoundary == mcpDownstreamDeliveryBoundary && action.OutcomeClass == "completed" {
-				card = card || action.Layer == "a2a_card_drift"
+				card = card || action.Layer == layer
 				delivery = delivery || action.Layer == ""
 			}
 		}
@@ -3049,4 +3068,79 @@ func TestMCPV3AgentCardBaselineCompletedWhenReplyWriteFails(t *testing.T) {
 		}
 	}
 	t.Fatal("missing completed card baseline outcome")
+}
+
+func TestMCPV3AgentCardSignatureDeliveryOutcome(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	card := signCard(t, baseCard(), priv, edHeader())
+	wire := `{"jsonrpc":"2.0","id":42,"result":` + string(card) + "}\n"
+	for _, tc := range []struct {
+		name        string
+		paired      bool
+		withheld    bool
+		writeErr    error
+		wantOutcome string
+	}{
+		{name: "delivered", wantOutcome: "completed"},
+		{name: "paired stdio reply", paired: true, wantOutcome: "completed"},
+		{name: "write failed", writeErr: io.ErrClosedPipe, wantOutcome: "attempt_unknown"},
+		{name: "missing upstream send", withheld: true, wantOutcome: "not_released"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts, receipts, client := localMCPReceiptFixture(t, v3MCPMatrixRow{required: true}, transportMCPStdio)
+			opts.A2ACfg = sigScanCfg(pub, true)
+			opts.A2ACardURL = testCardURL
+			if tc.paired || tc.withheld {
+				opts = opts.withV3Session()
+			}
+			tracker := NewStrictRequestTracker()
+			if tc.paired {
+				const request = `{"jsonrpc":"2.0","id":42,"method":"GetExtendedAgentCard"}` + "\n"
+				var upstream bytes.Buffer
+				blocked := make(chan BlockedRequest, 1)
+				ForwardScannedInput(transport.NewStdioReader(strings.NewReader(request)),
+					transport.NewStdioWriter(&upstream), io.Discard, config.ActionWarn, config.ActionBlock,
+					blocked, nil, tracker, opts)
+				if upstream.String() != request || len(blocked) != 0 {
+					t.Fatalf("upstream output = %q, denials = %d", upstream.String(), len(blocked))
+				}
+			} else {
+				tracker.TrackRequest(json.RawMessage("42"), "GetExtendedAgentCard")
+			}
+			var output bytes.Buffer
+			var sink io.Writer = &output
+			if tc.writeErr != nil {
+				sink = shortReplyWriter{err: tc.writeErr}
+			}
+			_, err := ForwardScanned(transport.NewStdioReader(strings.NewReader(wire)), transport.NewStdioWriter(sink), io.Discard, tracker, opts)
+			if !errors.Is(err, tc.writeErr) {
+				t.Fatalf("forwarding error = %v, want %v", err, tc.writeErr)
+			}
+			wantWire := wire
+			if tc.withheld || tc.writeErr != nil {
+				wantWire = ""
+			}
+			if output.String() != wantWire {
+				t.Fatalf("client output = %q, want %q", output.String(), wantWire)
+			}
+			var deliveries []mcpReceiptDelivery
+			if tc.paired {
+				deliveries = append(deliveries, mcpReceiptDelivery{
+					sent: []byte(wire), received: output.Bytes(), expectedCompletions: 2,
+				})
+			}
+			var outcomes []string
+			for _, action := range localMCPReceiptActions(t, receipts, client.dir, deliveries...) {
+				if action.Phase == "outcome" && action.Layer == "a2a_card_signature" && action.EffectBoundary == mcpDownstreamDeliveryBoundary {
+					outcomes = append(outcomes, action.OutcomeClass)
+				}
+			}
+			if !slices.Equal(outcomes, []string{tc.wantOutcome}) {
+				t.Fatalf("signature delivery outcomes = %v, want [%s]", outcomes, tc.wantOutcome)
+			}
+		})
+	}
 }
