@@ -19,6 +19,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
 	"github.com/luckyPipewrench/pipelock/internal/sandbox"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
@@ -32,6 +33,7 @@ type mcpSandboxBridgeStartOptions struct {
 	AuditLogger      *audit.Logger
 	Metrics          *metrics.Metrics
 	MetricsBoundAddr string
+	ReceiptWriter    *v3.StreamWriter
 	ReceiptEmitter   *receipt.Emitter
 	V2ReceiptEmitter *proxydecision.Emitter
 	ReceiptGroup     *mcp.MCPReceiptGroup
@@ -50,6 +52,7 @@ type mcpSandboxBridgeSetupOptions struct {
 	AuditLogger      *audit.Logger
 	Metrics          *metrics.Metrics
 	MetricsBoundAddr string
+	ReceiptWriter    *v3.StreamWriter
 	ReceiptEmitter   *receipt.Emitter
 	V2ReceiptEmitter *proxydecision.Emitter
 	ReceiptGroup     *mcp.MCPReceiptGroup
