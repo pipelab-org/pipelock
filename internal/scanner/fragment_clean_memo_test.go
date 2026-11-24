@@ -39,7 +39,7 @@ func TestFragmentCleanMemoIdenticalContinuity(t *testing.T) {
 	before := fb.cleanMemo.hits
 	_, _ = app("small", "abc")
 	_, _ = app("small", "def")
-	if fb.cleanMemo.hits-before != 2 {
+	if fb.cleanMemo.hits-before != 4 {
 		t.Fatalf("untouched big continuity not reused: hits=%d", fb.cleanMemo.hits-before)
 	}
 	other := newFragmentMemoScanner(t)
@@ -49,7 +49,7 @@ func TestFragmentCleanMemoIdenticalContinuity(t *testing.T) {
 	if fb.cleanMemo.hits != before {
 		t.Fatal("scanner generation reused")
 	}
-	t.Logf("untouched continuity hit delta=2; replacement scanner missed")
+	t.Logf("untouched continuity reused both normalization views; replacement scanner missed")
 }
 
 func TestFragmentCleanMemoDifferential(t *testing.T) {
@@ -153,7 +153,7 @@ func TestFragmentCleanMemoGenerationChangesDetection(t *testing.T) {
 	if got := fb.scanBatchWithCleanMemo(context.Background(), old, fs, "policy"); len(got) != 0 {
 		t.Fatal("old policy control", got)
 	}
-	if got := fb.scanBatchWithCleanMemo(context.Background(), old, fs, "policy"); len(got) != 0 || fb.cleanMemo.hits != 1 {
+	if got := fb.scanBatchWithCleanMemo(context.Background(), old, fs, "policy"); len(got) != 0 || fb.cleanMemo.hits != 2 {
 		t.Fatal("clean cache control")
 	}
 	cfg.DLP.Patterns = append(cfg.DLP.Patterns, config.DLPPattern{Name: "new boundary", Regex: `CTOK[A-Z]{12}`, Severity: config.SeverityHigh})

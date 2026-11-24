@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"slices"
 	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/jsonnumber"
 )
 
 func TestCardJSONExtractionRetainsDiscardedScalarPositions(t *testing.T) {
@@ -28,7 +30,7 @@ func TestCardVisibleExtractionRetainsScalarPositions(t *testing.T) {
 	if !slices.Equal(result.Strings, []string{"left", "", "right"}) || !slices.Equal(result.StringPositions, []int{0, 5, 6}) {
 		t.Fatal("visible extraction lost scalar positions")
 	}
-	if got, want := ResponseCardText(result.CardAtoms), "left \nnull \nfalse \ntrue \nnull \n \nright"; got != want {
+	if got, want := ResponseCardText(result.CardAtoms), "left"+jsonnumber.StringBoundary+"null"+jsonnumber.StringBoundary+"false"+jsonnumber.StringBoundary+"true"+jsonnumber.StringBoundary+"null"+jsonnumber.StringBoundary+jsonnumber.StringBoundary+"right"; got != want {
 		t.Fatalf("card view = %q, want %q", got, want)
 	}
 }

@@ -249,7 +249,7 @@ func TestInboundDecodeLimitKeepsCardClassification(t *testing.T) {
 	r := sc.ScanTextForDLPInbound(t.Context(), text)
 	card := false
 	partial := 0
-	for _, match := range r.Matches {
+	for _, match := range r.Findings() {
 		if match.genericCard && !match.IsInformational() {
 			card = true
 		}

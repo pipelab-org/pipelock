@@ -22,6 +22,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
+	"github.com/luckyPipewrench/pipelock/internal/cardtest"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/testwait"
@@ -46,7 +47,8 @@ func numericJoinCard16A() (string, string) {
 
 func numericJoinCard16B() (string, string) {
 	// 8+8 = 16-digit Luhn-valid Mastercard.
-	return "5105" + "1051", "0510" + "5100"
+	pan := cardtest.Issuer("5191", 16)
+	return pan[:8], pan[8:]
 }
 
 func (e *delegationEnv) serveBody(contentType, body string) {

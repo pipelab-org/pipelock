@@ -301,6 +301,9 @@ func extractTextResult(raw json.RawMessage, includeNumeric bool, budget *MediaTe
 			return TextResult{IncompleteReason: reason}
 		}
 		cards := slices.Clone(texts)
+		for i := range cards {
+			cards[i] = jsonnumber.EscapeCardBoundaries(cards[i])
+		}
 		cards = append(cards, ResponseCardText(structured.CardAtoms))
 		texts = append(texts, structured.Strings...)
 		keys := ExtractKeysFromJSONResult(tr.StructuredContent)
@@ -312,9 +315,9 @@ func extractTextResult(raw json.RawMessage, includeNumeric bool, budget *MediaTe
 		// texts is empty. Falling through to ExtractStringsFromJSON would
 		// feed base64 media in data/blob/raw fields into prompt scanning.
 		for i, view := range documents {
-			cards[i] = view
+			cards[i] = jsonnumber.EscapeCardBoundaries(view)
 		}
-		return TextResult{Text: strings.Join(texts, " "), CardText: strings.Join(cards, " "), CardKeys: keys.Keys, Numeric: numeric}
+		return TextResult{Text: strings.Join(texts, " "), CardText: JoinResponseCardViews(cards...), CardKeys: keys.Keys, Numeric: numeric}
 	}
 
 	// Fallback: recursively extract all string values from arbitrary JSON.
@@ -335,18 +338,18 @@ func extractTextResult(raw json.RawMessage, includeNumeric bool, budget *MediaTe
 // Keys are scanned separately. Numbers stay on the numeric channel, with null
 // retaining their position here. Empty strings must retain their join position.
 func ResponseCardText(atoms []extract.DLPAtom) string {
-	var cards []string
+	var cards []extract.DLPAtom
 	for _, atom := range atoms {
 		if atom.Key {
 			continue
 		}
 		if atom.Number {
-			cards = append(cards, Null)
+			cards = append(cards, extract.DLPAtom{Text: Null, Card: Null})
 		} else {
-			cards = append(cards, atom.Card)
+			cards = append(cards, atom)
 		}
 	}
-	return strings.Join(cards, fallbackTextSeparator)
+	return extract.JoinCardAtoms(cards, fallbackTextSeparator)
 }
 
 // ExtractNumericLeaves returns every numeric leaf in raw, in the same

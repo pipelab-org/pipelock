@@ -441,6 +441,7 @@ func finishAssembled(result TextDLPResult, memos ...*decodingMemo) TextDLPResult
 			result.Matches = append(result.Matches, uninspectableEncodedContentMatch())
 		}
 	}
-	result.Clean = !result.Incomplete && !HasEnforcingMatch(result.Matches)
+	result.Matches, result.InformationalMatches = partitionTextDLPMatches(result.Matches, result.InformationalMatches)
+	result.Clean = !result.Incomplete && len(result.Matches) == 0
 	return result
 }

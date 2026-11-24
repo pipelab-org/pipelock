@@ -12,6 +12,12 @@ import (
 
 //go:generate go run ./gen_dlp_presets.go
 
+// TogetherAIKeyBodyRegex is the documented provider token body.
+const TogetherAIKeyBodyRegex = `tok_[a-z0-9]{40,}\b`
+
+// TogetherAIKeyRegex rejects embedded substrings of larger dotted/base64url tokens.
+const TogetherAIKeyRegex = `(?:^|[^A-Za-z0-9_.-])` + TogetherAIKeyBodyRegex
+
 // ProviderKeyLeftBoundaryRegex is the raw-text false-positive boundary shared
 // by the shipped Anthropic and OpenAI key patterns. Scanner views that remove
 // separators derive a credential-only matcher by removing this exact prefix;
@@ -389,7 +395,7 @@ var defaultDLPPatternSet = []DLPPattern{
 	// https://docs.together.ai/docs/quickstart documents api.together.ai.
 	// The publisher SDK uses api.together.xyz/v1:
 	// https://github.com/togethercomputer/together-python/blob/807b79024fdcc4c3d37f49cc65b8d885322ae6b4/src/together/constants.py
-	{Name: "Together AI Key", Regex: `tok_[a-z0-9]{40,}\b`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"api.together.ai", "api.together.xyz"}, CredentialAudienceCarrierMask: CredentialAudienceCarrierAuthorizationBearer},
+	{Name: "Together AI Key", Regex: TogetherAIKeyRegex, Severity: SeverityCritical, CredentialAudienceHosts: []string{"api.together.ai", "api.together.xyz"}, CredentialAudienceCarrierMask: CredentialAudienceCarrierAuthorizationBearer},
 	// Pinecone API keys: "pcsk_" prefix followed by alphanumeric.
 	// Source: https://docs.pinecone.io/guides/get-started/authentication
 	{Name: "Pinecone API Key", Regex: `pcsk_[a-zA-Z0-9]{36,}\b`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"api.pinecone.io"}, CredentialAudienceCarrierMask: CredentialAudienceCarrierAPIKey},

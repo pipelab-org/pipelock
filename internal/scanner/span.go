@@ -7,6 +7,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/luckyPipewrench/pipelock/internal/carddlp"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
@@ -120,6 +121,10 @@ func (p *compiledPattern) matchSpanInView(text, source string) (start, end int, 
 }
 
 func (p *compiledPattern) matchSpanInPositionedView(text, source string, view *matchingView) (start, end int, ok bool) {
+	if p.cardPrefixRetry {
+		return p.firstAcceptedPositionedSpan(text, nil, view)
+	}
+
 	if p.keywords != nil && p.keywordContext == nil {
 		pattern := *p
 		logical := config.DLPKeywordContext(source)
@@ -141,6 +146,19 @@ func (p *compiledPattern) matchSpanInPositionedView(text, source string, view *m
 	// can glue a date to a clock (2026-12-30 23:59:59) and manufacture an
 	// SSN-shaped run; the source still has the space, so it is not confirmed.
 	if p.providerPrefixRE == nil {
+		if p.checkSourceBoundaryInJoined {
+			for _, loc := range p.re.FindAllStringIndex(text, -1) {
+				body := p.withoutLeftBoundary.FindStringIndex(text[loc[0]:loc[1]])
+				if body == nil {
+					continue
+				}
+				start, end := loc[0]+body[0], loc[0]+body[1]
+				if p.accepts(text, start, end) && p.candidateBoundaryConfirmedInSource(source, text[start:end]) {
+					return start, end, true
+				}
+			}
+			return 0, 0, false
+		}
 		return p.firstJoinedGluedSpan(text, source)
 	}
 
@@ -491,6 +509,21 @@ func (p *compiledPattern) firstAcceptedSpan(text string, joined func(int, int) b
 }
 
 func (p *compiledPattern) firstAcceptedPositionedSpan(text string, joined func(int, int) bool, view *matchingView) (int, int, bool) {
+	if p.cardPrefixRetry {
+		var start, end int
+		found := carddlp.Visit(text, p.cardURL, func(c carddlp.Candidate) bool {
+			if c.PublicExample && p.skipSpan == nil {
+				return false
+			}
+			if p.accepts(text, c.Start, c.End) && (joined == nil || joined(c.Start, c.End)) {
+				start, end = c.Start, c.End
+				return true
+			}
+			return false
+		})
+		return start, end, found
+	}
+
 	if !p.wifOverlapRetry {
 		return p.firstAcceptedLocations(text, p.regexpWindows.findAllWithPositions(p.re, p.re, text, text, view), joined)
 	}
@@ -544,4 +577,21 @@ func firstWIFCandidate(text string, accept func(start, end int) bool) (int, int,
 		runStart = i + 1
 	}
 	return run(runStart, len(text))
+}
+
+// candidateBoundaryConfirmedInSource retains the strict left context of
+// opaque provider tokens even when a transformed view removed punctuation.
+func (p *compiledPattern) candidateBoundaryConfirmedInSource(source, candidate string) bool {
+	for from := 0; from <= len(source)-len(candidate); {
+		at := strings.Index(source[from:], candidate)
+		if at < 0 {
+			return false
+		}
+		at += from
+		if p.candidateHasLeftBoundary(source, [2]int{at, at + len(candidate)}) {
+			return true
+		}
+		from = at + 1
+	}
+	return false
 }

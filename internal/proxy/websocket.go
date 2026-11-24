@@ -2210,7 +2210,7 @@ func (r *wsRelay) handleClientTextResult(ctx context.Context, log *audit.Logger,
 	if surface == "" || opts.crossMessage {
 		surface = "websocket_frame"
 	}
-	filteredMatches, audienceAllows := r.scanner.FilterTextDLPMatchesForDestination(dlpResult.Matches, r.targetURL, surface)
+	filteredMatches, audienceAllows := r.scanner.FilterTextDLPMatchesForDestination(dlpResult.Findings(), r.targetURL, surface)
 	collectReceiptCredentialEvidence(ctx, audienceAllows)
 	if err := r.recordCredentialAudienceAllows(audienceAllows); err != nil {
 		return true, r.blockOnCredentialAudienceReceiptFailure(log, err)
@@ -2218,12 +2218,12 @@ func (r *wsRelay) handleClientTextResult(ctx context.Context, log *audit.Logger,
 	if opts.crossMessage && r.blockCrossMessageRedaction(log, filteredMatches) {
 		return true, true
 	}
-	dlpResult.Matches = r.filterClientFrameDLPMatches(filteredMatches)
+	filteredMatches = r.filterClientFrameDLPMatches(filteredMatches)
 	var addrFindings []addressprotect.Finding
 	if checker := r.scanner.AddressChecker(); checker != nil {
 		addrFindings = checker.CheckText(string(scanInput), r.agent).Findings
 	}
-	if r.handleClientTextFindings(log, dlpResult.Matches, addrFindings) {
+	if r.handleClientTextFindings(log, filteredMatches, addrFindings) {
 		return true, true
 	}
 	if dlpResult.Incomplete || ctx.Err() != nil {
@@ -2251,9 +2251,14 @@ func (r *wsRelay) decideClientCrossMessageTextViews(ctx context.Context, log *au
 	combined = append(combined, tail...)
 	combined = append(combined, msg...)
 
-	combinedDLP := r.scanner.ScanTextForDLPQuietWithCardView(ctx, string(combined), string(cardTail)+string(cardMsg))
-	prevDLP := r.scanner.ScanTextForDLPQuietWithCardView(ctx, string(tail), string(cardTail))
-	currDLP := r.scanner.ScanTextForDLPQuietWithCardView(ctx, string(msg), string(cardMsg))
+	// A seam may complete one JSON document. Project its numeric types once,
+	// then retain the exact byte-length split when comparing the separate views.
+	// Otherwise an incomplete tail's fraction can shadow the same PAN in a
+	// completed string value spanning the seam.
+	combinedCards := jsonnumber.StructuredCardView(string(cardTail)+string(cardMsg), extract.MaxExtractDepth)
+	combinedDLP := r.scanner.ScanTextForDLPQuietWithCardView(ctx, string(combined), combinedCards)
+	prevDLP := r.scanner.ScanTextForDLPQuietWithCardView(ctx, string(tail), combinedCards[:len(cardTail)])
+	currDLP := r.scanner.ScanTextForDLPQuietWithCardView(ctx, string(msg), combinedCards[len(cardTail):])
 
 	// An interrupted scan still carries matches collected before it stopped.
 	// Those decide a policy block; the error only stops forwarding when they do not.

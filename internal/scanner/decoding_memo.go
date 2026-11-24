@@ -36,6 +36,7 @@ type decodingMemoKey struct {
 // stopped at a depth or work bound with decodable work left. It is a property of the
 // scan, not of one view, so it survives cache hits and unretained decodes.
 type decodingMemo struct {
+	cardText bool // preserve table and line boundaries for card-only scans
 	// urlAccounting marks a URL scan's memo. URL checks keep the inbound
 	// decode accounting for their direction, but their verdicts depend on
 	// whether a rescan finished cleanly, so a work-budget stop there is not
@@ -784,8 +785,12 @@ func (m *decodingMemo) normalizeWithRun(text string, run *normalizationRun) stri
 		}
 	}
 	if m != nil {
-		if !m.normalizedRetained(text) {
-			m.replayTransformUnretained(text, normalized, assembledPayloadNormalize)
+		if m.cardText || !m.normalizedRetained(text) {
+			operation := assembledPayloadNormalize
+			if m.cardText {
+				operation = assembledPayloadCardNormalize
+			}
+			m.replayTransformUnretained(text, normalized, operation)
 		}
 		m.reassemblyDerive(text, normalized)
 	}
@@ -796,6 +801,9 @@ func (m *decodingMemo) normalizeWithRun(text string, run *normalizationRun) stri
 // set only after its decode completes; deriving before then would give a
 // decoder view's normalization the text kind.
 func (m *decodingMemo) normalizeUntracked(text string) string {
+	if m != nil && m.cardText {
+		return normalize.ForCardText(text)
+	}
 	if m == nil {
 		return normalize.ForDLP(text)
 	}
@@ -851,7 +859,7 @@ func (m *decodingMemo) matchDecodedForWithNormalization(sc *Scanner, text, encod
 	if patterns != textDLPCardPatterns {
 		return patterns.selectMatches(m.matchDecodedKeyWithNormalization(full, run))
 	}
-	if cached, ok := m.cachedDecodedMatches(full); ok && !m.keywordMode {
+	if cached, ok := m.cachedDecodedMatches(full); ok && !m.keywordMode && !m.cardText {
 		return patterns.selectMatches(cached)
 	}
 	card := full
@@ -884,6 +892,16 @@ func (m *decodingMemo) matchDecodedKey(key decodedMatchKey) []TextDLPMatch {
 }
 
 func (m *decodingMemo) matchDecodedKeyWithNormalization(key decodedMatchKey, run *normalizationRun) []TextDLPMatch {
+	if key.cardOnly {
+		normalized := normalize.ForCardText(key.text)
+		if m != nil && m.cardText {
+			normalized = m.normalizeWithRun(key.text, nil)
+		}
+		var lowered dlpLoweredBytes
+		lowered.add(normalized)
+		return key.match(normalized, &lowered, m)
+	}
+
 	if m != nil && m.keywordMode && !key.core {
 		normalized := m.normalizeWithRun(key.text, run)
 		var lowered dlpLoweredBytes

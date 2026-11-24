@@ -472,7 +472,7 @@ const (
 	// coding the request-policy path does not decode is blocked by default,
 	// separate from on_parse_error. The field is present in Defaults().
 	// Bumped for the shipped Google route ID-only path-entropy scope.
-	goldenHashDefaults = "7f1b15b2f15febdafb18b83670b7282d36648d7bd9a6ddb0de213b985ebe543c"
+	goldenHashDefaults = "8aeda589039d7746fffab6a4f8bfd50235945decff4353ba535367d9a5592d1f"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -723,7 +723,7 @@ const (
 	// Re-bumped with goldenHashDefaults for the Vault service base64url body.
 	// Re-bumped for request_policy.on_undecodable_encoding. The rich fixture
 	// omits request_policy, so ApplyDefaults fills the new field.
-	goldenHashRichConfig = "830e9051fe8abbbb2beb53f982a53918cae4cbdb97e5893c574ec3927c43f836"
+	goldenHashRichConfig = "0eeded31e5050acc3c540e62b11a5c521c66cfc393902041e898e8856c4deb6c"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It
@@ -1306,8 +1306,8 @@ func TestCanonicalPolicyHash_NewToolAdmissionVocabularyGolden(t *testing.T) {
 		// Gateway carrier, the publisher SDK Together host and the JWT sign-in
 		// bearer carrier, matching the default and rich-config goldens above.
 		// They inherit the RFC 9110 default URI limit of 8000 octets.
-		{name: "admit remains warn", admission: NewToolAdmit, wantHash: "472016f083aa970df34d4b7a1c2b5fdf5c0a16d491c8f77b5175cee6961c47d4"},
-		{name: "withhold remains block", admission: NewToolWithhold, wantHash: "e0099b3d55651c3659ef199d8746dbbe13a996add447c31c7c5068e67b1aba32"},
+		{name: "admit remains warn", admission: NewToolAdmit, wantHash: "69a6653b28276e948198197c31d542fc1831b6b71390210b01ffe1dfead87311"},
+		{name: "withhold remains block", admission: NewToolWithhold, wantHash: "f37135be6b146984bc253dc8b7bf4e64b7d6b00553d14395893aa6fd4cc4e9bc"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

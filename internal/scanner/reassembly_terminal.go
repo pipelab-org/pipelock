@@ -13,6 +13,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/luckyPipewrench/pipelock/internal/carddlp"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
@@ -494,7 +495,7 @@ func (s *assembledScan) searchLane(codec, phase, id int) {
 	}
 	accepted := false
 	visit := func(begin, finish int) bool {
-		if pattern.withoutLeftBoundary != nil {
+		if pattern.withoutLeftBoundary != nil && !pattern.cardPrefixRetry {
 			loc := pattern.withoutLeftBoundary.FindStringIndex(lane.view[begin:finish])
 			if loc == nil {
 				return false
@@ -526,6 +527,12 @@ func (s *assembledScan) searchLane(codec, phase, id int) {
 		accepted = s.produce(id, lane.view, begin, finish)
 		return accepted && pattern.keywords == nil
 	}
+	if pattern.cardPrefixRetry {
+		carddlp.Visit(lane.view, false, func(c carddlp.Candidate) bool {
+			return pattern.accepts(lane.view, c.Start, c.End) && visit(c.Start, c.End)
+		})
+		return
+	}
 	if _, _, stopped := matchPattern.firstAcceptedSpan(lane.view, visit); stopped || !pattern.relaxSingleGluedBoundary {
 		return
 	}
@@ -553,8 +560,10 @@ func (s *assembledScan) produce(id int, view string, begin, finish int) bool {
 		s.budget.produced[key] = struct{}{}
 	}
 	pattern := s.p.patterns[id]
-	s.result.findings = append(s.result.findings, TextDLPMatch{Encoded: s.encoding, span: newMatchSpan(begin, finish, s.viewLabel, pattern.name, pattern.bundle, pattern.bundleVersion), keywordGated: pattern.keywords != nil, PatternName: pattern.name, Severity: pattern.severity, Bundle: pattern.bundle, BundleVersion: pattern.bundleVersion, Warn: pattern.warn, genericCard: pattern.genericCard, cardPrefixRetry: pattern.cardPrefixRetry, valueIdentity: identity, hasValueIdentity: true, credentialAudienceHosts: pattern.credentialAudienceHosts, credentialAudienceAuthorizationOnly: pattern.credentialAudienceAuthorizationOnly, credentialAudienceCarrierMask: pattern.credentialAudienceCarrierMask, credentialAudienceGitHosts: pattern.credentialAudienceGitHosts, credentialAudienceRegistryHosts: pattern.credentialAudienceRegistryHosts})
-	return true
+	informational := pattern.isPublicExample(view, begin, finish)
+	s.result.findings = append(s.result.findings, pattern.textDLPFinding(view, s.encoding, begin, finish, informational))
+	s.result.findings[len(s.result.findings)-1].span.ViewLabel = s.viewLabel
+	return !informational && !pattern.warn
 }
 
 // admitsAssembledView runs the same context-independent admission grammar as

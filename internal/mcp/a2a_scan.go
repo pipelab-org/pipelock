@@ -208,13 +208,13 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 			}
 			// DLP scanning
 			dlpResult := sc.ScanTextForDLP(ctx, value)
-			if len(dlpResult.Matches) > 0 {
+			if len(dlpResult.Findings()) > 0 {
 				result.Clean = false
-				result.DLPFindings = append(result.DLPFindings, dlpResult.Matches...)
-				if a2aDLPForcesBlock(dlpResult.Matches) {
+				result.DLPFindings = append(result.DLPFindings, dlpResult.Findings()...)
+				if a2aDLPForcesBlock(dlpResult.Findings()) {
 					action = config.StrongestAction(action, config.ActionBlock)
 				} else {
-					action = config.StrongestAction(action, scanner.CardRunAction(dlpResult.Matches, defaultFindingAction))
+					action = config.StrongestAction(action, scanner.CardRunAction(dlpResult.Findings(), defaultFindingAction))
 				}
 			}
 
@@ -283,9 +283,9 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 		// document; a text join must not erase its scalar boundaries.
 		if dlpResult := sc.ScanTextForDLPWithTypedCardView(ctx, view, ""); !dlpResult.Clean {
 			result.Clean = false
-			result.DLPFindings = appendUniqueA2ADLPFindings(result.DLPFindings, dlpResult.Matches)
+			result.DLPFindings = appendUniqueA2ADLPFindings(result.DLPFindings, dlpResult.Findings())
 			findingAction := defaultFindingAction
-			if budgetExceeded || a2aDLPForcesBlock(dlpResult.Matches) {
+			if budgetExceeded || a2aDLPForcesBlock(dlpResult.Findings()) {
 				findingAction = config.ActionBlock
 			}
 			action = config.StrongestAction(action, findingAction)
@@ -343,13 +343,13 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 				result.Clean = false
 				result.ScanError = "a2a: credential inspection incomplete: " + context.Cause(ctx).Error()
 			}
-			if len(dlpResult.Matches) > 0 {
+			if len(dlpResult.Findings()) > 0 {
 				result.Clean = false
-				result.DLPFindings = appendUniqueA2ADLPFindings(result.DLPFindings, dlpResult.Matches)
-				if a2aDLPForcesBlock(dlpResult.Matches) {
+				result.DLPFindings = appendUniqueA2ADLPFindings(result.DLPFindings, dlpResult.Findings())
+				if a2aDLPForcesBlock(dlpResult.Findings()) {
 					action = config.StrongestAction(action, config.ActionBlock)
 				} else {
-					action = config.StrongestAction(action, scanner.CardRunAction(dlpResult.Matches, defaultFindingAction))
+					action = config.StrongestAction(action, scanner.CardRunAction(dlpResult.Findings(), defaultFindingAction))
 				}
 			}
 		}
@@ -540,11 +540,11 @@ func a2aKeyCardMatches(ctx context.Context, sc *scanner.Scanner, atoms []extract
 // a2aOverflowRecordDLP adds DLP findings from the overflow pass and reports
 // whether they must block.
 func a2aOverflowRecordDLP(result *A2AScanResult, dlpResult scanner.TextDLPResult) bool {
-	if len(dlpResult.Matches) == 0 {
+	if len(dlpResult.Findings()) == 0 {
 		return false
 	}
-	result.DLPFindings = appendUniqueA2ADLPFindings(result.DLPFindings, dlpResult.Matches)
-	return a2aDLPForcesBlock(dlpResult.Matches)
+	result.DLPFindings = appendUniqueA2ADLPFindings(result.DLPFindings, dlpResult.Findings())
+	return a2aDLPForcesBlock(dlpResult.Findings())
 }
 
 func firstA2AContentEntropyOptions(opts []A2AContentEntropyOptions) *A2AContentEntropyOptions {
@@ -1441,7 +1441,7 @@ func ScanA2AStreamWithOptions(ctx context.Context, body io.Reader, w io.Writer, 
 				return fmt.Errorf("%w: %w", ErrSSEStreamScanError, err)
 			}
 			if !dlpResult.Clean {
-				return fmt.Errorf("%w: dlp in sse metadata: %s", sseFindingCause(ErrA2AStreamFinding, session.FindingDLP), sseDLPMatchNames(dlpResult.Matches))
+				return fmt.Errorf("%w: dlp in sse metadata: %s", sseFindingCause(ErrA2AStreamFinding, session.FindingDLP), sseDLPMatchNames(dlpResult.Findings()))
 			}
 		}
 		if injResult := sc.ScanResponse(ctx, canonical); !injResult.Clean {
@@ -1455,9 +1455,9 @@ func ScanA2AStreamWithOptions(ctx context.Context, body io.Reader, w io.Writer, 
 		if err := dlpResult.Err(); err != nil {
 			return fmt.Errorf("%w: %w", ErrSSEStreamScanError, err)
 		}
-		if len(dlpResult.Matches) > 0 && !recordNumberOnly(dlpResult.Matches) {
+		if len(dlpResult.Findings()) > 0 && !recordNumberOnly(dlpResult.Findings()) {
 			return fmt.Errorf("%w: dlp in sse metadata: %s",
-				sseFindingCause(ErrA2AStreamFinding, session.FindingDLP), sseDLPMatchNames(dlpResult.Matches))
+				sseFindingCause(ErrA2AStreamFinding, session.FindingDLP), sseDLPMatchNames(dlpResult.Findings()))
 		}
 
 		// Rolling injection tails inspect both word-separated and adjacent
@@ -1495,12 +1495,12 @@ func ScanA2AStreamWithOptions(ctx context.Context, body io.Reader, w io.Writer, 
 			if err := dlpResult.Err(); err != nil {
 				return fmt.Errorf("%w: %w", ErrSSEStreamScanError, err)
 			}
-			if len(dlpResult.Matches) > 0 && !recordNumberOnly(dlpResult.Matches) {
-				if scanner.HasInspectionLimit(dlpResult.Matches) {
-					return sseDLPFindingError(dlpResult.Matches, "cross-event dlp")
+			if len(dlpResult.Findings()) > 0 && !recordNumberOnly(dlpResult.Findings()) {
+				if scanner.HasInspectionLimit(dlpResult.Findings()) {
+					return sseDLPFindingError(dlpResult.Findings(), "cross-event dlp")
 				}
 				return fmt.Errorf("%w: cross-event dlp detected: %s",
-					sseFindingCause(ErrA2AStreamFinding, session.FindingDLP), sseDLPMatchNames(dlpResult.Matches))
+					sseFindingCause(ErrA2AStreamFinding, session.FindingDLP), sseDLPMatchNames(dlpResult.Findings()))
 			}
 		}
 		// A2A status and part wrappers put string metadata before each numeric
@@ -1512,11 +1512,11 @@ func ScanA2AStreamWithOptions(ctx context.Context, body io.Reader, w io.Writer, 
 			if err := result.Err(); err != nil {
 				return fmt.Errorf("%w: %w", ErrSSEStreamScanError, err)
 			}
-			if len(result.Matches) > 0 && !recordNumberOnly(result.Matches) {
+			if len(result.Findings()) > 0 && !recordNumberOnly(result.Findings()) {
 				if scanner.HasInspectionLimit(result.Matches) {
-					return sseDLPFindingError(result.Matches, "cross-event dlp")
+					return sseDLPFindingError(result.Findings(), "cross-event dlp")
 				}
-				return fmt.Errorf("%w: cross-event dlp detected: %s", sseFindingCause(ErrA2AStreamFinding, session.FindingDLP), sseDLPMatchNames(result.Matches))
+				return fmt.Errorf("%w: cross-event dlp detected: %s", sseFindingCause(ErrA2AStreamFinding, session.FindingDLP), sseDLPMatchNames(result.Findings()))
 			}
 		}
 		if numberText == "" {
@@ -1532,11 +1532,11 @@ func ScanA2AStreamWithOptions(ctx context.Context, body io.Reader, w io.Writer, 
 				return fmt.Errorf("%w: cross-event dlp scan incomplete: %w", ErrSSEStreamScanError, context.Cause(ctx))
 			}
 			if !dlpResult.Clean {
-				if scanner.HasInspectionLimit(dlpResult.Matches) {
-					return sseDLPFindingError(dlpResult.Matches, "cross-event dlp")
+				if scanner.HasInspectionLimit(dlpResult.Findings()) {
+					return sseDLPFindingError(dlpResult.Findings(), "cross-event dlp")
 				}
 				return fmt.Errorf("%w: cross-event dlp detected: %s",
-					sseFindingCause(ErrA2AStreamFinding, session.FindingDLP), sseDLPMatchNames(dlpResult.Matches))
+					sseFindingCause(ErrA2AStreamFinding, session.FindingDLP), sseDLPMatchNames(dlpResult.Findings()))
 			}
 		}
 		if fieldTail.Incomplete(frame) || fieldInjectionTail.Incomplete(frame) {

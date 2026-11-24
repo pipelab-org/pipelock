@@ -11,10 +11,11 @@ import (
 
 // JSONCase is a complete JSON document and its expected generic card verdict.
 type JSONCase struct {
-	Name  string
-	Body  string
-	Clean bool
-	Warn  bool // informational evidence; forward with a record
+	Name    string
+	Literal bool // ordinary leaf scan owns this candidate; no typed reconstruction
+	Body    string
+	Clean   bool
+	Warn    bool // informational evidence; forward with a record
 	// Retry marks a verdict that needs the shipped rule's separator retry.
 	// A configured rule with whole-match validation leaves it clean.
 	Retry bool
@@ -46,6 +47,26 @@ func JSONCases() []JSONCase {
 		{Name: "string card", Body: `{"n":"` + card + `"}`},
 		{Name: "number run and string card", Body: `{"ids":[` + groups + `],"card":"` + card + `"}`},
 		{Name: "number run and single card", Body: `{"ids":[` + groups + `],"card":` + card + `}`},
+	}
+	pan := Issuer("4019", 16)
+	for _, tc := range []struct {
+		name, value string
+		clean, warn bool
+	}{
+		{"decimal cell string", "F27=" + pan[:4] + "." + pan[4:], true, false},
+		{"tab separated columns", pan[:8] + "\t" + pan[8:], true, false},
+		{"newline separated columns", pan[:8] + "\n" + pan[8:], true, false},
+		{"space separated columns", pan[:8] + " " + pan[8:], true, false},
+		{"version string", "version 2026.11.24", true, false},
+		{"card shaped version components", "version " + pan[:4] + "." + pan[4:8] + "." + pan[8:], true, false},
+		{"bare unpublished card", pan, false, false},
+		{"dotted grouped card", Grouped(pan, "."), false, false},
+		{"slashed grouped card", Grouped(pan, "/"), false, false},
+		{"underscore grouped card", Grouped(pan, "_"), false, false},
+		{"published test card", strings.Repeat("4242", 4), false, true},
+		{"example before grouped card", strings.Repeat("4242", 4) + "-" + Grouped(pan, "-"), false, false},
+	} {
+		cases = append(cases, JSONCase{Name: tc.name, Body: `{"text":` + strconv.Quote(tc.value) + `}`, Clean: tc.clean, Warn: tc.warn, Literal: true})
 	}
 	cases = append(cases,
 		JSONCase{Name: "eight digit string pieces", Body: `["` + card[:8] + `","` + card[8:] + `"]`},

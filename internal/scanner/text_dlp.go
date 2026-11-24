@@ -28,7 +28,7 @@ import (
 // can be run through the pre-DNS structural exfil check. Conservative on
 // purpose: only scheme-prefixed URLs are extracted, so arbitrary dotted text
 // is not treated as a hostname.
-var textURLTokenRe = regexp.MustCompile(`(?i)\b(?:https?|wss?|ftp)://[^\s"'<>\\]+`)
+var textURLTokenRe = regexp.MustCompile(`(?i)\b(?:https?|wss?|s?ftp|ftps|file)://[^\s"'<>\\]+`)
 
 // textURLTokenSeparator is a literal every textURLTokenRe match contains.
 // Text without it holds no URL token, so callers skip the regex.
@@ -83,9 +83,9 @@ func extractHostsFromOneText(view spanTextView, seen map[string]struct{}, hosts 
 	if !strings.Contains(text, textURLTokenSeparator) {
 		return
 	}
-	locs := textURLTokenRe.FindAllStringIndex(text, -1)
-	for i, loc := range locs {
-		tok := text[loc[0]:loc[1]]
+	locs := textURLTokens(text)
+	for _, loc := range locs {
+		tok := text[loc.start:loc.end]
 		u, err := url.Parse(tok)
 		if err != nil {
 			continue
@@ -102,7 +102,7 @@ func extractHostsFromOneText(view spanTextView, seen map[string]struct{}, hosts 
 			continue
 		}
 		seen[host] = struct{}{}
-		start := locs[i][0] + hostStart
+		start := loc.start + hostStart
 		*hosts = append(*hosts, textHostView{
 			host:      host,
 			start:     start,
@@ -378,7 +378,7 @@ func (m TextDLPMatch) IsNumberOnlyCardRun() bool { return m.numberOnlyCardRun }
 // IsInformational reports retained evidence that cannot trigger enforcement.
 // Generic cards reconstructed only by deleting scalar boundaries and runs of
 // two or more JSON numbers belong to this class. Other detectors keep their policy.
-func (m TextDLPMatch) IsInformational() bool { return m.informational }
+func (m TextDLPMatch) IsInformational() bool { return m.informational || m.Warn }
 
 // OnlyInformational reports a nonempty set containing no enforcing finding.
 func OnlyInformational(matches []TextDLPMatch) bool {
@@ -460,8 +460,9 @@ func CardRunAction(matches []TextDLPMatch, action string) string {
 
 // TextDLPResult describes the outcome of scanning text for DLP patterns.
 type TextDLPResult struct {
-	// Clean means no enforcing finding. Matches may still contain
-	// informational evidence, including a partial inbound encoded scan.
+	// Clean means no enforcing finding and a complete inspection.
+	// Matches contains enforcing findings only; all other evidence is in
+	// InformationalMatches, including a partial inbound encoded scan.
 	Clean                bool           `json:"clean"`
 	Matches              []TextDLPMatch `json:"matches,omitempty"`
 	InformationalMatches []TextDLPMatch `json:"informational_matches,omitempty"` // warn-mode matches (non-blocking)
@@ -789,7 +790,7 @@ func (s *Scanner) scanTextDLPViews(ctx context.Context, text, cardView string, o
 	// the same order. Keyword-gated patterns judge a candidate's context from
 	// transforms the memo has registered so far, and the second pass used to
 	// see the first pass's transforms; keep two passes for them.
-	if textDLPSinglePass && text == cardView && !s.hasDLPKeywords() {
+	if textDLPSinglePass && text == cardView && !s.hasDLPKeywords() && !s.hasGenericCardPatterns() {
 		opts.patterns = textDLPAllPatterns
 		opts.mergedClasses = true
 		original = s.scanTextForDLPWithDecodes(ctx, text, opts, originalDecodes)
@@ -800,17 +801,18 @@ func (s *Scanner) scanTextDLPViews(ctx context.Context, text, cardView string, o
 		opts.patterns = textDLPNonCardPatterns
 		// Separate text/card memos never widen their pattern sets. A shared memo
 		// retains the all-pattern upper bound until both passes have finished.
-		if text != cardView {
+		if text != cardView || s.hasGenericCardPatterns() {
 			originalDecodes.reassemblyPatternLimit = textDLPNonCardPatterns
 		}
 		original = s.scanTextForDLPWithDecodes(ctx, text, opts, originalDecodes)
 		cardDecodes := originalDecodes
-		if text != cardView {
+		if text != cardView || s.hasGenericCardPatterns() {
 			typedDecodes := textDecodingMemo(shared, terminalInbound, allowance, kindInsensitive)
 			defer typedDecodes.releaseTextDecodingMemo()
 			typedDecodes.scanStop = originalDecodes.scanStop
 			typedDecodes.reassemblyPatternLimit = textDLPCardPatterns
 			cardDecodes = typedDecodes
+			cardDecodes.cardText = true
 			terminalMemos = append(terminalMemos, typedDecodes)
 		}
 		opts.patterns = textDLPCardPatterns
@@ -894,7 +896,8 @@ func (s *Scanner) scanTextDLPViews(ctx context.Context, text, cardView string, o
 		}
 	}
 	original = finishAssembled(original, terminalMemos...)
-	original.Clean = !HasEnforcingMatch(original.Matches)
+	original.Matches, original.InformationalMatches = partitionTextDLPMatches(original.Matches, original.InformationalMatches)
+	original.Clean = len(original.Matches) == 0 && !original.Incomplete
 	if emit {
 		s.EmitTextDLPWarnMatches(ctx, append(original.InformationalMatches[:len(original.InformationalMatches):len(original.InformationalMatches)], original.Matches...))
 	}
@@ -992,6 +995,7 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 			decodes.reassemblyObserve(text)
 		}
 	}
+
 	beforeRedaction := text
 	text = redactOfficialAWSExampleCredentialsForDocs(text)
 	text = decodes.rememberGraphTransform(beforeRedaction, text, assembledPayloadRedactExamples)
@@ -1234,7 +1238,11 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 
 	// Check raw text against DLP patterns (before URL decoding).
 	// This catches secrets that aren't URL-encoded.
-	for _, idx := range s.dlpPreFilter.patternsToCheckInView(cleaned, positions) {
+	indices := s.dlpPreFilter.patternsToCheckInView(cleaned, positions)
+	if opts.patterns == textDLPCardPatterns {
+		indices = s.dlpCardPatternIndices
+	}
+	for _, idx := range indices {
 		if decodes.stopRequested() {
 			break
 		}
@@ -1242,7 +1250,13 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 		if !opts.patterns.includes(p.genericCard) {
 			continue
 		}
-		if start, end, ok := p.matchPositionedSpanWithDecodes(cleaned, text, decodes, positions); ok {
+		var example textByteSpan
+		pattern := p.withPublicExamples(cleaned, &example)
+		start, end, ok := pattern.matchPositionedSpanWithDecodes(cleaned, text, decodes, positions)
+		if example.end > 0 {
+			matches = append(matches, p.textDLPFinding(cleaned, "", example.start, example.end, true))
+		}
+		if ok {
 			matches = append(matches, TextDLPMatch{
 				keywordGated:                        p.keywords != nil,
 				genericCard:                         p.genericCard,
@@ -1296,17 +1310,21 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 		}
 	}
 
+	if opts.patterns == textDLPCardPatterns && !decodes.stopRequested() {
+		matches = append(matches, s.textURLCardMatches(ctx, cleaned, decodes)...)
+	}
+
 	// Dot-collapse check: catches secrets split across DNS subdomains
 	// (e.g. "sk-ant-api03.AABBCCDD.EEFFGGHH.evil.com" → "sk-ant-api03AABBCCDDEEFFGGHH...").
 	// Only applied when text contains dots that could be subdomain separators.
-	if !decodes.stopRequested() && strings.Contains(cleaned, ".") {
+	if !decodes.stopRequested() && opts.patterns != textDLPCardPatterns && strings.Contains(cleaned, ".") {
 		dotless := removeHostnameDots(cleaned)
 		if dotless != cleaned {
 			matches = append(matches, opts.patterns.selectMatches(s.matchDLPPatternsWithDecodes(dotless, "subdomain", cleaned, decodes, positions, matchingSubdomain))...)
 		}
 	}
 
-	if !decodes.stopRequested() && len(segmentViews) > 1 {
+	if !decodes.stopRequested() && opts.patterns != textDLPCardPatterns && len(segmentViews) > 1 {
 		compacted, offsets, joined := decodes.compactWhitespaceWithView(cleaned, positions)
 		decodes.registerKeywordTransform(cleaned, compacted, "projection")
 		matches = append(matches, opts.patterns.selectMatches(s.matchDLPPatternsInWhitespaceView(compacted, cleaned, offsets, decodes, joined))...)
@@ -1466,7 +1484,7 @@ func (s *Scanner) matchDLPPatternsLowered(text, encoding, proseSource string, lo
 }
 
 func (s *Scanner) matchDLPPatternsWithDecodes(text, encoding, source string, decodes *decodingMemo, parent *matchingView, kind matchingTransform) []TextDLPMatch {
-	text = normalize.ForDLP(text)
+	text = decodes.normalize(text)
 	lowered := dlpLoweredBytes{positions: parent.transformed(kind, text)}
 	lowered.add(text)
 	return s.matchDLPPatternsLoweredWithDecodes(text, encoding, source, &lowered, textDLPAllPatterns, decodes)
@@ -1500,10 +1518,16 @@ func (s *Scanner) matchDLPPatternsLoweredWithDecodes(text, encoding, proseSource
 		if !patterns.includes(p.genericCard) {
 			continue
 		}
-		if s.dlpPreFilter.shapeRejects(p.shapeGate, text, &shape) {
+		if !p.cardPrefixRetry && s.dlpPreFilter.shapeRejects(p.shapeGate, text, &shape) {
 			continue
 		}
-		if start, end, ok := p.matchPositionedSpanInPreparedView(text, proseSource, foldedInput, decodes, positions); ok {
+		var example textByteSpan
+		pattern := p.withPublicExamples(text, &example)
+		start, end, ok := pattern.matchPositionedSpanInPreparedView(text, proseSource, foldedInput, decodes, positions)
+		if example.end > 0 {
+			matches = append(matches, p.textDLPFinding(text, encoding, example.start, example.end, true))
+		}
+		if ok {
 			matches = append(matches, TextDLPMatch{
 				keywordGated:                        p.keywords != nil,
 				genericCard:                         p.genericCard,
@@ -1969,6 +1993,12 @@ func deduplicateMatches(matches []TextDLPMatch) []TextDLPMatch {
 	for _, m := range matches {
 		k := key{name: m.PatternName, encoded: m.Encoded}
 		if i, ok := index[k]; ok {
+			if result[i].IsInformational() && !m.IsInformational() {
+				result[i] = m
+			}
+			if !result[i].IsInformational() && m.IsInformational() {
+				continue
+			}
 			if !slices.Equal(result[i].credentialAudienceHosts, m.credentialAudienceHosts) ||
 				result[i].credentialAudienceAuthorizationOnly != m.credentialAudienceAuthorizationOnly ||
 				result[i].credentialAudienceCarrierMask != m.credentialAudienceCarrierMask ||
@@ -1991,7 +2021,7 @@ func deduplicateMatches(matches []TextDLPMatch) []TextDLPMatch {
 // hasEnforcedMatch reports whether any match in the slice is non-warn (enforced).
 func hasEnforcedMatch(matches []TextDLPMatch) bool {
 	for _, m := range matches {
-		if !m.Warn {
+		if !m.IsInformational() {
 			return true
 		}
 	}
@@ -2014,7 +2044,7 @@ func finishTextDLPMatches(matches, coreMatches, canaryMatches []TextDLPMatch) (e
 	}
 	// Warn-only results are Clean=true so transports take no enforcement action.
 	for _, m := range matches {
-		if m.Warn {
+		if m.IsInformational() {
 			informational = append(informational, m)
 		} else {
 			enforced = append(enforced, m)
@@ -2062,7 +2092,7 @@ func (g *textDLPDecodeGate) keep(found []TextDLPMatch) []TextDLPMatch {
 
 func (g *textDLPDecodeGate) close(found []TextDLPMatch) {
 	for _, m := range found {
-		if m.Warn {
+		if m.IsInformational() {
 			continue
 		}
 		if !g.perClass {

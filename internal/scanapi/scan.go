@@ -109,14 +109,14 @@ func (h *Handler) scanDLP(ctx context.Context, cfg *config.Config, sc *scanner.S
 		Kind:   req.Kind,
 		ScanID: generateScanID(),
 	}
-	if len(result.Matches) == 0 && len(urlResults.results) == 0 && !urlResults.truncated {
+	if len(result.Findings()) == 0 && len(urlResults.results) == 0 && !urlResults.truncated {
 		resp.Decision = DecisionAllow
 	} else {
 		resp.Decision = DecisionDeny
 		if len(urlResults.results) == 0 && !urlResults.truncated {
-			resp.Decision = cardDLPDecision(result.Matches)
+			resp.Decision = cardDLPDecision(result.Findings())
 		}
-		if len(result.Matches) > 0 {
+		if len(result.Findings()) > 0 {
 			resp.Findings = append(resp.Findings, dlpFindings(result, req.Options)...)
 		}
 		for _, urlResult := range urlResults.results {
@@ -419,10 +419,11 @@ func (h *Handler) scanToolCall(
 					return h.contextErrorResponse(req.Kind, err), h.contextErrorStatus(err)
 				}
 				leaf := sc.ScanTextForDLPWithCardView(ctx, atom.Text, atom.Card)
-				if len(leaf.Matches) > 0 {
+				if len(leaf.Findings()) > 0 {
+					dlpResult.InformationalMatches = appendNewDLPMatches(dlpResult.InformationalMatches, leaf.InformationalMatches)
 					dlpResult.Matches = appendNewDLPMatches(dlpResult.Matches, leaf.Matches)
 					dlpResult.Clean = !scanner.HasEnforcingMatch(dlpResult.Matches)
-					if !scanner.OnlyInformational(leaf.Matches) {
+					if scanner.HasEnforcingMatch(leaf.Matches) {
 						break
 					}
 				}
@@ -431,8 +432,8 @@ func (h *Handler) scanToolCall(
 		if err := ctx.Err(); err != nil {
 			return h.contextErrorResponse(req.Kind, err), h.contextErrorStatus(err)
 		}
-		if len(dlpResult.Matches) > 0 {
-			dlpMatches = dlpResult.Matches
+		if len(dlpResult.Findings()) > 0 {
+			dlpMatches = dlpResult.Findings()
 		}
 
 		injResult = sc.ScanBufferedInjection(ctx, scanner.BufferedInjectionScan{Surface: config.InjectionSurfaceScanAPI, Transport: "scan_api", Direction: "request", Content: scanText})
@@ -561,8 +562,8 @@ func urlFindings(result scanner.Result) []Finding {
 }
 
 func dlpFindings(result scanner.TextDLPResult, opts *RequestOptions) []Finding {
-	findings := make([]Finding, 0, len(result.Matches))
-	for _, m := range result.Matches {
+	findings := make([]Finding, 0, len(result.Findings()))
+	for _, m := range result.Findings() {
 		f := Finding{
 			Scanner:  "dlp",
 			RuleID:   "DLP-" + m.PatternName,

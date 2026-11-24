@@ -310,12 +310,13 @@ func ScanGenericSSEStreamWithOptions(
 			}
 			droppedDLP.record(dropped)
 			dlpResult.Matches = appendUniqueA2ADLPFindings(dlpResult.Matches, result.Matches)
+			dlpResult.InformationalMatches = appendUniqueA2ADLPFindings(dlpResult.InformationalMatches, result.InformationalMatches)
 		}
-		if len(dlpResult.Matches) > 0 {
-			findingErr := sseDLPFindingError(dlpResult.Matches, "dlp")
-			if scanner.CardRunAction(dlpResult.Matches, cfg.Action) == config.ActionWarn {
+		if len(dlpResult.Findings()) > 0 {
+			findingErr := sseDLPFindingError(dlpResult.Findings(), "dlp")
+			if scanner.CardRunAction(dlpResult.Findings(), cfg.Action) == config.ActionWarn {
 				onFinding(findingErr)
-				clearDLPTailAfterCurrent = !scanner.OnlyInformational(dlpResult.Matches)
+				clearDLPTailAfterCurrent = !scanner.OnlyInformational(dlpResult.Findings())
 				skipTailDLP = clearDLPTailAfterCurrent
 			} else {
 				return findingErr
@@ -385,7 +386,7 @@ func ScanGenericSSEStreamWithOptions(
 				return err
 			}
 			droppedDLP.record(droppedMatches)
-			if (tailDLPResult.Clean || scanner.OnlyInformational(tailDLPResult.Matches)) && idDataText != "" {
+			if (tailDLPResult.Clean || scanner.OnlyInformational(tailDLPResult.Findings())) && idDataText != "" {
 				var next scanner.TextDLPResult
 				next, droppedMatches = once.textDLP(tail+idDataText, cardTail+cardIDDataText, false)
 				tailDLPResult = mergeInputDLP(tailDLPResult, next)
@@ -394,11 +395,11 @@ func ScanGenericSSEStreamWithOptions(
 				}
 				droppedDLP.record(droppedMatches)
 			}
-			if len(tailDLPResult.Matches) > 0 {
-				findingErr := sseDLPFindingError(tailDLPResult.Matches, "cross-event dlp")
-				if scanner.CardRunAction(tailDLPResult.Matches, cfg.Action) == config.ActionWarn {
+			if len(tailDLPResult.Findings()) > 0 {
+				findingErr := sseDLPFindingError(tailDLPResult.Findings(), "cross-event dlp")
+				if scanner.CardRunAction(tailDLPResult.Findings(), cfg.Action) == config.ActionWarn {
 					onFinding(findingErr)
-					resetDLPTail = !scanner.OnlyInformational(tailDLPResult.Matches)
+					resetDLPTail = !scanner.OnlyInformational(tailDLPResult.Findings())
 				} else {
 					return findingErr
 				}
@@ -410,11 +411,11 @@ func ScanGenericSSEStreamWithOptions(
 				return err
 			}
 			droppedDLP.record(droppedMatches)
-			if len(result.Matches) > 0 {
-				findingErr := sseDLPFindingError(result.Matches, "cross-event dlp")
-				if scanner.CardRunAction(result.Matches, cfg.Action) == config.ActionWarn {
+			if len(result.Findings()) > 0 {
+				findingErr := sseDLPFindingError(result.Findings(), "cross-event dlp")
+				if scanner.CardRunAction(result.Findings(), cfg.Action) == config.ActionWarn {
 					onFinding(findingErr)
-					resetDLPTail = !scanner.OnlyInformational(result.Matches)
+					resetDLPTail = !scanner.OnlyInformational(result.Findings())
 				} else {
 					return findingErr
 				}
@@ -426,11 +427,11 @@ func ScanGenericSSEStreamWithOptions(
 				return err
 			}
 			droppedDLP.record(droppedMatches)
-			if len(result.Matches) > 0 {
-				findingErr := sseDLPFindingError(result.Matches, "cross-event dlp")
-				if scanner.CardRunAction(result.Matches, cfg.Action) == config.ActionWarn {
+			if len(result.Findings()) > 0 {
+				findingErr := sseDLPFindingError(result.Findings(), "cross-event dlp")
+				if scanner.CardRunAction(result.Findings(), cfg.Action) == config.ActionWarn {
 					onFinding(findingErr)
-					resetDLPTail = !scanner.OnlyInformational(result.Matches)
+					resetDLPTail = !scanner.OnlyInformational(result.Findings())
 				} else {
 					return findingErr
 				}
@@ -454,8 +455,8 @@ func ScanGenericSSEStreamWithOptions(
 				if result.Clean {
 					continue
 				}
-				findingErr := sseDLPFindingError(result.Matches, "cross-event dlp")
-				if scanner.CardRunAction(result.Matches, cfg.Action) == config.ActionWarn {
+				findingErr := sseDLPFindingError(result.Findings(), "cross-event dlp")
+				if scanner.CardRunAction(result.Findings(), cfg.Action) == config.ActionWarn {
 					onFinding(findingErr)
 					resetFieldTail = true
 					break
@@ -691,7 +692,7 @@ func dropSelfMatchingSSETailWithScan(ctx context.Context, tail string, opts Gene
 			return tail, nil
 		}
 		matchEnd := 0
-		for _, match := range result.Matches {
+		for _, match := range result.Findings() {
 			span := match.Span()
 			if match.Encoded == "" && span.ViewLabel == scanner.ViewDLPNormalized && span.ByteEnd > 0 && span.ByteEnd <= len(tail) &&
 				(span.ByteEnd == len(tail) || sseTailRuneBoundary(tail, span.ByteEnd)) && strings.HasPrefix(normalize.ForDLP(tail), tail[:span.ByteEnd]) &&

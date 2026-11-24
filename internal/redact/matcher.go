@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/luckyPipewrench/pipelock/internal/carddlp"
 	"github.com/luckyPipewrench/pipelock/internal/seedprotect"
 )
 
@@ -173,6 +174,13 @@ func (m *Matcher) scanViews(s, cardView string) []Match {
 		view := s
 		if cp.class == ClassCreditCard {
 			view = cardView
+			carddlp.VisitText(view, func(c carddlp.Candidate) bool {
+				if !c.PublicExample {
+					raw = append(raw, Match{Class: cp.class, Start: c.Start, End: c.End, Original: s[c.Start:c.End]})
+				}
+				return false
+			})
+			continue
 		}
 		for _, loc := range cp.pattern.FindAllStringIndex(view, -1) {
 			// Reject matches whose surrounding context marks them as a protocol

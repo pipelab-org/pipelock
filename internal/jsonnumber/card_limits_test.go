@@ -31,8 +31,8 @@ func TestCardNumberBoundsAndIssuer(t *testing.T) {
 		{"6011", 17, false},
 		{"6439", 16, false},
 		{"6500", 15, false},
-		{"622125", 16, false},
-		{"622926", 16, false},
+		{"622125", 16, true},
+		{"622926", 16, true},
 	} {
 		t.Run(tt.prefix+strings.Repeat("x", tt.length), func(t *testing.T) {
 			digits := make([]byte, tt.length)

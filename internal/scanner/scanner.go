@@ -495,7 +495,8 @@ type compiledPattern struct {
 	// relaxSingleGluedBoundary joins candidateHasLeftBoundary. A miss is still
 	// a finding when exactly one preceding rune caused it and the family
 	// strength check passes. Longer prose prefixes keep failing that check.
-	relaxSingleGluedBoundary bool
+	relaxSingleGluedBoundary    bool
+	checkSourceBoundaryInJoined bool
 	// gluedDigitExtendsNumber refuses a glued ASCII digit. In front of a card
 	// or an SSN that digit lengthens the number instead of disguising it.
 	gluedDigitExtendsNumber bool
@@ -503,8 +504,9 @@ type compiledPattern struct {
 	validate                func(string) bool // post-match checksum (nil = regex-only)
 	genericCard             bool              // validator provenance, never a display-name exemption
 	// cardPrefixRetry marks the canonical card rule with its luhn validator.
-	// Its failed greedy hits retry shorter candidates (jsonnumber.AcceptedCardEnd).
+	// Candidate enumeration uses the shared bounded digit-group scanner.
 	cardPrefixRetry bool
+	cardURL         bool // URL components admit non-canonical digit groupings
 	// builtInCreditCard carries loader-verified built-in provenance for the
 	// shipped Credit Card Number rule so operator-configured rules with
 	// identical fields never receive numeric card-join relief.
@@ -587,13 +589,7 @@ func (p *compiledPattern) accepts(view string, start, end int) bool {
 // The card rule may instead accept a shorter candidate with the same start,
 // so the returned span, not the hit, is the evidence to report.
 func (p *compiledPattern) acceptedSpan(view string, start, end int) (int, int, bool) {
-	if !p.cardPrefixRetry {
-		return start, end, p.accepts(view, start, end)
-	}
-	accepted, ok := jsonnumber.AcceptedCardEnd(view[start:end], func(candidateEnd int) bool {
-		return p.accepts(view, start, start+candidateEnd)
-	})
-	return start, start + accepted, ok
+	return start, end, p.accepts(view, start, end)
 }
 
 // New creates a Scanner from config. Config should be validated first via
@@ -714,6 +710,9 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 			return nil, err
 		}
 		pattern := p.Regex
+		if RetriesCardPrefixes(p) {
+			pattern = jsonnumber.ShippedCardPattern
+		}
 		if !strings.HasPrefix(pattern, "(?i)") {
 			pattern = "(?i)" + pattern
 		}
@@ -771,6 +770,9 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 				return nil, fmt.Errorf("compile DLP pattern %q without left boundary: %w", p.Name, err)
 			}
 			cp.relaxSingleGluedBoundary = true
+		} else if p.Regex == config.TogetherAIKeyRegex {
+			cp.withoutLeftBoundary = mustCompileScannerRegexp("(?i)" + config.TogetherAIKeyBodyRegex)
+			cp.checkSourceBoundaryInJoined = true
 		} else if body, rejectDigit, ok := gluedWordBoundaryBody(p.Regex); ok {
 			if !strings.HasPrefix(body, "(?i)") {
 				body = "(?i)" + body
@@ -3856,117 +3858,7 @@ func (s *Scanner) checkDLPWithDecodesAt(parsed *url.URL, decodes *decodingMemo, 
 		result.CredentialAudienceAllows = deduplicateCredentialAudienceAllows(credentialAudienceAllows)
 	}()
 
-	// parsed.Path is already URL-decoded by Go's url.Parse.
-	// For query strings, iteratively decode to catch multi-layer encoding.
-	decodedQuery := IterativeDecode(parsed.RawQuery)
-
-	targets := []dlpTarget{
-		{parsed.Path, dlpViewLabel("url_path"), ""},
-		{decodedQuery, dlpViewLabel("url_query"), ""},
-	}
-	for _, target := range urlUserinfoDLPTargets(parsed, decodes) {
-		target.viewLabel = dlpViewLabel(target.viewLabel)
-		targets = append(targets, target)
-	}
-	fragmentTargets := urlFragmentDLPTargets(parsed, decodes)
-	for _, target := range fragmentTargets {
-		target.viewLabel = dlpViewLabel(target.viewLabel)
-		targets = append(targets, target)
-		if stripped := stripURLNoise(target.text); stripped != target.text {
-			targets = append(targets, dlpTarget{stripped, dlpViewLabel("url_noise_stripped"), target.text})
-		}
-	}
-
-	// Also check decoded query keys and values individually.
-	// Noise-strip each value to catch dot-separated keys (e.g. "s.k.-.a.n.t.-..." → "sk-ant-...").
-	// Try hex/base64/base32 decoding to catch encoded secrets
-	// (e.g. ?key=736b2d616e742d... is hex-encoded sk-ant-...).
-	for _, pair := range rawQuerySecurityPairs(parsed.RawQuery) {
-		key := pair.key
-		decodedKey := IterativeDecode(key)
-		onceKey := normalize.QueryUnescapePartial(key)
-		targets = append(targets, dlpTarget{onceKey, dlpViewLabel("url_query_key"), ""})
-		targets = append(targets, queryValueDecodedTargetsWithDecodes(onceKey, decodes)...)
-		if decodedKey != key {
-			targets = append(targets, queryValueDecodedTargetsWithDecodes(key, decodes)...)
-		}
-		targets = append(targets, dlpTarget{decodedKey, dlpViewLabel("url_query_key"), ""})
-		targets = append(targets, queryValueDecodedTargetsWithDecodes(decodedKey, decodes)...)
-		if stripped := stripURLNoise(decodedKey); stripped != decodedKey {
-			targets = append(targets, dlpTarget{stripped, dlpViewLabel("url_noise_stripped"), decodedKey})
-		}
-		{
-			v := pair.value
-			once := normalize.QueryUnescapePartial(v)
-			targets = append(targets, dlpTarget{once, dlpViewLabel("url_query_value"), ""})
-			targets = append(targets, queryValueDecodedTargetsWithDecodes(once, decodes)...)
-			decoded := IterativeDecode(v)
-			if decoded != v {
-				targets = append(targets, queryValueDecodedTargetsWithDecodes(v, decodes)...)
-			}
-			targets = append(targets, dlpTarget{decoded, dlpViewLabel("url_query_value"), ""})
-			targets = append(targets, queryValueDecodedTargetsWithDecodes(decoded, decodes)...)
-			if stripped := stripURLNoise(decoded); stripped != decoded {
-				targets = append(targets, dlpTarget{stripped, dlpViewLabel("url_noise_stripped"), decoded})
-			}
-		}
-	}
-
-	// Also apply iterative decode to the escaped path for double-encoded path segments.
-	rawPath := parsed.RawPath
-	if rawPath == "" {
-		rawPath = parsed.EscapedPath()
-	}
-	formPath, percentPath := urlComponentDecodes(rawPath)
-	for _, decoded := range []dlpTarget{
-		{formPath, dlpViewLabel("url_path_decoded"), ""},
-		{percentPath, dlpViewLabel(spanViewLabel("percent_decoded", "url_path")), ""},
-	} {
-		if decoded.text != "" && decoded.text != parsed.Path {
-			targets = append(targets, decoded)
-		}
-	}
-
-	// Try hex/base64/base32 decoding on path segments to catch encoded secrets
-	// in URL paths (e.g. /73732d616e742d... is hex-encoded sk-ant-...).
-	// Recover the escaped spelling of each decoded segment before its walk.
-	pathSegments := urlPathDecodeSegments(parsed.Path, parsed.EscapedPath())
-	if decodes.keywordsActive() {
-		decodes.registerKeywordURLSegments(rawPath, append(pathSegments, parsed.Path))
-	}
-	for _, segment := range pathSegments {
-		if len(segment) >= 10 { // minimum viable encoded secret length
-			for _, d := range decodes.decode(segment, true) {
-				targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
-			}
-		}
-	}
-
-	targets = appendHostnameDLPTargets(targets, parsed.Hostname(), decodes)
-
-	// Strip URL noise from path to catch secrets split by dots, slashes, and
-	// other separators (e.g., "/sk-ant-api03-AAAA.AAAA/AAAA" → "sk-ant-api03-AAAAAAAAAAAA").
-	// Covers both dot-split and encoded-slash attacks (%2f splitting path segments).
-	if stripped := stripURLNoise(parsed.Path); stripped != parsed.Path {
-		targets = append(targets, dlpTarget{stripped, dlpViewLabel("url_noise_stripped"), parsed.Path})
-	}
-
-	// Concatenate all query values in URL order to catch secrets split across
-	// query parameters (e.g. "?part1=sk-ant-api03-&part2=AAAA..." → "sk-ant-api03-AAAA...").
-	// Uses RawQuery to preserve parameter order (url.Values is a map with random iteration).
-	// Also noise-strip the concatenation to defeat inserted garbage params
-	// (e.g., "?part1=sk-ant-&mid=%20&part2=AAAA" → "sk-ant-AAAA...").
-	targets = appendQueryConcatTargets(targets, parsed.Path, parsed.RawQuery, decodes)
-	for _, text := range dnsQueryDLPTexts(parsed.RawQuery) {
-		targets = append(targets, dlpTarget{text, dlpViewLabel("doh"), ""})
-		for _, d := range decodes.decode(text, true) {
-			targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
-		}
-	}
-
-	// Coarse full-URL fallback runs after component targets so path/query spans
-	// keep their more precise view labels when both views match.
-	targets = append(targets, dlpTarget{parsed.String(), dlpViewLabel("url"), ""})
+	targets := urlDLPTargets(parsed, decodes)
 
 	if decodes.keywordsActive() {
 		// Keep exact windowing where source mapping succeeds. Only an
@@ -4007,7 +3899,18 @@ func (s *Scanner) checkDLPWithDecodesAt(parsed *url.URL, decodes *decodingMemo, 
 					skipSpan = numericCardJoinPathQuerySkipSpan(p, decodes.issuedNumericRawParts, parsed.RawQuery, target.text, cleaned, parsed.Hostname(), decodes)
 				}
 			}
-			if start, end, ok := p.matchSpanWithDecodesFiltered(cleaned, proseSource, decodes, skipSpan); ok {
+			var example textByteSpan
+			pattern := p.withPublicExamples(cleaned, &example)
+			if p.genericCard {
+				copyPattern := *pattern
+				copyPattern.cardURL = true
+				pattern = &copyPattern
+			}
+			start, end, ok := pattern.matchSpanWithDecodesFiltered(cleaned, proseSource, decodes, skipSpan)
+			if example.end > 0 {
+				warnMatches = append(warnMatches, WarnMatch{PatternName: p.name, Severity: p.severity, span: newMatchSpan(example.start, example.end, target.viewLabel, p.name, p.bundle, p.bundleVersion)})
+			}
+			if ok {
 				if allow, allowed := s.credentialAudienceAllowsAt(p, parsed.String(), s.urlDLPAudienceSurface(p, parsed, &queryLessMemo), now); allowed {
 					credentialAudienceAllows = append(credentialAudienceAllows, allow)
 					continue
@@ -4064,7 +3967,7 @@ func (s *Scanner) checkDLPWithDecodesAt(parsed *url.URL, decodes *decodingMemo, 
 		seedTargets := []dlpTarget{
 			{parsed.Path, "url_path", ""},
 		}
-		seedTargets = append(seedTargets, fragmentTargets...)
+		seedTargets = append(seedTargets, urlFragmentDLPTargets(parsed, decodes)...)
 		for _, target := range urlUserinfoDLPTargets(parsed, decodes) {
 			if target.proseSource == "" {
 				seedTargets = append(seedTargets, target)
@@ -4081,7 +3984,7 @@ func (s *Scanner) checkDLPWithDecodesAt(parsed *url.URL, decodes *decodingMemo, 
 		// The whole decoded query follows the per-value targets. "=" and "&"
 		// are seed separators, so a phrase inside one value also matches here;
 		// trying values first reports the narrower value-level span.
-		seedTargets = append(seedTargets, dlpTarget{decodedQuery, spanViewLabel("url_decoded", "url_query"), ""})
+		seedTargets = append(seedTargets, dlpTarget{IterativeDecode(parsed.RawQuery), spanViewLabel("url_decoded", "url_query"), ""})
 		// Ordered query-value concatenation with spaces: catches seed phrases
 		// split across params (e.g., ?w1=abandon&w2=abandon&...&w12=about).
 		// orderedQueryConcat joins without separators (for regex DLP), so we
@@ -4419,7 +4322,18 @@ func (s *Scanner) checkDLPCombinations(values []string, n, size int, hostname, t
 					}
 					skipSpan = numericCardJoinSkipSpan(p, subRawParts, cleaned, hostname, decodes)
 				}
-				if start, end, ok := p.matchSpanWithDecodesFiltered(cleaned, source, decodes, skipSpan); ok {
+				var example textByteSpan
+				pattern := p.withPublicExamples(cleaned, &example)
+				if p.genericCard {
+					copyPattern := *pattern
+					copyPattern.cardURL = true
+					pattern = &copyPattern
+				}
+				start, end, ok := pattern.matchSpanWithDecodesFiltered(cleaned, source, decodes, skipSpan)
+				if example.end > 0 {
+					warnMatches = append(warnMatches, WarnMatch{PatternName: p.name, Severity: p.severity, span: newMatchSpan(example.start, example.end, candidate.viewLabel, p.name, p.bundle, p.bundleVersion)})
+				}
+				if ok {
 					// The reassembled candidate is a token the URL-wide check never
 					// saw, so it must itself be a grant for this host.
 					surface := s.urlDLPAudienceSurfaceForTarget(p, target, memo)
@@ -6893,7 +6807,7 @@ func gluedWordBoundaryBody(regex string) (body string, rejectDigit bool, ok bool
 	switch regex {
 	case `\bSK[a-f0-9]{32}\b`, `\bkey-[a-zA-Z0-9]{32}\b`:
 		return strings.TrimPrefix(regex, `\b`), false, true
-	case `\b\d{3}-\d{2}-\d{4}\b`, jsonnumber.ShippedCardPattern:
+	case `\b\d{3}-\d{2}-\d{4}\b`, jsonnumber.ShippedCardPattern, jsonnumber.LegacyCardPattern:
 		return strings.TrimPrefix(regex, `\b`), true, true
 	default:
 		return "", false, false
@@ -7552,4 +7466,121 @@ func asciiUpperByte(c byte) byte {
 		return c - ('a' - 'A')
 	}
 	return c
+}
+
+// urlDLPTargets is shared by destination scans and URLs embedded in text.
+func urlDLPTargets(parsed *url.URL, decodes *decodingMemo) []dlpTarget {
+	// parsed.Path is already URL-decoded by Go's url.Parse.
+	// For query strings, iteratively decode to catch multi-layer encoding.
+	decodedQuery := IterativeDecode(parsed.RawQuery)
+
+	targets := []dlpTarget{
+		{parsed.Path, dlpViewLabel("url_path"), ""},
+		{decodedQuery, dlpViewLabel("url_query"), ""},
+	}
+	for _, target := range urlUserinfoDLPTargets(parsed, decodes) {
+		target.viewLabel = dlpViewLabel(target.viewLabel)
+		targets = append(targets, target)
+	}
+	fragmentTargets := urlFragmentDLPTargets(parsed, decodes)
+	for _, target := range fragmentTargets {
+		target.viewLabel = dlpViewLabel(target.viewLabel)
+		targets = append(targets, target)
+		if stripped := stripURLNoise(target.text); stripped != target.text {
+			targets = append(targets, dlpTarget{stripped, dlpViewLabel("url_noise_stripped"), target.text})
+		}
+	}
+
+	// Also check decoded query keys and values individually.
+	// Noise-strip each value to catch dot-separated keys (e.g. "s.k.-.a.n.t.-..." → "sk-ant-...").
+	// Try hex/base64/base32 decoding to catch encoded secrets
+	// (e.g. ?key=736b2d616e742d... is hex-encoded sk-ant-...).
+	for _, pair := range rawQuerySecurityPairs(parsed.RawQuery) {
+		key := pair.key
+		decodedKey := IterativeDecode(key)
+		onceKey := normalize.QueryUnescapePartial(key)
+		targets = append(targets, dlpTarget{onceKey, dlpViewLabel("url_query_key"), ""})
+		targets = append(targets, queryValueDecodedTargetsWithDecodes(onceKey, decodes)...)
+		if decodedKey != key {
+			targets = append(targets, queryValueDecodedTargetsWithDecodes(key, decodes)...)
+		}
+		targets = append(targets, dlpTarget{decodedKey, dlpViewLabel("url_query_key"), ""})
+		targets = append(targets, queryValueDecodedTargetsWithDecodes(decodedKey, decodes)...)
+		if stripped := stripURLNoise(decodedKey); stripped != decodedKey {
+			targets = append(targets, dlpTarget{stripped, dlpViewLabel("url_noise_stripped"), decodedKey})
+		}
+		{
+			v := pair.value
+			once := normalize.QueryUnescapePartial(v)
+			targets = append(targets, dlpTarget{once, dlpViewLabel("url_query_value"), ""})
+			targets = append(targets, queryValueDecodedTargetsWithDecodes(once, decodes)...)
+			decoded := IterativeDecode(v)
+			if decoded != v {
+				targets = append(targets, queryValueDecodedTargetsWithDecodes(v, decodes)...)
+			}
+			targets = append(targets, dlpTarget{decoded, dlpViewLabel("url_query_value"), ""})
+			targets = append(targets, queryValueDecodedTargetsWithDecodes(decoded, decodes)...)
+			if stripped := stripURLNoise(decoded); stripped != decoded {
+				targets = append(targets, dlpTarget{stripped, dlpViewLabel("url_noise_stripped"), decoded})
+			}
+		}
+	}
+
+	// Also apply iterative decode to the escaped path for double-encoded path segments.
+	rawPath := parsed.RawPath
+	if rawPath == "" {
+		rawPath = parsed.EscapedPath()
+	}
+	formPath, percentPath := urlComponentDecodes(rawPath)
+	for _, decoded := range []dlpTarget{
+		{formPath, dlpViewLabel("url_path_decoded"), ""},
+		{percentPath, dlpViewLabel(spanViewLabel("percent_decoded", "url_path")), ""},
+	} {
+		if decoded.text != "" && decoded.text != parsed.Path {
+			targets = append(targets, decoded)
+		}
+	}
+
+	// Try hex/base64/base32 decoding on path segments to catch encoded secrets
+	// in URL paths (e.g. /73732d616e742d... is hex-encoded sk-ant-...).
+	// Recover the escaped spelling of each decoded segment before its walk.
+	pathSegments := urlPathDecodeSegments(parsed.Path, parsed.EscapedPath())
+	if decodes.keywordsActive() {
+		decodes.registerKeywordURLSegments(rawPath, append(pathSegments, parsed.Path))
+	}
+	for _, segment := range pathSegments {
+		if len(segment) >= 10 { // minimum viable encoded secret length
+			for _, d := range decodes.decode(segment, true) {
+				targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
+			}
+		}
+	}
+
+	targets = appendHostnameDLPTargets(targets, parsed.Hostname(), decodes)
+
+	// Strip URL noise from path to catch secrets split by dots, slashes, and
+	// other separators (e.g., "/sk-ant-api03-AAAA.AAAA/AAAA" → "sk-ant-api03-AAAAAAAAAAAA").
+	// Covers both dot-split and encoded-slash attacks (%2f splitting path segments).
+	if stripped := stripURLNoise(parsed.Path); stripped != parsed.Path {
+		targets = append(targets, dlpTarget{stripped, dlpViewLabel("url_noise_stripped"), parsed.Path})
+	}
+
+	// Concatenate all query values in URL order to catch secrets split across
+	// query parameters (e.g. "?part1=sk-ant-api03-&part2=AAAA..." → "sk-ant-api03-AAAA...").
+	// Uses RawQuery to preserve parameter order (url.Values is a map with random iteration).
+	// Also noise-strip the concatenation to defeat inserted garbage params
+	// (e.g., "?part1=sk-ant-&mid=%20&part2=AAAA" → "sk-ant-AAAA...").
+	targets = appendQueryConcatTargets(targets, parsed.Path, parsed.RawQuery, decodes)
+	for _, text := range dnsQueryDLPTexts(parsed.RawQuery) {
+		targets = append(targets, dlpTarget{text, dlpViewLabel("doh"), ""})
+		for _, d := range decodes.decode(text, true) {
+			targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
+		}
+	}
+
+	// Coarse full-URL fallback runs after component targets so path/query spans
+	// keep their more precise view labels when both views match.
+	targets = append(targets, dlpTarget{parsed.String(), dlpViewLabel("url"), ""})
+
+	return appendHostnameCardTargets(targets, parsed.Hostname())
 }
