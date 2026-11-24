@@ -3277,6 +3277,9 @@ func newInterceptHandler(
 					}
 				}
 				cardResult := mcp.ScanAgentCardWithOptions(r.Context(), respBody, ic.Scanner, cardOpts)
+				if delivery, ok := w.(*v3DeliveryWriter); ok && (cardResult.FirstSeen || cardResult.DriftAdopted) {
+					delivery.completeCardAcceptance(r.Context())
+				}
 				if cardReceiptFailed {
 					emitBlockedPostRoundTripOutcome(http.StatusForbidden, receiptEmissionFailedLayer)
 					return

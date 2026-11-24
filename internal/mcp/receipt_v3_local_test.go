@@ -3027,3 +3027,26 @@ func TestMCPV3ListenerAgentCardBufferedDelivery(t *testing.T) {
 		return card && delivery
 	}, "card and primary delivery outcomes")
 }
+
+func TestMCPV3AgentCardBaselineCompletedWhenReplyWriteFails(t *testing.T) {
+	opts, writer, client := localMCPReceiptFixture(t, v3MCPMatrixRow{required: true}, transportMCPStdio)
+	a2a := config.Defaults().A2AScanning
+	a2a.Enabled, a2a.DetectCardDrift = true, true
+	opts.A2ACfg = &a2a
+	opts.CardBaseline = NewCardBaseline(8)
+	opts.A2ACardURL = "https://api.vendor.example/.well-known/agent-card.json"
+	tracker := NewRequestTracker()
+	tracker.TrackOutcome(json.RawMessage("42"), TrackedRequestOutcome{Method: "agent/getAuthenticatedExtendedCard"})
+	const reply = `{"jsonrpc":"2.0","id":42,"result":` + receiptCardBody + "}\n"
+	input := transport.NewStdioReader(strings.NewReader(reply))
+	_, err := ForwardScanned(input, transport.NewStdioWriter(shortReplyWriter{err: io.ErrClosedPipe}), io.Discard, tracker, opts)
+	if !errors.Is(err, io.ErrClosedPipe) {
+		t.Fatalf("forwarding error = %v, want closed pipe", err)
+	}
+	for _, action := range localMCPReceiptActions(t, writer, client.dir) {
+		if action.Phase == "outcome" && action.Layer == "a2a_card_drift" && action.OutcomeClass == "completed" {
+			return
+		}
+	}
+	t.Fatal("missing completed card baseline outcome")
+}

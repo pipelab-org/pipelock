@@ -1292,6 +1292,9 @@ type A2AResponseOpts struct {
 	// was accepted as the new baseline. It must not change the scan verdict:
 	// adoption remains clean, while the transport records the audit event.
 	OnCardDriftAdopted func()
+	// OnCardBaselineCommitted observes a first-seen or drift-adopted baseline
+	// after the write has applied and before the transport delivers the card.
+	OnCardBaselineCommitted func()
 	// CardKey identifies the Agent Card origin for drift detection.
 	// Used for GetExtendedAgentCard / agent/getAuthenticatedExtendedCard
 	// responses and for card-shaped results when the method is unknown.
@@ -1517,6 +1520,9 @@ func scanAgentCardRPCResponse(line []byte, sc *scanner.Scanner, a2aOpts *A2AResp
 		ctx, rpc.Result, sc,
 		a2aOpts.Baseline, a2aOpts.CardKey, agentCardScanOptions{cfg: a2aOpts.Cfg, commitBaseline: joined.Clean, confirmAcceptance: a2aOpts.ConfirmCardAcceptance},
 	)
+	if (cardResult.FirstSeen || cardResult.DriftAdopted) && a2aOpts.OnCardBaselineCommitted != nil {
+		a2aOpts.OnCardBaselineCommitted()
+	}
 	if cardResult.DriftAdopted && a2aOpts.OnCardDriftAdopted != nil {
 		a2aOpts.OnCardDriftAdopted()
 	}

@@ -1071,6 +1071,10 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				}
 			}
 
+			a2aOpts.OnCardBaselineCommitted = func() {
+				logMCPV3Error(logW, confirmMCPV3Effect(opts.warnContext(), cardDelivery, true))
+				cardDelivery = nil
+			}
 			a2aOpts.OnCardDriftAdopted = func() {
 				const detail = "a2a: Agent Card descriptive drift adopted"
 				_, _ = fmt.Fprintf(logW, "pipelock: a2a response: %s\n", detail)

@@ -3630,6 +3630,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 				cardResult := mcp.ScanAgentCardWithOptions(r.Context(), respBody, sc, cardOpts)
+				if delivery, ok := w.(*v3DeliveryWriter); ok && (cardResult.FirstSeen || cardResult.DriftAdopted) {
+					delivery.completeCardAcceptance(r.Context())
+				}
 				if cardReceiptErr != nil {
 					p.recordRequiredReceiptBlock(cardReceiptErr, TransportForward)
 					writeBlockedError(w, blockInfoFor(blockreason.ReceiptEmissionFailed, receiptEmissionFailedLayer).WithRequestID(requestID), receiptEmissionBlockReason, http.StatusForbidden)

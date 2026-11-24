@@ -2404,7 +2404,7 @@ func TestV3PlainFlusherNonSSELeavesDeliveryUnknown(t *testing.T) {
 	assertHandshakeOutcome(t, dir, boundaryDownstreamDelivery, "attempt_unknown")
 }
 
-func TestV3SignedCardReceiptsFollowDelivery(t *testing.T) {
+func TestV3SignedCardAcceptanceIndependentOfDelivery(t *testing.T) {
 	pub, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		t.Fatal(err)
@@ -2444,9 +2444,9 @@ func TestV3SignedCardReceiptsFollowDelivery(t *testing.T) {
 				}
 				out := &v3SSEFlushFaultRecorder{ResponseRecorder: httptest.NewRecorder()}
 				handler.ServeHTTP(out, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://api.vendor.example"+agentCardPath, http.NoBody))
-				wantStatus, wantOutcome := tc.status, "completed"
+				wantStatus := tc.status
 				if tc.block {
-					wantStatus, wantOutcome = http.StatusForbidden, "not_released"
+					wantStatus = http.StatusForbidden
 				}
 				if out.Code != wantStatus {
 					t.Fatalf("status = %d, want %d (%s)", out.Code, wantStatus, out.Body.String())
@@ -2458,17 +2458,23 @@ func TestV3SignedCardReceiptsFollowDelivery(t *testing.T) {
 					t.Fatal(err)
 				}
 				counts := make(map[string]int)
-				primaryCompleted := false
+				primaryCompleted, deliveryRefused := false, false
 				for _, action := range readV3TransportActions(t, dir) {
+					if action.Phase == "decision" && action.EffectBoundary == boundaryDownstreamDelivery && action.Layer == responseScanLayer && action.Verdict == config.ActionBlock && action.EffectRelation == "not_attempted" {
+						deliveryRefused = true
+					}
 					if action.Phase == "outcome" && action.EffectBoundary == boundaryDownstreamDelivery && action.Layer == "" {
 						primaryCompleted = action.OutcomeClass == "completed"
 					}
 					if action.Phase == "outcome" && (action.Layer == scannerLabelA2ACardSignature || action.Layer == scannerLabelA2ACardDrift) {
 						counts[action.Layer]++
-						if action.OutcomeClass != wantOutcome {
-							t.Errorf("%s outcome = %q, want %q", action.Layer, action.OutcomeClass, wantOutcome)
+						if action.OutcomeClass != "completed" {
+							t.Errorf("%s outcome = %q, want completed", action.Layer, action.OutcomeClass)
 						}
 					}
+				}
+				if tc.block && !deliveryRefused {
+					t.Error("missing downstream delivery refusal")
 				}
 				if !tc.block && !primaryCompleted {
 					t.Error("missing completed primary delivery")

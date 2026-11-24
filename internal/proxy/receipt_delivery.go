@@ -199,6 +199,12 @@ func (w *v3DeliveryWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	return conn, buf, err
 }
 
+// completeCardAcceptance settles checks for a baseline change already applied.
+func (w *v3DeliveryWriter) completeCardAcceptance(ctx context.Context) {
+	w.proxy.confirmObservedEffect(ctx, w.options, w.card, true)
+	w.card = nil
+}
+
 func (w *v3DeliveryWriter) finish() {
 	ctx := w.request.Context()
 	if w.card != nil && w.token == nil {
