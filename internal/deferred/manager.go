@@ -448,6 +448,9 @@ func (m *Manager) publishHoldLocked(action *HeldAction) {
 	source := SourceTimeout
 	switch {
 	case action.admissionBlock != "":
+		if action.lineage != nil {
+			action.lineage.blocked = true
+		}
 		delay, source = 0, action.admissionBlock
 	case action.lineage != nil && action.lineage.blocked:
 		delay, source = 0, SourceCascade
@@ -652,13 +655,23 @@ func (m *Manager) ResolveAll(finalDecision, source string) {
 	}
 	m.mu.Lock()
 	ids := make([]string, 0, len(m.holds))
+	markedAdmitting := false
 	for id, held := range m.holds {
 		if held.state == stateAdmitting && finalDecision != config.ActionAllow {
-			held.admissionBlock = source
+			if held.admissionBlock == "" {
+				held.admissionBlock = source
+			}
+			if held.lineage != nil {
+				m.markLineageBlockedLocked(held.lineage)
+				markedAdmitting = true
+			}
 		}
 		if held.state == StateHeld {
 			ids = append(ids, id)
 		}
+	}
+	if markedAdmitting {
+		m.notifyHoldChangeLocked()
 	}
 	m.mu.Unlock()
 	for _, id := range ids {

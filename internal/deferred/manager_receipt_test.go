@@ -116,3 +116,127 @@ func TestReceiptHoldFailedConfirmationFreesReservation(t *testing.T) {
 	}
 	m.ResolveAll(config.ActionBlock, SourceCancel)
 }
+
+func TestReceiptHoldAdmissionBlockEnforcedInTakeHold(t *testing.T) {
+	t.Run("resolve_all_during_admission_blocks_racing_allow_and_lineage", func(t *testing.T) {
+		m := NewManager(Config{Enabled: true, Timeout: testwait.Deadline(time.Minute)})
+		ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(5*time.Second))
+		defer cancel()
+
+		entered, releaseConfirm := make(chan struct{}), make(chan struct{})
+		resolved := make(chan Resolution, 1)
+		held := receiptAdmissionFixture("admitting")
+		held.RulePolicy = config.DeferResolutionPolicy{AllowOn: config.DeferAllowOn{Approval: true}}
+		held.Receipt.ConfirmHold = func(ctx context.Context, _ HeldAction) error {
+			close(entered)
+			select {
+			case <-releaseConfirm:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		held.ResolveReceipt = func(res Resolution, _ Release) {
+			resolved <- res
+		}
+
+		admitDone := make(chan error, 1)
+		go func() { admitDone <- m.HoldContext(ctx, held) }()
+		select {
+		case <-entered:
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+
+		m.ResolveAll(config.ActionBlock, SourceCancel)
+
+		// Lineage must already reflect the admission block before publication so
+		// neither a concurrent child nor a racing allow can observe it unblocked.
+		m.mu.Lock()
+		node := m.lineage[held.DeferID]
+		lineageBlocked := node != nil && node.blocked
+		m.mu.Unlock()
+		if !lineageBlocked {
+			close(releaseConfirm)
+			<-admitDone
+			t.Fatal("ResolveAll during admission did not mark lineage blocked")
+		}
+		close(releaseConfirm)
+		if err := <-admitDone; err != nil {
+			t.Fatalf("HoldContext: %v", err)
+		}
+		select {
+		case res := <-resolved:
+			if res.FinalDecision != config.ActionBlock || res.ResolutionSource != SourceCancel {
+				t.Fatalf("resolved = %+v, want block/%s", res, SourceCancel)
+			}
+		case <-ctx.Done():
+			t.Fatal("admitted hold did not close after ResolveAll")
+		}
+	})
+
+	t.Run("take_hold_rejects_allow_when_admission_blocked", func(t *testing.T) {
+		m := NewManager(Config{Enabled: true, Timeout: testwait.Deadline(time.Minute)})
+		resolved := make(chan Resolution, 1)
+		held := receiptAdmissionFixture("raced")
+		held.RulePolicy = config.DeferResolutionPolicy{AllowOn: config.DeferAllowOn{Approval: true}}
+		held.ResolveReceipt = func(res Resolution, release Release) {
+			if res.FinalDecision == config.ActionAllow {
+				release.Commit()
+			}
+			resolved <- res
+		}
+		if err := m.Hold(held); err != nil {
+			t.Fatal(err)
+		}
+		// Simulate the exact window right after publishHoldLocked before the
+		// asynchronous AfterFunc(0) timer goroutine invokes Resolve.
+		m.mu.Lock()
+		m.holds[held.DeferID].admissionBlock = SourceCancel
+		m.mu.Unlock()
+
+		decision, err := m.ResolveApprovalResultContext(t.Context(), held.DeferID, config.ActionAllow, SourceOperator)
+		if err != nil {
+			t.Fatalf("ResolveApprovalResultContext: %v", err)
+		}
+		res := <-resolved
+		if decision != config.ActionBlock || res.FinalDecision != config.ActionBlock || res.ResolutionSource != SourceCancel {
+			t.Fatalf("racing allow bypassed admissionBlock: decision=%q res=%+v", decision, res)
+		}
+	})
+
+	t.Run("step_up_cannot_bypass_cascade_block", func(t *testing.T) {
+		m := NewManager(Config{Enabled: true, Timeout: testwait.Deadline(time.Minute)})
+		resolved := make(chan Resolution, 2)
+		makeHeld := func(id string) HeldAction {
+			h := receiptAdmissionFixture(id)
+			h.RulePolicy = config.DeferResolutionPolicy{
+				AllowOn:  config.DeferAllowOn{Approval: true},
+				StepUpOn: config.DeferStepUpOn{ApprovalRequestsHuman: true},
+			}
+			h.ResolveReceipt = func(res Resolution, _ Release) { resolved <- res }
+			return h
+		}
+		if err := m.Hold(makeHeld("parent")); err != nil {
+			t.Fatal(err)
+		}
+		if err := m.Hold(makeHeld("child")); err != nil {
+			t.Fatal(err)
+		}
+		// Simulate parent having closed its lineage before finishReceiptHold
+		// resolves child, while an operator sends a step_up resolution for child.
+		m.mu.Lock()
+		m.lineage["child"].blocked = true
+		m.mu.Unlock()
+
+		decision, err := m.ResolveApprovalResultContext(t.Context(), "child", config.ActionStepUp, SourceOperator)
+		if err != nil {
+			t.Fatalf("ResolveApprovalResultContext step_up: %v", err)
+		}
+		res := <-resolved
+		if decision != config.ActionBlock || res.FinalDecision != config.ActionBlock || res.ResolutionSource != SourceCascade {
+			t.Fatalf("step_up bypassed cascade block: decision=%q res=%+v", decision, res)
+		}
+		m.ResolveAll(config.ActionBlock, SourceCancel)
+	})
+}

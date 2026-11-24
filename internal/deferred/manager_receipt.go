@@ -95,7 +95,12 @@ func (m *Manager) admitReceiptHoldLocked(ctx context.Context, action *HeldAction
 		return err
 	}
 	parent := m.lineage[action.ParentDeferID]
-	node := &holdLineage{id: action.DeferID, depth: action.CascadeDepth, parent: parent, blocked: action.cascadeBlocked}
+	node := &holdLineage{
+		id:      action.DeferID,
+		depth:   action.CascadeDepth,
+		parent:  parent,
+		blocked: action.cascadeBlocked || action.admissionBlock != "",
+	}
 	if parent != nil {
 		parent.children++
 	}
@@ -162,18 +167,27 @@ func (m *Manager) takeHold(ctx context.Context, id, decision, source string, wai
 			}
 			break
 		}
-		if decision != config.ActionAllow {
+		if decision == config.ActionBlock {
 			break
 		}
-		if err := ctx.Err(); err != nil {
-			return nil, "", "", err
+		if decision == config.ActionAllow {
+			if err := ctx.Err(); err != nil {
+				return nil, "", "", err
+			}
 		}
-		if !time.Now().Before(held.Deadline) {
-			decision, source = config.ActionBlock, SourceTimeout
+		if held.admissionBlock != "" {
+			decision, source = config.ActionBlock, held.admissionBlock
 			break
 		}
 		if held.lineage.blocked {
 			decision, source = config.ActionBlock, SourceCascade
+			break
+		}
+		if decision != config.ActionAllow {
+			break
+		}
+		if !time.Now().Before(held.Deadline) {
+			decision, source = config.ActionBlock, SourceTimeout
 			break
 		}
 		if ancestorsCommitted(held.lineage) {
@@ -227,18 +241,22 @@ func (m *Manager) closeReceiptLineageLocked(held *HeldAction, committed bool) {
 	node.closed = true
 	node.committed = committed
 	if !committed {
-		node.blocked = true
-		for _, candidate := range m.lineage {
-			for parent := candidate.parent; parent != nil; parent = parent.parent {
-				if parent == node {
-					candidate.blocked = true
-					break
-				}
-			}
-		}
+		m.markLineageBlockedLocked(node)
 	}
 	m.removeSessionHoldLocked(held.Authority.SessionID, held.DeferID)
 	m.notifyHoldChangeLocked()
+}
+
+func (m *Manager) markLineageBlockedLocked(node *holdLineage) {
+	node.blocked = true
+	for _, candidate := range m.lineage {
+		for parent := candidate.parent; parent != nil; parent = parent.parent {
+			if parent == node {
+				candidate.blocked = true
+				break
+			}
+		}
+	}
 }
 
 func (m *Manager) closeReceiptLineage(held *HeldAction, committed bool) {
