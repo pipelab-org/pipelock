@@ -292,3 +292,53 @@ func TestEffectGateDenialDeliveryDurability(t *testing.T) {
 		})
 	}
 }
+
+func TestEffectGateHeldAdmissionRequiresConfirmedIntent(t *testing.T) {
+	ctx := t.Context()
+	var empty EffectGate
+	if token, err := empty.AdmitHeld(ctx, Action{}, PolicySnapshot{}); token != nil || err == nil {
+		t.Fatalf("held admission without writer = %v, %v", token, err)
+	}
+	if err := empty.RecordApproval(ctx, Action{Phase: phaseHold}, PolicySnapshot{}); err == nil {
+		t.Fatal("hold confirmation succeeded without writer")
+	}
+
+	failure := errors.New("write started and was refused")
+	policy := CapturePolicy(Digest([]byte("held policy")))
+	writes := 0
+	gate := EffectGate{write: func(_ context.Context, action Action, got PolicySnapshot) error {
+		writes++
+		if action.Phase != phaseIntent || action.EffectRelation != relationBefore || action.Attempt == nil ||
+			*action.Attempt != 1 || got != policy {
+			t.Fatalf("invalid held intent: %+v with policy %+v", action, got)
+		}
+		return errors.Join(failure, ErrActionPersistStarted, ErrEffectNotReleased)
+	}}
+	if err := gate.RecordApproval(ctx, Action{Phase: phaseIntent}, policy); err == nil || writes != 0 {
+		t.Fatalf("approval record accepted intent: %v (%d writes)", err, writes)
+	}
+	token, err := gate.AdmitHeld(ctx, Action{Verdict: verdictAllow}, policy)
+	if token != nil || writes != 1 || !errors.Is(err, failure) ||
+		!errors.Is(err, ErrActionPersistStarted) || !errors.Is(err, ErrEffectNotReleased) {
+		t.Fatalf("optional held admission = %v, %v (%d writes)", token, err, writes)
+	}
+}
+
+func TestEffectGateRecordsBlockAfterApprovalCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	writes := 0
+	gate := EffectGate{write: func(ctx context.Context, action Action, _ PolicySnapshot) error {
+		writes++
+		if ctx.Err() != nil || action.Verdict != verdictBlock || action.Phase != phaseResolution {
+			t.Fatalf("terminal write: %+v, context = %v", action, ctx.Err())
+		}
+		if _, ok := ctx.Deadline(); !ok {
+			t.Fatal("terminal write has no finalization deadline")
+		}
+		return nil
+	}}.WithFinalizationTimeout(testwait.Deadline(time.Second))
+	if err := gate.RecordApproval(ctx, Action{Phase: phaseResolution, Verdict: verdictBlock}, PolicySnapshot{}); err != nil || writes != 1 {
+		t.Fatalf("terminal approval = %v (%d writes)", err, writes)
+	}
+}

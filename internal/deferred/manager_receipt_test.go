@@ -6,7 +6,9 @@ package deferred
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -457,5 +459,201 @@ func TestReceiptHoldRetainsSweepApproval(t *testing.T) {
 				})
 			}
 		})
+	}
+}
+
+func TestReceiptHoldWaitsForConfirmedParentBeforeLinking(t *testing.T) {
+	m := NewManager(Config{Enabled: true, Timeout: time.Minute, MaxCascadeDepth: 1})
+	writing, resume := make(chan struct{}), make(chan struct{})
+	unpause := sync.OnceFunc(func() { close(resume) })
+	defer unpause()
+	parent := receiptAdmissionFixture("parent")
+	parent.Receipt.ConfirmHold = func(context.Context, HeldAction) error {
+		close(writing)
+		<-resume
+		return nil
+	}
+	parentDone := make(chan error, 1)
+	go func() { parentDone <- m.Hold(parent) }()
+	receiveReceiptFixture(t, writing)
+	defer m.ResolveAll(config.ActionBlock, SourceCancel)
+	child := receiptAdmissionFixture("child")
+	child.Receipt.ConfirmHold = func(context.Context, HeldAction) error {
+		return errors.New("cascade-limited child must not confirm a hold")
+	}
+	childDone := make(chan error, 1)
+	go func() { childDone <- m.Hold(child) }()
+	testwait.For(t, time.Second, func() bool {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		return m.reservations == 2
+	}, "child reserving capacity behind parent confirmation")
+	if got := m.HeldCount(); got != 0 {
+		t.Fatalf("held count during confirmation = %d, want 0", got)
+	}
+	unpause()
+	if err := receiveReceiptFixture(t, parentDone); err != nil {
+		t.Fatal(err)
+	}
+	var limit *CascadeLimitError
+	err := receiveReceiptFixture(t, childDone)
+	if !errors.As(err, &limit) || limit.ParentDeferID != parent.DeferID || limit.Depth != 2 {
+		t.Fatalf("child admission = %v, depth error %+v", err, limit)
+	}
+	if count := m.HeldCount(); count != 1 {
+		t.Fatalf("held count after rejection = %d, want 1", count)
+	}
+}
+
+func receiveReceiptFixture[T any](t *testing.T, ch <-chan T) T {
+	t.Helper()
+	select {
+	case got := <-ch:
+		return got
+	case <-time.After(testwait.Deadline(time.Second)):
+		t.Fatal("timed out waiting for manager")
+		var zero T
+		return zero
+	}
+}
+
+func TestReceiptHoldParkedApprovalSettlement(t *testing.T) {
+	for _, mode := range []string{"commit", "cancel", "deadline"} {
+		t.Run(mode, func(t *testing.T) {
+			m := NewManager(Config{Enabled: true, Timeout: time.Minute})
+			defer m.ResolveAll(config.ActionBlock, SourceCancel)
+			parent := receiptAdmissionFixture("parent")
+			parent.ResolveReceipt = func(res Resolution, release Release) {
+				if res.FinalDecision == config.ActionAllow {
+					release.Commit()
+				}
+			}
+			child := receiptAdmissionFixture("child")
+			child.RulePolicy.AllowOn.Approval = true
+			resolved := make(chan Resolution, 1)
+			child.ResolveReceipt = func(res Resolution, release Release) {
+				if res.FinalDecision == config.ActionAllow {
+					release.Commit()
+				}
+				resolved <- res
+			}
+			for _, held := range []HeldAction{parent, child} {
+				if err := m.Hold(held); err != nil {
+					t.Fatal(err)
+				}
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			finished := make(chan error, 1)
+			go func() {
+				_, err := m.ResolveApprovalResultContext(ctx, child.DeferID, config.ActionAllow, SourceOperator)
+				finished <- err
+			}()
+			testwait.For(t, time.Second, func() bool {
+				m.mu.Lock()
+				defer m.mu.Unlock()
+				return m.holds[child.DeferID].parkedApprovals == 1
+			}, "child parked behind uncommitted parent")
+			switch mode {
+			case "cancel":
+				cancel()
+				if err := receiveReceiptFixture(t, finished); !errors.Is(err, context.Canceled) {
+					t.Fatalf("parked approval returned %v", err)
+				}
+				if _, ok := m.Held(child.DeferID); !ok {
+					t.Fatal("cancelled approval consumed child hold")
+				}
+				return
+			case "deadline":
+				// Expire the original deadline while the approval is parked.
+				m.mu.Lock()
+				m.holds[child.DeferID].Deadline = time.Now().Add(-time.Second)
+				m.notifyHoldChangeLocked()
+				m.mu.Unlock()
+			case "commit":
+				if err := m.Resolve(parent.DeferID, config.ActionAllow, SourceOperator); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := receiveReceiptFixture(t, finished); err != nil {
+				t.Fatal(err)
+			}
+			wantDecision, wantSource := config.ActionAllow, SourceOperator
+			if mode == "deadline" {
+				wantDecision, wantSource = config.ActionBlock, SourceTimeout
+			}
+			if got := receiveReceiptFixture(t, resolved); got.FinalDecision != wantDecision || got.ResolutionSource != wantSource {
+				t.Fatalf("parked approval settled as %q/%q, want %q/%q", got.FinalDecision, got.ResolutionSource, wantDecision, wantSource)
+			}
+		})
+	}
+}
+
+func TestReceiptHoldAllowWhenSettlementFails(t *testing.T) {
+	failure := errors.New("receipt storage unavailable")
+	for _, tc := range []struct {
+		name, confirmation string
+		confirm, settle    error
+	}{
+		{name: "repaired_block", confirmation: config.ActionBlock},
+		{name: "unsettled_allow", confirm: failure},
+		{name: "unsettled_refusal", confirmation: config.ActionAllow, settle: failure},
+		{name: "callback_omits_commit", confirmation: config.ActionAllow},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := NewManager(Config{Enabled: true, Timeout: time.Minute})
+			held := receiptAdmissionFixture("parent")
+			held.RulePolicy.AllowOn.Approval = true
+			held.Receipt.ConfirmResolution = func(context.Context, Resolution) (string, error) { return tc.confirmation, tc.confirm }
+			var corrected Resolution
+			held.Receipt.ConfirmCorrection = func(_ context.Context, res Resolution) error {
+				corrected = res
+				return nil
+			}
+			var result Resolution
+			held.ResolveReceipt = func(res Resolution, release Release) {
+				result = res
+				if tc.settle != nil {
+					result = release.Refuse("intent_refused", func() error { return tc.settle })
+					if second := release.Refuse("second_refusal", nil); second.Reason != result.Reason {
+						t.Errorf("second refusal changed reason to %q", second.Reason)
+					}
+				}
+			}
+			if err := m.Hold(held); err != nil {
+				t.Fatal(err)
+			}
+			applied, err := m.ResolveApprovalResult(held.DeferID, config.ActionAllow, SourceOperator)
+			wantErr := errors.Join(tc.confirm, tc.settle)
+			if (wantErr != nil && !errors.Is(err, failure)) || (wantErr == nil && err != nil) {
+				t.Fatalf("resolution error = %v, want %v", err, wantErr)
+			}
+			if wantErr == nil && applied != config.ActionBlock {
+				t.Fatalf("resolved %q, want block", applied)
+			}
+			if tc.name == "callback_omits_commit" {
+				result = corrected
+			}
+			if result.FinalDecision != config.ActionBlock || result.ResolutionSource != SourceCancel {
+				t.Fatalf("unreleased hold callback = %+v", result)
+			}
+			if count := m.HeldCount(); count != 0 {
+				t.Fatalf("resolved hold remains pending, count = %d", count)
+			}
+		})
+	}
+}
+
+func TestHoldFailureSourceCancellation(t *testing.T) {
+	for _, tc := range []struct {
+		err    error
+		source string
+	}{
+		{err: context.DeadlineExceeded, source: SourceTimeout},
+		{err: context.Canceled, source: SourceCancel},
+	} {
+		if got := HoldFailureSource(fmt.Errorf("admit held request: %w", tc.err)); got != tc.source {
+			t.Errorf("failure source for %v = %q, want %q", tc.err, got, tc.source)
+		}
 	}
 }

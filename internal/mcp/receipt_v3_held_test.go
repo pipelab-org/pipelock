@@ -1521,3 +1521,48 @@ func TestMCPV3POSTScopeDoesNotClaimReusedID(t *testing.T) {
 		t.Fatalf("current POST lost its exchange: %p", got)
 	}
 }
+
+func TestMCPV3HeldPreIntentRefusalCorrectsAllow(t *testing.T) {
+	for _, mode := range []string{"missing_session", "cancelled_approval"} {
+		t.Run(mode, func(t *testing.T) {
+			writer, writerOpts := openMCPV3RegressionWriter(t, deferred.SurfaceMCPStdio)
+			opts := (MCPProxyOpts{Transport: deferred.SurfaceMCPStdio}).WithV3ReceiptWriter(writer)
+			if mode == "cancelled_approval" {
+				opts = opts.withV3Session()
+			}
+			manager := deferred.NewManager(deferred.Config{Enabled: true, Timeout: time.Minute})
+			approval, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			var admissionErr error
+			held := v3ManagerAction(opts, "withheld", func(res deferred.Resolution, release deferred.Release) {
+				if res.FinalDecision != config.ActionAllow {
+					t.Errorf("unexpected resolution %+v", res)
+					return
+				}
+				if mode == "cancelled_approval" {
+					cancel()
+				}
+				id := json.RawMessage("1")
+				var exchange *mcpV3Exchange
+				exchange, admissionErr = opts.admitV3HeldSend(t.Context(), heldV3Evidence(res, id, opts), release)
+				if exchange != nil || opts.pendingV3Send(id) != nil {
+					t.Error("refused held send registered a reply owner")
+				}
+			})
+			if err := manager.Hold(held); err != nil {
+				t.Fatal(err)
+			}
+			applied, err := manager.ResolveApprovalResultContext(approval, held.DeferID, config.ActionAllow, deferred.SourceOperator)
+			if err != nil || applied != config.ActionBlock || admissionErr == nil {
+				t.Fatalf("resolve = %q, %v; admission = %v", applied, err, admissionErr)
+			}
+			if mode == "cancelled_approval" && !errors.Is(admissionErr, context.Canceled) {
+				t.Fatalf("cancelled approval admission = %v", admissionErr)
+			}
+			assertHeldEvidence(t, verifiedMCPV3RegressionActions(t, writer, writerOpts), []heldEvidencePoint{
+				holdPoint(held.ActionID, ""), resolutionPoint(held.ActionID, config.ActionAllow, false),
+				resolutionPoint(held.ActionID, config.ActionBlock, true),
+			})
+		})
+	}
+}

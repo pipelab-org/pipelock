@@ -807,3 +807,44 @@ func TestStreamWriterUnsealedClosePinsFailedReplay(t *testing.T) {
 	}
 	t.Fatalf("failed replay was not excluded from the stream tip: %+v", result.Histories[0].Streams)
 }
+
+func TestStreamWriterRepairsFailedHoldCorrection(t *testing.T) {
+	opts := writerTestOptions(t.TempDir())
+	opts.Heartbeat = 0
+	w := requireWriter(t, opts, localWriterStorage())
+	policy := CapturePolicy(Digest([]byte("held snapshot")))
+	hold := writerTestHold("corrected-hold")
+	hold.Hold.Parent = ""
+	if err := w.WriteAction(t.Context(), hold, policy); err != nil {
+		t.Fatal(err)
+	}
+	allow := blockingHoldResolution(hold, "operator", relationAfter, false)
+	allow.Verdict = verdictAllow
+	if err := w.WriteAction(t.Context(), allow, policy); err != nil {
+		t.Fatal(err)
+	}
+	previous := w.active.id
+	failure := errors.New("fixture correction append failed")
+	w.active.file = errorWriterFile{StreamFile: w.active.file, writeErr: failure}
+	block := blockingHoldResolution(hold, "request_cancelled", relationAfter, true)
+	err := w.WriteAction(t.Context(), block, policy)
+	if !errors.Is(err, failure) || !errors.Is(err, ErrHoldBlockRecorded) || w.active.id == previous {
+		t.Fatalf("correcting resolution = %v, stream changed = %t", err, w.active.id != previous)
+	}
+	if err := w.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	records := readRecoveryActions(t, opts.Dir, w.active.id)
+	if len(records) != 1 {
+		t.Fatalf("successor records = %+v, want one correcting block", records)
+	}
+	got := records[0]
+	if got.ActionID != hold.ActionID || got.Phase != phaseResolution || got.Verdict != verdictBlock ||
+		got.Hold == nil || got.Hold.ID != hold.Hold.ID || got.Hold.Correction == nil || !*got.Hold.Correction {
+		t.Fatalf("successor correction = %+v", got)
+	}
+	result := verifyWritten(t, opts.Dir, opts.SigningKey.Public().(ed25519.PublicKey))
+	if result.Integrity != "ok" || writerTestCount(t, result, "blocked") != 1 {
+		t.Fatalf("correction did not verify: %+v", result)
+	}
+}
