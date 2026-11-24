@@ -465,7 +465,7 @@ func (m *Manager) scheduleResolveLocked(held *HeldAction, delay time.Duration, s
 }
 
 func (m *Manager) resolveHeld(held *HeldAction, decision, source string) {
-	_, _ = m.resolveAppliedContext(context.Background(), held.DeferID, decision, source, held, false)
+	_, _ = m.resolveAppliedContext(context.Background(), held.DeferID, decision, source, held, resolveNoWait)
 }
 
 func (m *Manager) journalRejectedHold(action HeldAction, source string) {
@@ -496,10 +496,10 @@ func (m *Manager) Resolve(deferID, finalDecision, source string) error {
 // a journal failure can each close an allow, and callers that surface the
 // outcome to an operator must report that one, not the request.
 func (m *Manager) resolveApplied(deferID, finalDecision, source string) (string, error) {
-	return m.resolveAppliedContext(context.Background(), deferID, finalDecision, source, nil, true)
+	return m.resolveAppliedContext(context.Background(), deferID, finalDecision, source, nil, resolveWait)
 }
 
-func (m *Manager) resolveAppliedContext(ctx context.Context, deferID, finalDecision, source string, expected *HeldAction, wait bool) (string, error) {
+func (m *Manager) resolveAppliedContext(ctx context.Context, deferID, finalDecision, source string, expected *HeldAction, mode holdResolveMode) (string, error) {
 	if m == nil {
 		return "", ErrDisabled
 	}
@@ -510,7 +510,7 @@ func (m *Manager) resolveAppliedContext(ctx context.Context, deferID, finalDecis
 		source = SourceContext
 	}
 
-	held, finalDecision, source, err := m.takeHold(ctx, deferID, finalDecision, source, expected, wait)
+	held, finalDecision, source, err := m.takeHold(ctx, deferID, finalDecision, source, expected, mode)
 	if err != nil || held == nil {
 		return "", err
 	}
@@ -746,9 +746,14 @@ func (m *Manager) ResolveToolInventory(sessionID, finalDecision string) {
 		return
 	}
 	for _, held := range m.sweepSnapshot() {
-		if held.Authority.SessionID == sessionID && held.RulePolicy.AllowOn.ToolInventoryBaseline {
-			m.resolveHeld(held, finalDecision, SourceToolInventory)
+		if held.Authority.SessionID != sessionID {
+			continue
 		}
+		decision := finalDecision
+		if !held.RulePolicy.AllowOn.ToolInventoryBaseline {
+			decision = config.ActionDefer
+		}
+		m.resolveHeld(held, decision, SourceToolInventory)
 	}
 }
 
@@ -786,7 +791,7 @@ func (m *Manager) ResolveApprovalResultContext(ctx context.Context, deferID, fin
 	decision := approvalDecision(held.RulePolicy, finalDecision)
 	// Report what was applied, not what was asked: a kill switch that activated
 	// before release, or a release gate that refused, closes an approved hold.
-	return m.resolveAppliedContext(ctx, deferID, decision, source, expected, true)
+	return m.resolveAppliedContext(ctx, deferID, decision, source, expected, resolveWait)
 }
 
 // approvalDecision maps an approval input onto the terminal decision, enforcing
@@ -824,22 +829,17 @@ func (m *Manager) ResolvePolicyReload(evaluate ReloadEvaluator) {
 			continue
 		}
 		decision, err := evaluate(snapshot)
-		if err != nil {
-			m.resolveHeld(held, config.ActionBlock, SourcePolicyReload)
-			continue
-		}
-		switch decision {
-		case config.ActionAllow:
-			if held.RulePolicy.AllowOn.PolicyPermits {
-				m.resolveHeld(held, config.ActionAllow, SourcePolicyReload)
+		switch {
+		case err != nil:
+			decision = config.ActionBlock
+		case decision == config.ActionAllow:
+			if !snapshot.RulePolicy.AllowOn.PolicyPermits {
+				decision = config.ActionDefer
 			}
-		case config.ActionBlock:
-			m.resolveHeld(held, config.ActionBlock, SourcePolicyReload)
-		case config.ActionDefer:
-			continue
-		default:
-			m.resolveHeld(held, config.ActionBlock, SourcePolicyReload)
+		case decision != config.ActionDefer:
+			decision = config.ActionBlock
 		}
+		m.resolveHeld(held, decision, SourcePolicyReload)
 	}
 }
 

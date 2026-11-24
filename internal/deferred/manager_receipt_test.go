@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -702,4 +703,160 @@ func TestReceiptCascadeSweepKeepsReplacementHold(t *testing.T) {
 	if !ok || held.Authority.SessionID != "replacement" {
 		t.Fatalf("stale cascade consumed replacement hold %q", replaced)
 	}
+}
+
+func TestReceiptHoldLatestSweepRevokesApproval(t *testing.T) {
+	m := NewManager(Config{Enabled: true, Timeout: testwait.Deadline(time.Minute)})
+	parent := receiptAdmissionFixture("parent")
+	parent.ResolveReceipt = func(_ Resolution, release Release) { release.Commit() }
+	child := receiptAdmissionFixture("child")
+	child.RulePolicy.AllowOn.PolicyPermits = true
+	resolved := make(chan Resolution, 1)
+	child.ResolveReceipt = func(res Resolution, release Release) {
+		if res.FinalDecision == config.ActionAllow {
+			release.Commit()
+		}
+		resolved <- res
+	}
+	for _, held := range []HeldAction{parent, child} {
+		if err := m.Hold(held); err != nil {
+			t.Fatal(err)
+		}
+	}
+	defer m.ResolveAll(config.ActionBlock, SourceCancel)
+
+	for _, decision := range []string{config.ActionAllow, config.ActionDefer} {
+		m.ResolvePolicyReload(func(h HeldAction) (string, error) {
+			if h.DeferID == child.DeferID {
+				return decision, nil
+			}
+			return config.ActionDefer, nil
+		})
+	}
+	m.mu.Lock()
+	hasApproval := m.holds[child.DeferID].sweepApproval != ""
+	m.mu.Unlock()
+	if err := m.Resolve(parent.DeferID, config.ActionAllow, SourceOperator); err != nil {
+		t.Fatal(err)
+	}
+	if hasApproval {
+		res := receiveReceiptFixture(t, resolved)
+		t.Fatalf("newer defer left the sweep approval active: child resolved as %q", res.FinalDecision)
+	}
+	if _, ok := m.Held(child.DeferID); !ok {
+		t.Fatal("child did not remain held after the parent committed")
+	}
+}
+
+func TestReceiptHoldSweepSequences(t *testing.T) {
+	const (
+		policyAllow    = "policy-allow"
+		policyDefer    = "policy-defer"
+		inventoryAllow = "inventory-allow"
+		inventoryDefer = "inventory-defer"
+		inventoryBlock = "inventory-block"
+		parentCommit   = "parent-commit"
+		parentBlock    = "parent-block"
+	)
+	events := []string{policyAllow, policyDefer, inventoryAllow, inventoryDefer, inventoryBlock, parentCommit, parentBlock}
+	var enumerate func([]string, bool)
+	enumerate = func(sequence []string, decided bool) {
+		if len(sequence) == 3 {
+			return
+		}
+		for _, event := range events {
+			parentDecision := event == parentCommit || event == parentBlock
+			if parentDecision && decided {
+				continue
+			}
+			next := append(sequence, event)
+			for _, policyPermitted := range []bool{false, true} {
+				for _, inventoryPermitted := range []bool{false, true} {
+					name := fmt.Sprintf("%s/policy=%t/inventory=%t", strings.Join(next, "_"), policyPermitted, inventoryPermitted)
+					t.Run(name, func(t *testing.T) {
+						m := NewManager(Config{Enabled: true, Timeout: testwait.Deadline(time.Minute)})
+						parent := receiptAdmissionFixture("parent")
+						parent.ResolveReceipt = func(res Resolution, release Release) {
+							if res.FinalDecision == config.ActionAllow {
+								release.Commit()
+							}
+						}
+						child := receiptAdmissionFixture("child")
+						child.RulePolicy.AllowOn.PolicyPermits = policyPermitted
+						child.RulePolicy.AllowOn.ToolInventoryBaseline = inventoryPermitted
+						resolved := make(chan Resolution, 2)
+						child.ResolveReceipt = func(res Resolution, release Release) {
+							if res.FinalDecision == config.ActionAllow {
+								release.Commit()
+							}
+							resolved <- res
+						}
+						for _, held := range []HeldAction{parent, child} {
+							if err := m.Hold(held); err != nil {
+								t.Fatal(err)
+							}
+						}
+						defer m.ResolveAll(config.ActionBlock, SourceCancel)
+
+						var committed, sent, blocked, latestPermitted bool
+						for _, step := range next {
+							switch step {
+							case policyAllow, policyDefer:
+								latestPermitted = step == policyAllow && policyPermitted
+								m.ResolvePolicyReload(func(h HeldAction) (string, error) {
+									if h.DeferID == child.DeferID && step == policyAllow {
+										return config.ActionAllow, nil
+									}
+									return config.ActionDefer, nil
+								})
+							case inventoryAllow, inventoryDefer, inventoryBlock:
+								decision := config.ActionDefer
+								switch step {
+								case inventoryAllow:
+									decision = config.ActionAllow
+								case inventoryBlock:
+									decision = config.ActionBlock
+								}
+								latestPermitted = step == inventoryAllow && inventoryPermitted
+								blocked = blocked || (!sent && step == inventoryBlock && inventoryPermitted)
+								m.ResolveToolInventory(child.Authority.SessionID, decision)
+							case parentCommit, parentBlock:
+								committed = step == parentCommit
+								blocked = blocked || !committed
+								decision := config.ActionBlock
+								if committed {
+									decision = config.ActionAllow
+								}
+								if err := m.Resolve(parent.DeferID, decision, SourceOperator); err != nil {
+									t.Fatal(err)
+								}
+							}
+							if !sent && !blocked && committed && latestPermitted {
+								if got := receiveReceiptFixture(t, resolved); got.FinalDecision != config.ActionAllow {
+									t.Fatalf("after %s child resolved as %q, want allow", step, got.FinalDecision)
+								}
+								sent = true
+							}
+							m.mu.Lock()
+							current := m.holds[child.DeferID]
+							retained := current != nil && current.sweepApproval != ""
+							m.mu.Unlock()
+							wantHeld := !sent && !blocked
+							if (current != nil) != wantHeld || retained != (wantHeld && !committed && latestPermitted) {
+								t.Fatalf("after %s child held=%t retained=%t, model held=%t permitted=%t committed=%t",
+									step, current != nil, retained, wantHeld, latestPermitted, committed)
+							}
+						}
+						for len(resolved) != 0 {
+							if got := <-resolved; got.FinalDecision != config.ActionBlock {
+								t.Fatalf("unexpected child send: %+v", got)
+							}
+						}
+					})
+				}
+			}
+			enumerate(next, decided || parentDecision)
+		}
+	}
+	enumerate(nil, false)
 }
