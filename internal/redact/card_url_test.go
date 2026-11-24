@@ -17,6 +17,9 @@ func TestCardURLPresentation(t *testing.T) {
 		"https://api.vendor.example/path/" + pan[:4] + "." + pan[4:],
 		"https://api.vendor.example/?a=" + pan[:8] + "&b=" + pan[8:],
 		"https://a." + pan[:4] + "." + pan[4:] + ".vendor.example/",
+		"https://api.vendor.example/?" + pan[:4] + "%3" + pan[4:5] + pan[5:],
+		"https://" + pan[:4] + "%3" + pan[4:5] + pan[5:] + "@api.vendor.example/",
+		"https://api.vendor.example/%ZZ/?a=" + pan[:8] + "&b=" + pan[8:],
 	} {
 		found := false
 		for _, match := range m.Scan(text) {

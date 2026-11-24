@@ -65,20 +65,28 @@ func visitTextView(text string, yield func(Candidate) bool) bool {
 		}
 		parsed, err := url.Parse(token)
 		if err != nil {
+			if _, rest, ok := strings.Cut(token, "?"); ok {
+				rawQuery, _, _ := strings.Cut(rest, "#")
+				if query := decodedRawQueryValues(rawQuery); Visit(query, true, func(c Candidate) bool {
+					c.Start, c.End = span.Start, span.End
+					return yield(c)
+				}) {
+					return true
+				}
+			}
 			continue
 		}
 		// RFC 3986 percent decoding and URL-ordered query values preserve the
 		// existing URL reconstruction contract. Reconstructed spans replace the
 		// complete URL because their source bytes may be discontiguous.
-		var query strings.Builder
-		for _, pair := range strings.Split(parsed.RawQuery, "&") {
-			_, value, _ := strings.Cut(pair, "=")
-			decoded, err := url.QueryUnescape(value)
-			if err == nil {
-				query.WriteString(decoded)
+		views := []string{parsed.Path, parsed.Fragment, decodedRawQueryValues(parsed.RawQuery)}
+		if parsed.User != nil {
+			views = append(views, parsed.User.Username())
+			if pass, ok := parsed.User.Password(); ok {
+				views = append(views, pass)
 			}
 		}
-		for _, view := range []string{parsed.Path, parsed.Fragment, query.String()} {
+		for _, view := range views {
 			if Visit(view, true, func(c Candidate) bool {
 				c.Start, c.End = span.Start, span.End
 				return yield(c)
@@ -88,4 +96,24 @@ func visitTextView(text string, yield func(Candidate) bool) bool {
 		}
 	}
 	return false
+}
+
+func decodedRawQueryValues(rawQuery string) string {
+	if rawQuery == "" {
+		return ""
+	}
+	var query strings.Builder
+	for _, pair := range strings.Split(rawQuery, "&") {
+		key, value, hasEq := strings.Cut(pair, "=")
+		if !hasEq {
+			value = key
+		}
+		decoded, err := url.QueryUnescape(value)
+		if err == nil {
+			query.WriteString(decoded)
+		} else {
+			query.WriteString(value)
+		}
+	}
+	return query.String()
 }

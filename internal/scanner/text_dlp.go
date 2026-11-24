@@ -725,6 +725,13 @@ func (s *Scanner) ScanJSONCardRunsWithDepth(ctx context.Context, text string, ma
 			s.classifyCardRun(&result.Matches[i], run)
 			matches = append(matches, result.Matches[i])
 		}
+		for i := range result.InformationalMatches {
+			if run.RetryOnly && !result.InformationalMatches[i].cardPrefixRetry {
+				continue
+			}
+			result.InformationalMatches[i].span.ViewLabel = spanViewLabel("json_number_run", result.InformationalMatches[i].span.ViewLabel)
+			matches = append(matches, result.InformationalMatches[i])
+		}
 	}
 	return matches
 }
@@ -1488,7 +1495,11 @@ func (s *Scanner) matchDLPPatternsWithDecodes(text, encoding, source string, dec
 	text = decodes.normalize(text)
 	lowered := dlpLoweredBytes{positions: parent.transformed(kind, text)}
 	lowered.add(text)
-	return s.matchDLPPatternsLoweredWithDecodes(text, encoding, source, &lowered, textDLPAllPatterns, decodes)
+	patterns := textDLPAllPatterns
+	if decodes != nil && decodes.cardText {
+		patterns = textDLPCardPatterns
+	}
+	return s.matchDLPPatternsLoweredWithDecodes(text, encoding, source, &lowered, patterns, decodes)
 }
 
 func (s *Scanner) matchDLPPatternsLoweredWithDecodes(text, encoding, proseSource string, lowered *dlpLoweredBytes, patterns textDLPPatternSet, decodes *decodingMemo) []TextDLPMatch {

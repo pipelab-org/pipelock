@@ -49,12 +49,21 @@ func (s *Scanner) textURLCardMatches(ctx context.Context, text string, decodes *
 			break
 		}
 		token := text[loc.start:loc.end]
-		parsed, err := url.Parse(token)
-		if err != nil {
-			continue
+		var targets []dlpTarget
+		if parsed, err := url.Parse(token); err == nil {
+			targets = urlDLPTargets(parsed, decodes)
+		} else {
+			// Malformed escapes (e.g. %ZZ in path) make url.Parse fail; retain
+			// raw URL and query-concatenation views so malformed syntax cannot
+			// disable embedded-URL card enforcement.
+			targets = append(targets, dlpTarget{token, dlpViewLabel("url"), ""})
+			if _, rest, ok := strings.Cut(token, "?"); ok {
+				rawQuery, _, _ := strings.Cut(rest, "#")
+				targets = appendQueryConcatTargets(targets, "", rawQuery, decodes)
+			}
 		}
 
-		for _, target := range urlDLPTargets(parsed, decodes) {
+		for _, target := range targets {
 			view := normalize.ForDLP(target.text)
 			for _, id := range s.dlpCardPatternIndices {
 				p := *s.dlpPatterns[id]

@@ -27,6 +27,12 @@ func TestCandidateEnumeration(t *testing.T) {
 		{pan[:4] + "\t" + pan[4:], 0},
 		{pan + " 12/28", 1},
 		{"1234." + cardtest.Grouped(pan, "."), 1},
+		{"1234__" + cardtest.Grouped(pan, "__"), 1},
+		{cardtest.Grouped(pan, "__") + "__1234", 1},
+		{strings.Repeat("4242", 4) + "__" + pan, 2},
+		{"4242_4242_4242_4242__" + cardtest.Grouped(pan, "_"), 2},
+		{"order__" + pan, 0},
+		{pan + "__order", 0},
 		{strings.Repeat("4242", 4) + "-" + cardtest.Grouped(pan, "-"), 2},
 		{cardtest.Grouped(pan, "-") + "-" + cardtest.Grouped(pan, "-"), 2},
 	} {

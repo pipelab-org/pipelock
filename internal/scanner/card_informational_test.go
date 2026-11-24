@@ -42,6 +42,14 @@ func TestCardInformationalContinuation(t *testing.T) {
 			t.Fatalf("partition invariant failed: %+v", got)
 		}
 	}
+	splitPub := `["4242","4242","4242","4242"]`
+	if runs := s.ScanJSONCardRuns(t.Context(), splitPub); !OnlyInformational(runs) {
+		t.Fatalf("split public test PAN lost informational JSON run: %+v", runs)
+	}
+	splitBoth := `["4242","4242","4242","4242","` + pan[:4] + `","` + pan[4:8] + `","` + pan[8:12] + `","` + pan[12:] + `"]`
+	if runs := s.ScanJSONCardRuns(t.Context(), splitBoth); !HasEnforcingMatch(runs) {
+		t.Fatalf("split public test PAN shadowed real JSON card run: %+v", runs)
+	}
 }
 
 func TestInformationalDeduplicationDominance(t *testing.T) {

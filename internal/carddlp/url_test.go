@@ -36,6 +36,10 @@ func TestURLCardTextSpans(t *testing.T) {
 		"https://api.vendor.example/" + url.PathEscape(pan[:4]+"/"+pan[4:]),
 		"https://api.vendor.example/#" + pan[:4] + "%2F" + pan[4:],
 		"https://api.vendor.example/" + pan[:4] + "\u200b." + pan[4:],
+		"https://api.vendor.example/?" + pan[:4] + "%3" + pan[4:5] + pan[5:],
+		"https://" + pan[:4] + "%3" + pan[4:5] + pan[5:] + "@api.vendor.example/",
+		"https://user:" + pan[:4] + "%3" + pan[4:5] + pan[5:] + "@api.vendor.example/",
+		"https://api.vendor.example/%ZZ/?a=" + pan[:8] + "&b=" + pan[8:],
 	} {
 		text := "see (" + token + ")."
 		for _, stop := range []bool{false, true} {

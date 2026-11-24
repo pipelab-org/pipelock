@@ -121,15 +121,14 @@ func (p *compiledPattern) matchSpanInView(text, source string) (start, end int, 
 }
 
 func (p *compiledPattern) matchSpanInPositionedView(text, source string, view *matchingView) (start, end int, ok bool) {
-	if p.cardPrefixRetry {
-		return p.firstAcceptedPositionedSpan(text, nil, view)
-	}
-
 	if p.keywords != nil && p.keywordContext == nil {
 		pattern := *p
 		logical := config.DLPKeywordContext(source)
 		pattern.keywordContext = &keywordCandidateContext{logical: logical}
 		return pattern.matchSpanInPositionedView(text, source, view)
+	}
+	if p.cardPrefixRetry {
+		return p.firstAcceptedPositionedSpan(text, nil, view)
 	}
 	if !p.admitsView(text) {
 		return 0, 0, false

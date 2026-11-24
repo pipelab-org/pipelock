@@ -10,6 +10,7 @@ import (
 	"regexp/syntax"
 	"unicode/utf8"
 
+	"github.com/luckyPipewrench/pipelock/internal/carddlp"
 	"github.com/luckyPipewrench/pipelock/internal/jsonnumber"
 )
 
@@ -221,10 +222,12 @@ func (s *assembledShape) grammarNear(text string, position assembledPosition, ca
 	switch {
 	case s.validate != nil && s.validate.cardPrefixRetry:
 		// An accepted ordinary or glued card span passes the same checksum.
-		// Keep the original grammar screen after validation so the necessary
-		// condition cannot admit a lane the original screen rejected.
-		result = jsonnumber.HasShippedCardCandidate(string(data), s.validate.validate) &&
-			(s.local.Match(data) || s.gluedNear(string(data)))
+		// Keep the bounded grammar screen, and also admit underscore-flanked
+		// canonical candidates that RE2's \b treats as mid-word.
+		windowText := string(data)
+		result = jsonnumber.HasShippedCardCandidate(windowText, s.validate.validate) &&
+			(s.local.Match(data) || s.gluedNear(windowText) ||
+				carddlp.Visit(windowText, false, func(c carddlp.Candidate) bool { return s.validate.validate(windowText[c.Start:c.End]) }))
 	case s.validate != nil:
 		_, _, result = s.validate.firstAcceptedSpan(string(data), nil)
 		result = result || s.gluedNear(string(data))

@@ -118,14 +118,28 @@ func leftBoundary(s string, at int) bool {
 	if at == 0 || !word(s[at-1]) {
 		return true
 	}
-	if s[at-1] == '_' && at > 1 && digit(s[at-2]) {
-		return true
+	if s[at-1] == '_' {
+		if at == 1 || digit(s[at-2]) || !word(s[at-2]) {
+			return true
+		}
+		if s[at-2] == '_' && (at == 2 || digit(s[at-3]) || !word(s[at-3])) {
+			return true
+		}
 	}
 	return !digit(s[at-1]) && (at == 1 || !word(s[at-2]))
 }
 
 func rightBoundary(s string, at int) bool {
-	return at == len(s) || !word(s[at]) || s[at] == '_' && at+1 < len(s) && digit(s[at+1])
+	if at == len(s) || !word(s[at]) {
+		return true
+	}
+	if s[at] != '_' {
+		return false
+	}
+	if at+1 == len(s) || digit(s[at+1]) || !word(s[at+1]) {
+		return true
+	}
+	return s[at+1] == '_' && (at+2 == len(s) || digit(s[at+2]) || !word(s[at+2]))
 }
 
 // URL punctuation is structure, not card data. Alphabetic components remain
