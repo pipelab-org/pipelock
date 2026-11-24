@@ -36,6 +36,10 @@ var ErrEffectNotReleased = errors.New("receipt recorded that the effect was not 
 // durable blocking resolution. The caller must still withhold the release.
 var ErrHoldBlockRecorded = errors.New("receipt recorded the blocking hold resolution")
 
+// ErrActionPersistStarted means the writer started persisting the failed
+// action. Any repair of the unconfirmed action belongs to the writer.
+var ErrActionPersistStarted = errors.New("receipt action persistence started")
+
 // ErrActionVisible indicates the failed action is visible in the receipt
 // stream even though its durability could not be confirmed.
 var ErrActionVisible = errors.New("receipt action visible before durability failure")
@@ -77,7 +81,10 @@ func (w *StreamWriter) writeAction(ctx context.Context, action Action, policy Po
 		}
 		return nil
 	}
-	_, err := w.appendAction(ctx, action)
+	started, err := w.appendAction(ctx, action)
+	if started && err != nil {
+		err = errors.Join(ErrActionPersistStarted, err)
+	}
 	return err
 }
 
@@ -235,6 +242,13 @@ func (w *StreamWriter) queueActionRepair(action Action, confirmed bool) bool {
 		}
 	case phaseResolution:
 		if action.Verdict != verdictAllow {
+			// A correcting block supersedes an already confirmed allow.
+			// Preserve it across successor streams even though it cannot
+			// grant authority for an effect.
+			if action.Hold.Correction != nil && *action.Hold.Correction {
+				w.repairs = append(w.repairs, action)
+				return true
+			}
 			return false
 		}
 		source := "durability_failure"
@@ -247,7 +261,7 @@ func (w *StreamWriter) queueActionRepair(action Action, confirmed bool) bool {
 			return false
 		}
 		w.repairs = append(w.repairs, minimalRepairAction(action))
-		return false
+		return action.OutcomeClass == outcomeNotReleased
 	default:
 		return false
 	}

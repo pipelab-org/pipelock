@@ -5,11 +5,14 @@ package deferred
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -141,25 +144,27 @@ type AuthoritySnapshot struct {
 
 // HeldAction is the immutable action payload stored while awaiting resolution.
 type HeldAction struct {
-	DeferID       string
-	ActionID      string
-	ShardIndex    int
-	ShardSelected bool
-	Target        string
-	Reason        string
-	Surface       string
-	Method        string
-	SizeBytes     int
-	Policy        ResolutionPolicy
-	RulePolicy    config.DeferResolutionPolicy
-	Authority     AuthoritySnapshot
-	ParentDeferID string
-	CascadeDepth  int
-	Linkage       string
-	Deadline      time.Time
-	Payload       []byte
-	ArgDigest     string
-	Resolve       func(Resolution)
+	DeferID        string
+	ActionID       string
+	ShardIndex     int
+	ShardSelected  bool
+	Target         string
+	Reason         string
+	Surface        string
+	Method         string
+	SizeBytes      int
+	Policy         ResolutionPolicy
+	RulePolicy     config.DeferResolutionPolicy
+	Authority      AuthoritySnapshot
+	ParentDeferID  string
+	CascadeDepth   int
+	Linkage        string
+	Deadline       time.Time
+	Payload        []byte
+	ArgDigest      string
+	Resolve        func(Resolution)
+	Receipt        *ReceiptHold
+	ResolveReceipt func(Resolution, Release)
 	// ResolveWithReleaseRefusal is the synchronous Resolve variant for a
 	// release path that can still refuse immediately before sending. It may
 	// call refuse during the callback to close a journaled allow to block.
@@ -183,11 +188,14 @@ type HeldAction struct {
 	// entry, so that block's receipt is written first. Prepare's
 	// finish func is still pending, so the release claim and sink lock cover
 	// this call.
-	AfterJournal   func(Resolution) error
-	timer          *time.Timer
-	cascadeBlocked bool // protected by Manager.mu
-	state          string
-	createdAt      time.Time
+	AfterJournal    func(Resolution) error
+	timer           *time.Timer
+	cascadeBlocked  bool // protected by Manager.mu
+	state           string
+	createdAt       time.Time
+	lineage         *holdLineage
+	admissionBlock  string
+	parkedApprovals int
 }
 
 // Resolution is delivered exactly once for a held action.
@@ -210,14 +218,19 @@ type Resolution struct {
 
 // Manager tracks per-action holds. It is safe for concurrent use.
 type Manager struct {
-	mu             sync.Mutex
-	journalMu      sync.Mutex
-	cfg            Config
-	warningf       func(format string, args ...any)
-	holds          map[string]*HeldAction
-	sessionHolds   map[string][]string
-	totalBytes     int
-	pendingJournal map[string]journalEntry
+	mu                  sync.Mutex
+	journalMu           sync.Mutex
+	cfg                 Config
+	warningf            func(format string, args ...any)
+	holds               map[string]*HeldAction
+	sessionHolds        map[string][]string
+	totalBytes          int
+	reservations        int
+	sessionReservations map[string]int
+	lineage             map[string]*holdLineage
+	confirmingSessions  map[string]chan struct{}
+	changed             chan struct{}
+	pendingJournal      map[string]journalEntry
 	// fileSync replaces File.Sync for journal writes in tests; nil uses it.
 	fileSync func(*os.File) error
 	// dirSync replaces directorysync.Sync in tests; nil uses it.
@@ -252,10 +265,16 @@ func (e *CascadeLimitError) Unwrap() error {
 }
 
 func HoldFailureSource(err error) string {
-	if errors.Is(err, ErrCascadeLimit) {
+	switch {
+	case errors.Is(err, ErrCascadeLimit):
 		return SourceCascadeLimit
+	case errors.Is(err, context.DeadlineExceeded):
+		return SourceTimeout
+	case errors.Is(err, context.Canceled):
+		return SourceCancel
+	default:
+		return SourceCapacity
 	}
-	return SourceCapacity
 }
 
 // NewManager constructs a bounded held-action manager.
@@ -276,11 +295,15 @@ func NewManager(cfg Config) *Manager {
 		cfg.MaxCascadeDepth = DefaultMaxCascadeDepth
 	}
 	return &Manager{
-		cfg:            cfg,
-		warningf:       cfg.Warningf,
-		holds:          make(map[string]*HeldAction),
-		sessionHolds:   make(map[string][]string),
-		pendingJournal: make(map[string]journalEntry),
+		cfg:                 cfg,
+		warningf:            cfg.Warningf,
+		holds:               make(map[string]*HeldAction),
+		sessionHolds:        make(map[string][]string),
+		sessionReservations: make(map[string]int),
+		lineage:             make(map[string]*holdLineage),
+		confirmingSessions:  make(map[string]chan struct{}),
+		changed:             make(chan struct{}),
+		pendingJournal:      make(map[string]journalEntry),
 	}
 }
 
@@ -317,88 +340,121 @@ func (m *Manager) JournalPath() string {
 // Hold stores an action and starts its hard timeout. Capacity rejects the new
 // action; existing held actions are never evicted open.
 func (m *Manager) Hold(action HeldAction) error {
+	return m.HoldContext(context.Background(), action)
+}
+
+func (m *Manager) HoldContext(ctx context.Context, action HeldAction) error {
 	if !m.Enabled() {
 		return ErrDisabled
 	}
 	if action.DeferID == "" {
-		return fmt.Errorf("defer_id is required")
+		return errors.New("defer_id is required")
 	}
-	if action.Resolve == nil && action.ResolveWithReleaseRefusal == nil {
-		return fmt.Errorf("resolve callback is required")
+	if err := m.validateHoldCallbacks(action); err != nil {
+		return err
 	}
-	if action.SizeBytes < 0 {
-		action.SizeBytes = 0
-	}
-	now := time.Now().UTC()
+	action.SizeBytes = max(0, action.SizeBytes)
+	action.createdAt = time.Now().UTC()
 	action.Policy = m.Policy()
-	action.Deadline = now.Add(m.cfg.Timeout)
-	action.createdAt = now
+	action.Deadline = action.createdAt.Add(m.cfg.Timeout)
 	action.state = StateHeld
 
 	m.mu.Lock()
-	if _, exists := m.holds[action.DeferID]; exists {
+	if m.holds[action.DeferID] != nil || m.lineage[action.DeferID] != nil {
 		m.mu.Unlock()
 		m.journalRejectedHold(action, SourceDuplicateDeferID)
 		return fmt.Errorf("defer hold %q already exists", action.DeferID)
 	}
-	if len(m.holds) >= m.cfg.MaxPending ||
-		len(m.sessionHolds[action.Authority.SessionID]) >= m.cfg.MaxPendingPerSession ||
+	sessionID := action.Authority.SessionID
+	if m.reservations >= m.cfg.MaxPending ||
+		m.sessionReservations[sessionID] >= m.cfg.MaxPendingPerSession ||
 		action.SizeBytes > m.cfg.MaxPendingBytes ||
 		m.totalBytes > m.cfg.MaxPendingBytes-action.SizeBytes {
 		m.mu.Unlock()
 		m.journalRejectedHold(action, SourceCapacity)
 		return ErrCapacity
 	}
-	action.Linkage = LinkageSessionPendingAncestor
-	action.CascadeDepth = 1
-	// An empty session ID is not an identity. Linking the shared "" bucket
-	// would chain unrelated flows into one ancestry: one flow could
-	// cascade-block another and the signed receipts would claim a false
-	// parent/child relationship. Session-less holds stay independent roots
-	// (the per-session capacity cap still bounds the "" bucket).
-	if action.Authority.SessionID != "" {
-		if ids := m.sessionHolds[action.Authority.SessionID]; len(ids) > 0 {
-			parent := m.holds[ids[len(ids)-1]]
-			action.ParentDeferID = parent.DeferID
-			action.CascadeDepth = parent.CascadeDepth + 1
-			action.cascadeBlocked = parent.cascadeBlocked
-		}
+	if action.Receipt != nil {
+		confirmation := *action.Receipt
+		action.Receipt = &confirmation
+		return m.admitReceiptHoldLocked(ctx, &action)
 	}
-	if action.CascadeDepth > m.cfg.MaxCascadeDepth {
+	if err := m.linkHoldLocked(&action); err != nil {
 		m.mu.Unlock()
-		limitErr := &CascadeLimitError{
-			Depth:         action.CascadeDepth,
-			Limit:         m.cfg.MaxCascadeDepth,
-			ParentDeferID: action.ParentDeferID,
-		}
 		m.journalRejectedHold(action, SourceCascadeLimit)
-		return limitErr
+		return err
 	}
-	journalAction := action
-	stored := action
-	held := &stored
-	// Commit the StateHeld journal entry BEFORE publishing the hold, while still
-	// holding m.mu. A concurrent admission rejection for a related id blocks on
-	// m.mu until this returns, so it cannot append its StateAdmissionRejected
-	// entry ahead of this hold's StateHeld and causally invert the audit trail.
-	// On journal failure nothing is published, so no rollback is needed.
-	if err := m.appendJournal(journalEntryFromHeld(journalAction, StateHeld, "")); err != nil {
+	// Commit before publishing to preserve the journal order of related IDs.
+	if err := m.appendJournal(journalEntryFromHeld(action, StateHeld, "")); err != nil {
 		m.mu.Unlock()
 		return fmt.Errorf("journal defer hold: %w", err)
 	}
-	m.holds[action.DeferID] = held
-	m.sessionHolds[action.Authority.SessionID] = append(m.sessionHolds[action.Authority.SessionID], action.DeferID)
-	m.totalBytes += action.SizeBytes
-	m.mu.Unlock()
-
-	m.mu.Lock()
-	if live := m.holds[action.DeferID]; live != nil && live.state == StateHeld {
-		live.timer = time.AfterFunc(m.cfg.Timeout, func() {
-			_ = m.Resolve(action.DeferID, "block", SourceTimeout)
-		})
-	}
+	m.reserveHoldLocked(&action)
+	m.publishHoldLocked(&action)
 	m.mu.Unlock()
 	return nil
+}
+
+func (m *Manager) linkHoldLocked(action *HeldAction) error {
+	action.Linkage = LinkageSessionPendingAncestor
+	action.ParentDeferID = ""
+	action.CascadeDepth = 1
+	// The empty session bucket bounds capacity but cannot identify an ancestor.
+	if sessionID := action.Authority.SessionID; sessionID != "" {
+		if ids := m.sessionHolds[sessionID]; len(ids) > 0 {
+			parentID := ids[len(ids)-1]
+			action.ParentDeferID = parentID
+			if parent := m.lineage[parentID]; parent != nil {
+				action.CascadeDepth = parent.depth + 1
+				action.cascadeBlocked = parent.blocked
+			} else {
+				parent := m.holds[parentID]
+				action.CascadeDepth = parent.CascadeDepth + 1
+				action.cascadeBlocked = parent.cascadeBlocked
+			}
+		}
+	}
+	if action.CascadeDepth > m.cfg.MaxCascadeDepth {
+		return &CascadeLimitError{
+			Depth: action.CascadeDepth, Limit: m.cfg.MaxCascadeDepth, ParentDeferID: action.ParentDeferID,
+		}
+	}
+	return nil
+}
+
+func (m *Manager) reserveHoldLocked(action *HeldAction) {
+	m.holds[action.DeferID] = action
+	m.reservations++
+	m.sessionReservations[action.Authority.SessionID]++
+	m.totalBytes += action.SizeBytes
+}
+
+func (m *Manager) freeReservationLocked(action *HeldAction) {
+	m.reservations--
+	sessionID := action.Authority.SessionID
+	m.sessionReservations[sessionID]--
+	if m.sessionReservations[sessionID] == 0 {
+		delete(m.sessionReservations, sessionID)
+	}
+	m.totalBytes -= action.SizeBytes
+}
+
+func (m *Manager) publishHoldLocked(action *HeldAction) {
+	action.state = StateHeld
+	sessionID := action.Authority.SessionID
+	m.sessionHolds[sessionID] = append(m.sessionHolds[sessionID], action.DeferID)
+	id := action.DeferID
+	delay := time.Until(action.Deadline)
+	source := SourceTimeout
+	switch {
+	case action.admissionBlock != "":
+		delay, source = 0, action.admissionBlock
+	case action.lineage != nil && action.lineage.blocked:
+		delay, source = 0, SourceCascade
+	}
+	action.timer = time.AfterFunc(delay, func() {
+		_ = m.Resolve(id, config.ActionBlock, source)
+	})
 }
 
 func (m *Manager) journalRejectedHold(action HeldAction, source string) {
@@ -429,6 +485,10 @@ func (m *Manager) Resolve(deferID, finalDecision, source string) error {
 // a journal failure can each close an allow, and callers that surface the
 // outcome to an operator must report that one, not the request.
 func (m *Manager) resolveApplied(deferID, finalDecision, source string) (string, error) {
+	return m.resolveAppliedContext(context.Background(), deferID, finalDecision, source, true)
+}
+
+func (m *Manager) resolveAppliedContext(ctx context.Context, deferID, finalDecision, source string, wait bool) (string, error) {
 	if m == nil {
 		return "", ErrDisabled
 	}
@@ -439,23 +499,14 @@ func (m *Manager) resolveApplied(deferID, finalDecision, source string) (string,
 		source = SourceContext
 	}
 
-	m.mu.Lock()
-	held := m.holds[deferID]
-	if held == nil || held.state != StateHeld {
-		m.mu.Unlock()
-		return "", ErrNotFound
+	held, finalDecision, source, err := m.takeHold(ctx, deferID, finalDecision, source, wait)
+	if err != nil || held == nil {
+		return "", err
 	}
-	if held.cascadeBlocked {
-		finalDecision, source = config.ActionBlock, SourceCascade
+	if held.Receipt != nil {
+		defer m.finishReceiptHold(held)
 	}
-	held.state = StateResolving
-	delete(m.holds, deferID)
-	m.removeSessionHoldLocked(held.Authority.SessionID, deferID)
-	m.totalBytes -= held.SizeBytes
-	if held.timer != nil {
-		held.timer.Stop()
-	}
-	m.mu.Unlock()
+
 	if finalDecision == config.ActionAllow && held.BeforeAllow != nil {
 		release, ok := held.BeforeAllow()
 		if !ok || release == nil {
@@ -466,22 +517,7 @@ func (m *Manager) resolveApplied(deferID, finalDecision, source string) (string,
 		}
 	}
 
-	res := Resolution{
-		DeferID:          held.DeferID,
-		ParentActionID:   held.ActionID,
-		ShardIndex:       held.ShardIndex,
-		ShardSelected:    held.ShardSelected,
-		FinalDecision:    finalDecision,
-		ResolutionSource: source,
-		Authority:        held.Authority,
-		ParentDeferID:    held.ParentDeferID,
-		CascadeDepth:     held.CascadeDepth,
-		Linkage:          held.Linkage,
-		Policy:           held.Policy,
-		Target:           held.Target,
-		Method:           held.Method,
-		Reason:           held.Reason,
-	}
+	res := resolutionFor(held, finalDecision, source)
 	if held.Prepare != nil {
 		prepared, finish := held.Prepare(res)
 		if finish != nil {
@@ -492,6 +528,10 @@ func (m *Manager) resolveApplied(deferID, finalDecision, source string) (string,
 			prepared.FinalDecision = config.ActionBlock
 		}
 		res = prepared
+	}
+
+	if held.Receipt != nil {
+		return m.resolveReceiptHold(ctx, held, res)
 	}
 
 	if res.FinalDecision == config.ActionAllow {
@@ -518,6 +558,25 @@ func (m *Manager) resolveApplied(deferID, finalDecision, source string) (string,
 		held.Resolve(res)
 	}
 	return res.FinalDecision, nil
+}
+
+func resolutionFor(held *HeldAction, finalDecision, source string) Resolution {
+	return Resolution{
+		DeferID:          held.DeferID,
+		ParentActionID:   held.ActionID,
+		ShardIndex:       held.ShardIndex,
+		ShardSelected:    held.ShardSelected,
+		FinalDecision:    finalDecision,
+		ResolutionSource: source,
+		Authority:        held.Authority,
+		ParentDeferID:    held.ParentDeferID,
+		CascadeDepth:     held.CascadeDepth,
+		Linkage:          held.Linkage,
+		Policy:           held.Policy,
+		Target:           held.Target,
+		Method:           held.Method,
+		Reason:           held.Reason,
+	}
 }
 
 // journalRelease records an allow in three durable steps so that no point in
@@ -593,12 +652,17 @@ func (m *Manager) ResolveAll(finalDecision, source string) {
 	}
 	m.mu.Lock()
 	ids := make([]string, 0, len(m.holds))
-	for id := range m.holds {
-		ids = append(ids, id)
+	for id, held := range m.holds {
+		if held.state == stateAdmitting && finalDecision != config.ActionAllow {
+			held.admissionBlock = source
+		}
+		if held.state == StateHeld {
+			ids = append(ids, id)
+		}
 	}
 	m.mu.Unlock()
 	for _, id := range ids {
-		_ = m.Resolve(id, finalDecision, source)
+		_, _ = m.resolveAppliedContext(context.Background(), id, finalDecision, source, false)
 	}
 }
 
@@ -625,12 +689,9 @@ func (m *Manager) Snapshot() []HeldAction {
 	defer m.mu.Unlock()
 	out := make([]HeldAction, 0, len(m.holds))
 	for _, held := range m.holds {
-		cp := *held
-		cp.timer = nil
-		cp.Resolve = nil
-		cp.ResolveWithReleaseRefusal = nil
-		cp.Payload = append([]byte(nil), held.Payload...)
-		out = append(out, cp)
+		if held.state == StateHeld {
+			out = append(out, heldSnapshot(held))
+		}
 	}
 	return out
 }
@@ -642,7 +703,13 @@ func (m *Manager) HeldCount() int {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return len(m.holds)
+	count := 0
+	for _, held := range m.holds {
+		if held.state == StateHeld {
+			count++
+		}
+	}
+	return count
 }
 
 func (m *Manager) Held(deferID string) (HeldAction, bool) {
@@ -657,9 +724,9 @@ func (m *Manager) ResolveToolInventory(sessionID, finalDecision string) {
 	if m == nil {
 		return
 	}
-	for _, held := range m.Snapshot() {
+	for _, held := range m.sweepSnapshot() {
 		if held.Authority.SessionID == sessionID && held.RulePolicy.AllowOn.ToolInventoryBaseline {
-			_ = m.Resolve(held.DeferID, finalDecision, SourceToolInventory)
+			_, _ = m.resolveAppliedContext(context.Background(), held.DeferID, finalDecision, SourceToolInventory, false)
 		}
 	}
 }
@@ -683,9 +750,14 @@ func (m *Manager) ResolveApproval(deferID, finalDecision string) error {
 //
 // The returned error mirrors Resolve: ErrNotFound when the hold is unknown or
 // was already resolved (by timeout, cascade, or another resolver) between the
-// snapshot and the resolve. On any non-nil error nothing was resolved and the
-// returned decision is empty.
+// snapshot and the resolve. On a confirmation error the call is withheld
+// and the returned decision is empty because receipt settlement is unresolved.
 func (m *Manager) ResolveApprovalResult(deferID, finalDecision, source string) (string, error) {
+	return m.ResolveApprovalResultContext(context.Background(), deferID, finalDecision, source)
+}
+
+// ResolveApprovalResultContext lets a parked approval withdraw without settling the hold.
+func (m *Manager) ResolveApprovalResultContext(ctx context.Context, deferID, finalDecision, source string) (string, error) {
 	held, err := m.snapshotOne(deferID)
 	if err != nil {
 		return "", err
@@ -693,7 +765,7 @@ func (m *Manager) ResolveApprovalResult(deferID, finalDecision, source string) (
 	decision := approvalDecision(held.RulePolicy, finalDecision)
 	// Report what was applied, not what was asked: a kill switch that activated
 	// before release, or a release gate that refused, closes an approved hold.
-	return m.resolveApplied(deferID, decision, source)
+	return m.resolveAppliedContext(ctx, deferID, decision, source, true)
 }
 
 // approvalDecision maps an approval input onto the terminal decision, enforcing
@@ -725,7 +797,7 @@ func (m *Manager) ResolvePolicyReload(evaluate ReloadEvaluator) {
 	if m == nil || evaluate == nil {
 		return
 	}
-	for _, held := range m.Snapshot() {
+	for _, held := range m.sweepSnapshot() {
 		decision, err := evaluate(held)
 		if err != nil {
 			_ = m.Resolve(held.DeferID, config.ActionBlock, SourcePolicyReload)
@@ -734,7 +806,7 @@ func (m *Manager) ResolvePolicyReload(evaluate ReloadEvaluator) {
 		switch decision {
 		case config.ActionAllow:
 			if held.RulePolicy.AllowOn.PolicyPermits {
-				_ = m.Resolve(held.DeferID, config.ActionAllow, SourcePolicyReload)
+				_, _ = m.resolveAppliedContext(context.Background(), held.DeferID, config.ActionAllow, SourcePolicyReload, false)
 			}
 		case config.ActionBlock:
 			_ = m.Resolve(held.DeferID, config.ActionBlock, SourcePolicyReload)
@@ -756,12 +828,30 @@ func (m *Manager) snapshotOne(deferID string) (HeldAction, error) {
 	if held == nil || held.state != StateHeld {
 		return HeldAction{}, ErrNotFound
 	}
+	return heldSnapshot(held), nil
+}
+
+func heldSnapshot(held *HeldAction) HeldAction {
 	cp := *held
 	cp.timer = nil
 	cp.Resolve = nil
 	cp.ResolveWithReleaseRefusal = nil
+	cp.Receipt = nil
+	cp.ResolveReceipt = nil
+	cp.lineage = nil
 	cp.Payload = append([]byte(nil), held.Payload...)
-	return cp, nil
+	return cp
+}
+
+func (m *Manager) sweepSnapshot() []HeldAction {
+	holds := m.Snapshot()
+	slices.SortFunc(holds, func(a, b HeldAction) int {
+		if a.CascadeDepth != b.CascadeDepth {
+			return a.CascadeDepth - b.CascadeDepth
+		}
+		return strings.Compare(a.DeferID, b.DeferID)
+	})
+	return holds
 }
 
 func (m *Manager) removeSessionHoldLocked(sessionID, deferID string) {
