@@ -1566,3 +1566,74 @@ func TestMCPV3HeldPreIntentRefusalCorrectsAllow(t *testing.T) {
 		})
 	}
 }
+
+func TestMCPV3HeldSweepDecisionPolicy(t *testing.T) {
+	holdHash := "sha256:" + strings.Repeat("a", 64)
+	reloadHash := "sha256:" + strings.Repeat("b", 64)
+	for _, tc := range []struct {
+		name, policyHash, source string
+		parked                   bool
+	}{
+		{name: "reload_without_snapshot", source: deferred.SourcePolicyReload},
+		{name: "reload_with_snapshot", policyHash: reloadHash, source: deferred.SourcePolicyReload},
+		{name: "retained_reload", policyHash: reloadHash, source: deferred.SourcePolicyReload, parked: true},
+		{name: "inventory", source: deferred.SourceToolInventory},
+		{name: "retained_inventory", source: deferred.SourceToolInventory, parked: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			writer, writerOpts := openMCPV3RegressionWriter(t, deferred.SurfaceMCPStdio)
+			opts := (MCPProxyOpts{Transport: deferred.SurfaceMCPStdio, PolicyHash: holdHash}).WithV3ReceiptWriter(writer)
+			manager := deferred.NewManager(deferred.Config{Enabled: true, Timeout: testwait.Deadline(time.Minute)})
+			const parentID, heldID = "parent", "held"
+			settled := make(chan struct{})
+			if tc.parked {
+				parent := v3ManagerAction(opts, parentID, func(_ deferred.Resolution, release deferred.Release) { release.Commit() })
+				parent.RulePolicy.AllowOn.ToolInventoryBaseline = false
+				if err := manager.Hold(parent); err != nil {
+					t.Fatal(err)
+				}
+			}
+			held := v3ManagerAction(opts, heldID, func(_ deferred.Resolution, release deferred.Release) {
+				release.Commit()
+				close(settled)
+			})
+			if err := manager.Hold(held); err != nil {
+				t.Fatal(err)
+			}
+			switch {
+			case tc.source == deferred.SourceToolInventory:
+				manager.ResolveToolInventory(held.Authority.SessionID, config.ActionAllow)
+			case tc.policyHash == "":
+				manager.ResolvePolicyReload(func(deferred.HeldAction) (string, error) { return config.ActionAllow, nil })
+			default:
+				manager.ResolvePolicyReloadWithDecision(func(h deferred.HeldAction) (deferred.ReloadDecision, error) {
+					decision := config.ActionDefer
+					if h.DeferID == heldID {
+						decision = config.ActionAllow
+					}
+					return deferred.ReloadDecision{Decision: decision, PolicyHash: tc.policyHash}, nil
+				})
+			}
+			if tc.parked {
+				if _, ok := manager.Held(heldID); !ok {
+					t.Fatal("sweep released the child before parent commit")
+				}
+				if err := manager.Resolve(parentID, config.ActionAllow, deferred.SourceOperator); err != nil {
+					t.Fatal(err)
+				}
+			}
+			awaitHeldTest(t, settled)
+
+			var got []v3.ActionPolicy
+			for _, action := range verifiedMCPV3RegressionActions(t, writer, writerOpts) {
+				if action.ActionID == heldID {
+					got = append(got, action.Policy)
+				}
+			}
+			want := []v3.ActionPolicy{v3.CapturePolicy(holdHash).ActionPolicy(), v3.CapturePolicy(tc.policyHash).ActionPolicy()}
+			if !slices.Equal(got, want) {
+				t.Fatalf("signed hold and resolution policy = %+v, want %+v", got, want)
+			}
+		})
+	}
+}

@@ -188,33 +188,35 @@ type HeldAction struct {
 	// entry, so that block's receipt is written first. Prepare's
 	// finish func is still pending, so the release claim and sink lock cover
 	// this call.
-	AfterJournal    func(Resolution) error
-	timer           *time.Timer
-	cascadeBlocked  bool // protected by Manager.mu
-	state           string
-	createdAt       time.Time
-	lineage         *holdLineage
-	admissionBlock  string
-	parkedApprovals int
-	sweepApproval   string // protected by Manager.mu
+	AfterJournal       func(Resolution) error
+	timer              *time.Timer
+	cascadeBlocked     bool // protected by Manager.mu
+	state              string
+	createdAt          time.Time
+	lineage            *holdLineage
+	admissionBlock     string
+	parkedApprovals    int
+	sweepApproval      holdSweepApproval // protected by Manager.mu
+	decidingPolicyHash string            // set when takeHold claims the resolution
 }
 
 // Resolution is delivered exactly once for a held action.
 type Resolution struct {
-	DeferID          string
-	ParentActionID   string
-	ShardIndex       int
-	ShardSelected    bool
-	FinalDecision    string
-	ResolutionSource string
-	Authority        AuthoritySnapshot
-	ParentDeferID    string
-	CascadeDepth     int
-	Linkage          string
-	Policy           ResolutionPolicy
-	Target           string
-	Method           string
-	Reason           string
+	DeferID            string
+	ParentActionID     string
+	ShardIndex         int
+	ShardSelected      bool
+	FinalDecision      string
+	ResolutionSource   string
+	DecidingPolicyHash string
+	Authority          AuthoritySnapshot
+	ParentDeferID      string
+	CascadeDepth       int
+	Linkage            string
+	Policy             ResolutionPolicy
+	Target             string
+	Method             string
+	Reason             string
 }
 
 // Manager tracks per-action holds. It is safe for concurrent use.
@@ -465,7 +467,7 @@ func (m *Manager) scheduleResolveLocked(held *HeldAction, delay time.Duration, s
 }
 
 func (m *Manager) resolveHeld(held *HeldAction, decision, source string) {
-	_, _ = m.resolveAppliedContext(context.Background(), held.DeferID, decision, source, held, resolveNoWait)
+	_, _ = m.resolveAppliedContext(context.Background(), held.DeferID, decision, source, holdResolveRequest{expected: held})
 }
 
 func (m *Manager) journalRejectedHold(action HeldAction, source string) {
@@ -496,10 +498,10 @@ func (m *Manager) Resolve(deferID, finalDecision, source string) error {
 // a journal failure can each close an allow, and callers that surface the
 // outcome to an operator must report that one, not the request.
 func (m *Manager) resolveApplied(deferID, finalDecision, source string) (string, error) {
-	return m.resolveAppliedContext(context.Background(), deferID, finalDecision, source, nil, resolveWait)
+	return m.resolveAppliedContext(context.Background(), deferID, finalDecision, source, holdResolveRequest{mode: resolveWait})
 }
 
-func (m *Manager) resolveAppliedContext(ctx context.Context, deferID, finalDecision, source string, expected *HeldAction, mode holdResolveMode) (string, error) {
+func (m *Manager) resolveAppliedContext(ctx context.Context, deferID, finalDecision, source string, request holdResolveRequest) (string, error) {
 	if m == nil {
 		return "", ErrDisabled
 	}
@@ -510,7 +512,7 @@ func (m *Manager) resolveAppliedContext(ctx context.Context, deferID, finalDecis
 		source = SourceContext
 	}
 
-	held, finalDecision, source, err := m.takeHold(ctx, deferID, finalDecision, source, expected, mode)
+	held, finalDecision, source, err := m.takeHold(ctx, deferID, finalDecision, source, request)
 	if err != nil || held == nil {
 		return "", err
 	}
@@ -573,20 +575,21 @@ func (m *Manager) resolveAppliedContext(ctx context.Context, deferID, finalDecis
 
 func resolutionFor(held *HeldAction, finalDecision, source string) Resolution {
 	return Resolution{
-		DeferID:          held.DeferID,
-		ParentActionID:   held.ActionID,
-		ShardIndex:       held.ShardIndex,
-		ShardSelected:    held.ShardSelected,
-		FinalDecision:    finalDecision,
-		ResolutionSource: source,
-		Authority:        held.Authority,
-		ParentDeferID:    held.ParentDeferID,
-		CascadeDepth:     held.CascadeDepth,
-		Linkage:          held.Linkage,
-		Policy:           held.Policy,
-		Target:           held.Target,
-		Method:           held.Method,
-		Reason:           held.Reason,
+		DeferID:            held.DeferID,
+		ParentActionID:     held.ActionID,
+		ShardIndex:         held.ShardIndex,
+		ShardSelected:      held.ShardSelected,
+		FinalDecision:      finalDecision,
+		ResolutionSource:   source,
+		DecidingPolicyHash: held.decidingPolicyHash,
+		Authority:          held.Authority,
+		ParentDeferID:      held.ParentDeferID,
+		CascadeDepth:       held.CascadeDepth,
+		Linkage:            held.Linkage,
+		Policy:             held.Policy,
+		Target:             held.Target,
+		Method:             held.Method,
+		Reason:             held.Reason,
 	}
 }
 
@@ -791,7 +794,7 @@ func (m *Manager) ResolveApprovalResultContext(ctx context.Context, deferID, fin
 	decision := approvalDecision(held.RulePolicy, finalDecision)
 	// Report what was applied, not what was asked: a kill switch that activated
 	// before release, or a release gate that refused, closes an approved hold.
-	return m.resolveAppliedContext(ctx, deferID, decision, source, expected, resolveWait)
+	return m.resolveAppliedContext(ctx, deferID, decision, source, holdResolveRequest{expected: expected, mode: resolveWait})
 }
 
 // approvalDecision maps an approval input onto the terminal decision, enforcing
@@ -816,10 +819,28 @@ func approvalDecision(rp config.DeferResolutionPolicy, finalDecision string) str
 
 type ReloadEvaluator func(HeldAction) (string, error)
 
-// ResolvePolicyReload re-evaluates held actions against a caller-supplied fresh
+// ReloadDecision pairs a fresh policy verdict with its deciding revision.
+// An empty PolicyHash means the evaluator could not retain that digest.
+type ReloadDecision struct {
+	Decision   string
+	PolicyHash string
+}
+
+// ResolvePolicyReload re-evaluates held actions without policy attribution.
+func (m *Manager) ResolvePolicyReload(evaluate ReloadEvaluator) {
+	if evaluate == nil {
+		return
+	}
+	m.ResolvePolicyReloadWithDecision(func(held HeldAction) (ReloadDecision, error) {
+		decision, err := evaluate(held)
+		return ReloadDecision{Decision: decision}, err
+	})
+}
+
+// ResolvePolicyReloadWithDecision re-evaluates held actions against a fresh
 // policy view. Only affirmative policy_permits may allow; block/error resolves
 // closed; defer remains held until another resolver or the hard deadline.
-func (m *Manager) ResolvePolicyReload(evaluate ReloadEvaluator) {
+func (m *Manager) ResolvePolicyReloadWithDecision(evaluate func(HeldAction) (ReloadDecision, error)) {
 	if m == nil || evaluate == nil {
 		return
 	}
@@ -828,18 +849,19 @@ func (m *Manager) ResolvePolicyReload(evaluate ReloadEvaluator) {
 		if err != nil || current != held {
 			continue
 		}
-		decision, err := evaluate(snapshot)
+		result, err := evaluate(snapshot)
 		switch {
 		case err != nil:
-			decision = config.ActionBlock
-		case decision == config.ActionAllow:
+			result.Decision = config.ActionBlock
+		case result.Decision == config.ActionAllow:
 			if !snapshot.RulePolicy.AllowOn.PolicyPermits {
-				decision = config.ActionDefer
+				result.Decision = config.ActionDefer
 			}
-		case decision != config.ActionDefer:
-			decision = config.ActionBlock
+		case result.Decision != config.ActionDefer:
+			result.Decision = config.ActionBlock
 		}
-		m.resolveHeld(held, decision, SourcePolicyReload)
+		_, _ = m.resolveAppliedContext(context.Background(), held.DeferID, result.Decision, SourcePolicyReload,
+			holdResolveRequest{expected: held, policyHash: result.PolicyHash})
 	}
 }
 

@@ -734,7 +734,7 @@ func TestReceiptHoldLatestSweepRevokesApproval(t *testing.T) {
 		})
 	}
 	m.mu.Lock()
-	hasApproval := m.holds[child.DeferID].sweepApproval != ""
+	hasApproval := m.holds[child.DeferID].sweepApproval.source != ""
 	m.mu.Unlock()
 	if err := m.Resolve(parent.DeferID, config.ActionAllow, SourceOperator); err != nil {
 		t.Fatal(err)
@@ -839,7 +839,7 @@ func TestReceiptHoldSweepSequences(t *testing.T) {
 							}
 							m.mu.Lock()
 							current := m.holds[child.DeferID]
-							retained := current != nil && current.sweepApproval != ""
+							retained := current != nil && current.sweepApproval.source != ""
 							m.mu.Unlock()
 							wantHeld := !sent && !blocked
 							if (current != nil) != wantHeld || retained != (wantHeld && !committed && latestPermitted) {

@@ -72,10 +72,14 @@ func (o MCPProxyOpts) v3EffectAction(opts receipt.EmitOpts, boundary string) (v3
 	if digest == "" {
 		digest = o.receiptPolicyHash()
 	}
+	return action, mcpV3PolicySnapshot(digest)
+}
+
+func mcpV3PolicySnapshot(digest string) v3.PolicySnapshot {
 	if digest != "" && !strings.HasPrefix(digest, "sha256:") {
 		digest = "sha256:" + digest
 	}
-	return action, v3.CapturePolicy(digest)
+	return v3.CapturePolicy(digest)
 }
 
 type mcpV3EffectToken = v3.EffectToken
@@ -148,7 +152,14 @@ func (o MCPProxyOpts) setupV3Hold(held *deferred.HeldAction, evidence receipt.Em
 		if res.FinalDecision == config.ActionAsk {
 			resolution.Ask = &v3.Ask{Channel: "approval_api", Observed: true}
 		}
-		return o.receiptEffects.gate.RecordApproval(ctx, resolution, policy)
+		resolutionPolicy := policy
+		switch res.ResolutionSource {
+		case deferred.SourcePolicyReload, deferred.SourceToolInventory:
+			// A sweep decides independently of the policy that created the hold.
+			// The inventory resolver does not supply a deciding revision.
+			resolutionPolicy = mcpV3PolicySnapshot(res.DecidingPolicyHash)
+		}
+		return o.receiptEffects.gate.RecordApproval(ctx, resolution, resolutionPolicy)
 	}
 	held.Receipt = &deferred.ReceiptHold{
 		ConfirmHold: func(ctx context.Context, h deferred.HeldAction) error {
