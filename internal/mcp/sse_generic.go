@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -181,7 +182,15 @@ func ScanGenericSSEStreamWithOptions(
 	observedCore := newSSEObservedCoreRecorder(opts)
 
 	var warnedFinding error
+	var reportedWarnings map[string]struct{}
 	onFinding := func(err error) {
+		// Independent retained views can report the same rule on one event. Keep
+		// scanning every view, but deliver that identical warning only once.
+		key := err.Error()
+		if _, ok := reportedWarnings[key]; ok {
+			return
+		}
+		reportedWarnings[key] = struct{}{}
 		warnedFinding = errors.Join(warnedFinding, err)
 		if opts.OnFinding != nil {
 			opts.OnFinding(err)
@@ -189,6 +198,7 @@ func ScanGenericSSEStreamWithOptions(
 	}
 	for {
 		warnedFinding = nil
+		reportedWarnings = make(map[string]struct{})
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -395,6 +405,13 @@ func ScanGenericSSEStreamWithOptions(
 				}
 				droppedDLP.record(droppedMatches)
 			}
+			if len(tailDLPResult.Findings()) > 0 && scanner.CardRunAction(tailDLPResult.Findings(), cfg.Action) == config.ActionWarn {
+				var err error
+				tailDLPResult, err = scanNewSSEDLPWarnings(ctx, sc, tailDLPResult, sseDLPContinuation{tail: tail, value: rollingText, cardTail: cardTail, cardValue: cardRollingText, current: dlpResult.Findings()}, opts)
+				if err != nil {
+					return err
+				}
+			}
 			if len(tailDLPResult.Findings()) > 0 {
 				findingErr := sseDLPFindingError(tailDLPResult.Findings(), "cross-event dlp")
 				if scanner.CardRunAction(tailDLPResult.Findings(), cfg.Action) == config.ActionWarn {
@@ -405,47 +422,62 @@ func ScanGenericSSEStreamWithOptions(
 				}
 			}
 		}
-		if !skipTailDLP && !resetDLPTail && payloadTail != "" {
+		resetPayloadTail := false
+		if !skipTailDLP && payloadTail != "" {
 			result, droppedMatches := once.textDLP(payloadTail+payloadText, cardPayloadTail+cardPayloadText, false)
 			if err := checkSSEDLPContext(ctx); err != nil {
 				return err
 			}
 			droppedDLP.record(droppedMatches)
+			if len(result.Findings()) > 0 && scanner.CardRunAction(result.Findings(), cfg.Action) == config.ActionWarn {
+				var err error
+				result, err = scanNewSSEDLPWarnings(ctx, sc, result, sseDLPContinuation{tail: payloadTail, value: payloadText, cardTail: cardPayloadTail, cardValue: cardPayloadText, current: dlpResult.Findings()}, opts)
+				if err != nil {
+					return err
+				}
+			}
 			if len(result.Findings()) > 0 {
 				findingErr := sseDLPFindingError(result.Findings(), "cross-event dlp")
 				if scanner.CardRunAction(result.Findings(), cfg.Action) == config.ActionWarn {
 					onFinding(findingErr)
-					resetDLPTail = !scanner.OnlyInformational(result.Findings())
+					resetPayloadTail = !scanner.OnlyInformational(result.Findings())
 				} else {
 					return findingErr
 				}
 			}
 		}
-		if !skipTailDLP && !resetDLPTail && numberTail != "" && numberText != "" {
+		resetNumberTail := false
+		if !skipTailDLP && numberTail != "" && numberText != "" {
 			result, droppedMatches := once.textDLP(numberTail+numberText, numberCardTail+jsonnumber.NumberBoundary+numberCard, true)
 			if err := checkSSEDLPContext(ctx); err != nil {
 				return err
 			}
 			droppedDLP.record(droppedMatches)
+			if len(result.Findings()) > 0 && scanner.CardRunAction(result.Findings(), cfg.Action) == config.ActionWarn {
+				var err error
+				result, err = scanNewSSEDLPWarnings(ctx, sc, result, sseDLPContinuation{tail: numberTail, value: numberText, cardTail: numberCardTail, cardValue: jsonnumber.NumberBoundary + numberCard, typed: true, current: dlpResult.Findings()}, opts)
+				if err != nil {
+					return err
+				}
+			}
 			if len(result.Findings()) > 0 {
 				findingErr := sseDLPFindingError(result.Findings(), "cross-event dlp")
 				if scanner.CardRunAction(result.Findings(), cfg.Action) == config.ActionWarn {
 					onFinding(findingErr)
-					resetDLPTail = !scanner.OnlyInformational(result.Findings())
+					resetNumberTail = !scanner.OnlyInformational(result.Findings())
 				} else {
 					return findingErr
 				}
 			}
 		}
-		if numberText == "" || clearDLPTailAfterCurrent || resetDLPTail {
+		if numberText == "" || clearDLPTailAfterCurrent || resetNumberTail {
 			numberTail, numberCardTail = "", ""
 		} else {
 			numberTail = advanceSSERollingTail(numberTail, []byte(numberText), false, "")
 			numberCardTail = advanceSSERollingTail(numberCardTail, []byte(numberCard), false, jsonnumber.NumberBoundary)
 		}
 
-		resetFieldTail := false
-		if !skipTailDLP && !resetDLPTail {
+		{
 			var warnErr error
 			for _, view := range fieldTail.Views(frame) {
 				result, droppedMatches := keepUnsuppressedDLP(sc.ScanTextForDLP(ctx, view.Joined), opts.Target, opts.Suppress)
@@ -453,26 +485,30 @@ func ScanGenericSSEStreamWithOptions(
 					return err
 				}
 				droppedDLP.record(droppedMatches)
-				if result.Clean && len(result.Findings()) == 0 {
+				if len(result.Findings()) == 0 {
 					continue
 				}
-				findingErr := sseDLPFindingError(result.Findings(), "cross-event dlp")
 				if scanner.CardRunAction(result.Findings(), cfg.Action) == config.ActionWarn {
-					// A warn-only field must not skip a later field of this
-					// event. The warning is delivered once, after every field
-					// has been scanned, and only when none of them enforces.
-					if warnErr == nil {
-						warnErr = findingErr
+					var err error
+					result, err = scanNewSSEDLPWarnings(ctx, sc, result, sseDLPContinuation{tail: view.Tail, value: view.Value, cardTail: view.Tail, cardValue: view.Value, current: dlpResult.Findings()}, opts)
+					if err != nil {
+						return err
 					}
-					resetFieldTail = true
+					if len(result.Findings()) > 0 && scanner.CardRunAction(result.Findings(), cfg.Action) != config.ActionWarn {
+						return sseDLPFindingError(result.Findings(), "cross-event dlp")
+					}
+					if len(result.Findings()) > 0 && warnErr == nil {
+						warnErr = sseDLPFindingError(result.Findings(), "cross-event dlp")
+					}
 					continue
 				}
-				return findingErr
+				return sseDLPFindingError(result.Findings(), "cross-event dlp")
 			}
 			if warnErr != nil {
 				onFinding(warnErr)
 			}
 		}
+
 		// Warn and an exempt response domain log a finding and continue. They
 		// do not make an unjoined field safe to forward: the raw tail cannot
 		// see across the JSON envelope, so this closes in every action.
@@ -481,9 +517,9 @@ func ScanGenericSSEStreamWithOptions(
 		if fieldInjectionTail.Incomplete(frame) || fieldTail.Incomplete(frame) {
 			return fmt.Errorf("%w: cross-event inspection incomplete: event exceeds JSON field limits", ErrSSEStreamScanError)
 		}
-		// Any finding reported for this event clears the field tails so the
-		// same bytes are not reported again by the next event.
-		fieldTail.Advance(frame, resetFieldTail || resetDLPTail || clearDLPTailAfterCurrent)
+		// Warning deduplication must not erase a pending credential, including
+		// a new suffix in the same field as the warning.
+		fieldTail.Advance(frame, false)
 		fieldInjectionTail.Advance(frame, resetInjectionTail || clearInjectionTailAfterCurrent)
 
 		if clearDLPTailAfterCurrent {
@@ -511,20 +547,16 @@ func ScanGenericSSEStreamWithOptions(
 				if boundary := strings.LastIndexByte(rollingText, ' '); boundary >= 0 {
 					rollingText = rollingText[boundary+1:]
 				}
-				if boundary := strings.LastIndexByte(cardRollingText, ' '); boundary >= 0 {
-					cardRollingText = cardRollingText[boundary+1:]
-				}
+			}
+			if resetPayloadTail {
 				if boundary := strings.LastIndexByte(payloadText, ' '); boundary >= 0 {
 					payloadText = payloadText[boundary+1:]
 				}
-				if boundary := strings.LastIndexByte(cardPayloadText, ' '); boundary >= 0 {
-					cardPayloadText = cardPayloadText[boundary+1:]
-				}
 			}
 			tail = advanceSSERollingTail(tail, []byte(rollingText), resetDLPTail, "")
-			cardTail = advanceSSERollingTail(cardTail, []byte(cardRollingText), resetDLPTail, "")
-			payloadTail = advanceSSERollingTail(payloadTail, []byte(payloadText), resetDLPTail, "")
-			cardPayloadTail = advanceSSERollingTail(cardPayloadTail, []byte(cardPayloadText), resetDLPTail, "")
+			cardTail = advanceSSERollingTail(cardTail, []byte(cardRollingText), false, "")
+			payloadTail = advanceSSERollingTail(payloadTail, []byte(payloadText), resetPayloadTail, "")
+			cardPayloadTail = advanceSSERollingTail(cardPayloadTail, []byte(cardPayloadText), false, "")
 		}
 		if clearDLPTailAfterCurrent || resetDLPTail {
 			// A fragment with no whitespace boundary can still hold the whole
@@ -668,6 +700,125 @@ func isASCII(s string) bool {
 		}
 	}
 	return true
+}
+
+// sseDLPContinuation holds the retained and current scan views for a warning.
+type sseDLPContinuation struct {
+	tail, value, cardTail, cardValue string
+	typed                            bool
+	current                          []scanner.TextDLPMatch
+}
+
+// scanNewSSEDLPWarnings scans a copy after completed prior findings. The full
+// card view and retained traffic remain intact, including a card prefix after
+// a warning in the same field. The existing probe budget bounds suffix work.
+func scanNewSSEDLPWarnings(ctx context.Context, sc *scanner.Scanner, result scanner.TextDLPResult, view sseDLPContinuation, opts GenericSSEScanOptions) (scanner.TextDLPResult, error) {
+	scan := func(text, cards string) scanner.TextDLPResult {
+		var r scanner.TextDLPResult
+		if view.typed {
+			r = sc.ScanTextForDLPQuietWithTypedCardView(ctx, text, cards)
+		} else {
+			r = sc.ScanTextForDLPQuietWithCardView(ctx, text, cards)
+		}
+		r, _ = keepUnsuppressedDLP(r, opts.Target, opts.Suppress)
+		return r
+	}
+	prior := scan(view.tail, view.cardTail)
+	if err := prior.Err(); err != nil {
+		return result, fmt.Errorf("%w: %w", ErrSSEStreamScanError, err)
+	}
+	initial := result.Findings()
+	fresh := keepNewSSEDLPFindings(result, view.current, prior.Findings(), view.tail, view.tail+view.value)
+	suffix, err := dropSelfMatchingSSETailWithScan(ctx, view.tail, opts, func(ctx context.Context, text string) scanner.TextDLPResult {
+		r := sc.ScanTextForDLPQuiet(ctx, text)
+		// This bookkeeping predicate includes warnings. A warning must not hide
+		// a distinct later value of the same rule in the scan-only suffix.
+		r.Clean = len(r.Findings()) == 0 && !r.Incomplete
+		return r
+	})
+	if err != nil {
+		return result, err
+	}
+	if suffix == view.tail {
+		return fresh, nil
+	}
+	next := scan(suffix+view.value, view.cardTail+view.cardValue)
+	if err := next.Err(); err != nil {
+		return result, fmt.Errorf("%w: %w", ErrSSEStreamScanError, err)
+	}
+	known := append(append(append([]scanner.TextDLPMatch{}, view.current...), prior.Findings()...), initial...)
+	next = keepNewSSEDLPFindings(next, known, nil, "", "")
+	fresh.Matches = append(fresh.Matches, next.Matches...)
+	fresh.InformationalMatches = append(fresh.InformationalMatches, next.InformationalMatches...)
+	fresh.Clean = !fresh.Incomplete && !scanner.HasEnforcingMatch(fresh.Findings())
+	return fresh, nil
+}
+
+// keepNewSSEDLPFindings deduplicates warnings by rule and value, preserving
+// enforcing verdicts at the caller and leaving all retained traffic intact.
+func keepNewSSEDLPFindings(result scanner.TextDLPResult, current, prior []scanner.TextDLPMatch, priorText, joined string) scanner.TextDLPResult {
+	type rule struct {
+		name, bundle, version string
+		informational         bool
+	}
+	type key struct {
+		rule  rule
+		value [32]byte
+	}
+	type origin struct {
+		rule  rule
+		start int
+	}
+	ruleOf := func(m scanner.TextDLPMatch) rule {
+		return rule{m.PatternName, m.Bundle, m.BundleVersion, m.IsInformational()}
+	}
+	identity := func(m scanner.TextDLPMatch) (key, bool) {
+		value, ok := m.ValueIdentity()
+		return key{ruleOf(m), value}, ok
+	}
+	seen := make(map[key]struct{})
+	for _, matches := range [][]scanner.TextDLPMatch{current, prior} {
+		for _, m := range matches {
+			if k, ok := identity(m); ok {
+				seen[k] = struct{}{}
+			}
+		}
+	}
+	// A greedy literal matcher can extend an already complete prior value.
+	// Suppress that same origin, but never equate an informational prior match
+	// with enforcing evidence. Decoded-coordinate extensions remain independent.
+	normalized := normalize.ForDLP(priorText)
+	if priorText != "" && strings.HasPrefix(normalize.ForDLP(joined), normalized) {
+		ends := make(map[origin]int)
+		for _, m := range prior {
+			span := m.Span()
+			if m.Encoded == "" && span.ViewLabel == scanner.ViewDLPNormalized && span.ByteEnd > span.ByteStart && span.ByteEnd <= len(normalized) {
+				ends[origin{ruleOf(m), span.ByteStart}] = span.ByteEnd
+			}
+		}
+		for _, m := range result.Findings() {
+			span := m.Span()
+			end, ok := ends[origin{ruleOf(m), span.ByteStart}]
+			if ok && m.Encoded == "" && span.ViewLabel == scanner.ViewDLPNormalized && span.ByteEnd >= end {
+				if k, ok := identity(m); ok {
+					seen[k] = struct{}{}
+				}
+			}
+		}
+	}
+	duplicate := func(m scanner.TextDLPMatch) bool {
+		k, ok := identity(m)
+		if !ok {
+			return false
+		}
+		_, exists := seen[k]
+		seen[k] = struct{}{}
+		return exists
+	}
+	result.Matches = slices.DeleteFunc(slices.Clone(result.Matches), duplicate)
+	result.InformationalMatches = slices.DeleteFunc(slices.Clone(result.InformationalMatches), duplicate)
+	result.Clean = !result.Incomplete && !scanner.HasEnforcingMatch(result.Findings())
+	return result
 }
 
 // dropSelfMatchingSSETail keeps only the bytes after a match already reported

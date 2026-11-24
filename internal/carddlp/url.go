@@ -147,9 +147,18 @@ func visitDecodedQueryValues(rawQuery string, yield func(Candidate) bool) bool {
 		return false
 	}
 	var query strings.Builder
+	var fields []URLSpan
 	for _, pair := range strings.Split(rawQuery, "&") {
 		key, value, hasEq := strings.Cut(pair, "=")
-		if !hasEq {
+		if hasEq {
+			decodedName, err := url.QueryUnescape(key)
+			if err != nil {
+				decodedName = key
+			}
+			if Visit(normalize.ForCardText(decodedName), true, yield) {
+				return true
+			}
+		} else {
 			value = key
 		}
 		decoded, err := url.QueryUnescape(value)
@@ -160,7 +169,24 @@ func visitDecodedQueryValues(rawQuery string, yield func(Candidate) bool) bool {
 		if Visit(decoded, true, yield) {
 			return true
 		}
+		fields = append(fields, URLSpan{Start: query.Len(), End: query.Len() + len(decoded)})
 		query.WriteString(decoded)
 	}
-	return Visit(query.String(), true, yield)
+	if len(fields) < 2 {
+		return false
+	}
+	fieldIndex := 0
+	return Visit(query.String(), true, func(c Candidate) bool {
+		// Each field was already visited independently. The joined view owns
+		// only candidates spanning fields, including a token without an equals sign.
+		// Visit emits candidate starts in order. A monotonic field cursor
+		// avoids rescanning every query field for every candidate.
+		for fieldIndex < len(fields) && fields[fieldIndex].End <= c.Start {
+			fieldIndex++
+		}
+		if fieldIndex < len(fields) && c.Start >= fields[fieldIndex].Start && c.End <= fields[fieldIndex].End {
+			return false
+		}
+		return yield(c)
+	})
 }

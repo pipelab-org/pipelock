@@ -27,7 +27,7 @@ func TestScanDiffCardURLs(t *testing.T) {
 		found := false
 		for _, finding := range result.Findings {
 			found = found || finding.Pattern == "Credit Card Number"
-			if strings.Contains(finding.Content, pan[:4]) || strings.Contains(finding.Content, pan[4:]) {
+			if strings.Contains(finding.Content, pan[:4]) || strings.Contains(finding.Content, pan[4:]) || strings.Contains(finding.Content, pan[:8]) || strings.Contains(finding.Content, pan[8:]) {
 				t.Fatalf("card bytes retained in diff report: %s", finding.Content)
 			}
 		}

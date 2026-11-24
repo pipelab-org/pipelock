@@ -206,7 +206,8 @@ func TestCardMainDifferential(t *testing.T) {
 			}
 			totals[name+" "+direction]++
 			if before && !after {
-				allowed := c.AllowedLoss(surface == 3)
+				input := []string{c.Text, c.JSON, c.URL, c.Text}[surface]
+				allowed := cardcorpus.AllowedLoss(name, input)
 				if allowed == "" {
 					failures++
 					details[name+" unapproved/"+c.Context+"/"+strconv.Quote(c.Separator)]++

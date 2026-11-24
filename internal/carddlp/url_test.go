@@ -84,3 +84,58 @@ func TestURLCardIndependentQueryValues(t *testing.T) {
 		t.Fatalf("independent query values lost: %v", seen)
 	}
 }
+
+func TestURLCardIndependentQueryNames(t *testing.T) {
+	first, second := cardtest.Issuer("4019", 16), cardtest.Issuer("5191", 16)
+	for _, suffix := range []string{"=x", "=x&b=%35" + second[1:], ""} {
+		token := "https://api.vendor.example/?%34" + first[1:] + suffix
+		seen := map[string]bool{}
+		VisitText(token, func(c Candidate) bool {
+			if c.Start != 0 || c.End != len(token) {
+				t.Fatalf("decoded name span: %+v", c)
+			}
+			seen[c.Digits] = true
+			return false
+		})
+		if !seen[first] || strings.Contains(suffix, "&") && !seen[second] {
+			t.Errorf("query names missing for %q: %v", token, seen)
+		}
+	}
+}
+
+func TestDecodedQuerySingleTokenVisitedOnce(t *testing.T) {
+	pan := cardtest.Issuer("4019", 16)
+	for _, suffix := range []string{"", "&note=safe"} {
+		count := 0
+		visitDecodedQueryValues("%34"+pan[1:]+suffix, func(c Candidate) bool {
+			if c.Digits == pan {
+				count++
+			}
+			return false
+		})
+		if count != 1 {
+			t.Fatalf("single token visited %d times, suffix=%q", count, suffix)
+		}
+	}
+}
+
+func TestCardMixedControlContext(t *testing.T) {
+	pan := cardtest.Issuer("4019", 16)
+	for _, sep := range []string{"\t", "\r", "\n", "\r\n"} {
+		split := pan[:4] + sep + pan[4:]
+		for _, text := range []string{"0." + split, split + "-99", pan[:4] + sep + pan[4:8] + " " + pan[8:]} {
+			found := false
+			VisitText(text, func(c Candidate) bool { found = found || c.Digits == pan; return false })
+			if !found {
+				t.Errorf("mixed presentation missing: %q", text)
+			}
+		}
+		if VisitText(split, func(Candidate) bool { return true }) {
+			t.Errorf("pure control join detected: %q", split)
+		}
+		token := "https://api.vendor.example/?v=" + url.QueryEscape(split)
+		if !VisitText(token, func(c Candidate) bool { return c.Digits == pan }) {
+			t.Errorf("URL control join missing: %q", token)
+		}
+	}
+}

@@ -34,8 +34,14 @@ func TestAllowedLossPresentation(t *testing.T) {
 		{public + "\t" + pan, "bare", "", false},
 		{"9" + public, "bare", "", false},
 	} {
-		c := Case{Value: tc.value, Context: tc.context}
-		if got := c.AllowedLoss(tc.redaction); got != tc.want {
+		surface := "text"
+		if tc.redaction {
+			surface = "redact"
+		}
+		if tc.context == "path" {
+			surface = "url"
+		}
+		if got := AllowedLoss(surface, tc.value); got != tc.want {
 			t.Errorf("value=%q context=%s redaction=%v got %q want %q", tc.value, tc.context, tc.redaction, got, tc.want)
 		}
 	}
@@ -63,13 +69,57 @@ func TestCasesAreDeterministicAndClassified(t *testing.T) {
 		}
 		ids[c.ID] = struct{}{}
 		for _, redaction := range []bool{false, true} {
-			class := c.AllowedLoss(redaction)
+			surface := "text"
+			if redaction {
+				surface = "redact"
+			}
+			class := AllowedLoss(surface, c.Text)
 			if !allowed[class] {
 				t.Fatalf("case %s: unexpected allowed-loss class %q", c.ID, class)
 			}
 			if redaction && class != "" && class != "published" {
 				t.Fatalf("case %s: redaction may only lose published examples, got %q", c.ID, class)
 			}
+		}
+	}
+}
+
+func TestAllowedLossRenderedLoopholes(t *testing.T) {
+	pan := number("4019", 16, 0)
+	value := pan[:4] + "." + pan[4:]
+	c := makeCase("hand", "visa", ".", "decimal-prefix", []string{pan[:4], pan[4:]})
+	if got := AllowedLoss("text", c.Text); got != "" {
+		t.Errorf("two-dot rendered input %q exempted as %s", c.Text, got)
+	}
+	c = Case{Value: value, Context: "bare", URL: "https://api.vendor.example/?value=" + value}
+	if got := AllowedLoss("url", c.URL); got != "" {
+		t.Errorf("URL input %q exempted as %s", c.URL, got)
+	}
+}
+
+func TestAllowedLossSurfaceInputs(t *testing.T) {
+	pan := number("4019", 16, 0)
+	long := number("4019", 19, 2)
+	otherVisa := number("4539", 16, 0)
+	for _, tc := range []struct{ surface, input, want string }{
+		{"text", otherVisa + "\t" + pan[:4] + "." + pan[4:], ""},
+		{"unknown", pan[:4] + "." + pan[4:], ""},
+		{"json-body", `{"value":"` + pan + `","value":"` + strings.Repeat("4242", 4) + `"}`, ""},
+		{"json-body", `"` + strings.Repeat("4242", 4) + `" ` + pan, ""},
+		{"text", "0." + pan[:4] + "." + pan[4:], ""},
+		{"text", "https://api.vendor.example/?v=" + pan[:4] + "." + pan[4:], ""},
+		{"json-body", `{"value":"https://api.vendor.example/?v=` + pan[:4] + "." + pan[4:] + `"}`, ""},
+		{"json-body", `["` + pan[:4] + `.","` + pan[4:] + `"]`, ""},
+		{"text", long[:16] + "\t" + long[16:18] + "\t" + long[18:], ""},
+		{"text", pan[:4] + "." + pan[4:] + "-99", ""},
+		{"text", pan[:8] + "\t" + pan[8:] + "-99", ""},
+		{"text", pan + ".99", ""},
+		{"text", "99." + pan, ""},
+		{"text", pan[:4] + "\t" + pan[4:8] + " " + pan[8:], ""},
+		{"url", "https://api.vendor.example/?v=" + pan[:8] + "%09" + pan[8:], ""},
+	} {
+		if got := AllowedLoss(tc.surface, tc.input); got != tc.want {
+			t.Errorf("surface=%s input=%q got=%q want=%q", tc.surface, tc.input, got, tc.want)
 		}
 	}
 }

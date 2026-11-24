@@ -281,14 +281,14 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 		// Non-card credentials split across adjacent text parts are contiguous
 		// only in these views. Pass 2 owns card classification from the original
 		// document; a text join must not erase its scalar boundaries.
-		if dlpResult := sc.ScanTextForDLPWithTypedCardView(ctx, view, ""); !dlpResult.Clean {
+		if dlpResult := sc.ScanTextForDLPWithTypedCardView(ctx, view, ""); len(dlpResult.Findings()) > 0 {
 			result.Clean = false
 			result.DLPFindings = appendUniqueA2ADLPFindings(result.DLPFindings, dlpResult.Findings())
 			findingAction := defaultFindingAction
 			if budgetExceeded || a2aDLPForcesBlock(dlpResult.Findings()) {
 				findingAction = config.ActionBlock
 			}
-			action = config.StrongestAction(action, findingAction)
+			action = config.StrongestAction(action, scanner.CardRunAction(dlpResult.Findings(), findingAction))
 		}
 	}
 
@@ -1404,6 +1404,9 @@ func ScanA2AStreamWithOptions(ctx context.Context, body io.Reader, w io.Writer, 
 			}
 			if warnedFinding == nil {
 				warnedFinding = fmt.Errorf("%w: informational JSON card run (action=warn)", sseFindingCause(ErrA2AStreamFinding, session.FindingDLP))
+				if !scanner.OnlyNumberOnlyCardRuns(matches) {
+					warnedFinding = fmt.Errorf("%w: dlp (action=warn): %s", sseFindingCause(ErrA2AStreamFinding, session.FindingDLP), sseDLPMatchNames(matches))
+				}
 				sc.EmitTextDLPWarnMatches(ctx, matches)
 				if opts.Warning.OnFinding != nil {
 					opts.Warning.OnFinding(warnedFinding)
@@ -1495,6 +1498,13 @@ func ScanA2AStreamWithOptions(ctx context.Context, body io.Reader, w io.Writer, 
 			if err := dlpResult.Err(); err != nil {
 				return fmt.Errorf("%w: %w", ErrSSEStreamScanError, err)
 			}
+			if len(dlpResult.Findings()) > 0 && scanner.CardRunAction(dlpResult.Findings(), config.ActionBlock) == config.ActionWarn {
+				var err error
+				dlpResult, err = scanNewSSEDLPWarnings(ctx, sc, dlpResult, sseDLPContinuation{tail: dlpTail, value: currentText, cardTail: cardTail, cardValue: cardBoundary + currentCardText, typed: true, current: eventResult.DLPFindings}, GenericSSEScanOptions{})
+				if err != nil {
+					return err
+				}
+			}
 			if len(dlpResult.Findings()) > 0 && !recordNumberOnly(dlpResult.Findings()) {
 				if scanner.HasInspectionLimit(dlpResult.Findings()) {
 					return sseDLPFindingError(dlpResult.Findings(), "cross-event dlp")
@@ -1512,6 +1522,13 @@ func ScanA2AStreamWithOptions(ctx context.Context, body io.Reader, w io.Writer, 
 			if err := result.Err(); err != nil {
 				return fmt.Errorf("%w: %w", ErrSSEStreamScanError, err)
 			}
+			if len(result.Findings()) > 0 && scanner.CardRunAction(result.Findings(), config.ActionBlock) == config.ActionWarn {
+				var err error
+				result, err = scanNewSSEDLPWarnings(ctx, sc, result, sseDLPContinuation{tail: numberTail, value: numberText, cardTail: numberCardTail, cardValue: jsonnumber.NumberBoundary + numberCard, typed: true, current: eventResult.DLPFindings}, GenericSSEScanOptions{})
+				if err != nil {
+					return err
+				}
+			}
 			if len(result.Findings()) > 0 && !recordNumberOnly(result.Findings()) {
 				if scanner.HasInspectionLimit(result.Matches) {
 					return sseDLPFindingError(result.Findings(), "cross-event dlp")
@@ -1528,16 +1545,27 @@ func ScanA2AStreamWithOptions(ctx context.Context, body io.Reader, w io.Writer, 
 
 		for _, view := range fieldTail.Views(frame) {
 			dlpResult := sc.ScanTextForDLP(ctx, view.Joined)
-			if dlpResult.Incomplete {
-				return fmt.Errorf("%w: cross-event dlp scan incomplete: %w", ErrSSEStreamScanError, context.Cause(ctx))
+			if err := dlpResult.Err(); err != nil {
+				return fmt.Errorf("%w: %w", ErrSSEStreamScanError, err)
 			}
-			if !dlpResult.Clean {
-				if scanner.HasInspectionLimit(dlpResult.Findings()) {
-					return sseDLPFindingError(dlpResult.Findings(), "cross-event dlp")
+			if len(dlpResult.Findings()) > 0 && scanner.CardRunAction(dlpResult.Findings(), config.ActionBlock) == config.ActionWarn {
+				var err error
+				dlpResult, err = scanNewSSEDLPWarnings(ctx, sc, dlpResult, sseDLPContinuation{tail: view.Tail, value: view.Value, cardTail: view.Tail, cardValue: view.Value, current: eventResult.DLPFindings}, GenericSSEScanOptions{})
+				if err != nil {
+					return err
 				}
-				return fmt.Errorf("%w: cross-event dlp detected: %s",
-					sseFindingCause(ErrA2AStreamFinding, session.FindingDLP), sseDLPMatchNames(dlpResult.Findings()))
 			}
+			if len(dlpResult.Findings()) == 0 {
+				continue
+			}
+			if recordNumberOnly(dlpResult.Findings()) {
+				continue
+			}
+			findingErr := fmt.Errorf("%w: cross-event dlp detected: %s", sseFindingCause(ErrA2AStreamFinding, session.FindingDLP), sseDLPMatchNames(dlpResult.Findings()))
+			if scanner.HasInspectionLimit(dlpResult.Findings()) {
+				return sseDLPFindingError(dlpResult.Findings(), "cross-event dlp")
+			}
+			return findingErr
 		}
 		if fieldTail.Incomplete(frame) || fieldInjectionTail.Incomplete(frame) {
 			return fmt.Errorf("%w: cross-event inspection incomplete: event exceeds JSON field limits", ErrSSEStreamScanError)

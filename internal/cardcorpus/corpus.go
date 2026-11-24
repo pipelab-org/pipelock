@@ -9,8 +9,11 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -272,60 +275,232 @@ func published() []string {
 	return []string{strings.Repeat("4242", 4), "4000" + "056655665556", "5555" + "555555554444", "2223" + "003122003222", "5200" + "828282828210", "5105" + "105105105100", "3782" + "82246310005", "3714" + "49635398431", "6011" + "111111111117", "6011" + "000990139424", "6011" + "981111111113", "3056" + "930009020004", "3622" + "7206271667", "6555" + "900000604105", "3566" + "002020360505", "6200" + "000000000005", "6200" + "000000000047", "6205" + "500000000000004"}
 }
 
-// AllowedLoss derives the exception from the presentation, without consulting
-// any production classifier or a list of failing case IDs. Redaction retains
-// its legacy shape contract: only exact published examples may lose redaction.
-func (c Case) AllowedLoss(redaction bool) string {
-	var digits strings.Builder
-	dots, controls := 0, 0
-	for _, r := range c.Value {
-		switch {
-		case r >= '0' && r <= '9':
-			digits.WriteRune(r)
-		case r == '.':
-			dots++
-		case r == '\t' || r == '\r' || r == '\n':
-			controls++
-		case r == ' ' || r == '-' || r == '/' || r == '_' || r == ',' || r == '[' || r == ']' || r == '"':
-		default:
-			return ""
-		}
-	}
-	if digits.Len() < 14 || digits.Len() > 19 {
+var lossDigits = regexp.MustCompile(`[0-9]+`)
+
+// AllowedLoss classifies the exact bytes scanned by a surface without case
+// metadata or production validators. The binding migration contract permits
+// only exact published candidates, single decimal joins, and control joins.
+func AllowedLoss(surface, input string) string {
+	switch surface {
+	case "text", "json-body", "url", "redact":
+	default:
 		return ""
 	}
-	for _, p := range published() {
-		if digits.String() == p {
-			return "published"
-		}
-	}
-	if redaction {
+	views := lossInputs(input)
+	if len(views) == 0 {
 		return ""
 	}
-	// URL punctuation is a reconstruction channel, never a decimal exception.
-	if c.Context == "path" || c.Context == "query" || c.Context == "subdomain" {
-		return ""
-	}
-	if controls > 0 {
-		for _, field := range strings.FieldsFunc(c.Value, func(r rune) bool { return r == '\t' || r == '\r' || r == '\n' }) {
-			if completeCardField(field) {
+
+	found := ""
+	for _, view := range views {
+		groups := lossDigits.FindAllStringIndex(view.text, -1)
+		for _, g := range groups {
+			if completeCardField(view.text[g[0]:g[1]]) {
 				return ""
 			}
 		}
-		return "control-boundary"
-	}
-	if dots == 1 && strings.Count(c.Value, ".") == 1 {
-		parts := strings.Split(c.Value, ".")
-		if allDigits(parts[0]) && allDigits(parts[1]) {
-			// A dot join excuses only a split card. One side that is already
-			// a complete non-published card stays enforceable.
-			if completeCardField(parts[0]) || completeCardField(parts[1]) {
-				return ""
+		for i, g := range groups {
+			digits := ""
+			joins := []string{}
+			for j := i; j < len(groups); j++ {
+				if j > i {
+					sep := view.text[groups[j-1][1]:groups[j][0]]
+					if strings.IndexFunc(sep, func(r rune) bool { return !strings.ContainsRune(" .-/_,\t\r\n", r) }) >= 0 {
+						break
+					}
+					joins = append(joins, sep)
+				}
+				digits += view.text[groups[j][0]:groups[j][1]]
+				if len(digits) > 19 {
+					break
+				}
+				public := false
+				for _, p := range published() {
+					public = public || digits == p
+				}
+				if len(digits) < 14 {
+					continue
+				}
+				valid := completeCardField(digits)
+				class := ""
+				if public {
+					class = "published"
+				} else if surface != "url" && surface != "redact" && !view.url && !view.joined {
+					if len(joins) == 1 && joins[0] == "." &&
+						(i == 0 || view.text[groups[i-1][1]:g[0]] != ".") &&
+						(j+1 == len(groups) || view.text[groups[j][1]:groups[j+1][0]] != ".") {
+						class = "decimal"
+					}
+					controls := len(joins) > 0
+					for _, sep := range joins {
+						controls = controls && strings.Trim(sep, "\t\r\n") == ""
+					}
+					if controls {
+						class = "control-boundary"
+					}
+				}
+				if class != "published" && (i > 0 && strings.ContainsAny(view.text[groups[i-1][1]:g[0]], ".-/_,") ||
+					j+1 < len(groups) && strings.ContainsAny(view.text[groups[j][1]:groups[j+1][0]], ".-/_,")) {
+					class = ""
+				}
+				if class == "" {
+					if !valid && !public {
+						continue
+					}
+					return ""
+				}
+				if found == "" || class != "published" {
+					found = class
+				}
 			}
-			return "decimal"
 		}
 	}
-	return ""
+	return found
+}
+
+// lossInputs unwraps actual transport/encoding syntax independently of production
+// normalization. Each JSON scalar remains a field, so syntax cannot manufacture
+// a decimal or control exception. URL components are likewise independent.
+type lossInput struct {
+	text        string
+	url, joined bool
+}
+
+func lossInputs(input string) []lossInput {
+	input = strings.ReplaceAll(input, "\u200b", "")
+	// Long all-digit hex can also be parsed as a JSON number. Preserve the
+	// scanner's encoded view before that parse consumes its literal spelling.
+	if len(input) > 19 && allDigits(input) {
+		if decoded, err := hex.DecodeString(input); err == nil {
+			return lossInputs(string(decoded))
+		}
+	}
+
+	dec := json.NewDecoder(strings.NewReader(input))
+	dec.UseNumber()
+	if out, err := lossJSONInputs(dec); err == nil {
+		if _, err = dec.Token(); errors.Is(err, io.EOF) {
+			return out
+		}
+	}
+
+	if strings.Contains(input, "://") {
+		u, err := url.Parse(input)
+		if err != nil {
+			return nil
+		}
+		out := []string{u.Hostname(), u.Path, u.Fragment}
+		for _, pair := range strings.Split(u.RawQuery, "&") {
+			key, value, eq := strings.Cut(pair, "=")
+			key, err = url.QueryUnescape(key)
+			if err != nil {
+				return nil
+			}
+			out = append(out, key)
+			if eq {
+				value, err = url.QueryUnescape(value)
+				if err != nil {
+					return nil
+				}
+				out = append(out, value)
+			}
+		}
+		// Components without digits cannot be part of a card candidate.
+		var numeric []lossInput
+		for _, v := range out {
+			for _, decoded := range lossInputs(v) {
+				if lossDigits.MatchString(decoded.text) {
+					decoded.url = true
+					numeric = append(numeric, decoded)
+				}
+			}
+		}
+		return numeric
+	}
+	if strings.Contains(input, "%") {
+		if decoded, err := url.QueryUnescape(input); err == nil && decoded != input {
+			return lossInputs(decoded)
+		}
+	}
+	if decoded, err := hex.DecodeString(input); err == nil && len(decoded) > 0 && (!allDigits(input) || len(input) > 19) {
+		return lossInputs(string(decoded))
+	}
+	if decoded, err := base64.StdEncoding.DecodeString(input); err == nil && len(decoded) > 0 && !allDigits(input) && !strings.ContainsAny(input, "\t\r\n") {
+		if n := numericPresentation(string(decoded)); n != "" || strings.Contains(string(decoded), "://") {
+			return lossInputs(string(decoded))
+		}
+	}
+	return []lossInput{{text: input}}
+}
+
+// lossJSONInputs retains source order and duplicate object members. Decoding to
+// a map would let a later published fixture hide an earlier enforcing value.
+func lossJSONInputs(dec *json.Decoder) ([]lossInput, error) {
+	token, err := dec.Token()
+	if err != nil {
+		return nil, err
+	}
+	switch v := token.(type) {
+	case string:
+		return lossInputs(v), nil
+	case json.Number:
+		return []lossInput{{text: v.String()}}, nil
+	case json.Delim:
+		var out []lossInput
+		for dec.More() {
+			if v == '{' {
+				key, err := dec.Token()
+				if err != nil {
+					return nil, err
+				}
+				if text, ok := key.(string); ok {
+					out = append(out, lossInputs(text)...)
+				}
+			}
+			fields, err := lossJSONInputs(dec)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, fields...)
+		}
+		if _, err := dec.Token(); err != nil {
+			return nil, err
+		}
+		if v == '[' {
+			var joined strings.Builder
+			for _, field := range out {
+				if !field.joined {
+					joined.WriteString(field.text)
+				}
+			}
+			out = append(out, lossInput{text: joined.String(), joined: true})
+		}
+		return out, nil
+	}
+	return nil, nil
+}
+
+func numericPresentation(input string) string {
+	start, end := -1, 0
+	for i, r := range input {
+		if r >= '0' && r <= '9' {
+			if start < 0 {
+				start = i
+			}
+			end = i + 1
+		}
+	}
+	if start < 0 {
+		return ""
+	}
+	value := input[start:end]
+	for _, r := range value {
+		if r >= '0' && r <= '9' || strings.ContainsRune(" .-/_,\t\r\n", r) {
+			continue
+		}
+		return ""
+	}
+	return value
 }
 
 func allDigits(s string) bool {
@@ -366,7 +541,51 @@ func (c Case) Category() string {
 	return "overlapping-or-grouping/" + c.Context
 }
 
-// completeCardField independently checks the corpus issuer families and Luhn
+// lossIssuerRanges is independent of the generator seeds and production
+// validator. Visa/Mastercard/Amex/Discover/JCB lengths follow the migration's
+// existing issuer contract; additions use the same published range sources:
+// https://developer.cybersource.com/docs/cybs/en-us/test-data/developer/all/so/test-data/best_practices_intro/card_type_id.html
+// https://www.jcb.co.jp/merchant/services/payment/unionpay.html
+// https://github.com/braintree/credit-card-type/blob/main/src/lib/card-types.ts
+// https://www.microfocus.com/documentation/idol/IDOL_24_3/EductionSDK_24.3_Documentation/Guides/html/Content/Reference/StandardGrammars/StandardGrammarCompiled_N.htm
+var lossIssuerRanges = []struct {
+	first, last string
+	min, max    int
+}{
+	{"4", "4", 16, 16},
+	{"4", "4", 19, 19},
+	{"51", "55", 16, 16},
+	{"2221", "2720", 16, 16},
+	{"34", "34", 15, 15},
+	{"37", "37", 15, 15},
+	{"3528", "3589", 16, 19},
+	{"6011", "6011", 16, 16},
+	{"6011", "6011", 19, 19},
+	{"644", "649", 16, 16},
+	{"644", "649", 19, 19},
+	{"622126", "622925", 16, 16},
+	{"622126", "622925", 19, 19},
+	{"65", "65", 16, 16},
+	{"65", "65", 19, 19},
+	{"300", "305", 14, 14},
+	{"3095", "3095", 14, 14},
+	{"36", "36", 14, 14},
+	{"38", "39", 14, 14},
+	{"36", "36", 16, 16},
+	{"38", "39", 16, 16},
+	{"62", "62", 16, 19},
+	{"81", "81", 16, 16},
+	{"2200", "2204", 16, 16},
+	{"5018", "5018", 16, 19},
+	{"5020", "5020", 16, 19},
+	{"5038", "5038", 16, 19},
+	{"5893", "5893", 16, 19},
+	{"6304", "6304", 16, 19},
+	{"6759", "6759", 16, 19},
+	{"6761", "6763", 16, 19},
+}
+
+// completeCardField independently checks card issuer ranges and Luhn
 // arithmetic. A control boundary only excuses joins, never a complete field.
 func completeCardField(field string) bool {
 	var digits strings.Builder
@@ -379,8 +598,11 @@ func completeCardField(field string) bool {
 	}
 	value := digits.String()
 	known := false
-	for _, issuer := range issuers {
-		known = known || len(value) == issuer.size && strings.HasPrefix(value, issuer.prefix)
+	for _, issuer := range lossIssuerRanges {
+		if len(value) >= issuer.min && len(value) <= issuer.max {
+			prefix := value[:len(issuer.first)]
+			known = known || prefix >= issuer.first && prefix <= issuer.last
+		}
 	}
 	if !known {
 		return false

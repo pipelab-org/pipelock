@@ -18,7 +18,8 @@ type Candidate struct {
 // groupings. A false return continues enumeration; true stops it. Each digit
 // group starts independently, so rejected prefixes cannot swallow neighbors.
 // At most 19 digit groups can precede any separator run, so both modes
-// take O(len(text)) work. Text mode never joins tab or line boundaries.
+// take O(len(text)) work. Text mode preserves pure tab/line joins as boundaries; mixed numeric
+// presentations retain the legacy detection floor.
 func Visit(text string, reconstructed bool, yield func(Candidate) bool) bool {
 	return visit(text, candidateView{allGroups: reconstructed}, yield)
 }
@@ -49,6 +50,16 @@ func visit(text string, view candidateView, yield func(Candidate) bool) bool {
 			var groups [MaxDigits]int
 			n, count, at, dots := 0, 0, start, 0
 			canonicalSeparators, legacySeparators, dottedSeparators := true, true, true
+			controls, visible := false, false
+			presentationAllowed := func(groupCount int) bool {
+				if view.allGroups || groupCount == 1 {
+					return true
+				}
+				if controls {
+					return view.openEdges || visible || numericPunctuationBefore(text, start) || numericPunctuationAfter(text, at)
+				}
+				return legacySeparators || dottedSeparators && dots > 0 && (groupCount != 2 || at-start != n+1 || numericDashTail(text, at)) || canonicalSeparators && canonical(groups[:groupCount])
+			}
 			for at < len(text) && digit(text[at]) {
 				groupStart := at
 				for at < len(text) && digit(text[at]) && n < MaxDigits {
@@ -57,7 +68,7 @@ func visit(text string, view candidateView, yield func(Candidate) bool) bool {
 					at++
 					if view.openEdges && n >= MinDigits {
 						groups[count] = at - groupStart
-						if count == 0 || (legacySeparators || dottedSeparators && dots > 0 && (count != 1 || at-start != n+1 || numericDashTail(text, at)) || canonicalSeparators && canonical(groups[:count+1])) {
+						if presentationAllowed(count + 1) {
 							if validCardDigits(digits[:n]) && yield(candidateFromDigits(digits[:n], start, at)) {
 								return true
 							}
@@ -69,14 +80,16 @@ func visit(text string, view candidateView, yield func(Candidate) bool) bool {
 				}
 				groups[count] = at - groupStart
 				count++
-				if !view.openEdges && n >= MinDigits && rightBoundary(text, at) && (view.allGroups || count == 1 || legacySeparators || dottedSeparators && dots > 0 && (count != 2 || at-start != n+1 || numericDashTail(text, at)) || canonicalSeparators && canonical(groups[:count])) {
+				if !view.openEdges && n >= MinDigits && rightBoundary(text, at) && presentationAllowed(count) {
 					if validCardDigits(digits[:n]) && yield(candidateFromDigits(digits[:n], start, at)) {
 						return true
 					}
 				}
 				sepStart := at
-				for at < len(text) && ((view.allGroups && urlSeparator(text[at])) || (!view.allGroups && separator(text[at]) && (at-sepStart < 2 || text[at] == ' ' || text[at] == '-'))) {
-					canonicalSeparators = canonicalSeparators && text[at] != ','
+				for at < len(text) && ((view.allGroups && (urlSeparator(text[at]) || controlSeparator(text[at]))) || (!view.allGroups && (separator(text[at]) || controlSeparator(text[at])) && (at-sepStart < 2 || text[at] == ' ' || text[at] == '-' || controls || controlSeparator(text[at])))) {
+					controls = controls || controlSeparator(text[at])
+					visible = visible || !controlSeparator(text[at])
+					canonicalSeparators = canonicalSeparators && text[at] != ',' && !controlSeparator(text[at])
 					legacySeparators = legacySeparators && (text[at] == ' ' || text[at] == '-')
 					dottedSeparators = dottedSeparators && (text[at] == ' ' || text[at] == '-' || text[at] == '.')
 					if text[at] == '.' {
@@ -93,6 +106,28 @@ func visit(text string, view candidateView, yield func(Candidate) bool) bool {
 	}
 	return false
 }
+
+// Pure table/line joins remain boundaries. A mixed numeric presentation,
+// including numeric punctuation beside a control-joined candidate, retains the
+// legacy detection floor. These probes stop at the next digit group or text.
+func numericPunctuationBefore(text string, at int) bool {
+	punctuation := false
+	for at--; at >= 0 && (separator(text[at]) || controlSeparator(text[at])); at-- {
+		punctuation = punctuation || separator(text[at]) && text[at] != ' '
+	}
+	return punctuation && at >= 0 && digit(text[at])
+}
+
+func numericPunctuationAfter(text string, at int) bool {
+	punctuation := false
+	for at < len(text) && (separator(text[at]) || controlSeparator(text[at])) {
+		punctuation = punctuation || separator(text[at]) && text[at] != ' '
+		at++
+	}
+	return punctuation && at < len(text) && digit(text[at])
+}
+
+func controlSeparator(b byte) bool { return b == '\t' || b == '\r' || b == '\n' }
 
 func canonical(g []int) bool {
 	if len(g) == 3 {

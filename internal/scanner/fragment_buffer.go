@@ -1037,7 +1037,7 @@ func scanFragmentView(ctx context.Context, sc *Scanner, fragments []fragment, vi
 	// offsets no longer line up with fragment ranges. Map positions back
 	// through the removed image spans instead.
 	if excised, decoded, removed := stripVerifiedImageDataURLSpans(text, true); len(removed) > 0 {
-		return imageSplicedFragmentMatches(ctx, sc, excised, decoded, removed, ranges, result.Matches)
+		return imageSplicedFragmentMatches(ctx, sc, imageSpliceView{excised: excised, decoded: decoded, removed: removed, ranges: ranges, joined: result.Matches, normalize: normalizeView})
 	}
 	complete := completeFragmentOccurrences(ctx, sc, ranges)
 	patternSet := make(map[string]struct{}, len(result.Matches))
@@ -1160,6 +1160,14 @@ type fragmentOccurrence struct {
 	end   int
 }
 
+type imageSpliceView struct {
+	excised, decoded string
+	removed          []textByteSpan
+	ranges           []fragmentRange
+	joined           []TextDLPMatch
+	normalize        func([]byte) ([]byte, bool)
+}
+
 // imageSplicedFragmentMatches attributes joined-window findings after image
 // excision has rewritten the text. Excision only removes byte ranges and
 // appends decoded image bytes after the surrounding text, so a position in the
@@ -1167,11 +1175,13 @@ type fragmentOccurrence struct {
 // that maps inside one fragment is blanked in place and the window rescanned,
 // so a whole copy cannot hide a split copy. A match in the decoded image bytes,
 // or one without a raw position, has no original location and is reported.
-func imageSplicedFragmentMatches(ctx context.Context, sc *Scanner, excised, decoded string, removed []textByteSpan, ranges []fragmentRange, joined []TextDLPMatch) []DLPMatch {
+func imageSplicedFragmentMatches(ctx context.Context, sc *Scanner, view imageSpliceView) []DLPMatch {
+	excised, decoded, removed, ranges, joined := view.excised, view.decoded, view.removed, view.ranges, view.joined
+	normalizeView := view.normalize
 	// Scanner spans are in DLP-normalized coordinates. If normalizing the
 	// surrounding text would move bytes, positions cannot be trusted, so
 	// every joined rule is reported without attribution.
-	if normalized, stable := normalizeFragmentForDLP([]byte(excised)); !stable || string(normalized) != excised {
+	if normalized, stable := normalizeView([]byte(excised)); !stable || string(normalized) != excised {
 		return unattributedFragmentMatches(joined)
 	}
 	window := excised
