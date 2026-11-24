@@ -46,13 +46,13 @@ the config files differ:
 - **Rule bundle directory.** Installed community rule bundles are read from a
   shared rules directory; both servers load the same bundle response patterns
   unless you separate the directories in config.
-- **Kill-switch sentinel file.** If two invocations point at the same sentinel
+- **Kill switch sentinel file.** If two invocations point at the same sentinel
   path, activating the kill switch blocks both. Use distinct sentinel paths if
   you need independent kill control.
 
 ## Deferred approvals during emergency activation
 
-An approved MCP call remains held until it claims its upstream send. Kill-switch
+An approved MCP call remains held until it claims its upstream send. Kill switch
 activation rejects held calls that have not claimed that send. A send that claimed
 before activation is recorded as in flight and cannot be recalled; inspect the
 upstream service if you need to determine whether it completed.

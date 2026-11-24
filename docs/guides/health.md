@@ -67,7 +67,7 @@ The `subsystems` map — a per-subsystem liveness boolean — is **only included
 | `scanner` | The scanner pointer and config pointer are both non-nil AND either the scanner heartbeat is fresh or a synthetic probe completes within `interval/2` | The probe scans a fail-fast scheme URL through the live scanner; it's the only subsystem that uses an active probe |
 | `config` | The atomic config pointer is non-nil | Hot reload swaps the pointer atomically; a nil pointer means a reload race left the proxy unable to read config |
 | `session` | Session profiling is disabled, OR the session-manager pointer is non-nil | Sessions are optional (`session_profiling.enabled`); a missing manager when expected is unhealthy |
-| `killswitch` | The kill switch is disabled in config, OR the kill-switch controller is wired | The controller is independent of `kill_switch_active`: `active` reports whether traffic is currently denied; `subsystems.killswitch` reports whether the kill-switch state machine itself is reachable |
+| `killswitch` | The kill switch is disabled in config, OR the kill switch controller is wired | The controller is independent of `kill_switch_active`: `active` reports whether traffic is currently denied; `subsystems.killswitch` reports whether the kill switch state machine itself is reachable |
 | `watchdog` | Watchdog goroutine has bumped its self-heartbeat within the staleness threshold | If the goroutine dies, `/health` flips to 503 even when other subsystems look fine |
 
 ## Detection Strategy
@@ -135,7 +135,7 @@ The `/health` endpoint returns the pre-v2.4 shape: status always `"healthy"`, no
 
 `kill_switch_active` (top-level field) reports whether the kill switch is currently denying traffic. It is a policy signal that can be activated by config, API, Conductor remote kill, Conductor stale-bundle detection, uncertain Conductor apply state, SIGUSR1, or a sentinel file.
 
-`subsystems.killswitch` (under the watchdog map) reports whether the kill-switch *state machine* is reachable from the proxy. A pipelock that cannot read its kill switch is wedged; one that reads it and reports "active" is fine.
+`subsystems.killswitch` (under the watchdog map) reports whether the kill switch *state machine* is reachable from the proxy. A pipelock that cannot read its kill switch is wedged; one that reads it and reports "active" is fine.
 
 External watchdogs interested in "should this instance receive traffic?" check both: `status == "healthy"` AND `kill_switch_active == false`. The first answers "is pipelock alive?", the second answers "is pipelock currently allowing traffic?".
 

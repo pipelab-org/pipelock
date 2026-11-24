@@ -987,7 +987,7 @@ The operator-lifecycle rule for every piece of fleet state: prove you can
 
 Under `stale_policy.strict_deny_all` (the default), a follower re-evaluates its
 active bundle each poll interval and, once that bundle is missing, unreadable, or
-past its grace window, engages the independent `conductor_stale` kill-switch
+past its grace window, engages the independent `conductor_stale` kill switch
 source — denying **all traffic across every transport** (forward, CONNECT,
 WebSocket, MCP) until a fresh in-grace bundle applies. The `conductor_stale`
 source is OR-composed and independent of the remote-kill source: clearing

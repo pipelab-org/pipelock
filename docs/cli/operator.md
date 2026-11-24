@@ -18,7 +18,7 @@ from no config to a local smoke test.
 ## `pipelock status`
 
 Loads the effective local config and prints mode, listeners, scanner switches,
-license state, and kill-switch sources. It stats a configured kill-switch
+license state, and kill switch sources. It stats a configured kill switch
 sentinel file so the report reflects that source, but it does not change the
 sentinel, contact the proxy, or reload anything.
 
