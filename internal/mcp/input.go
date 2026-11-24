@@ -1816,7 +1816,11 @@ func ForwardScannedInput(
 						if v3Hold {
 							var admitErr error
 							exchange, admitErr = heldOpts.admitV3HeldSend(releaseCtx, heldV3Evidence(res, heldID, heldOpts), v3Release)
-							if releaseErr := errors.Join(admitErr, releaseCtx.Err(), v3Release.ApprovalContext.Err()); releaseErr != nil {
+							releaseErr := errors.Join(admitErr, releaseCtx.Err(), v3Release.ApprovalContext.Err())
+							if releaseErr == nil {
+								releaseErr = heldOpts.commitV3HeldSend(exchange, v3Release, &readyToCorrelate)
+							}
+							if releaseErr != nil {
 								tracker.removeOwnedOutcome(heldID, registration)
 								if admitErr == nil {
 									heldOpts.refuseV3HeldIntent(releaseCtx, exchange, v3Release)
@@ -1831,7 +1835,6 @@ func ForwardScannedInput(
 								}
 								return
 							}
-							heldOpts.commitV3HeldSend(exchange, v3Release, &readyToCorrelate)
 						}
 						// forwardMu is held by Prepare's release claim.
 						if err := writer.WriteMessage(heldLine); err != nil {

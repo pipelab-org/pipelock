@@ -678,6 +678,9 @@ func RunHTTPProxy(
 						releaseOpts := heldOpts
 						messageOpts := transport.HTTPMessageOptions{Headers: releaseHeaders}
 						var exchange *mcpV3Exchange
+						// localReply links a held call's local error reply to its
+						// upstream send, as the non-held path does.
+						localReply := safeClientOut
 						var wrote func() bool
 						var roundTripConfirmed bool
 						if v3Hold {
@@ -685,7 +688,14 @@ func RunHTTPProxy(
 							exchange, admitErr = heldOpts.admitV3HeldSend(releaseCtx, heldV3Evidence(res, deferredReq.ID, heldOpts), v3Release)
 							releaseCtx, wrote = observeMCPHTTPWrite(releaseCtx)
 							messageOpts.ObserveRoundTrip = func(err error) { roundTripConfirmed = err == nil }
-							if releaseErr := errors.Join(admitErr, releaseCtx.Err(), v3Release.ApprovalContext.Err()); releaseErr != nil {
+							releaseErr := errors.Join(admitErr, releaseCtx.Err(), v3Release.ApprovalContext.Err())
+							if releaseErr == nil {
+								releaseErr = heldOpts.commitV3HeldSend(exchange, v3Release, &readyToCorrelate)
+							}
+							if releaseErr == nil {
+								localReply = heldOpts.localV3ReplyWriter(wireClientOut, safeLogW, exchange)
+							}
+							if releaseErr != nil {
 								tracker.removeOwnedOutcome(deferredReq.ID, registration)
 								if admitErr == nil {
 									heldOpts.refuseV3HeldIntent(releaseCtx, exchange, v3Release)
@@ -701,7 +711,6 @@ func RunHTTPProxy(
 								}
 								return
 							}
-							heldOpts.commitV3HeldSend(exchange, v3Release, &readyToCorrelate)
 						}
 						respReader, sendErr := httpClient.SendMessageWithOptions(releaseCtx, deferredReq.ForwardMessage, messageOpts)
 						if v3Hold {
@@ -732,7 +741,7 @@ func RunHTTPProxy(
 								finishDeniedRelease()
 							}
 							if !deferredReq.IsNotification {
-								_ = safeClientOut.WriteMessage(upstreamErrorResponse(deferredReq.ID, fmt.Errorf("upstream HTTP request failed")))
+								_ = localReply.WriteMessage(upstreamErrorResponse(deferredReq.ID, fmt.Errorf("upstream HTTP request failed")))
 							}
 							return
 						}
@@ -760,7 +769,7 @@ func RunHTTPProxy(
 							}
 							emitRequestScopedTimeout(
 								respReader,
-								safeClientOut,
+								localReply,
 								safeLogW,
 								tracker,
 								deferredReq.ID,

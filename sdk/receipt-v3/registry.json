@@ -1554,9 +1554,9 @@
       "fields": "Request-time MCP decision and authority attribution from the held call, when available.",
       "when": "The stdio writer returned success for the held message."
     },
-    "internal/mcp/input.go/ForwardScannedInput/refuseV3HeldIntent/80f5c2e9b0a72086": {
+    "internal/mcp/input.go/ForwardScannedInput/refuseV3HeldIntent/d19a879e439bc163": {
       "fields": "Request-time MCP decision and authority attribution from the held call, when available.",
-      "when": "Cancellation withheld the held stdio send after its intent was confirmed."
+      "when": "Cancellation or a closed session withheld the held stdio send after its intent was confirmed."
     },
     "internal/mcp/mcp_http_forward.go/RunHTTPProxy/admitV3HeldSend/184c00831b4d2456": {
       "fields": "Request-time MCP decision and authority attribution from the held call, when available.",
@@ -1566,9 +1566,9 @@
       "fields": "Request-time MCP decision and authority attribution from the held call, when available.",
       "when": "The HTTP bridge observed the return from a held send."
     },
-    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/refuseV3HeldIntent/99e90926bc72cd94": {
+    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/refuseV3HeldIntent/71f02d6317ebdb33": {
       "fields": "Request-time MCP decision and authority attribution from the held call, when available.",
-      "when": "Cancellation withheld the held bridge send after its intent was confirmed."
+      "when": "Cancellation or a closed session withheld the held bridge send after its intent was confirmed."
     },
     "internal/mcp/receipt_v3.go/(MCPProxyOpts).refuseV3HoldAdmission/Refuse/ce6a2157d50c8247": {
       "fields": "Request-time MCP decision and authority attribution from the held call, when available.",
@@ -2174,10 +2174,10 @@
     "internal/proxy/intercept.go/newInterceptHandler/admitV3CardAcceptance/e12897d20ee65328": "downstream_delivery",
     "internal/mcp/input.go/ForwardScannedInput/admitV3HeldSend/af18bed001ca6138": "upstream_send",
     "internal/mcp/input.go/ForwardScannedInput/confirmV3HeldSend/fa3a08d355ed354b": "upstream_send",
-    "internal/mcp/input.go/ForwardScannedInput/refuseV3HeldIntent/80f5c2e9b0a72086": "upstream_send",
+    "internal/mcp/input.go/ForwardScannedInput/refuseV3HeldIntent/d19a879e439bc163": "upstream_send",
     "internal/mcp/mcp_http_forward.go/RunHTTPProxy/admitV3HeldSend/184c00831b4d2456": "upstream_send",
     "internal/mcp/mcp_http_forward.go/RunHTTPProxy/confirmV3HeldSend/ceb014ad43ab0243": "upstream_send",
-    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/refuseV3HeldIntent/99e90926bc72cd94": "upstream_send",
+    "internal/mcp/mcp_http_forward.go/RunHTTPProxy/refuseV3HeldIntent/71f02d6317ebdb33": "upstream_send",
     "internal/mcp/receipt_v3.go/(MCPProxyOpts).refuseV3HoldAdmission/Refuse/ce6a2157d50c8247": "approval_prompt",
     "internal/mcp/receipt_v3.go/(MCPProxyOpts).setupV3Hold/RecordApproval/528ac8407b73a820": "approval_prompt",
     "internal/mcp/receipt_v3.go/(MCPProxyOpts).setupV3Hold/RecordApproval/b911cbba2c22a98c": "approval_prompt"

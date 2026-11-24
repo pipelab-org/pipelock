@@ -278,9 +278,17 @@ func (o MCPProxyOpts) refuseV3HeldIntent(ctx context.Context, exchange *mcpV3Exc
 	})
 }
 
-func (o MCPProxyOpts) commitV3HeldSend(exchange *mcpV3Exchange, release deferred.Release, ready *atomic.Bool) {
+// commitV3HeldSend publishes the held send as committed. It refuses once the
+// session has settled: settleV3Session skips reserved exchanges, so a commit
+// after teardown would send with no session left to settle the attempt. The
+// caller then refuses the intent as not_released, like any other pre-send gate.
+func (o MCPProxyOpts) commitV3HeldSend(exchange *mcpV3Exchange, release deferred.Release, ready *atomic.Bool) error {
 	if s := o.v3Session; s != nil {
 		s.mu.Lock()
+		if s.closed {
+			s.mu.Unlock()
+			return errMCPV3SessionClosed
+		}
 		exchange.reserved = false
 		s.mu.Unlock()
 	}
@@ -288,6 +296,7 @@ func (o MCPProxyOpts) commitV3HeldSend(exchange *mcpV3Exchange, release deferred
 		ready.Store(true)
 	}
 	release.Commit()
+	return nil
 }
 
 func (o MCPProxyOpts) confirmV3HeldSend(ctx context.Context, log io.Writer, exchange *mcpV3Exchange, observed bool) {
@@ -295,6 +304,10 @@ func (o MCPProxyOpts) confirmV3HeldSend(ctx context.Context, log io.Writer, exch
 		logMCPV3Error(log, confirmMCPV3Effect(ctx, exchange.token, observed))
 	}
 }
+
+// errMCPV3SessionClosed refuses a held send whose session settled before it
+// committed.
+var errMCPV3SessionClosed = errors.New("pipelock: MCP session closed before the held call was released")
 
 type mcpV3Exchange struct {
 	request  receipt.EmitOpts

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -304,7 +305,9 @@ func TestMCPV3HeldAncestryWitnesses(t *testing.T) {
 						opts.refuseV3HeldIntent(ctx, exchange, release)
 						return
 					}
-					opts.commitV3HeldSend(exchange, release, nil)
+					if err := opts.commitV3HeldSend(exchange, release, nil); err != nil {
+						t.Errorf("commitV3HeldSend: %v", err)
+					}
 					observed := true
 					if id == "parent" {
 						select {
@@ -509,7 +512,9 @@ func TestMCPV3HeldSiblingsAndSweeps(t *testing.T) {
 					t.Error(err)
 					return
 				}
-				opts.commitV3HeldSend(exchange, release, nil)
+				if err := opts.commitV3HeldSend(exchange, release, nil); err != nil {
+					t.Errorf("commitV3HeldSend: %v", err)
+				}
 				sends = append(sends, id)
 				opts.confirmV3HeldSend(t.Context(), io.Discard, exchange, true)
 			}
@@ -708,7 +713,9 @@ func TestMCPV3HeldCorrelationBeginsAtCommit(t *testing.T) {
 		if _, ok := tracker.Consume(requestID); ok || opts.takeV3Send(requestID) != nil {
 			t.Error("an early reply claimed a held request that had not committed")
 		}
-		opts.commitV3HeldSend(exchange, release, &ready)
+		if err := opts.commitV3HeldSend(exchange, release, &ready); err != nil {
+			t.Errorf("commitV3HeldSend: %v", err)
+		}
 		sends = append(sends, res.DeferID)
 		if _, ok := tracker.Consume(requestID); !ok || opts.takeV3Send(requestID) != exchange {
 			t.Error("the committed request lost its reply correlation")
@@ -1118,8 +1125,12 @@ func TestMCPV3HeldSessionSettleDoesNotMisreportReservedExchange(t *testing.T) {
 					return
 				}
 				// Session teardown runs while the held send is still reserved (pre-commit).
-				// It must not settle the unsent intent as attempt_unknown.
+				// It must not settle the unsent intent as attempt_unknown, and the
+				// held send must not commit afterwards.
 				opts.settleV3Session(t.Context(), io.Discard)
+				if err := opts.commitV3HeldSend(exchange, release, nil); !errors.Is(err, errMCPV3SessionClosed) {
+					t.Errorf("commit after session settle = %v, want %v", err, errMCPV3SessionClosed)
+				}
 				opts.refuseV3HeldIntent(t.Context(), exchange, release)
 			})
 			if err := manager.Hold(held); err != nil {
@@ -1191,6 +1202,53 @@ func TestMCPV3HeldSendRefusalDownstreamEvidence(t *testing.T) {
 		for _, a := range actions {
 			if a.EffectBoundary == mcpDownstreamDeliveryBoundary {
 				t.Fatalf("refused held notification emitted unexpected downstream_delivery action: %+v", a)
+			}
+		}
+	})
+
+	t.Run("bridge_send_failure_links_error_reply_to_held_send", func(t *testing.T) {
+		writer, writerOpts := openMCPV3RegressionWriter(t, deferred.SurfaceMCPHTTPUpstream)
+		opts := nativeDeferredOptions(t, nil).WithV3ReceiptWriter(writer)
+		opts.Transport = deferred.SurfaceMCPHTTPUpstream
+		opts.ListenerShutdownTimeout = testwait.Deadline(time.Second)
+		opts.DeferManager = deferred.NewManager(deferred.Config{Enabled: true, Timeout: testwait.Deadline(time.Minute)})
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		in, feed := io.Pipe()
+		defer func() { _ = in.Close(); _ = feed.Close() }()
+		upstream := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			panic(http.ErrAbortHandler)
+		}))
+		upstream.Config.ErrorLog = log.New(io.Discard, "", 0)
+		defer upstream.Close()
+		var out lockedHTTPBuffer
+		done := make(chan error, 1)
+		go func() { done <- RunHTTPProxy(ctx, in, &out, io.Discard, upstream.URL, nil, opts) }()
+		if _, err := io.WriteString(feed, heldNativeCall+"\n"); err != nil {
+			t.Fatal(err)
+		}
+		testwait.For(t, 5*time.Second, func() bool { return opts.DeferManager.HeldCount() == 1 }, "held bridge call")
+		held := opts.DeferManager.Snapshot()[0]
+		if err := opts.DeferManager.Resolve(held.DeferID, config.ActionAllow, deferred.SourceOperator); err != nil {
+			t.Fatal(err)
+		}
+		testwait.For(t, 5*time.Second, func() bool { return strings.Contains(out.String(), "upstream HTTP request failed") }, "error reply")
+		_ = feed.Close()
+		if err := awaitHeldTest(t, done); err != nil {
+			t.Fatal(err)
+		}
+		var downstream []v3.Action
+		for _, a := range verifiedMCPV3RegressionActions(t, writer, writerOpts) {
+			if a.EffectBoundary == mcpDownstreamDeliveryBoundary {
+				downstream = append(downstream, a)
+			}
+		}
+		if len(downstream) == 0 {
+			t.Fatal("held bridge error reply has no downstream_delivery receipt")
+		}
+		for _, a := range downstream {
+			if a.ParentActionID != held.ActionID {
+				t.Fatalf("held bridge error reply not linked to held send %q: %+v", held.ActionID, a)
 			}
 		}
 	})
