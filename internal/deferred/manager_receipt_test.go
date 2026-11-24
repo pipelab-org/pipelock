@@ -360,3 +360,102 @@ func TestReceiptHoldReloadCannotResolveReusedID(t *testing.T) {
 		t.Fatal("stale policy evaluation resolved the replacement hold")
 	}
 }
+
+func TestReceiptHoldRetainsSweepApproval(t *testing.T) {
+	for _, source := range []string{SourceToolInventory, SourcePolicyReload} {
+		t.Run(source, func(t *testing.T) {
+			for _, tc := range []struct {
+				name, decision, source string
+				commit, expired        bool
+			}{
+				{name: "commit", decision: config.ActionAllow, source: source, commit: true},
+				{name: "refuse", decision: config.ActionBlock, source: SourceCascade},
+				{name: "expired", decision: config.ActionBlock, source: SourceTimeout, commit: true, expired: true},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					m := NewManager(Config{Enabled: true, Timeout: time.Minute})
+					parent := receiptAdmissionFixture("parent")
+					child := receiptAdmissionFixture("child")
+					child.RulePolicy.AllowOn.ToolInventoryBaseline = true
+					child.RulePolicy.AllowOn.PolicyPermits = true
+					parentReady := make(chan struct{})
+					finishParent := make(chan struct{})
+					parent.ResolveReceipt = func(_ Resolution, release Release) {
+						if tc.commit {
+							release.Commit()
+						} else {
+							release.Refuse("pre_send_refusal", nil)
+						}
+						close(parentReady)
+						if tc.commit {
+							<-finishParent
+						}
+					}
+					results := make(chan Resolution, 1)
+					child.ResolveReceipt = func(res Resolution, release Release) {
+						if res.FinalDecision == config.ActionAllow {
+							release.Commit()
+						}
+						results <- res
+					}
+					for _, held := range []HeldAction{parent, child} {
+						if err := m.Hold(held); err != nil {
+							t.Fatal(err)
+						}
+					}
+					defer m.ResolveAll(config.ActionBlock, SourceCancel)
+					defer close(finishParent)
+					swept := make(chan struct{})
+					go func() {
+						defer close(swept)
+						if source == SourceToolInventory {
+							m.ResolveToolInventory(child.Authority.SessionID, config.ActionAllow)
+						} else {
+							m.ResolvePolicyReload(func(h HeldAction) (string, error) {
+								if h.DeferID == child.DeferID {
+									return config.ActionAllow, nil
+								}
+								return config.ActionDefer, nil
+							})
+						}
+					}()
+					select {
+					case <-swept:
+					case <-time.After(testwait.Deadline(time.Second)):
+						t.Fatal("sweep blocked on the parent")
+					}
+					if m.HeldCount() != 2 {
+						t.Fatal("sweep released the child before the parent's commitment")
+					}
+					if tc.expired {
+						m.mu.Lock()
+						current := m.holds[child.DeferID]
+						current.timer.Stop()
+						current.Deadline = time.Now().Add(-time.Second)
+						m.mu.Unlock()
+					}
+					parentDone := make(chan error, 1)
+					go func() { parentDone <- m.Resolve(parent.DeferID, config.ActionAllow, SourceOperator) }()
+					select {
+					case <-parentReady:
+					case <-time.After(testwait.Deadline(time.Second)):
+						t.Fatal("parent did not reach the send boundary")
+					}
+					select {
+					case res := <-results:
+						if res.FinalDecision != tc.decision || res.ResolutionSource != tc.source {
+							t.Fatalf("child = %q/%q, want %q/%q", res.FinalDecision, res.ResolutionSource, tc.decision, tc.source)
+						}
+					case <-time.After(testwait.Deadline(time.Second)):
+						t.Fatal("child did not settle after parent decided; sweep result was delivered once")
+					}
+					if !tc.commit {
+						if err := <-parentDone; err != nil {
+							t.Fatal(err)
+						}
+					}
+				})
+			}
+		})
+	}
+}

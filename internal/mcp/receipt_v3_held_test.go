@@ -500,12 +500,17 @@ func TestMCPV3HeldSiblingsAndSweeps(t *testing.T) {
 			writer, writerOpts := openMCPV3RegressionWriter(t, deferred.SurfaceMCPStdio)
 			opts := (MCPProxyOpts{Transport: deferred.SurfaceMCPStdio}).WithV3ReceiptWriter(writer).withV3Session()
 			manager := deferred.NewManager(deferred.Config{Enabled: true, Timeout: testwait.Deadline(time.Minute)})
-			var sends []string
+			const parent, sibling, child = "z-parent", "sibling", "a-child"
+			sends := make(chan string, 2)
+			parentConfirmed := make(chan struct{})
 			resolve := func(res deferred.Resolution, release deferred.Release) {
 				if res.FinalDecision != config.ActionAllow {
 					return
 				}
 				id := res.DeferID
+				if id == child {
+					<-parentConfirmed
+				}
 				evidence := heldV3Evidence(res, json.RawMessage(fmt.Sprintf("%q", id)), opts)
 				exchange, err := opts.admitV3HeldSend(t.Context(), evidence, release)
 				if err != nil {
@@ -515,10 +520,12 @@ func TestMCPV3HeldSiblingsAndSweeps(t *testing.T) {
 				if err := opts.commitV3HeldSend(exchange, release, nil); err != nil {
 					t.Errorf("commitV3HeldSend: %v", err)
 				}
-				sends = append(sends, id)
 				opts.confirmV3HeldSend(t.Context(), io.Discard, exchange, true)
+				sends <- id
+				if id == parent {
+					close(parentConfirmed)
+				}
 			}
-			const parent, sibling, child = "z-parent", "sibling", "a-child"
 			root := v3ManagerAction(opts, parent, resolve)
 			root.RulePolicy.AllowOn.ToolInventoryBaseline = false
 			if err := manager.Hold(root); err != nil {
@@ -534,7 +541,7 @@ func TestMCPV3HeldSiblingsAndSweeps(t *testing.T) {
 					}
 				}
 			}
-			runSweep := func(allowParent bool) {
+			runSweep := func() {
 				done := make(chan struct{})
 				go func() {
 					defer close(done)
@@ -542,7 +549,7 @@ func TestMCPV3HeldSiblingsAndSweeps(t *testing.T) {
 						manager.ResolveToolInventory("session", config.ActionAllow)
 					} else {
 						manager.ResolvePolicyReload(func(held deferred.HeldAction) (string, error) {
-							if !allowParent && held.DeferID == parent {
+							if held.DeferID == parent {
 								return config.ActionDefer, nil
 							}
 							return config.ActionAllow, nil
@@ -551,18 +558,15 @@ func TestMCPV3HeldSiblingsAndSweeps(t *testing.T) {
 				}()
 				awaitHeldTest(t, done)
 			}
-			runSweep(false)
+			runSweep()
 			if len(sends) != 0 || manager.HeldCount() != 2 {
-				t.Fatalf("sweep released unresolved lineage: %v", sends)
+				t.Fatal("sweep released unresolved lineage")
 			}
-			if sweep == "inventory" {
-				if err := manager.Resolve(parent, config.ActionAllow, deferred.SourceOperator); err != nil {
-					t.Fatal(err)
-				}
+			if err := manager.Resolve(parent, config.ActionAllow, deferred.SourceOperator); err != nil {
+				t.Fatal(err)
 			}
-			runSweep(true)
-			if !slices.Equal(sends, []string{parent, child}) {
-				t.Fatalf("peer observed %v", sends)
+			if got := []string{awaitHeldTest(t, sends), awaitHeldTest(t, sends)}; !slices.Equal(got, []string{parent, child}) {
+				t.Fatalf("peer observed %v", got)
 			}
 			want := []heldEvidencePoint{
 				holdPoint(parent, ""), holdPoint(sibling, parent), resolutionPoint(sibling, config.ActionBlock, false),

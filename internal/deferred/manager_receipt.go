@@ -200,6 +200,9 @@ func (m *Manager) takeHold(ctx context.Context, id, decision, source string, exp
 			break
 		}
 		if !wait {
+			if source == SourceToolInventory || source == SourcePolicyReload {
+				held.sweepApproval = source
+			}
 			return nil, "", "", nil
 		}
 		changed := m.changed
@@ -246,11 +249,27 @@ func (m *Manager) closeReceiptLineageLocked(held *HeldAction, committed bool) {
 	}
 	node.closed = true
 	node.committed = committed
-	if !committed {
+	if committed {
+		m.resumeSweepApprovalsLocked(node)
+	} else {
 		m.markLineageBlockedLocked(node)
 	}
 	m.removeSessionHoldLocked(held.Authority.SessionID, held.DeferID)
 	m.notifyHoldChangeLocked()
+}
+
+// A retained sweep approval only becomes eligible when its direct parent
+// commits: that parent already passed the barrier for every earlier ancestor.
+// Its resolver must run independently of the parent's upstream send.
+func (m *Manager) resumeSweepApprovalsLocked(parent *holdLineage) {
+	for _, child := range m.holds {
+		if child.state != StateHeld || child.lineage == nil || child.lineage.parent != parent || child.sweepApproval == "" {
+			continue
+		}
+		source := child.sweepApproval
+		child.sweepApproval = ""
+		go m.resolveHeld(child, config.ActionAllow, source)
+	}
 }
 
 func (m *Manager) markLineageBlockedLocked(node *holdLineage) {
