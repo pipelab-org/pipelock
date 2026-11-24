@@ -545,6 +545,7 @@ tls_interception:
     - "*.googlevideo.com"
   cert_ttl: "24h"
   cert_cache_size: 10000
+  crl_url: ""                   # default: HTTP CRL URL on the bound main listener; "off" omits leaf CDPs
   max_response_bytes: 5242880    # 5MB; responses larger than this are blocked
 ```
 
@@ -556,6 +557,7 @@ tls_interception:
 | `passthrough_domains` | `["*.googlevideo.com"]` | Domains to splice (pass through without interception). Supports `*.example.com` wildcards, which match any subdomain but **not** the apex `example.com`; list the apex separately if it must be spliced. Entries must be written exactly as the matcher reads them: no surrounding whitespace and at most one trailing DNS dot. A malformed entry is refused at load rather than accepted and then silently matching nothing. A wildcard over ANY public suffix, ICANN-operated (`*.com`, `*.co.uk`) or private-section (`*.github.io`, `*.s3.amazonaws.com`), is refused, because a passthrough host is spliced without decryption and that entry would turn body and response scanning off for every unrelated tenant under the suffix; this is stricter than the public-suffix rule for an ordinary exempt/trusted domain list, which still accepts a private-section wildcard because that list still scans what it exempts. An exact host under a private suffix (`mybucket.s3.amazonaws.com` with no wildcard) or a wildcard one label below it (`*.myorg.github.io`) is unaffected. |
 | `cert_ttl` | `"24h"` | TTL for forged leaf certificates (Go duration string) |
 | `cert_cache_size` | `10000` | Max cached leaf certificates. Evicts oldest when full. |
+| `crl_url` | `""` | HTTP CRL distribution point advertised in intercepted leaf certificates. Empty derives `http://<bound-listen-address>/.well-known/pipelock/ca.crl`; wildcard binds use `127.0.0.1` and port `0` is replaced after binding. Set a client-reachable `http://` URL for remote clients, or `"off"` to omit the distribution point. HTTPS, credentials, and fragments are rejected. The CA must allow CRL signing. Changes invalidate cached leaves. |
 | `max_response_bytes` | `5242880` | Max response body to buffer for scanning. Responses exceeding this are blocked (fail-closed). |
 
 **Setup:**

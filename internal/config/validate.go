@@ -3974,6 +3974,12 @@ func (c *Config) validateCrossRequestDetection(warnings *[]Warning) error {
 }
 
 func (c *Config) validateTLSInterception() error {
+	if raw := c.TLSInterception.CRLURL; raw != "" && raw != "off" {
+		u, err := url.Parse(raw)
+		if err != nil || u.Scheme != "http" || u.Hostname() == "" || u.User != nil || strings.Contains(raw, "#") || strings.IndexFunc(raw, func(r rune) bool { return r > unicode.MaxASCII }) >= 0 || strings.ContainsAny(raw, "\r\n\t ") {
+			return errors.New("tls_interception.crl_url must be an absolute ASCII http:// URL without credentials or fragment, or off")
+		}
+	}
 	// Validate TLS interception config
 	if err := validateLiteralHostMatchList(
 		"tls_interception.passthrough_domains", c.TLSInterception.PassthroughDomains, true); err != nil {
