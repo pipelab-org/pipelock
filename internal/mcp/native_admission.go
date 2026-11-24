@@ -56,14 +56,21 @@ func (o MCPProxyOpts) nativeWarningContext(ctx context.Context, admission receip
 }
 
 func trackNativeOutcome(tracker *RequestTracker, id json.RawMessage, outcome TrackedRequestOutcome) error {
-	_, err := trackMCPAdmittedOutcome(io.Discard, MCPProxyOpts{}, tracker, id, outcome)
+	_, err := trackMCPAdmittedOutcome(io.Discard, MCPProxyOpts{}, tracker, id, outcome, false)
 	return err
 }
 
-// Transfer the response budget to the same registration that owns the intent.
-func trackMCPAdmittedOutcome(logW io.Writer, opts MCPProxyOpts, tracker *RequestTracker, id json.RawMessage, outcome TrackedRequestOutcome) (*requestRegistration, error) {
+var errMCPOutcomeRegistration = errors.New("could not reserve a pending receipt outcome for this request ID")
+
+// A receipt-backed send needs an owned reply registration, even when it
+// does not need to transfer a legacy response budget.
+func trackMCPAdmittedOutcome(logW io.Writer, opts MCPProxyOpts, tracker *RequestTracker, id json.RawMessage, outcome TrackedRequestOutcome, requireRegistration bool) (*requestRegistration, error) {
 	if outcome.Receipt.NativeLease == nil {
-		return trackMCPOutcome(logW, opts, tracker, id, outcome), nil
+		registration := trackMCPOutcome(logW, opts, tracker, id, outcome)
+		if registration == nil && requireRegistration {
+			return nil, errMCPOutcomeRegistration
+		}
+		return registration, nil
 	}
 	lease, err := outcome.Receipt.NativeLease.Split(nativeMCPPendingRecords)
 	if err != nil {
@@ -75,7 +82,7 @@ func trackMCPAdmittedOutcome(logW io.Writer, opts MCPProxyOpts, tracker *Request
 	registration := trackMCPOutcome(logW, opts, tracker, id, outcome)
 	if registration == nil {
 		lease.Release()
-		return nil, errors.New("could not reserve a pending receipt outcome for this request ID")
+		return nil, errMCPOutcomeRegistration
 	}
 	return registration, nil
 }

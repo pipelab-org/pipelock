@@ -3170,3 +3170,45 @@ func TestMCPV3HeldErrorReplyReportsAdmissionFailure(t *testing.T) {
 		t.Fatalf("held error reply failure handler received %v", failures)
 	}
 }
+
+func TestMCPV3OrdinaryRequestRequiresRegistration(t *testing.T) {
+	writer, writerOpts := openMCPV3RegressionWriter(t, deferred.SurfaceMCPStdio)
+	opts := nativeDeferredOptions(t, nil).WithV3ReceiptWriter(writer).withV3Session()
+	tracker := NewRequestTracker()
+	id := json.RawMessage("1")
+	original := tracker.trackOutcome(id, TrackedRequestOutcome{Method: methodToolsCall})
+	if original == nil {
+		t.Fatal("fixture could not register original request")
+	}
+	if registration, err := trackMCPAdmittedOutcome(io.Discard, MCPProxyOpts{}, tracker, id, TrackedRequestOutcome{}, false); registration != nil || err != nil {
+		t.Fatalf("legacy duplicate registration = %p, %v", registration, err)
+	}
+
+	// There is a tracker entry but no paired v3 exchange. Binding an exchange
+	// alone would not give the reply to this send a usable registration.
+	blocked := make(chan BlockedRequest, 1)
+	var sends int
+	upstream := heldWireWriter(func([]byte) error {
+		sends++
+		return nil
+	})
+	const request = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}\n"
+	ForwardScannedInput(transport.NewStdioReader(strings.NewReader(request)), upstream, io.Discard,
+		config.ActionBlock, config.ActionBlock, blocked, nil, tracker, opts)
+	if sends != 0 {
+		t.Fatalf("sent %d v3 requests without an owned reply registration", sends)
+	}
+	if denial, ok := <-blocked; !ok || denial.ErrorCode != -32007 {
+		t.Fatalf("missing tracking denial: %+v", denial)
+	}
+	if opts.pendingV3Send(id) != nil {
+		t.Fatal("refused request bound a v3 exchange")
+	}
+	if outcome, ok := tracker.takeOwnedOutcome(id, original); !ok || outcome.Method != methodToolsCall {
+		t.Fatalf("original registration was changed: %+v", outcome)
+	}
+	actions := verifiedMCPV3RegressionActions(t, writer, writerOpts)
+	if len(actions) != 2 || actions[0].Phase != "intent" || actions[1].Phase != "outcome" || actions[1].OutcomeClass != "not_released" {
+		t.Fatalf("unexpected evidence for the refused send: %+v", actions)
+	}
+}

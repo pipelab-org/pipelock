@@ -893,7 +893,7 @@ func ForwardScannedInput(
 				if awaitReply {
 					outcome.Method = verdict.Method
 					outcome.Receipt = outcome.Receipt.InheritAdmission(admission)
-					registration, trackingErr = trackMCPAdmittedOutcome(logW, opts, tracker, verdict.ID, outcome)
+					registration, trackingErr = trackMCPAdmittedOutcome(logW, opts, tracker, verdict.ID, outcome, effect != nil)
 					if trackingErr != nil {
 						return "", nil
 					}
@@ -1783,10 +1783,7 @@ func ForwardScannedInput(
 						if isTrackableRequest(heldLine, heldID) {
 							releaseOutcome.Receipt = releaseOutcome.Receipt.InheritAdmission(heldOpts.nativeAdmission)
 							var trackErr error
-							registration, trackErr = trackMCPAdmittedOutcome(logW, heldOpts, tracker, heldID, releaseOutcome)
-							if trackErr == nil && v3Hold && registration == nil {
-								trackErr = errors.New("could not reserve the held request ID")
-							}
+							registration, trackErr = trackMCPAdmittedOutcome(logW, heldOpts, tracker, heldID, releaseOutcome, v3Hold)
 							if trackErr != nil {
 								refuse("request_tracking_failed")
 								if finishDeniedRelease != nil {

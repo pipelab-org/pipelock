@@ -639,10 +639,7 @@ func RunHTTPProxy(
 						if isTrackableRequest(deferredReq.ForwardMessage, deferredReq.ID) {
 							releaseOutcome.Receipt = releaseOutcome.Receipt.InheritAdmission(heldOpts.nativeAdmission)
 							var trackErr error
-							registration, trackErr = trackMCPAdmittedOutcome(safeLogW, heldOpts, tracker, deferredReq.ID, releaseOutcome)
-							if trackErr == nil && v3Hold && registration == nil {
-								trackErr = errors.New("could not reserve the held request ID")
-							}
+							registration, trackErr = trackMCPAdmittedOutcome(safeLogW, heldOpts, tracker, deferredReq.ID, releaseOutcome, v3Hold)
 							if trackErr != nil {
 								refuse("request_tracking_failed")
 								if finishDeniedRelease != nil {
@@ -1007,7 +1004,7 @@ func RunHTTPProxy(
 			if awaitReply {
 				decision.Outcome.Method = frame.Method
 				decision.Outcome.Receipt = decision.Outcome.Receipt.InheritAdmission(admission)
-				registration, trackingErr = trackMCPAdmittedOutcome(safeLogW, fwdOpts, tracker, frame.ID, decision.Outcome)
+				registration, trackingErr = trackMCPAdmittedOutcome(safeLogW, fwdOpts, tracker, frame.ID, decision.Outcome, effect != nil)
 				if trackingErr != nil {
 					return nil, nil
 				}
