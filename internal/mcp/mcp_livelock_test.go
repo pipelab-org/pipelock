@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -23,9 +24,11 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/contract"
 	contractruntime "github.com/luckyPipewrench/pipelock/internal/contract/runtime"
 	"github.com/luckyPipewrench/pipelock/internal/contract/runtime/contractruntimetest"
+	"github.com/luckyPipewrench/pipelock/internal/deferred"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
@@ -1012,6 +1015,99 @@ func TestMCPToolLiveLock_HTTPWarnScannerThenContractBlocks(t *testing.T) {
 	data := decodeRPCError(t, string(blockRequestResponse(*decision.Blocked)))
 	if got := data[mcpBlockReasonKey]; got != string(blockreason.ContractDefaultDeny) {
 		t.Fatalf("%s = %v, want %s", mcpBlockReasonKey, got, blockreason.ContractDefaultDeny)
+	}
+}
+
+func TestMCPToolLiveLock_DeferredAdmission(t *testing.T) {
+	const allowedTool = "echo"
+	for _, surface := range []string{deferred.SurfaceMCPStdio, deferred.SurfaceMCPHTTPUpstream} {
+		for _, useV3 := range []bool{false, true} {
+			for _, tool := range []string{allowedTool, "format_text"} {
+				t.Run(surface+"/v3="+strconv.FormatBool(useV3)+"/"+tool, func(t *testing.T) {
+					emitter, recorder, receiptDir, _ := newReceiptTestHarness(t)
+					opts := nativeDeferredOptions(t, emitter)
+					opts.Transport = surface
+					opts.PolicyHash = strings.Repeat("a", 64)
+					opts.ContractLoader = mcpLiveLockLoader(t, contractruntime.ModeLive, mcpCallableRule("r-echo", allowedTool, nil))
+					opts.ContractAgent, opts.ContractServer = mcpLiveLockAgent, mcpLiveLockServer
+					opts.WarnContext = t.Context()
+					var writer *v3.StreamWriter
+					var writerOpts v3.StreamWriterOptions
+					if useV3 {
+						writer, writerOpts = openMCPV3RegressionWriter(t, surface)
+						opts = opts.WithV3ReceiptWriter(writer)
+						opts.DeferManager = deferred.NewManager(deferred.Config{Enabled: true, Timeout: time.Minute})
+					}
+					msg := mcpToolCall(tool, `{"prompt":"fixture hold marker"}`)
+					wantHeld := tool == allowedTool
+					var response string
+					var logs strings.Builder
+					if surface == deferred.SurfaceMCPStdio {
+						var out strings.Builder
+						if err := RunProxy(t.Context(), strings.NewReader(msg+"\n"), &out, &logs, []string{"cat"}, opts); err != nil {
+							t.Fatal(err)
+						}
+						response = out.String()
+					} else {
+						result := scanHTTPInputDecision([]byte(msg), io.Discard, "session", "session", opts)
+						if (result.Deferred != nil) != wantHeld {
+							t.Errorf("HTTP defer decision = %t, want %t", result.Deferred != nil, wantHeld)
+						}
+						if result.Blocked != nil {
+							response = string(blockRequestResponse(*result.Blocked))
+						}
+					}
+
+					if !wantHeld {
+						data := decodeRPCError(t, response)
+						if got := data[mcpBlockReasonKey]; got != string(blockreason.ContractDefaultDeny) {
+							t.Fatalf("block reason = %v, want %s", got, blockreason.ContractDefaultDeny)
+						}
+						if opts.DeferManager.HeldCount() != 0 {
+							t.Error("contract denial registered a hold")
+						}
+						if !useV3 {
+							if _, err := os.Stat(opts.DeferManager.JournalPath()); !os.IsNotExist(err) {
+								t.Errorf("journal exists or could not be inspected after refusal: %v", err)
+							}
+						}
+					}
+
+					if useV3 {
+						actions := verifiedMCPV3RegressionActions(t, writer, writerOpts)
+						var holds int
+						var refusal bool
+						for _, action := range actions {
+							if action.Phase == "hold" {
+								holds++
+							}
+							refusal = refusal || action.Phase == "decision" && action.Verdict == config.ActionBlock &&
+								action.Contract != nil && action.Contract.LiveVerdict == config.ActionBlock
+						}
+						if (holds == 1) != (wantHeld && surface == deferred.SurfaceMCPStdio) || holds > 1 {
+							t.Errorf("v3 hold receipts = %d: %s", holds, logs.String())
+						}
+						if !wantHeld && !refusal {
+							t.Error("contract denial lacked a v3 block decision")
+						}
+						return
+					}
+					if err := recorder.Close(); err != nil {
+						t.Fatal(err)
+					}
+					receipts := readActionReceipts(t, receiptDir)
+					if wantHeld {
+						if len(receipts) == 0 || receipts[0].ActionRecord.DecisionPhase != receipt.DecisionPhaseDefer {
+							t.Fatal("deferral did not emit a legacy hold receipt")
+						}
+					} else if len(receipts) != 1 || receipts[0].ActionRecord.Verdict != config.ActionBlock ||
+						receipts[0].ActionRecord.DecisionPhase == receipt.DecisionPhaseDefer ||
+						receipts[0].ActionRecord.ContractLiveVerdict != config.ActionBlock {
+						t.Fatalf("expected one legacy block receipt, got %+v", receipts)
+					}
+				})
+			}
+		}
 	}
 }
 

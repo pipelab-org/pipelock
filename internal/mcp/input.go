@@ -1597,6 +1597,29 @@ func ForwardScannedInput(
 				})
 			}
 		case config.ActionDefer:
+			contractGate, contractErr := evaluateMCPToolGate(frame, effectiveAction, len(reasons) > 0, opts)
+			if contractErr != nil {
+				denialAudit = mcpInputGateBlockAudit(scanner.AuditContract, mcpContractEvalReason, audit.BlockClassInfrastructureError)
+				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: contract tool-call evaluation failed: %v\n", lineNum, contractErr)
+				sendInputDenial(opts, denialAudit, BlockedRequest{
+					ID:             verdict.ID,
+					IsNotification: isRPCNotification(verdict.ID),
+					LogMessage:     fmt.Sprintf("pipelock: input line %d: contract tool-call evaluation failed", lineNum),
+					ErrorCode:      -32006,
+					ErrorMessage:   "pipelock: contract tool-call evaluation failed",
+				}, blockedCh)
+				effectiveAction = config.ActionBlock
+				break
+			}
+			if contractGate.Verdict == config.ActionBlock {
+				denialAudit = mcpInputGateBlockAudit(scanner.AuditContract, mcpContractDenyAuditReason, audit.BlockClassProtective)
+				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: contract blocked %s %q (%s)\n", lineNum, enforcementKind, enforcementTarget, contractGate.Reason)
+				v3Evidence = mcpWithContractReceipt(v3Evidence, contractGate)
+				sendInputDenial(opts, denialAudit, mcpContractBlockRequest(verdict.ID, contractGate, "pipelock: request blocked by live-lock contract"), blockedCh)
+				contractGateForReceipt = &contractGate
+				effectiveAction = config.ActionBlock
+				break
+			}
 			v3Hold := opts.receiptEffects.enabled
 			manager := opts.deferManager()
 			if err := deferred.ValidateAction(opts.Transport, config.ActionDefer); err != nil {

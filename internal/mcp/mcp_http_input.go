@@ -1255,6 +1255,28 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		result.Blocked = br
 		return result
 	case config.ActionDefer:
+		contractGate, contractErr := evaluateMCPToolGate(frame, effectiveAction, len(reasons) > 0, opts)
+		if contractErr != nil {
+			denialAudit = mcpInputGateBlockAudit(scanner.AuditContract, mcpContractEvalReason, audit.BlockClassInfrastructureError)
+			_, _ = fmt.Fprintf(logW, "pipelock: contract tool-call evaluation failed: %v\n", contractErr)
+			receiptVerdict = config.ActionBlock
+			result.Blocked = &BlockedRequest{
+				ID:             verdict.ID,
+				IsNotification: isRPCNotification(verdict.ID),
+				LogMessage:     "contract tool-call evaluation failed",
+				ErrorCode:      -32006,
+				ErrorMessage:   "pipelock: contract tool-call evaluation failed",
+			}
+			return result
+		}
+		if contractGate.Verdict == config.ActionBlock {
+			denialAudit = mcpInputGateBlockAudit(scanner.AuditContract, mcpContractDenyAuditReason, audit.BlockClassProtective)
+			_, _ = fmt.Fprintf(logW, "pipelock: contract blocked %s %q (%s)\n", enforcementKind, enforcementTarget, contractGate.Reason)
+			receiptVerdict = config.ActionBlock
+			receiptContractGate = &contractGate
+			result.Blocked = ptrMCPBlockedRequest(mcpContractBlockRequest(verdict.ID, contractGate, "pipelock: request blocked by live-lock contract"))
+			return result
+		}
 		manager := opts.deferManager()
 		if err := deferred.ValidateAction(opts.Transport, config.ActionDefer); err != nil {
 			denialAudit = mcpInputGateBlockAudit(scanner.AuditMCPDefer, mcpDeferUnsupportedReason, audit.BlockClassConfigMismatch)
