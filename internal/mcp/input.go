@@ -12,6 +12,7 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/addressprotect"
@@ -812,6 +813,9 @@ func ForwardScannedInput(
 			}
 			if opts.receiptEffects.enabled {
 				v3Evidence = opts.withReceiptPolicyHash(receiptOpts.receiptOptions())
+				if receiptVerdict == config.ActionDefer {
+					return nil
+				}
 			}
 			if err := emitMCPToolReceipt(receiptOpts); err != nil {
 				return err
@@ -889,7 +893,7 @@ func ForwardScannedInput(
 				if awaitReply {
 					outcome.Method = verdict.Method
 					outcome.Receipt = outcome.Receipt.InheritAdmission(admission)
-					registration, trackingErr = trackMCPAdmittedOutcome(logW, opts, tracker, verdict.ID, outcome)
+					registration, trackingErr = trackMCPAdmittedOutcome(logW, opts, tracker, verdict.ID, outcome, effect != nil)
 					if trackingErr != nil {
 						return "", nil
 					}
@@ -1593,19 +1597,30 @@ func ForwardScannedInput(
 				})
 			}
 		case config.ActionDefer:
-			if opts.receiptEffects.enabled {
-				effectiveAction = config.ActionBlock
-				receiptEmitted = true
-				denialAudit = mcpInputGateBlockAudit(scanner.AuditMCPDefer, mcpV3DeferRefusal, audit.BlockClassConfigMismatch)
-				evidence := mcpInputDenialEvidence(opts, frame, denialAudit, receipt.EmitOpts{})
-				refusalErr := opts.refuseV3Reply(opts.warnContext(), mcpV3ReplyEvidence(evidence))
+			contractGate, contractErr := evaluateMCPToolGate(frame, effectiveAction, len(reasons) > 0, opts)
+			if contractErr != nil {
+				denialAudit = mcpInputGateBlockAudit(scanner.AuditContract, mcpContractEvalReason, audit.BlockClassInfrastructureError)
+				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: contract tool-call evaluation failed: %v\n", lineNum, contractErr)
 				sendInputDenial(opts, denialAudit, BlockedRequest{
-					ID: verdict.ID, IsNotification: isNotification,
-					LogMessage: mcpV3DeferRefusal, ErrorCode: -32002, ErrorMessage: mcpV3DeferRefusal,
-					v3Evidence: evidence, v3RefusalSigned: refusalErr == nil, v3RefusalErr: refusalErr,
+					ID:             verdict.ID,
+					IsNotification: isRPCNotification(verdict.ID),
+					LogMessage:     fmt.Sprintf("pipelock: input line %d: contract tool-call evaluation failed", lineNum),
+					ErrorCode:      -32006,
+					ErrorMessage:   "pipelock: contract tool-call evaluation failed",
 				}, blockedCh)
+				effectiveAction = config.ActionBlock
 				break
 			}
+			if contractGate.Verdict == config.ActionBlock {
+				denialAudit = mcpInputGateBlockAudit(scanner.AuditContract, mcpContractDenyAuditReason, audit.BlockClassProtective)
+				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: contract blocked %s %q (%s)\n", lineNum, enforcementKind, enforcementTarget, contractGate.Reason)
+				v3Evidence = mcpWithContractReceipt(v3Evidence, contractGate)
+				sendInputDenial(opts, denialAudit, mcpContractBlockRequest(verdict.ID, contractGate, "pipelock: request blocked by live-lock contract"), blockedCh)
+				contractGateForReceipt = &contractGate
+				effectiveAction = config.ActionBlock
+				break
+			}
+			v3Hold := opts.receiptEffects.enabled
 			manager := opts.deferManager()
 			if err := deferred.ValidateAction(opts.Transport, config.ActionDefer); err != nil {
 				denialAudit = mcpInputGateBlockAudit(scanner.AuditMCPDefer, mcpDeferUnsupportedReason, audit.BlockClassConfigMismatch)
@@ -1621,7 +1636,7 @@ func ForwardScannedInput(
 				effectiveAction = config.ActionBlock
 				break
 			}
-			if err := deferredAdmissionError(manager, opts.requireReceipts()); err != nil {
+			if err := deferredAdmissionError(manager, opts.requireReceipts() && !v3Hold); err != nil {
 				denialAudit = mcpInputGateBlockAudit(scanner.AuditMCPDefer, mcpDeferDisabledReason, audit.BlockClassConfigMismatch)
 				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked %s request (%s) [%v]\n",
 					lineNum, method, reasonStr, err)
@@ -1635,12 +1650,15 @@ func ForwardScannedInput(
 				effectiveAction = config.ActionBlock
 				break
 			}
+			if actionID == "" {
+				actionID = receipt.NewActionID()
+			}
 			receiptDecisionPhase = receipt.DecisionPhaseDefer
 			receiptDeferID = actionID
 			receiptResolutionPolicy = deferred.ReceiptPolicyString(manager.Policy(), policyVerdict.ResolutionPolicy)
 			receiptSessionID = captureSessionID(opts.Transport)
 			receiptSessionIDOriginal = captureSessionIDOriginal(opts.Transport)
-			if err := emitToolReceipt(config.ActionDefer); err != nil {
+			if deferReceiptErr := emitToolReceipt(config.ActionDefer); deferReceiptErr != nil {
 				denialAudit = mcpOperationalBlockAudit(scanner.AuditReceiptEmission, "mcp_input", mcpReceiptEmissionReason)
 				sendMCPDenial(opts, denialAudit, BlockedRequest{
 					ID:             verdict.ID,
@@ -1673,6 +1691,8 @@ func ForwardScannedInput(
 			// deferred cleanup safe after this early denial cleanup.
 			var finishDeniedRelease func()
 			var taskRefusal string
+			var v3Release deferred.Release
+			var v3HeldEvidence receipt.EmitOpts
 			heldOpts, releaseHeldAdmission, holdErr := opts.splitDeferredAdmission()
 			heldCallbacks.Add(1)
 			finishHeldAdmission := func() {
@@ -1734,7 +1754,9 @@ func ForwardScannedInput(
 						finish = sync.OnceFunc(finish)
 						finishDeniedRelease = finish
 					}
-					prepared = receiptSettle.probeAllow(heldOpts, prepared)
+					if !v3Hold {
+						prepared = receiptSettle.probeAllow(heldOpts, prepared)
+					}
 					return prepared, finish
 				},
 				// The release receipt is written while the journal shows the
@@ -1749,7 +1771,11 @@ func ForwardScannedInput(
 					denialOpts.denialTerminal = &terminalSlot
 					denialAudit := mcpDeferredDenialAudit(res)
 					authorityDenied := res.ResolutionSource == deferred.SourceAuthority
-					if emitErr := receiptSettle.ensure(heldOpts, logW, res); emitErr != nil {
+					var emitErr error
+					if !v3Hold {
+						emitErr = receiptSettle.ensure(heldOpts, logW, res)
+					}
+					if emitErr != nil {
 						if finishDeniedRelease != nil {
 							finishDeniedRelease()
 						}
@@ -1771,11 +1797,16 @@ func ForwardScannedInput(
 					switch res.FinalDecision {
 					case config.ActionAllow:
 						releaseOutcome := receiptSettle.release
+						releaseOutcome.Method = res.Method
+						var readyToCorrelate atomic.Bool
+						if v3Hold {
+							releaseOutcome.readyToCorrelate = &readyToCorrelate
+						}
 						var registration *requestRegistration
 						if isTrackableRequest(heldLine, heldID) {
 							releaseOutcome.Receipt = releaseOutcome.Receipt.InheritAdmission(heldOpts.nativeAdmission)
 							var trackErr error
-							registration, trackErr = trackMCPAdmittedOutcome(logW, heldOpts, tracker, heldID, releaseOutcome)
+							registration, trackErr = trackMCPAdmittedOutcome(logW, heldOpts, tracker, heldID, releaseOutcome, v3Hold)
 							if trackErr != nil {
 								refuse("request_tracking_failed")
 								if finishDeniedRelease != nil {
@@ -1800,24 +1831,57 @@ func ForwardScannedInput(
 							}
 							return
 						}
+						releaseCtx := heldOpts.warnContext()
+						var exchange *mcpV3Exchange
+						if v3Hold {
+							var admitErr error
+							exchange, admitErr = heldOpts.admitV3HeldSend(releaseCtx, v3HeldEvidence, v3Release)
+							releaseErr := errors.Join(admitErr, releaseCtx.Err(), v3Release.ApprovalContext.Err())
+							if releaseErr == nil {
+								releaseErr = heldOpts.commitV3HeldSend(releaseCtx, exchange, v3Release, &readyToCorrelate)
+							}
+							if releaseErr != nil {
+								tracker.removeOwnedOutcome(heldID, registration)
+								if admitErr == nil {
+									heldOpts.refuseV3HeldIntent(releaseCtx, exchange, v3Release)
+								}
+								finishDeniedRelease()
+								logMCPV3Error(logW, admitErr)
+								if heldNotification {
+									dropMCPDenial(denialOpts, mcpReceiptMcpInputDenialAudit(), "input")
+								} else {
+									br := mcpV3HeldSendDenial(heldAuthorityFrame, v3HeldEvidence, exchange, releaseErr)
+									sendMCPDenial(denialOpts, mcpReceiptMcpInputDenialAudit(), br, blockedCh)
+								}
+								return
+							}
+						}
 						// forwardMu is held by Prepare's release claim.
 						if err := writer.WriteMessage(heldLine); err != nil {
 							tracker.removeOwnedOutcome(heldID, registration)
 							releaseOutcome.settle(logW, heldOpts, "error", -1, mcpUpstreamWriteFailed)
-							res = refuse(mcpUpstreamWriteFailed)
+							if v3Hold {
+								heldOpts.finishV3Send(releaseCtx, logW, exchange, true)
+							} else {
+								res = refuse(mcpUpstreamWriteFailed)
+							}
 							if finishDeniedRelease != nil {
 								finishDeniedRelease()
 							}
 							// Settlement logs any receipt write failure.
-							_ = receiptSettle.ensure(heldOpts, logW, res)
+							if !v3Hold {
+								_ = receiptSettle.ensure(heldOpts, logW, res)
+							}
 							if !heldNotification {
 								sendMCPDenial(denialOpts, mcpDeferredDenialAudit(res), BlockedRequest{
 									ID: heldID, ErrorCode: -32603, ErrorMessage: "pipelock: upstream write failed",
+									v3ReplyParent: exchange,
 								}, blockedCh)
 							}
 							_, _ = fmt.Fprintf(logW, "pipelock: input forward error: %v\n", err)
 							return
 						}
+						heldOpts.confirmV3HeldSend(releaseCtx, logW, exchange, true)
 						if heldNotification {
 							releaseOutcome.settle(logW, heldOpts, "forwarded", -1, "notification_forwarded")
 						}
@@ -1860,8 +1924,18 @@ func ForwardScannedInput(
 					}
 				},
 			}
+			if v3Hold {
+				v3Evidence.RequestID, v3Evidence.Method = canonicalID(heldID), verdict.Method
+				v3HeldEvidence = heldOpts.setupV3Hold(&heldAction, v3Evidence)
+				resolve := heldAction.ResolveWithReleaseRefusal
+				heldAction.ResolveWithReleaseRefusal = nil
+				heldAction.ResolveReceipt = func(res deferred.Resolution, release deferred.Release) {
+					v3Release = release
+					resolve(res, func(reason string) deferred.Resolution { return release.Refuse(reason, nil) })
+				}
+			}
 			if holdErr == nil {
-				holdErr = manager.Hold(heldAction)
+				holdErr = manager.HoldContext(heldOpts.warnContext(), heldAction)
 			}
 			if holdErr == nil && heldOpts.nativeAdmission.NativeLease.Stopping() {
 				_ = manager.Resolve(actionID, config.ActionBlock, deferred.SourceCancel)

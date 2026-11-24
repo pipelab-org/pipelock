@@ -16,13 +16,13 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/deferred"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
 )
 
 const (
-	mcpV3DeferRefusal             = "pipelock: deferred holds are not available while v3 receipts are enabled"
 	mcpV3RedirectRefusal          = "pipelock: policy redirect is not available while v3 receipts are enabled"
 	mcpUpstreamSendBoundary       = "upstream_send"
 	mcpDownstreamDeliveryBoundary = "downstream_delivery"
@@ -72,10 +72,14 @@ func (o MCPProxyOpts) v3EffectAction(opts receipt.EmitOpts, boundary string) (v3
 	if digest == "" {
 		digest = o.receiptPolicyHash()
 	}
+	return action, mcpV3PolicySnapshot(digest)
+}
+
+func mcpV3PolicySnapshot(digest string) v3.PolicySnapshot {
 	if digest != "" && !strings.HasPrefix(digest, "sha256:") {
 		digest = "sha256:" + digest
 	}
-	return action, v3.CapturePolicy(digest)
+	return v3.CapturePolicy(digest)
 }
 
 type mcpV3EffectToken = v3.EffectToken
@@ -129,15 +133,243 @@ func observeMCPHTTPWrite(ctx context.Context) (context.Context, func() bool) {
 	return httptrace.WithClientTrace(ctx, trace), written.Load
 }
 
+func (o MCPProxyOpts) setupV3Hold(held *deferred.HeldAction, evidence receipt.EmitOpts) receipt.EmitOpts {
+	evidence.ActionID = held.ActionID
+	evidence.Target = firstNonEmpty(evidence.Target, firstNonEmpty(held.Target, held.Method))
+	action, policy := o.v3EffectAction(evidence, "approval_prompt")
+	rule := held.RulePolicy
+	recordResolution := func(ctx context.Context, res deferred.Resolution, correction bool) error {
+		resolution := action
+		resolution.Phase, resolution.Verdict, resolution.EffectRelation = "resolution", res.FinalDecision, "after"
+		resolution.Pattern = res.Reason
+		resolution.Hold = &v3.Hold{
+			ID: res.DeferID, ResolutionSource: res.ResolutionSource,
+			ResolutionPolicy: deferred.ReceiptPolicyString(res.Policy, rule),
+		}
+		if correction {
+			resolution.Hold.Correction = &correction
+		}
+		if res.FinalDecision == config.ActionAsk {
+			resolution.Ask = &v3.Ask{Channel: "approval_api", Observed: true}
+		}
+		resolutionPolicy := policy
+		switch res.ResolutionSource {
+		case deferred.SourcePolicyReload, deferred.SourceToolInventory:
+			// A sweep decides independently of the policy that created the hold.
+			// The inventory resolver does not supply a deciding revision.
+			resolutionPolicy = mcpV3PolicySnapshot(res.DecidingPolicyHash)
+		}
+		return o.receiptEffects.gate.RecordApproval(ctx, resolution, resolutionPolicy)
+	}
+	held.Receipt = &deferred.ReceiptHold{
+		ConfirmHold: func(ctx context.Context, h deferred.HeldAction) error {
+			hold := action
+			hold.Phase, hold.Verdict, hold.EffectRelation = "hold", config.ActionDefer, "before"
+			hold.Hold = &v3.Hold{ID: h.DeferID, Parent: h.ParentDeferID, Policy: deferred.ReceiptPolicyString(h.Policy, h.RulePolicy)}
+			return o.receiptEffects.gate.RecordApproval(ctx, hold, policy)
+		},
+		ConfirmResolution: func(ctx context.Context, res deferred.Resolution) (string, error) {
+			err := recordResolution(ctx, res, false)
+			switch {
+			case err == nil:
+				return res.FinalDecision, nil
+			case errors.Is(err, v3.ErrHoldBlockRecorded):
+				return config.ActionBlock, nil
+			case res.FinalDecision == config.ActionAllow && !errors.Is(err, v3.ErrActionPersistStarted):
+				res.FinalDecision, res.ResolutionSource, res.Reason = config.ActionBlock, deferred.SourceCancel, deferred.ReasonReceiptNotWritten
+				if blockErr := recordResolution(ctx, res, false); blockErr != nil {
+					return "", errors.Join(err, blockErr)
+				}
+				return config.ActionBlock, nil
+			default:
+				return "", err
+			}
+		},
+		ConfirmCorrection: func(ctx context.Context, res deferred.Resolution) error {
+			err := recordResolution(ctx, res, true)
+			if errors.Is(err, v3.ErrHoldBlockRecorded) {
+				return nil
+			}
+			return err
+		},
+	}
+	evidence.Verdict = config.ActionAllow
+	return evidence
+}
+
+// refuseV3HoldAdmission records rejections that never started a hold write.
+// Started writes have their own writer-managed refusal or recovery.
+func (o MCPProxyOpts) refuseV3HoldAdmission(hf holdFailureResolution, holdErr error) (string, error) {
+	source := deferred.HoldFailureSource(holdErr)
+	message := "pipelock: deferred action could not be held"
+	switch {
+	case errors.Is(holdErr, deferred.ErrCapacity):
+		message = "pipelock: defer capacity exceeded"
+	case errors.Is(holdErr, deferred.ErrCascadeLimit):
+		message = "pipelock: defer cascade depth exceeded"
+	case errors.Is(holdErr, v3.ErrEffectNotReleased):
+		return message, nil
+	case errors.Is(holdErr, v3.ErrActionPersistStarted):
+		return message, holdErr
+	}
+	action, policy := o.v3EffectAction(receipt.EmitOpts{
+		ActionID: hf.DeferID, Method: hf.Method, Transport: o.Transport,
+		Target: firstNonEmpty(hf.Target, hf.Method), Pattern: source,
+		SessionID: hf.Authority.SessionID, SessionIDOriginal: hf.Authority.SessionIDOriginal,
+	}, "approval_prompt")
+	return message, o.receiptEffects.gate.Refuse(o.warnContext(), action, policy)
+}
+
+// admitV3HeldSend reserves the reply ID before intent I/O. The reservation
+// cannot correlate a reply until the transport publishes commit-to-send.
+func (o MCPProxyOpts) admitV3HeldSend(ctx context.Context, evidence receipt.EmitOpts, release deferred.Release) (*mcpV3Exchange, error) {
+	exchange := &mcpV3Exchange{request: evidence, reserved: true}
+	if err := o.bindV3Send(exchange); err != nil {
+		release.Refuse("request_tracking_failed", nil)
+		return nil, err
+	}
+	action, policy := o.v3EffectAction(evidence, mcpUpstreamSendBoundary)
+	admitCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	stop := context.AfterFunc(release.ApprovalContext, cancel)
+	defer stop()
+	if release.ApprovalContext.Err() != nil {
+		cancel()
+	}
+	token, err := o.receiptEffects.gate.AdmitHeld(admitCtx, action, policy)
+	if err != nil {
+		o.unbindV3Send(exchange)
+		var settle func() error
+		if errors.Is(err, v3.ErrActionPersistStarted) {
+			settle = func() error {
+				if errors.Is(err, v3.ErrEffectNotReleased) {
+					return nil
+				}
+				return err
+			}
+		}
+		release.Refuse("receipt_admission_failed", settle)
+		return nil, err
+	}
+	if s := o.v3Session; s != nil && evidence.RequestID != "" {
+		s.mu.Lock()
+		exchange.token = token
+		closed := s.closed
+		s.mu.Unlock()
+		if closed {
+			release.Refuse("request_cancelled", func() error {
+				refuseErr := token.Refuse(ctx)
+				if errors.Is(refuseErr, v3.ErrEffectNotReleased) {
+					return nil
+				}
+				return refuseErr
+			})
+			return nil, context.Canceled
+		}
+	} else {
+		exchange.token = token
+	}
+	return exchange, nil
+}
+
+func (o MCPProxyOpts) refuseV3HeldIntent(ctx context.Context, exchange *mcpV3Exchange, release deferred.Release) {
+	o.unbindV3Send(exchange)
+	release.Refuse("request_cancelled", func() error {
+		err := exchange.token.Refuse(ctx)
+		if errors.Is(err, v3.ErrEffectNotReleased) {
+			return nil
+		}
+		return err
+	})
+}
+
+// commitV3HeldSend publishes the held send as committed. It refuses once the
+// session has settled: settleV3Session skips reserved exchanges, so a commit
+// after teardown would send with no session left to settle the attempt. The
+// caller then refuses the intent as not_released, like any other pre-send gate.
+// Check the approval context after taking the session lock, where cancellation
+// during the wait can still stop the send.
+func (o MCPProxyOpts) commitV3HeldSend(ctx context.Context, exchange *mcpV3Exchange, release deferred.Release, ready *atomic.Bool) error {
+	s := o.v3Session
+	if s != nil {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.afterCommitLock != nil {
+			s.afterCommitLock()
+		}
+		if s.closed {
+			return errMCPV3SessionClosed
+		}
+	}
+	// Checked after the session lock: a cancellation that lands while the
+	// commit waits still withholds the send.
+	if err := errors.Join(ctx.Err(), release.ApprovalContext.Err()); err != nil {
+		return err
+	}
+	if s != nil {
+		exchange.reserved = false
+	}
+	if ready != nil {
+		ready.Store(true)
+	}
+	release.Commit()
+	return nil
+}
+
+func (o MCPProxyOpts) confirmV3HeldSend(ctx context.Context, log io.Writer, exchange *mcpV3Exchange, observed bool) {
+	if exchange != nil {
+		logMCPV3Error(log, confirmMCPV3Effect(ctx, exchange.token, observed))
+	}
+}
+
+// errMCPV3SessionClosed refuses a held send whose session settled before it
+// committed.
+var errMCPV3SessionClosed = errors.New("pipelock: MCP session closed before the held call was released")
+
 type mcpV3Exchange struct {
-	request receipt.EmitOpts
-	token   *v3.EffectToken
+	request  receipt.EmitOpts
+	token    *v3.EffectToken
+	reserved bool // under mcpV3Session.mu, until a held send commits
 }
 
 type mcpV3Session struct {
 	mu      sync.Mutex
 	pending map[string]*mcpV3Exchange
 	closed  bool
+	// afterCommitLock is a test hook run by commitV3HeldSend while it holds mu.
+	afterCommitLock func()
+}
+
+// mcpV3POST scopes a bridge response reader to its own registration
+// and send. Outstanding request IDs are still reserved across the session.
+type mcpV3POST struct {
+	exchange     *mcpV3Exchange
+	registration *requestRegistration
+}
+
+func (o MCPProxyOpts) withV3POST(exchange *mcpV3Exchange, registration *requestRegistration) MCPProxyOpts {
+	if exchange != nil {
+		o.v3POST = &mcpV3POST{exchange: exchange, registration: registration}
+	}
+	return o
+}
+
+func (p *mcpV3POST) ownsID(id json.RawMessage) bool {
+	return p.registration != nil && p.exchange.request.RequestID == canonicalID(id)
+}
+
+func (o MCPProxyOpts) consumeMCPResponse(tracker *RequestTracker, id json.RawMessage) (TrackedRequestOutcome, bool) {
+	if o.v3POST == nil {
+		return tracker.Consume(id)
+	}
+	s := o.v3Session
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	x := o.v3POST.exchange
+	if !o.v3POST.ownsID(id) || x.reserved || s.pending[x.request.RequestID] != x {
+		return TrackedRequestOutcome{}, false
+	}
+	return tracker.takeOwnedOutcome(id, o.v3POST.registration)
 }
 
 func (o MCPProxyOpts) withV3Session() MCPProxyOpts {
@@ -175,6 +407,9 @@ func (o MCPProxyOpts) bindV3Send(x *mcpV3Exchange) error {
 		return nil
 	}
 	s := o.v3Session
+	if s == nil {
+		return errors.New("missing v3 receipt session")
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
@@ -191,16 +426,21 @@ func (o MCPProxyOpts) finishV3Send(ctx context.Context, log io.Writer, x *mcpV3E
 	if x == nil {
 		return
 	}
-	s := o.v3Session
-	s.mu.Lock()
-	if s.pending[x.request.RequestID] == x {
-		delete(s.pending, x.request.RequestID)
-	}
-	s.mu.Unlock()
+	o.unbindV3Send(x)
 	if attempted {
 		logMCPV3Error(log, x.token.SettleOnExit(ctx))
 	} else {
 		logMCPV3Error(log, x.token.Refuse(ctx))
+	}
+}
+
+func (o MCPProxyOpts) unbindV3Send(x *mcpV3Exchange) {
+	if s := o.v3Session; s != nil && x != nil {
+		s.mu.Lock()
+		if s.pending[x.request.RequestID] == x {
+			delete(s.pending, x.request.RequestID)
+		}
+		s.mu.Unlock()
 	}
 }
 
@@ -210,11 +450,16 @@ func (o MCPProxyOpts) settleV3Session(ctx context.Context, log io.Writer) {
 	}
 	s := o.v3Session
 	s.mu.Lock()
-	pending := s.pending
+	var committed []*mcpV3Exchange
+	for _, x := range s.pending {
+		if !x.reserved {
+			committed = append(committed, x)
+		}
+	}
 	s.pending = nil
 	s.closed = true
 	s.mu.Unlock()
-	for _, x := range pending {
+	for _, x := range committed {
 		logMCPV3Error(log, x.token.SettleOnExit(ctx))
 	}
 }
@@ -251,18 +496,29 @@ func isWithheldV3Reply(writer transport.MessageWriter) bool {
 }
 
 func (o MCPProxyOpts) takeV3Send(id json.RawMessage) *mcpV3Exchange {
-	return o.takeV3SendKey(canonicalID(id))
+	var expected *mcpV3Exchange
+	if o.v3POST != nil {
+		expected = o.v3POST.exchange
+	}
+	return o.takeV3SendMatching(canonicalID(id), expected)
 }
 
 func (o MCPProxyOpts) takeV3SendKey(key string) *mcpV3Exchange {
+	return o.takeV3SendMatching(key, nil)
+}
+
+func (o MCPProxyOpts) takeV3SendMatching(key string, expected *mcpV3Exchange) *mcpV3Exchange {
 	if o.v3Session == nil {
 		return nil
 	}
 	s := o.v3Session
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	x := s.pending[key]
+	if expected != nil && x != expected || x != nil && x.reserved {
+		return nil
+	}
 	delete(s.pending, key)
-	s.mu.Unlock()
 	return x
 }
 
@@ -272,7 +528,11 @@ func (o MCPProxyOpts) pendingV3Send(id json.RawMessage) *mcpV3Exchange {
 	}
 	o.v3Session.mu.Lock()
 	defer o.v3Session.mu.Unlock()
-	return o.v3Session.pending[canonicalID(id)]
+	x := o.v3Session.pending[canonicalID(id)]
+	if x != nil && x.reserved {
+		return nil
+	}
+	return x
 }
 
 func mcpV3SendDenial(frame MCPFrame, send *mcpV3Exchange, admitErr error) BlockedRequest {
@@ -282,6 +542,15 @@ func mcpV3SendDenial(frame MCPFrame, send *mcpV3Exchange, admitErr error) Blocke
 		ErrorMessage: requiredReceiptFailureMessage(nil), ErrorData: mcpBlockReasonData(blockreason.ReceiptEmissionFailed),
 		v3ReplyParent: send, v3SendDenied: errors.Is(admitErr, v3.ErrEffectNotReleased),
 	}
+}
+
+func mcpV3HeldSendDenial(frame MCPFrame, evidence receipt.EmitOpts, send *mcpV3Exchange, releaseErr error) BlockedRequest {
+	if send == nil {
+		send = &mcpV3Exchange{request: evidence}
+	}
+	br := mcpV3SendDenial(frame, send, releaseErr)
+	br.v3SendDenied = true
+	return br
 }
 
 func (o MCPProxyOpts) writeV3SendDenial(log io.Writer, writer transport.MessageWriter, frame MCPFrame, send *mcpV3Exchange, admitErr error) error {
@@ -324,7 +593,7 @@ func (w *mcpV3LocalWriter) replyWriter(id json.RawMessage) mcpV3ReplyWriter {
 
 func (w *mcpV3LocalWriter) WriteMessage(msg []byte) error {
 	reply := w.replyWriter(ParseMCPFrame(msg).ID)
-	return writeMCPForwardedMessage(&reply, msg)
+	return w.reportDenialFailure(msg, writeMCPForwardedMessage(&reply, msg))
 }
 
 func (w *mcpV3LocalWriter) writeDeniedMessage(msg []byte) error {

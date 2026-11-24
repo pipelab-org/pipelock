@@ -739,7 +739,7 @@ func TestHTTPBridgeFailureScopeAndCancellation(t *testing.T) {
 }
 
 func TestResponseHelpersHandleMissingState(t *testing.T) {
-	if _, ok := consumeTrackedRequestOutcome(nil, []byte(`1`)); !ok {
+	if _, ok := consumeTrackedRequestOutcome(nil, []byte(`1`), MCPProxyOpts{}); !ok {
 		t.Fatal("nil tracker did not preserve untracked response behavior")
 	}
 	if got := firstNonEmptyPattern([]string{"", ""}); got != "unknown" {

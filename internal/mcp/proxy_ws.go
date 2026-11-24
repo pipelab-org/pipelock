@@ -572,7 +572,7 @@ func registerWSTaskOutcome(logW io.Writer, opts MCPProxyOpts, tracker *RequestTr
 	outcome := decision.Outcome
 	outcome.Method = frame.Method
 	outcome.Receipt = outcome.Receipt.InheritAdmission(opts.nativeAdmission)
-	registration, err := trackMCPAdmittedOutcome(logW, opts, tracker, frame.ID, outcome)
+	registration, err := trackMCPAdmittedOutcome(logW, opts, tracker, frame.ID, outcome, false)
 	if err != nil {
 		return nil, "", err
 	}

@@ -6,6 +6,7 @@ package mcp
 import (
 	"encoding/json"
 	"reflect"
+	"strconv"
 	"sync"
 	"testing"
 
@@ -26,7 +27,7 @@ func TestRequestTracker_ClaimRejectedOutcome(t *testing.T) {
 		{"no-receipt-metadata", NewStrictRequestTracker(id), id},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, ok := tc.tracker.claimRejectedOutcome(tc.id); ok {
+			if _, ok := tc.tracker.claimRejectedOutcome(tc.id, nil); ok {
 				t.Fatal("claimed rejection without trusted receipt metadata")
 			}
 		})
@@ -35,30 +36,46 @@ func TestRequestTracker_ClaimRejectedOutcome(t *testing.T) {
 	tr := NewRequestTracker()
 	want := TrackedRequestOutcome{Receipt: receipt.EmitOpts{ActionID: receipt.NewActionID()}, Method: methodToolsCall}
 	tr.TrackOutcome(id, want)
-	if got, ok := tr.claimRejectedOutcome(id); !ok || !reflect.DeepEqual(got, want) {
+	if got, ok := tr.claimRejectedOutcome(id, nil); !ok || !reflect.DeepEqual(got, want) {
 		t.Fatal("first rejection did not preserve trusted metadata")
 	}
 	tr.TrackOutcome(id, want)
-	if _, ok := tr.claimRejectedOutcome(id); ok {
+	if _, ok := tr.claimRejectedOutcome(id, nil); ok {
 		t.Fatal("retracking a pending request reset its rejection bound")
 	}
 	if got, ok := tr.Consume(id); !ok || !reflect.DeepEqual(got, want) {
 		t.Fatal("rejection consumed or changed trusted request metadata")
 	}
-	if _, ok := tr.claimRejectedOutcome(id); ok {
+	if _, ok := tr.claimRejectedOutcome(id, nil); ok {
 		t.Fatal("claimed rejection after request consumption")
 	}
 	tr.TrackOutcome(id, want)
-	if _, ok := tr.claimRejectedOutcome(id); !ok {
+	if _, ok := tr.claimRejectedOutcome(id, nil); !ok {
 		t.Fatal("new request inherited the consumed request's rejection bound")
 	}
 	if got := tr.DrainPendingOutcomes(); len(got) != 1 || !reflect.DeepEqual(got[0].Outcome, want) {
 		t.Fatal("rejection changed pending timeout metadata")
 	}
 	tr.TrackOutcome(id, want)
-	if _, ok := tr.claimRejectedOutcome(id); !ok {
+	if _, ok := tr.claimRejectedOutcome(id, nil); !ok {
 		t.Fatal("new request inherited the drained request's rejection bound")
 	}
+
+	t.Run("registration identity", func(t *testing.T) {
+		tracker := NewRequestTracker()
+		stale := tracker.trackOutcome(id, want)
+		tracker.removeOwnedOutcome(id, stale)
+		current := tracker.trackOutcome(id, want)
+		if stale == nil || current == nil || stale == current {
+			t.Fatal("fixture did not replace the request registration")
+		}
+		if _, ok := tracker.claimRejectedOutcome(id, stale); ok {
+			t.Fatal("stale registration claimed the replacement request")
+		}
+		if got, ok := tracker.claimRejectedOutcome(id, current); !ok || !reflect.DeepEqual(got, want) {
+			t.Fatal("current registration could not claim its request")
+		}
+	})
 }
 
 func TestRequestTracker_TrackAndValidate(t *testing.T) {
@@ -392,5 +409,25 @@ func TestRequestTrackerOutcomeOwnership(t *testing.T) {
 	tracker.removeOwnedOutcome(id, owner)
 	if got, ok := tracker.Consume(id); !ok || got.handle != nil {
 		t.Fatal("reuse after ambiguity acquired an outcome or lost correlation")
+	}
+}
+
+func TestRequestTrackerKeepsPinnedRegistrationAtCapacity(t *testing.T) {
+	tracker := NewRequestTracker()
+	pinned := json.RawMessage("0")
+	registration := tracker.trackOutcome(pinned, TrackedRequestOutcome{pinned: true})
+	if registration == nil {
+		t.Fatal("pinned registration was refused")
+	}
+	for i := 1; i < maxTrackedRequests; i++ {
+		if tracker.trackOutcome(json.RawMessage(strconv.Itoa(i)), TrackedRequestOutcome{}) == nil {
+			t.Fatalf("registration %d refused below capacity", i)
+		}
+	}
+	if got := tracker.trackOutcome(json.RawMessage(strconv.Itoa(maxTrackedRequests)), TrackedRequestOutcome{}); got != nil {
+		t.Fatal("tracker evicted a pinned registration to admit a newcomer")
+	}
+	if _, ok := tracker.takeOwnedOutcome(pinned, registration); !ok {
+		t.Fatal("pinned registration lost ownership at capacity")
 	}
 }

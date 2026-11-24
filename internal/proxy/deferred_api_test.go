@@ -5,6 +5,7 @@ package proxy
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -540,4 +541,67 @@ func TestHandleDeferredAction_ApproveAfterKillSwitchReportsBlock(t *testing.T) {
 	if n != 1 || res.FinalDecision != config.ActionBlock || res.ResolutionSource != deferred.SourceKillSwitch {
 		t.Fatalf("resume = %d x (%q,%q), want one block from the kill switch", n, res.FinalDecision, res.ResolutionSource)
 	}
+}
+
+type deferredRequestContext struct {
+	context.Context
+	waiting chan struct{}
+	once    sync.Once
+}
+
+func (c *deferredRequestContext) Done() <-chan struct{} {
+	c.once.Do(func() { close(c.waiting) })
+	return c.Context.Done()
+}
+
+func TestHandleDeferredAction_CancelsParkedApproval(t *testing.T) {
+	const parent, child = "0193defer00000000000000000031", "0193defer00000000000000000032"
+	mgr := newDeferManager()
+	heldActions := make(chan deferred.Resolution, 2)
+	for _, id := range []string{parent, child} {
+		err := mgr.Hold(deferred.HeldAction{
+			DeferID: id, ActionID: id, Authority: deferred.AuthoritySnapshot{SessionID: "session"},
+			RulePolicy: config.DeferResolutionPolicy{AllowOn: config.DeferAllowOn{Approval: true}},
+			Receipt: &deferred.ReceiptHold{
+				ConfirmHold: func(context.Context, deferred.HeldAction) error { return nil },
+				ConfirmResolution: func(_ context.Context, res deferred.Resolution) (string, error) {
+					return res.FinalDecision, nil
+				},
+				ConfirmCorrection: func(context.Context, deferred.Resolution) error { return nil },
+			},
+			ResolveReceipt: func(res deferred.Resolution, _ deferred.Release) { heldActions <- res },
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	h := deferredTestHandler(mgr)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	requestCtx, cancelRequest := context.WithCancel(ctx)
+	defer cancelRequest()
+	waiting := &deferredRequestContext{Context: requestCtx, waiting: make(chan struct{})}
+	req := httptest.NewRequestWithContext(waiting, http.MethodPost, "/api/v1/deferred/"+child+"/approve", nil)
+	req.Header.Set("Authorization", "Bearer "+deferredTestToken)
+	rr := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		h.HandleDeferredAction(rr, req)
+		close(done)
+	}()
+	select {
+	case <-waiting.waiting:
+	case <-ctx.Done():
+		t.Fatal("operator request did not park using its context")
+	}
+	cancelRequest()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatal("parked operator request did not return on cancellation")
+	}
+	if _, ok := mgr.Held(child); !ok || len(heldActions) != 0 {
+		t.Fatal("cancelled approval settled the hold")
+	}
+	mgr.ResolveAll(config.ActionBlock, deferred.SourceCancel)
 }

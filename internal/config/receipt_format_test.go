@@ -11,7 +11,7 @@ import (
 func TestLoadReceiptFormat(t *testing.T) {
 	for _, tc := range []struct {
 		name, fields, other, want, wantErr string
-		useDeferDefault                    bool
+		useDeferDefault, wantDefer         bool
 	}{
 		{name: "omitted"},
 		{name: "null", fields: "  receipt_format: null\n"},
@@ -20,10 +20,10 @@ func TestLoadReceiptFormat(t *testing.T) {
 		{name: "explicit v3", fields: "  receipt_format: v3\n", want: ReceiptFormatV3},
 		{name: "invalid", fields: "  receipt_format: other\n", wantErr: "must be omitted, legacy, or v3"},
 		{name: "multiple chains", fields: "  receipt_format: v3\n  receipt_chains: 2\n", wantErr: "requires at most one"},
-		{name: "manager default", fields: "  receipt_format: v3\n", useDeferDefault: true, wantErr: "does not yet support deferred holds"},
-		{name: "manager", fields: "  receipt_format: v3\n", other: "defer:\n  enabled: true\n", wantErr: "does not yet support deferred holds"},
-		{name: "policy action", fields: "  receipt_format: v3\n", other: "mcp_tool_policy:\n  action: defer\n", wantErr: "does not yet support deferred holds"},
-		{name: "policy rule", fields: "  receipt_format: v3\n", other: "mcp_tool_policy:\n  rules:\n    - action: defer\n", wantErr: "does not yet support deferred holds"},
+		{name: "manager default", fields: "  receipt_format: v3\n", useDeferDefault: true, want: ReceiptFormatV3, wantDefer: true},
+		{name: "manager", fields: "  receipt_format: v3\n", other: "defer:\n  enabled: true\n", want: ReceiptFormatV3, wantDefer: true},
+		{name: "policy action", fields: "  receipt_format: v3\n", other: "defer:\n  enabled: true\nmcp_tool_policy:\n  enabled: true\n  action: defer\n  rules:\n    - name: deferred\n      tool_pattern: echo\n      resolution_policy:\n        allow_on:\n          tool_inventory_baseline: true\n", want: ReceiptFormatV3, wantDefer: true},
+		{name: "policy rule", fields: "  receipt_format: v3\n", other: "defer:\n  enabled: true\nmcp_tool_policy:\n  enabled: true\n  rules:\n    - name: deferred\n      tool_pattern: echo\n      action: defer\n      resolution_policy:\n        allow_on:\n          tool_inventory_baseline: true\n", want: ReceiptFormatV3, wantDefer: true},
 		{name: "redirect action", fields: "  receipt_format: v3\n", other: "mcp_tool_policy:\n  action: redirect\n", wantErr: "does not yet support redirect rules"},
 		{name: "dashboard snapshot", fields: "  receipt_format: v3\n", other: "dashboard_snapshot:\n  enabled: true\n", wantErr: "dashboard_snapshot requires receipt_format: legacy"},
 		{name: "evidence health", fields: "  receipt_format: v3\n  evidence_health:\n    enabled: true\n", wantErr: "flight_recorder.evidence_health requires receipt_format: legacy"},
@@ -53,6 +53,9 @@ func TestLoadReceiptFormat(t *testing.T) {
 			}
 			if got := cfg.FlightRecorder.EffectiveReceiptFormat(); got != wantEffective {
 				t.Fatalf("effective receipt format = %q, want %q", got, wantEffective)
+			}
+			if cfg.Defer.Enabled != tc.wantDefer {
+				t.Fatalf("defer.enabled = %t, want %t", cfg.Defer.Enabled, tc.wantDefer)
 			}
 			if got := cfg.FlightRecorder.ReceiptFormat; got != tc.want {
 				t.Fatalf("receipt format = %q, want %q", got, tc.want)
@@ -91,9 +94,9 @@ func TestValidateReceiptV3AgentPolicy(t *testing.T) {
 		want   string
 	}{
 		{"redirect action", MCPToolPolicy{Action: ActionRedirect}, ".action"},
-		{"defer action", MCPToolPolicy{Action: ActionDefer}, ".action"},
+		{"defer action", MCPToolPolicy{Action: ActionDefer}, ""},
 		{"redirect rule", MCPToolPolicy{Rules: []ToolPolicyRule{{Action: ActionRedirect}}}, ".rules[0].action"},
-		{"defer rule", MCPToolPolicy{Rules: []ToolPolicyRule{{Action: ActionDefer}}}, ".rules[0].action"},
+		{"defer rule", MCPToolPolicy{Rules: []ToolPolicyRule{{Action: ActionDefer}}}, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := Defaults()
@@ -102,8 +105,15 @@ func TestValidateReceiptV3AgentPolicy(t *testing.T) {
 			cfg.FlightRecorder.Dir = t.TempDir()
 			cfg.FlightRecorder.SigningKeyPath = "signer.key"
 			cfg.Agents = map[string]AgentProfile{"test": {MCPToolPolicy: &tc.policy}}
+			err := cfg.ValidateReceiptV3()
+			if tc.want == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
 			want := "agents.test.mcp_tool_policy" + tc.want
-			if err := cfg.ValidateReceiptV3(); err == nil || !strings.Contains(err.Error(), want) {
+			if err == nil || !strings.Contains(err.Error(), want) {
 				t.Fatalf("ValidateReceiptV3 error = %v, want %s", err, want)
 			}
 		})

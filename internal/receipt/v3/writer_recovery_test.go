@@ -5,6 +5,7 @@ package v3
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,11 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/deferred"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func writerTestHold(id string) Action {
@@ -418,6 +424,145 @@ func TestStreamWriterStartupReportsHighestUnsupportedActionVersion(t *testing.T)
 			}
 			if err == nil || !strings.Contains(err.Error(), "action body version 3 required") {
 				t.Fatalf("wanted highest unsupported version, got %v", err)
+			}
+		})
+	}
+}
+
+func TestReceiptHeldRestartBoundaries(t *testing.T) {
+	for _, phase := range []string{phaseHold, phaseResolution, phaseIntent} {
+		t.Run(phase, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(5*time.Second))
+			defer cancel()
+			opts := writerTestOptions(t.TempDir())
+			writer := requireWriter(t, opts, localWriterStorage())
+			gate := NewEffectGate(writer)
+			policy := CapturePolicy(Digest([]byte("request snapshot")))
+			action := writerTestHold("interrupted")
+			action.Hold.Parent = ""
+			manager := deferred.NewManager(deferred.Config{Enabled: true, Timeout: time.Minute})
+			boundary, resume := make(chan struct{}), make(chan struct{})
+			sends := make(chan string, 1)
+			pause := func() error {
+				close(boundary)
+				select {
+				case <-resume:
+					return errors.New("fixture process interruption")
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}
+			held := deferred.HeldAction{
+				DeferID: action.Hold.ID, ActionID: action.ActionID,
+				Receipt: &deferred.ReceiptHold{
+					ConfirmHold: func(ctx context.Context, _ deferred.HeldAction) error {
+						return gate.RecordApproval(ctx, action, policy)
+					},
+					ConfirmResolution: func(ctx context.Context, res deferred.Resolution) (string, error) {
+						if phase == phaseHold {
+							return "", pause()
+						}
+						record := blockingHoldResolution(action, res.ResolutionSource, relationAfter, false)
+						record.Verdict = res.FinalDecision
+						if err := gate.RecordApproval(ctx, record, policy); err != nil {
+							return "", err
+						}
+						if phase == phaseResolution {
+							return "", pause()
+						}
+						return res.FinalDecision, nil
+					},
+					ConfirmCorrection: func(ctx context.Context, res deferred.Resolution) error {
+						return gate.RecordApproval(ctx, blockingHoldResolution(action, res.ResolutionSource, relationAfter, true), policy)
+					},
+				},
+				ResolveReceipt: func(res deferred.Resolution, release deferred.Release) {
+					if res.FinalDecision != config.ActionAllow {
+						return
+					}
+					if _, err := gate.AdmitHeld(ctx, writerTestIntent(action.ActionID), policy); err != nil {
+						t.Error(err)
+						return
+					}
+					release.Commit()
+					if pause() == nil {
+						sends <- res.DeferID
+					}
+				},
+			}
+			if err := manager.HoldContext(ctx, held); err != nil {
+				t.Fatal(err)
+			}
+			stopped := make(chan error, 1)
+			go func() { stopped <- manager.Resolve(held.DeferID, config.ActionAllow, deferred.SourceOperator) }()
+			select {
+			case <-boundary:
+			case <-ctx.Done():
+				t.Fatal("old process did not reach requested crash boundary")
+			}
+			if err := abandonWriterReplay(writer); err != nil {
+				t.Fatal(err)
+			}
+			reopened := requireWriter(t, opts, localWriterStorage())
+			records := readRecoveryActions(t, opts.Dir, reopened.active.id)
+			switch phase {
+			case phaseIntent:
+				if len(records) != 0 {
+					t.Fatalf("restart changed an unsettled intent: %+v", records)
+				}
+			default:
+				corrected := phase == phaseResolution
+				relation := "unknown"
+				if corrected {
+					relation = relationAfter
+				}
+				if len(records) != 1 {
+					t.Fatalf("unexpected settlement records: %+v", records)
+				}
+				got := records[0]
+				if got.ActionID != held.ActionID || got.Phase != phaseResolution || got.Verdict != verdictBlock ||
+					got.EffectRelation != relation || got.OutcomeClass != "" || got.Hold == nil ||
+					got.Hold.ID != held.DeferID || got.Hold.Parent != "" || got.Hold.ResolutionSource != deferred.SourceRestartRecovery ||
+					(got.Hold.Correction != nil) != corrected || corrected && !*got.Hold.Correction {
+					t.Fatalf("wrong recovered hold: %+v", got)
+				}
+			}
+			close(resume)
+			select {
+			case stopErr := <-stopped:
+				if (stopErr == nil) != (phase == phaseIntent) {
+					t.Fatalf("interrupted resolver returned %v in phase %s", stopErr, phase)
+				}
+			case <-ctx.Done():
+				t.Fatal("old resolver did not unwind")
+			}
+			if len(sends) != 0 || manager.HeldCount() != 0 {
+				t.Fatal("restart fixture left a payload or sent a call")
+			}
+			if err := reopened.Close(ctx, nil); err != nil {
+				t.Fatal(err)
+			}
+			next := requireWriter(t, opts, localWriterStorage())
+			if next.active.confirmed.Seq != 0 || len(readRecoveryActions(t, opts.Dir, next.active.id)) != 0 {
+				t.Fatal("second restart did not begin with its own stream open or duplicated hold settlement")
+			}
+			fresh := deferred.NewManager(deferred.Config{Enabled: true, MaxPending: 1, MaxPendingBytes: 8})
+			if err := fresh.Hold(deferred.HeldAction{
+				DeferID: "fresh", SizeBytes: 8, Resolve: func(deferred.Resolution) {},
+			}); err != nil || fresh.HeldCount() != 1 {
+				t.Fatalf("new manager inherited stale capacity: %v", err)
+			}
+			fresh.ResolveAll(config.ActionBlock, deferred.SourceCancel)
+			if err := next.Close(ctx, nil); err != nil {
+				t.Fatal(err)
+			}
+			replayed := verifyWritten(t, opts.Dir, opts.SigningKey.Public().(ed25519.PublicKey))
+			if replayed.Integrity != "ok" || replayed.Verdict != "VALID PREFIX, END UNPROVEN" ||
+				len(replayed.Findings) != 1 || replayed.Findings[0].Code != codeEndUnproven {
+				t.Fatalf("verify interrupted history: %+v", replayed)
+			}
+			if phase == phaseIntent && (replayed.Counts.EffectsUnknown == nil || *replayed.Counts.EffectsUnknown != 1) {
+				t.Fatalf("unresolved attempted effect: %+v", replayed.Counts)
 			}
 		})
 	}

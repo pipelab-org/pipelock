@@ -6,6 +6,7 @@ package mcp
 import (
 	"encoding/json"
 	"sync"
+	"sync/atomic"
 
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
@@ -51,6 +52,10 @@ type TrackedRequestOutcome struct {
 	// response-side A2A routing (Agent Card vs field-aware body scan).
 	Method          string
 	ownsNativeLease bool
+	// pinned marks a v3 registration that must stay owned until its response
+	// correlates: capacity eviction refuses a newcomer instead of evicting it.
+	pinned           bool
+	readyToCorrelate *atomic.Bool // set at the commit boundary for held v3 sends
 }
 
 func (o TrackedRequestOutcome) releaseNativeLease() {
@@ -181,7 +186,7 @@ func (t *RequestTracker) registerOutcome(id json.RawMessage, outcome TrackedRequ
 		oldest := t.order[0]
 		evicted := t.pending[oldest].outcome
 		_, remembered := t.ambiguousIDs[oldest]
-		if evicted.ownsNativeLease || (outcome.ownsNativeLease && !remembered && len(t.ambiguousIDs) >= maxTrackedRequests) {
+		if evicted.ownsNativeLease || evicted.pinned || (outcome.ownsNativeLease && !remembered && len(t.ambiguousIDs) >= maxTrackedRequests) {
 			return nil, nil, ""
 		}
 		t.markAmbiguous(oldest)
@@ -229,7 +234,7 @@ func (t *RequestTracker) Validate(id json.RawMessage) bool {
 // claimRejectedOutcome consumes a paired request when its attributable
 // response was denied. A legacy diagnostic retains the pending correlation
 // and can be written at most once.
-func (t *RequestTracker) claimRejectedOutcome(id json.RawMessage) (TrackedRequestOutcome, bool) {
+func (t *RequestTracker) claimRejectedOutcome(id json.RawMessage, expected *requestRegistration) (TrackedRequestOutcome, bool) {
 	if t == nil {
 		return TrackedRequestOutcome{}, false
 	}
@@ -240,7 +245,8 @@ func (t *RequestTracker) claimRejectedOutcome(id json.RawMessage) (TrackedReques
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	request, ok := t.pending[key]
-	if !ok || request.rejectionOutcomeClaimed || request.outcome.Receipt.ActionID == "" {
+	if !ok || request.outcome.readyToCorrelate != nil && !request.outcome.readyToCorrelate.Load() ||
+		expected != nil && request.registration != expected || request.rejectionOutcomeClaimed || request.outcome.Receipt.ActionID == "" {
 		return TrackedRequestOutcome{}, false
 	}
 	if request.outcome.handle != nil {
@@ -304,7 +310,7 @@ func (t *RequestTracker) Consume(id json.RawMessage) (TrackedRequestOutcome, boo
 	defer t.mu.Unlock()
 
 	request, ok := t.pending[key]
-	if !ok {
+	if !ok || request.outcome.readyToCorrelate != nil && !request.outcome.readyToCorrelate.Load() {
 		return TrackedRequestOutcome{}, false
 	}
 	t.remove(key)

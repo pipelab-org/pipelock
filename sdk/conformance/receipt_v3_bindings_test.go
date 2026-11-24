@@ -39,7 +39,8 @@ var receiptEmissionCalls = strings.Fields(
 		"EmitSessionOpen EmitSessionClose EmitHeartbeat EmitTranscriptRoot prepareNativeAEL " +
 		"BuildProxyDecisionReceipt BuildProxyDecisionWithSpansReceipt BuildSecretEgressDecisionReceipt " +
 		"SignReceipt EmitBatch RecordPrescanned buildReceipt confirmMCPCardAcceptance " +
-		"admitV3CardAcceptance sseFindingDelivery legacySSEFindingConfirmer recordEffectRefusal")
+		"admitV3CardAcceptance sseFindingDelivery legacySSEFindingConfirmer recordEffectRefusal " +
+		"RecordApproval AdmitHeld admitV3HeldSend refuseV3HeldIntent confirmV3HeldSend refuseV3HoldAdmission")
 
 type receiptProducerAttribution struct {
 	Fields string `json:"fields"`

@@ -136,6 +136,7 @@ func (o MCPProxyOpts) minSubjectTrust() config.DoWSubjectTrust {
 type MCPProxyOpts struct {
 	receiptEffects        mcpReceiptEffects
 	v3Session             *mcpV3Session
+	v3POST                *mcpV3POST
 	onLocalV3ReplyFailure func(error)
 	nativeAdmission       receipt.EmitOpts
 	nativeSSE             bool

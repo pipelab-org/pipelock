@@ -73,6 +73,41 @@ func (g EffectGate) Admit(ctx context.Context, action Action, policy PolicySnaps
 	return g.admit(ctx, []Action{action}, policy)
 }
 
+// AdmitHeld writes the intent of a held call. Even on an optional stream,
+// a hold requires confirmed evidence before release. The returned error
+// preserves the writer's distinction between no intent and an intent whose
+// persistence (and therefore its refusal repair) has started.
+func (g EffectGate) AdmitHeld(ctx context.Context, action Action, policy PolicySnapshot) (*EffectToken, error) {
+	if g.write == nil {
+		return nil, errors.New("receipt writer is unavailable")
+	}
+	attempt := int64(1)
+	action.Attempt = &attempt
+	action.Phase = phaseIntent
+	action.EffectRelation = relationBefore
+	if err := g.write(ctx, action, policy); err != nil {
+		return nil, err
+	}
+	return &EffectToken{gate: g, actions: []Action{action}, policy: policy}, nil
+}
+
+// RecordApproval confirms a hold or resolution. A terminal resolution can
+// still record the actual decision after the RPC or transport cancels.
+func (g EffectGate) RecordApproval(ctx context.Context, action Action, policy PolicySnapshot) error {
+	if g.write == nil {
+		return errors.New("receipt writer is unavailable")
+	}
+	if action.Phase != phaseHold && action.Phase != phaseResolution {
+		return errors.New("approval record requires a hold or resolution")
+	}
+	if action.Phase == phaseResolution && action.Verdict != verdictAllow {
+		finalCtx, cancel := g.finalizationContext(ctx)
+		defer cancel()
+		return g.write(finalCtx, action, policy)
+	}
+	return g.write(ctx, action, policy)
+}
+
 // AdmitDenialDelivery uses best-effort recording for optional local denials.
 func (g EffectGate) AdmitDenialDelivery(ctx context.Context, action Action, policy PolicySnapshot) (*EffectToken, error) {
 	if !g.required && g.writeOptionalDenial != nil {

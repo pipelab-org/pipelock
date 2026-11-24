@@ -345,7 +345,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		recordV3 := opts.receiptEffects.enabled && opts.responseDropped == nil
 		if recordV3 {
 			if !isRPCNotification(id) {
-				outcome, correlated = tracker.Consume(id)
+				outcome, correlated = opts.consumeMCPResponse(tracker, id)
 			}
 			denialWriter = earlyMCPV3ResponseWriter(opts, baseWriter, frame, logW, correlated)
 		}
@@ -356,7 +356,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			return err
 		}
 		if !recordV3 && !isRPCNotification(id) {
-			outcome, correlated = tracker.Consume(id)
+			outcome, correlated = opts.consumeMCPResponse(tracker, id)
 		}
 		if correlated {
 			outcome.recordResponseOutcome(logW, opts, mcpOutcomeStatusBlocked, int64(len(outbound)), reason)
@@ -399,6 +399,11 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		// Parse the inbound frame once per message; every gate below reads
 		// ID / Method / tool fields from this frame instead of re-parsing.
 		frame := ParseMCPFrame(line)
+		if opts.v3POST != nil && (frame.KeyValidationErr != nil || isResponse(line)) && !opts.v3POST.ownsID(postResponseDiagnosticID(frame)) {
+			dropMCPDenial(opts, mcpCorrelationResponseDenialAudit(), "response")
+			_, _ = fmt.Fprintln(logW, "pipelock: dropped response outside its upstream POST")
+			continue
+		}
 		if opts.nativeSSE {
 			var admission receipt.EmitOpts
 			if frame.Method == "" && isResponse(line) {
@@ -580,7 +585,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				continue
 			}
 			if rpcID != nil {
-				trackedOutcome, correlated = tracker.Consume(rpcID)
+				trackedOutcome, correlated = opts.consumeMCPResponse(tracker, rpcID)
 				if correlated {
 					trackedMethod = trackedOutcome.Method
 					if trackedOutcome.ownsNativeLease {
@@ -1503,6 +1508,15 @@ func rejectResponseKeys(frame MCPFrame, lineNum int, sc *scanner.Scanner, writer
 	return true, resp, nil
 }
 
+// A recoverable ID can address a key-validation diagnostic without
+// correlating the rejected envelope to a request or consuming its send.
+func postResponseDiagnosticID(frame MCPFrame) json.RawMessage {
+	if frame.KeyValidationErr != nil {
+		return recoverTopLevelJSONRPCID(frame.Raw)
+	}
+	return frame.ID
+}
+
 // attributableMCPResponseID accepts only unambiguous reply IDs. Neither
 // a server request nor a reply with duplicate or aliased IDs owns a receipt.
 func attributableMCPResponseID(raw []byte) json.RawMessage {
@@ -1549,7 +1563,11 @@ func earlyMCPV3ResponseWriter(opts MCPProxyOpts, base transport.MessageWriter, f
 }
 
 func emitRejectedResponseOutcome(raw, outbound []byte, logW io.Writer, tracker *RequestTracker, opts MCPProxyOpts) {
-	outcome, ok := tracker.claimRejectedOutcome(attributableMCPResponseID(raw))
+	var expected *requestRegistration
+	if opts.v3POST != nil {
+		expected = opts.v3POST.registration
+	}
+	outcome, ok := tracker.claimRejectedOutcome(attributableMCPResponseID(raw), expected)
 	if !ok {
 		return
 	}

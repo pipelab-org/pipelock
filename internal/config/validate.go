@@ -5449,9 +5449,6 @@ func (c *Config) validateSandbox() error {
 // ValidateReceiptV3 checks prerequisites for explicit and directory-selected v3.
 func (c *Config) ValidateReceiptV3() error {
 	fr := c.FlightRecorder
-	if c.Defer.Enabled {
-		return errors.New("defer.enabled: receipt_format v3 does not yet support deferred holds; disable defer or use receipt_format: legacy")
-	}
 	if err := validateReceiptV3ToolPolicy("mcp_tool_policy", c.MCPToolPolicy); err != nil {
 		return err
 	}
@@ -5508,8 +5505,6 @@ func validateReceiptV3ToolAction(path, action string) error {
 	switch action {
 	case ActionRedirect:
 		return fmt.Errorf("%s: receipt_format v3 does not yet support redirect rules; use receipt_format: legacy", path)
-	case ActionDefer:
-		return fmt.Errorf("%s: receipt_format v3 does not yet support deferred holds; use receipt_format: legacy", path)
 	default:
 		return nil
 	}

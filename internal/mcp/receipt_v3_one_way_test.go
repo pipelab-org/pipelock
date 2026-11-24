@@ -443,15 +443,13 @@ func TestMCPV3RejectedResponseDoesNotClaimValidReply(t *testing.T) {
 	}
 }
 
-func TestMCPV3RefusesDeferredRequestsAndNotifications(t *testing.T) {
-	for _, name := range []string{"stdio", "sandbox", "WebSocket", "HTTP bridge", "HTTP listener"} {
+func TestMCPV3RefusesDeferOnUnsupportedTransports(t *testing.T) {
+	for _, name := range []string{"WebSocket", "HTTP listener"} {
 		t.Run(name, func(t *testing.T) {
 			surface := transportMCPStdio
 			switch name {
 			case "WebSocket":
 				surface = deferred.SurfaceMCPWS
-			case "HTTP bridge":
-				surface = deferred.SurfaceMCPHTTPUpstream
 			case "HTTP listener":
 				surface = deferred.SurfaceMCPHTTPListener
 			}
@@ -489,23 +487,8 @@ func TestMCPV3RefusesDeferredRequestsAndNotifications(t *testing.T) {
 			defer srv.Close()
 			var err error
 			switch name {
-			case "stdio", "sandbox":
-				seen := filepath.Join(t.TempDir(), "upstream")
-				args := []string{"sh", "-c", "cat > \"$1\"", "peer", seen}
-				if name == "stdio" {
-					err = RunProxy(ctx, input, &out, &proxyLog, args, opts)
-				} else {
-					child := exec.CommandContext(ctx, "sh", "-c", "cat > upstream")
-					child.Dir = filepath.Dir(seen)
-					err = runProxyWithSandbox(ctx, child, child.Start, input, &out, &proxyLog, opts)
-				}
-				if bytes, err := os.ReadFile(filepath.Clean(seen)); err != nil || len(bytes) != 0 {
-					t.Fatalf("upstream received %q (%v)", bytes, err)
-				}
 			case "WebSocket":
 				err = RunWSProxy(ctx, input, &out, &proxyLog, wsURL(srv), opts)
-			case "HTTP bridge":
-				err = RunHTTPProxy(ctx, input, &out, &proxyLog, srv.URL, nil, opts)
 			case "HTTP listener":
 				url, _ := startListenerProxyWithOpts(t, srv.URL, opts)
 				for _, msg := range []string{heldNativeCall, notification} {
@@ -525,14 +508,14 @@ func TestMCPV3RefusesDeferredRequestsAndNotifications(t *testing.T) {
 			}
 			var reply rpcError
 			if err := json.Unmarshal([]byte(out.String()), &reply); err != nil ||
-				reply.Error.Code != -32002 || reply.Error.Message != mcpV3DeferRefusal || canonicalID(reply.ID) != "1" {
+				reply.Error.Code != -32002 || canonicalID(reply.ID) != "1" {
 				t.Fatalf("defer refusal = %q (%v)", out.String(), err)
 			}
 			if journalBytes, err := os.ReadFile(filepath.Clean(journal)); len(journalBytes) != 0 || (err != nil && !errors.Is(err, os.ErrNotExist)) {
 				t.Fatalf("deferred journal wrote %d bytes (%v)", len(journalBytes), err)
 			}
 			if opts.DeferManager.HeldCount() != 0 {
-				t.Fatal("deferred hold was registered")
+				t.Fatal("unsupported transport registered a hold")
 			}
 			var refused []string
 			for _, a := range verifiedMCPV3RegressionActions(t, writer, writerOpts) {

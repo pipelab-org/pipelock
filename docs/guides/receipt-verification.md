@@ -1016,10 +1016,21 @@ Set `flight_recorder.receipt_format: v3` in the configuration for
 `pipelock run` or `pipelock mcp proxy`. Enable the flight recorder, set
 `flight_recorder.dir` and `flight_recorder.signing_key_path`, and use a
 single receipt chain. Restart after changing the format or v3 coverage
-settings. V3 does not support deferred holds, MCP tool policy redirect rules,
+settings. V3 does not support MCP tool policy redirect rules,
 `dashboard_snapshot`, `flight_recorder.evidence_health`, or
-`flight_recorder.anchor`.
-Remove defer and redirect rules and disable `defer.enabled` before switching.
+`flight_recorder.anchor`. Remove redirect rules before switching.
+
+Held calls on MCP stdio and the stdio-to-HTTP bridge use the v3 stream for
+approval and restart recovery. A child call needs its own approval and waits
+until every ancestor has confirmed its send intent and cleared its last release
+check. It may reach the upstream before a committed ancestor does. If an
+inventory or policy reload permits a child before its parent commits to send,
+the proxy discards that approval. The child stays held for an operator
+decision, which waits for the parent to commit before allowing the call, a
+later inventory or reload result, or its timeout. On shutdown,
+the HTTP bridge waits for held-call callbacks to settle their receipts. Outputs
+with write deadlines are interrupted after the shutdown grace period. For
+outputs without write deadlines, shutdown waits for an ongoing write to return.
 
 Receipt v3 records an intent before forwarding each complete WebSocket message (and each ping/pong) and an outcome after writing it. In this release each record is flushed to disk in turn, including when require_receipts is false. That is two disk syncs per WebSocket message on one shared writer, roughly 100-500 messages per second in total across the process on typical SSD or cloud storage, and HTTP, MCP and WebSocket traffic share that limit. Keep receipt_format: legacy for high-rate WebSocket workloads until shared flushing lands.
 
