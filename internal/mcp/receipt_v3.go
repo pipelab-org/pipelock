@@ -287,15 +287,22 @@ func (o MCPProxyOpts) refuseV3HeldIntent(ctx context.Context, exchange *mcpV3Exc
 // session has settled: settleV3Session skips reserved exchanges, so a commit
 // after teardown would send with no session left to settle the attempt. The
 // caller then refuses the intent as not_released, like any other pre-send gate.
+// Check the approval context after taking the session lock, where cancellation
+// during the wait can still stop the send.
 func (o MCPProxyOpts) commitV3HeldSend(exchange *mcpV3Exchange, release deferred.Release, ready *atomic.Bool) error {
-	if s := o.v3Session; s != nil {
+	s := o.v3Session
+	if s != nil {
 		s.mu.Lock()
+		defer s.mu.Unlock()
 		if s.closed {
-			s.mu.Unlock()
 			return errMCPV3SessionClosed
 		}
+	}
+	if err := release.ApprovalContext.Err(); err != nil {
+		return err
+	}
+	if s != nil {
 		exchange.reserved = false
-		s.mu.Unlock()
 	}
 	if ready != nil {
 		ready.Store(true)

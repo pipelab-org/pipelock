@@ -1644,3 +1644,40 @@ func TestMCPV3HeldSweepDecisionPolicy(t *testing.T) {
 		})
 	}
 }
+
+func TestMCPV3HeldApprovalCanceledAtCommit(t *testing.T) {
+	for _, surface := range []string{deferred.SurfaceMCPStdio, deferred.SurfaceMCPHTTPUpstream} {
+		t.Run(surface, func(t *testing.T) {
+			writer, writerOpts := openMCPV3RegressionWriter(t, surface)
+			opts := (MCPProxyOpts{Transport: surface}).WithV3ReceiptWriter(writer).withV3Session()
+			manager := deferred.NewManager(deferred.Config{Enabled: true, Timeout: testwait.Deadline(time.Minute)})
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			held := v3ManagerAction(opts, "held", func(res deferred.Resolution, release deferred.Release) {
+				exchange, err := opts.admitV3HeldSend(t.Context(), heldV3Evidence(res, json.RawMessage("1"), opts), release)
+				if err != nil || release.ApprovalContext.Err() != nil {
+					t.Errorf("held send was not admitted with a live approval: %v", err)
+					return
+				}
+				// Cancel after the caller's precheck, with a durable intent.
+				cancel()
+				var ready atomic.Bool
+				err = opts.commitV3HeldSend(exchange, release, &ready)
+				if !errors.Is(err, context.Canceled) || ready.Load() || !exchange.reserved {
+					t.Errorf("canceled commit: err=%v ready=%t reserved=%t", err, ready.Load(), exchange.reserved)
+				}
+				opts.refuseV3HeldIntent(t.Context(), exchange, release)
+			})
+			if err := manager.Hold(held); err != nil {
+				t.Fatal(err)
+			}
+			applied, err := manager.ResolveApprovalResultContext(ctx, held.DeferID, config.ActionAllow, deferred.SourceOperator)
+			if err != nil || applied != config.ActionBlock {
+				t.Fatalf("resolve = %q, %v; want settled block", applied, err)
+			}
+			want := []heldEvidencePoint{holdPoint(held.ActionID, ""), resolutionPoint(held.ActionID, config.ActionAllow, false)}
+			want = append(want, heldAttempt(held.ActionID, "not_released")...)
+			assertHeldEvidence(t, verifiedMCPV3RegressionActions(t, writer, writerOpts), want)
+		})
+	}
+}
