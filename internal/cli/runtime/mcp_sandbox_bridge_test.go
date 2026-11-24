@@ -174,7 +174,6 @@ func TestMCPSandboxBridgeHelpers_Nil(t *testing.T) {
 		t.Fatal("nil bridge SocketPath should be empty")
 	}
 	_ = nilBridge.Close()
-
 }
 
 func TestStartMCPSandboxBridge_ForcesForwardProxyIntoScanner(t *testing.T) {
