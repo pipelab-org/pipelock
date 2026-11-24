@@ -1823,7 +1823,12 @@ func ForwardScannedInput(
 								}
 								finishDeniedRelease()
 								logMCPV3Error(logW, admitErr)
-								sendMCPDenial(denialOpts, mcpReceiptMcpInputDenialAudit(), mcpV3SendDenial(heldAuthorityFrame, exchange, releaseErr), blockedCh)
+								if heldNotification {
+									dropMCPDenial(denialOpts, mcpReceiptMcpInputDenialAudit(), "input")
+								} else {
+									br := mcpV3HeldSendDenial(heldAuthorityFrame, heldV3Evidence(res, heldID, heldOpts), exchange, releaseErr)
+									sendMCPDenial(denialOpts, mcpReceiptMcpInputDenialAudit(), br, blockedCh)
+								}
 								return
 							}
 							heldOpts.commitV3HeldSend(exchange, v3Release, &readyToCorrelate)

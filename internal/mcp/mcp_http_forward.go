@@ -692,11 +692,12 @@ func RunHTTPProxy(
 								}
 								finishDeniedRelease()
 								logMCPV3Error(safeLogW, admitErr)
-								br := mcpV3SendDenial(deferredReq.authorityFrame, exchange, releaseErr)
 								if deferredReq.IsNotification {
 									dropMCPDenial(denialOpts, mcpReceiptMcpInputDenialAudit(), "input")
 								} else {
-									_ = writeMCPInputDenial(denialOpts, mcpReceiptMcpInputDenialAudit(), safeClientOut, deferredReq.authorityFrame, blockRequestResponse(br))
+									br := mcpV3HeldSendDenial(deferredReq.authorityFrame, heldV3Evidence(res, deferredReq.ID, heldOpts), exchange, releaseErr)
+									inputMCPDenial(denialOpts, mcpReceiptMcpInputDenialAudit(), &br)
+									_ = deliverMCPInputResult(denialOpts, br, heldOpts.v3SendDenialWriter(wireClientOut, safeLogW, br))
 								}
 								return
 							}

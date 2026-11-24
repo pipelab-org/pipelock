@@ -1135,3 +1135,107 @@ func TestMCPV3HeldSessionSettleDoesNotMisreportReservedExchange(t *testing.T) {
 		})
 	}
 }
+
+func TestMCPV3HeldSendRefusalDownstreamEvidence(t *testing.T) {
+	t.Run("stdio_notification_refusal_emits_no_downstream_decision", func(t *testing.T) {
+		writer, writerOpts := openMCPV3RegressionWriter(t, deferred.SurfaceMCPStdio)
+		opts := nativeDeferredOptions(t, nil).WithV3ReceiptWriter(writer).withV3Session()
+		opts.ListenerShutdownTimeout = testwait.Deadline(time.Second)
+		opts.DeferManager = deferred.NewManager(deferred.Config{Enabled: true, Timeout: testwait.Deadline(time.Minute)})
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		opts.WarnContext = ctx
+
+		in, feed := io.Pipe()
+		defer func() { _ = in.Close(); _ = feed.Close() }()
+		blockedCh := make(chan BlockedRequest, 2)
+		var out lockedHTTPBuffer
+		wireOut := newMCPClientWriter(&out, opts)
+		blockedDone := make(chan struct{})
+		go func() {
+			defer close(blockedDone)
+			for blocked := range blockedCh {
+				_ = deliverMCPInputResult(opts, blocked, opts.v3SendDenialWriter(wireOut, io.Discard, blocked))
+			}
+		}()
+
+		var sends atomic.Int64
+		peer := heldWireWriter(func([]byte) error {
+			sends.Add(1)
+			return nil
+		})
+		inputDone := make(chan struct{})
+		go func() {
+			defer close(inputDone)
+			ForwardScannedInput(transport.NewStdioReader(in), peer, io.Discard, config.ActionDefer, config.ActionBlock,
+				blockedCh, nil, NewRequestTracker(), opts)
+		}()
+
+		notification := strings.Replace(heldNativeCall, "\"id\":1,", "", 1)
+		if _, err := io.WriteString(feed, notification+"\n"); err != nil {
+			t.Fatal(err)
+		}
+		testwait.For(t, 5*time.Second, func() bool { return opts.DeferManager.HeldCount() == 1 }, "held notification")
+		held := opts.DeferManager.Snapshot()[0]
+		cancel()
+		if err := opts.DeferManager.Resolve(held.DeferID, config.ActionAllow, deferred.SourceOperator); err != nil {
+			t.Fatalf("resolve held notification: %v", err)
+		}
+		_ = feed.Close()
+		awaitHeldTest(t, inputDone)
+		awaitHeldTest(t, blockedDone)
+		if sends.Load() != 0 {
+			t.Fatal("refused notification reached peer")
+		}
+		actions := verifiedMCPV3RegressionActions(t, writer, writerOpts)
+		for _, a := range actions {
+			if a.EffectBoundary == mcpDownstreamDeliveryBoundary {
+				t.Fatalf("refused held notification emitted unexpected downstream_delivery action: %+v", a)
+			}
+		}
+	})
+
+	t.Run("bridge_intent_failure_links_error_reply_without_duplicate_decision", func(t *testing.T) {
+		writer, writerOpts := heldFaultWriter(t, func(a v3.Action) bool {
+			return a.Phase == "intent" && a.EffectBoundary == mcpUpstreamSendBoundary
+		})
+		opts := nativeDeferredOptions(t, nil).WithV3ReceiptWriter(writer)
+		opts.Transport = deferred.SurfaceMCPHTTPUpstream
+		opts.ListenerShutdownTimeout = testwait.Deadline(time.Second)
+		opts.DeferManager = deferred.NewManager(deferred.Config{Enabled: true, Timeout: testwait.Deadline(time.Minute)})
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		in, feed := io.Pipe()
+		defer func() { _ = in.Close(); _ = feed.Close() }()
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusAccepted)
+		}))
+		defer upstream.Close()
+		var out lockedHTTPBuffer
+		done := make(chan error, 1)
+		go func() { done <- RunHTTPProxy(ctx, in, &out, io.Discard, upstream.URL, nil, opts) }()
+		if _, err := io.WriteString(feed, heldNativeCall+"\n"); err != nil {
+			t.Fatal(err)
+		}
+		testwait.For(t, 5*time.Second, func() bool { return opts.DeferManager.HeldCount() == 1 }, "held bridge call")
+		held := opts.DeferManager.Snapshot()[0]
+		if err := opts.DeferManager.Resolve(held.DeferID, config.ActionAllow, deferred.SourceOperator); err != nil {
+			t.Fatal(err)
+		}
+		_ = feed.Close()
+		if err := awaitHeldTest(t, done); err != nil {
+			t.Fatal(err)
+		}
+		actions := verifiedHeldActions(t, writer, writerOpts, true)
+		var downstream []v3.Action
+		for _, a := range actions {
+			if a.EffectBoundary == mcpDownstreamDeliveryBoundary {
+				downstream = append(downstream, a)
+			}
+		}
+		if len(downstream) != 2 || downstream[0].Phase != "intent" || downstream[1].Phase != "outcome" ||
+			downstream[0].ParentActionID != held.ActionID || downstream[1].ParentActionID != held.ActionID {
+			t.Fatalf("unexpected downstream_delivery records for refused held bridge call: %+v", downstream)
+		}
+	})
+}

@@ -472,6 +472,15 @@ func mcpV3SendDenial(frame MCPFrame, send *mcpV3Exchange, admitErr error) Blocke
 	}
 }
 
+func mcpV3HeldSendDenial(frame MCPFrame, evidence receipt.EmitOpts, send *mcpV3Exchange, releaseErr error) BlockedRequest {
+	if send == nil {
+		send = &mcpV3Exchange{request: evidence}
+	}
+	br := mcpV3SendDenial(frame, send, releaseErr)
+	br.v3SendDenied = true
+	return br
+}
+
 func (o MCPProxyOpts) writeV3SendDenial(log io.Writer, writer transport.MessageWriter, frame MCPFrame, send *mcpV3Exchange, admitErr error) error {
 	br := mcpV3SendDenial(frame, send, admitErr)
 	inputMCPDenial(o, mcpReceiptMcpInputDenialAudit(), &br)
