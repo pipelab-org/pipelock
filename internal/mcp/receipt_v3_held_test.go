@@ -334,7 +334,7 @@ func TestMCPV3HeldAncestryWitnesses(t *testing.T) {
 						opts.refuseV3HeldIntent(ctx, exchange, release)
 						return
 					}
-					if err := opts.commitV3HeldSend(exchange, release, nil); err != nil {
+					if err := opts.commitV3HeldSend(t.Context(), exchange, release, nil); err != nil {
 						t.Errorf("commitV3HeldSend: %v", err)
 					}
 					observed := true
@@ -542,7 +542,7 @@ func TestMCPV3HeldSiblingsAndSweeps(t *testing.T) {
 					t.Error(err)
 					return
 				}
-				if err := opts.commitV3HeldSend(exchange, release, nil); err != nil {
+				if err := opts.commitV3HeldSend(t.Context(), exchange, release, nil); err != nil {
 					t.Errorf("commitV3HeldSend: %v", err)
 				}
 				opts.confirmV3HeldSend(t.Context(), io.Discard, exchange, true)
@@ -757,7 +757,7 @@ func TestMCPV3HeldCorrelationBeginsAtCommit(t *testing.T) {
 		if _, ok := tracker.Consume(requestID); ok || opts.takeV3Send(requestID) != nil {
 			t.Error("an early reply claimed a held request that had not committed")
 		}
-		if err := opts.commitV3HeldSend(exchange, release, &ready); err != nil {
+		if err := opts.commitV3HeldSend(t.Context(), exchange, release, &ready); err != nil {
 			t.Errorf("commitV3HeldSend: %v", err)
 		}
 		sends = append(sends, res.DeferID)
@@ -1221,7 +1221,7 @@ func TestMCPV3HeldSessionSettleDoesNotMisreportReservedExchange(t *testing.T) {
 				// It must not settle the unsent intent as attempt_unknown, and the
 				// held send must not commit afterwards.
 				opts.settleV3Session(t.Context(), io.Discard)
-				if err := opts.commitV3HeldSend(exchange, release, nil); !errors.Is(err, errMCPV3SessionClosed) {
+				if err := opts.commitV3HeldSend(t.Context(), exchange, release, nil); !errors.Is(err, errMCPV3SessionClosed) {
 					t.Errorf("commit after session settle = %v, want %v", err, errMCPV3SessionClosed)
 				}
 				opts.refuseV3HeldIntent(t.Context(), exchange, release)
@@ -1653,39 +1653,52 @@ func TestMCPV3HeldSweepDecisionPolicy(t *testing.T) {
 	}
 }
 
-func TestMCPV3HeldApprovalCanceledAtCommit(t *testing.T) {
+func TestMCPV3HeldCancellationAtCommit(t *testing.T) {
 	for _, surface := range []string{deferred.SurfaceMCPStdio, deferred.SurfaceMCPHTTPUpstream} {
-		t.Run(surface, func(t *testing.T) {
-			writer, writerOpts := openMCPV3RegressionWriter(t, surface)
-			opts := (MCPProxyOpts{Transport: surface}).WithV3ReceiptWriter(writer).withV3Session()
-			manager := deferred.NewManager(deferred.Config{Enabled: true, Timeout: testwait.Deadline(time.Minute)})
-			ctx, cancel := context.WithCancel(t.Context())
-			defer cancel()
-			held := v3ManagerAction(opts, "held", func(res deferred.Resolution, release deferred.Release) {
-				exchange, err := opts.admitV3HeldSend(t.Context(), heldV3Evidence(res, json.RawMessage("1"), opts), release)
-				if err != nil || release.ApprovalContext.Err() != nil {
-					t.Errorf("held send was not admitted with a live approval: %v", err)
-					return
+		for _, which := range []string{"approval", "invocation"} {
+			t.Run(surface+"/"+which, func(t *testing.T) {
+				writer, writerOpts := openMCPV3RegressionWriter(t, surface)
+				opts := (MCPProxyOpts{Transport: surface}).WithV3ReceiptWriter(writer).withV3Session()
+				manager := deferred.NewManager(deferred.Config{Enabled: true, Timeout: testwait.Deadline(time.Minute)})
+				approvalCtx, cancelApproval := context.WithCancel(t.Context())
+				defer cancelApproval()
+				invocationCtx, cancelInvocation := context.WithCancel(t.Context())
+				defer cancelInvocation()
+				held := v3ManagerAction(opts, "held", func(res deferred.Resolution, release deferred.Release) {
+					exchange, err := opts.admitV3HeldSend(t.Context(), heldV3Evidence(res, json.RawMessage("1"), opts), release)
+					if err != nil || release.ApprovalContext.Err() != nil || invocationCtx.Err() != nil {
+						t.Errorf("held send was not admitted with live contexts: %v", err)
+						return
+					}
+					// Both contexts are live when commit starts; cancel only once
+					// commit holds the session lock, so a check made before the
+					// lock would miss it.
+					opts.v3Session.afterCommitLock = func() {
+						if which == "approval" {
+							cancelApproval()
+						} else {
+							cancelInvocation()
+						}
+					}
+					var ready atomic.Bool
+					err = opts.commitV3HeldSend(invocationCtx, exchange, release, &ready)
+					opts.v3Session.afterCommitLock = nil
+					if !errors.Is(err, context.Canceled) || ready.Load() || !exchange.reserved {
+						t.Errorf("canceled commit: err=%v ready=%t reserved=%t", err, ready.Load(), exchange.reserved)
+					}
+					opts.refuseV3HeldIntent(t.Context(), exchange, release)
+				})
+				if err := manager.Hold(held); err != nil {
+					t.Fatal(err)
 				}
-				// Cancel after the caller's precheck, with a durable intent.
-				cancel()
-				var ready atomic.Bool
-				err = opts.commitV3HeldSend(exchange, release, &ready)
-				if !errors.Is(err, context.Canceled) || ready.Load() || !exchange.reserved {
-					t.Errorf("canceled commit: err=%v ready=%t reserved=%t", err, ready.Load(), exchange.reserved)
+				applied, err := manager.ResolveApprovalResultContext(approvalCtx, held.DeferID, config.ActionAllow, deferred.SourceOperator)
+				if err != nil || applied != config.ActionBlock {
+					t.Fatalf("resolve = %q, %v; want settled block", applied, err)
 				}
-				opts.refuseV3HeldIntent(t.Context(), exchange, release)
+				want := []heldEvidencePoint{holdPoint(held.ActionID, ""), resolutionPoint(held.ActionID, config.ActionAllow, false)}
+				want = append(want, heldAttempt(held.ActionID, "not_released")...)
+				assertHeldEvidence(t, verifiedMCPV3RegressionActions(t, writer, writerOpts), want)
 			})
-			if err := manager.Hold(held); err != nil {
-				t.Fatal(err)
-			}
-			applied, err := manager.ResolveApprovalResultContext(ctx, held.DeferID, config.ActionAllow, deferred.SourceOperator)
-			if err != nil || applied != config.ActionBlock {
-				t.Fatalf("resolve = %q, %v; want settled block", applied, err)
-			}
-			want := []heldEvidencePoint{holdPoint(held.ActionID, ""), resolutionPoint(held.ActionID, config.ActionAllow, false)}
-			want = append(want, heldAttempt(held.ActionID, "not_released")...)
-			assertHeldEvidence(t, verifiedMCPV3RegressionActions(t, writer, writerOpts), want)
-		})
+		}
 	}
 }

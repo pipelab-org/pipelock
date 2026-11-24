@@ -691,7 +691,7 @@ func RunHTTPProxy(
 							messageOpts.ObserveRoundTrip = func(err error) { roundTripConfirmed = err == nil }
 							releaseErr := errors.Join(admitErr, releaseCtx.Err(), v3Release.ApprovalContext.Err())
 							if releaseErr == nil {
-								releaseErr = heldOpts.commitV3HeldSend(exchange, v3Release, &readyToCorrelate)
+								releaseErr = heldOpts.commitV3HeldSend(releaseCtx, exchange, v3Release, &readyToCorrelate)
 							}
 							if releaseErr == nil {
 								localReply = heldOpts.localV3ReplyWriter(wireClientOut, safeLogW, exchange)

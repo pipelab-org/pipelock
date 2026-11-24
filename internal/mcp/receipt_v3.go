@@ -289,16 +289,21 @@ func (o MCPProxyOpts) refuseV3HeldIntent(ctx context.Context, exchange *mcpV3Exc
 // caller then refuses the intent as not_released, like any other pre-send gate.
 // Check the approval context after taking the session lock, where cancellation
 // during the wait can still stop the send.
-func (o MCPProxyOpts) commitV3HeldSend(exchange *mcpV3Exchange, release deferred.Release, ready *atomic.Bool) error {
+func (o MCPProxyOpts) commitV3HeldSend(ctx context.Context, exchange *mcpV3Exchange, release deferred.Release, ready *atomic.Bool) error {
 	s := o.v3Session
 	if s != nil {
 		s.mu.Lock()
 		defer s.mu.Unlock()
+		if s.afterCommitLock != nil {
+			s.afterCommitLock()
+		}
 		if s.closed {
 			return errMCPV3SessionClosed
 		}
 	}
-	if err := release.ApprovalContext.Err(); err != nil {
+	// Checked after the session lock: a cancellation that lands while the
+	// commit waits still withholds the send.
+	if err := errors.Join(ctx.Err(), release.ApprovalContext.Err()); err != nil {
 		return err
 	}
 	if s != nil {
@@ -331,6 +336,8 @@ type mcpV3Session struct {
 	mu      sync.Mutex
 	pending map[string]*mcpV3Exchange
 	closed  bool
+	// afterCommitLock is a test hook run by commitV3HeldSend while it holds mu.
+	afterCommitLock func()
 }
 
 // mcpV3POST scopes a bridge response reader to its own registration

@@ -1815,7 +1815,7 @@ func ForwardScannedInput(
 							exchange, admitErr = heldOpts.admitV3HeldSend(releaseCtx, v3HeldEvidence, v3Release)
 							releaseErr := errors.Join(admitErr, releaseCtx.Err(), v3Release.ApprovalContext.Err())
 							if releaseErr == nil {
-								releaseErr = heldOpts.commitV3HeldSend(exchange, v3Release, &readyToCorrelate)
+								releaseErr = heldOpts.commitV3HeldSend(releaseCtx, exchange, v3Release, &readyToCorrelate)
 							}
 							if releaseErr != nil {
 								tracker.removeOwnedOutcome(heldID, registration)
