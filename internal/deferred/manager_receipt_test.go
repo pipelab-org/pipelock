@@ -301,3 +301,35 @@ func TestReceiptHoldCancelledParkedWaiterDoesNotStrandBlockedChild(t *testing.T)
 		return m.reservations == 0 && len(m.holds) == 0 && len(m.lineage) == 0
 	}, "released child capacity and lineage")
 }
+
+func TestReceiptHoldStepUpHonorsDeadline(t *testing.T) {
+	for _, tc := range []struct {
+		name, decision, source string
+		expired                bool
+	}{
+		{name: "before", decision: config.ActionAsk, source: SourceOperator},
+		{name: "after", decision: config.ActionBlock, source: SourceTimeout, expired: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := NewManager(Config{Enabled: true, Timeout: time.Minute})
+			held := receiptAdmissionFixture("step-up")
+			held.RulePolicy.StepUpOn.ApprovalRequestsHuman = true
+			var resolution Resolution
+			held.ResolveReceipt = func(res Resolution, _ Release) { resolution = res }
+			if err := m.Hold(held); err != nil {
+				t.Fatal(err)
+			}
+			m.mu.Lock()
+			current := m.holds[held.DeferID]
+			current.timer.Stop()
+			if tc.expired {
+				current.Deadline = time.Now().Add(-time.Second)
+			}
+			m.mu.Unlock()
+			applied, err := m.ResolveApprovalResult(held.DeferID, config.ActionStepUp, SourceOperator)
+			if err != nil || applied != tc.decision || resolution.ResolutionSource != tc.source {
+				t.Fatalf("step-up = %q/%q (%v), want %q/%q", applied, resolution.ResolutionSource, err, tc.decision, tc.source)
+			}
+		})
+	}
+}

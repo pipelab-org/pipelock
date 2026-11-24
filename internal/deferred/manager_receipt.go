@@ -186,11 +186,11 @@ func (m *Manager) takeHold(ctx context.Context, id, decision, source string, wai
 			decision, source = config.ActionBlock, SourceCascade
 			break
 		}
-		if decision != config.ActionAllow {
-			break
-		}
 		if !time.Now().Before(held.Deadline) {
 			decision, source = config.ActionBlock, SourceTimeout
+			break
+		}
+		if decision != config.ActionAllow {
 			break
 		}
 		if ancestorsCommitted(held.lineage) {
