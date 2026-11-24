@@ -70,7 +70,7 @@ behavior.
 | One-shot enrollment into per-instance mTLS and audit identity | **Shipped.** Enrollment tokens are single-use and follower identity is derived from verified mTLS. |
 | Audience-bound signed bundle preimages | **Shipped.** Organization, fleet, environment, instance, and label selectors are validated. |
 | First-class signed rollback | **Shipped.** Rollback authorization is purpose-bound, threshold-signed, scoped, and replay-controlled. |
-| Remote kill separate from ordinary bundle state | **Shipped.** Remote kill and stale-policy denial are independent kill switch sources. |
+| Remote kill separate from ordinary bundle state | **Shipped.** Remote kill and stale-policy denial are independent kill-switch sources. |
 | License metadata excluded from policy bundles | **Shipped.** Forbidden local and license fields are rejected before storage/apply. |
 | Audit payloads remain hostile after signature verification | **Shipped.** Ingest performs schema, scope, signature, continuity, and content-safety checks. |
 | Follower-to-Conductor transport uses mTLS | **Shipped.** Deployment PKI remains an operator responsibility. |
@@ -470,8 +470,8 @@ Follower behavior:
   explicitly set it to false to opt out of applying otherwise valid remote kill
   messages.
 - Followers poll the Conductor remote-kill endpoint over follower mTLS and
-  apply signed messages through the local `conductor_remote` kill switch source.
-  `conductor_remote` is the local kill switch input that accepts signed
+  apply signed messages through the local `conductor_remote` kill-switch source.
+  `conductor_remote` is the local kill-switch input that accepts signed
   Conductor remote-kill messages after follower-side verification; when honoring
   is disabled, the source rejects messages and leaves the existing local kill
   state unchanged.
@@ -485,7 +485,7 @@ Follower behavior:
   Conductor bundle cache directory as `remote-kill-state.json`. Rejected,
   expired, superseded, and disabled messages emit structured local logs.
 - The replay-state file is local follower trust state: it must remain writable
-  only by the Pipelock process owner, and the other kill switch sources
+  only by the Pipelock process owner, and the other kill-switch sources
   (config, API, signal, sentinel) remain independently OR-composed.
 
 MVP Conductor behavior:

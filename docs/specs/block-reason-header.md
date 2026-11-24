@@ -8,7 +8,7 @@ This document is the canonical schema. Once an agent in production reads `dlp_ma
 
 ## Header set
 
-Blocked proxy HTTP responses include `X-Pipelock-Request-ID` with the ID recorded for the block and `X-Pipelock-Operator` with exactly `pipelock explain event <id>`. This includes WebSocket handshake refusals and both the absolute-URI 403 and JSON 503 kill switch responses. These headers do not depend on the opt-in `explain_blocks` setting, which still controls additional prose hints. Verdicts, status codes, and schema version 1 are unchanged.
+Blocked proxy HTTP responses include `X-Pipelock-Request-ID` with the ID recorded for the block and `X-Pipelock-Operator` with exactly `pipelock explain event <id>`. This includes WebSocket handshake refusals and both the absolute-URI 403 and JSON 503 kill-switch responses. These headers do not depend on the opt-in `explain_blocks` setting, which still controls additional prose hints. Verdicts, status codes, and schema version 1 are unchanged.
 
 The ID must match the shared `receiptcontent.ValidRequestID` shape: `req-` followed by a lowercase canonical UUIDv7 or a decimal fallback counter. Both headers are omitted when the recorded ID is empty or malformed. Pipelock supplies its recorded ID; it never copies a client header or request URL into these fields. Shape validation is not proof of origin or a signed receipt.
 
@@ -95,7 +95,7 @@ Reason codes are lowercase snake_case. The v1 set is derived from existing pipel
 | Code | When | Severity | Retry |
 |---|---|---|---|
 | `airlock_active` | Adaptive enforcement escalated this session into the airlock tier. | `critical` | `transient` |
-| `kill_switch_active` | A kill switch activation source is active (config, API, Conductor remote kill, Conductor stale bundle, uncertain Conductor apply, SIGUSR1, or sentinel file). | `critical` | `transient` |
+| `kill_switch_active` | A kill-switch activation source is active (config, API, Conductor remote kill, Conductor stale bundle, uncertain Conductor apply, SIGUSR1, or sentinel file). | `critical` | `transient` |
 | `envelope_verify_failed` | Inbound mediation envelope did not verify (signature / replay / trust). | `critical` | `none` |
 | `outbound_envelope_failed` | Outbound envelope injection / refresh / signing failed before the request left pipelock. Distinct from `envelope_verify_failed` so agents can tell inbound verification from outbound emission. | `critical` | `transient` |
 | `receipt_emission_failed` | `flight_recorder.require_receipts` is enabled and Pipelock could not emit the allow-path receipt before forwarding. The action is denied so there is no unreceipted upstream traffic. | `critical` | `transient` |
