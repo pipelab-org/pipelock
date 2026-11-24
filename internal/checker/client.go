@@ -243,11 +243,14 @@ func (c *Client) Check(ctx context.Context, item Item, policy Policy) Assessment
 	if item.Kind != KindText {
 		return failure(StatusNotChecked, ReasonUnsupported)
 	}
+	if a, ok := producerStopped(item); ok {
+		return a
+	}
 	if !validItem(item) {
 		return failure(StatusInvalid, ReasonMalformed)
 	}
 	if item.SubmittedBytes > policy.MaxRequestBytes {
-		return failure(StatusNotChecked, ReasonOverBudget)
+		return overBudget()
 	}
 	data, _ := json.Marshal(item)
 	var nonce [32]byte
@@ -258,7 +261,7 @@ func (c *Client) Check(ctx context.Context, item Item, policy Policy) Assessment
 	}
 	body, _ := json.Marshal(req)
 	if int64(len(body)) > policy.MaxRequestBytes {
-		return failure(StatusNotChecked, ReasonOverBudget)
+		return overBudget()
 	}
 	data, fail := c.post(ctx, body, policy.MaxResponseBytes)
 	if fail != nil {

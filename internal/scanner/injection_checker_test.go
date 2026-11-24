@@ -182,6 +182,33 @@ func TestWatchInjectionReportsWithoutDeciding(t *testing.T) {
 	}
 }
 
+// A watch call ignores the caller's cancellation, so an item whose build was
+// canceled after it kept parts is still assessed by the watcher and its finding
+// is reported, while a canceled build with nothing to send reports canceled.
+func TestWatchInjectionAssessesCanceledBuildThatKeptParts(t *testing.T) {
+	m := checkertest.NewMockServer(t, checkertest.BehaviorClassify)
+	s, ev := checkerScanner(t, m.URL, config.InjectionSurfaceConfig{Mode: config.InjectionModeWarn, Watch: "watch"})
+	canceled, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	item := checkerTestItem(checkertest.SuspiciousMarker)
+	item.Completeness = &checker.Completeness{Status: checker.Partial, Reason: checker.ReasonCanceled}
+	s.AssessInjection(canceled, config.InjectionSurfaceMCPToolResult, item)
+	got := ev.waitFor(t, 1)
+	if !got[0].Watch || got[0].State != string(checker.StateFinding) || got[0].Reason != FindingReason {
+		t.Fatalf("canceled build that kept parts: %+v", got[0])
+	}
+
+	empty := checkerTestItem("")
+	empty.Parts, empty.SubmittedBytes = nil, 0
+	empty.Completeness = &checker.Completeness{Status: checker.Partial, Reason: checker.ReasonCanceled}
+	s.AssessInjection(canceled, config.InjectionSurfaceMCPToolResult, empty)
+	got = ev.waitFor(t, 2)
+	if got[1].State != string(checker.StateNotAssessed) || got[1].Reason != string(checker.ReasonCanceled) {
+		t.Fatalf("canceled build with no parts: %+v", got[1])
+	}
+}
+
 func TestInjectionCheckerHookNilSafety(t *testing.T) {
 	var nilScanner *Scanner
 	nilScanner.ReportInjectionChecker(context.Background(), InjectionCheckerEvent{})

@@ -65,14 +65,12 @@ type controlPass struct {
 // ControlSurfaceSnapshot is an in-memory observation of the monitored paths
 // in one workspace. It can be compared independently of a full tree Manifest.
 type ControlSurfaceSnapshot struct {
-	root       string
-	capBytes   int64
-	rootInfo   fs.FileInfo
-	rootMount  uint64
-	mountKnown bool
-	priority   controlPass
-	nested     controlPass
-	problem    string
+	root     string
+	capBytes int64
+	identity controlRootIdentity
+	priority controlPass
+	nested   controlPass
+	problem  string
 }
 
 // ControlSurfaceStatement names changes to observed workspace control paths.
@@ -134,9 +132,9 @@ func SnapshotControlSurface(root string, capBytes int64, budget ControlSurfaceBu
 		snap.problem = "workspace root identity changed during open"
 		return snap, nil
 	}
-	snap.rootInfo = info
+	dev, ino, idsKnown := statIDsWithInode(info)
 	mnt, mntOK := mountID(abs)
-	snap.rootMount, snap.mountKnown = mnt, mntOK
+	snap.identity = controlRootIdentity{Dev: dev, Ino: ino, IDsKnown: idsKnown, Mount: mnt, MountKnown: mntOK, BootID: workspaceBootID()}
 	w := controlWalker{
 		root: handle, rootPath: abs, rootMount: mnt, mountKnown: mntOK, rootInfo: info,
 		capBytes: capBytes, budget: budget, coveredTrees: make(map[string]struct{}),
@@ -1081,14 +1079,9 @@ func DiffControlSurface(before, after ControlSurfaceSnapshot) (ControlSurfaceSta
 		return ControlSurfaceStatement{}, errors.New("workspacediff: incompatible control surface snapshots")
 	}
 	s := ControlSurfaceStatement{Added: []string{}, Removed: []string{}, Modified: []string{}, Unreadable: []UnreadableEntry{}}
-	var identityReason string
-	if before.rootInfo != nil && after.rootInfo != nil &&
-		(!os.SameFile(before.rootInfo, after.rootInfo) ||
-			crossedMount(before.rootMount, after.rootMount, before.mountKnown, after.mountKnown)) {
-		identityReason = "workspace root identity or mount changed between observations"
-	}
+	identityReason := controlIdentityChange(before.identity, after.identity)
 	var priorityDiff, nestedDiff controlPassDiff
-	if before.rootInfo != nil && after.rootInfo != nil && identityReason == "" {
+	if before.priority.entries != nil && after.priority.entries != nil && identityReason == "" {
 		priorityDiff = compareControlPass(before.priority, after.priority)
 		nestedDiff = compareControlPass(before.nested, after.nested)
 	}
@@ -1101,7 +1094,7 @@ func DiffControlSurface(before, after ControlSurfaceSnapshot) (ControlSurfaceSta
 	s.Removed = mergeControlPaths(s.Removed, unobservedControlPaths(priorityDiff.removed, observedAfter),
 		unobservedControlPaths(nestedDiff.removed, observedAfter))
 	s.Modified = mergeControlPaths(s.Modified, priorityDiff.modified, nestedDiff.modified)
-	if before.rootInfo != nil && after.rootInfo != nil && identityReason == "" {
+	if before.priority.entries != nil && after.priority.entries != nil && identityReason == "" {
 		s.Modified = mergeControlPaths(s.Modified, nil, modifiedAcrossPasses(
 			[]controlPass{before.priority, before.nested}, []controlPass{after.priority, after.nested}))
 	}

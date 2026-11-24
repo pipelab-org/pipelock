@@ -4,15 +4,11 @@
 package scanner
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"strconv"
-	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/checker"
 	"github.com/luckyPipewrench/pipelock/internal/config"
-	"github.com/luckyPipewrench/pipelock/internal/normalize"
 )
 
 // CheckerPatternPrefix labels a proxy-owned external checker finding.
@@ -71,10 +67,11 @@ func (s *Scanner) ComposeBufferedInjection(ctx context.Context, o BufferedInject
 	}
 	originalBytes := int64(len(o.Content))
 	texts := o.Texts
+	var views []bodyInjectionView
 	if o.UseBody {
 		originalBytes = int64(len(o.Body))
 		var err error
-		texts, err = bufferedBodyInjectionTexts(ctx, o.Body)
+		views, err = extractResponseBodyViews(ctx, o.Body)
 		if err != nil {
 			result.Clean = false
 			result.ScanError = err.Error()
@@ -87,8 +84,21 @@ func (s *Scanner) ComposeBufferedInjection(ctx context.Context, o BufferedInject
 	if o.OriginalBytes > 0 {
 		originalBytes = o.OriginalBytes
 	}
-	parts := InjectionTextParts(texts...)
-	if len(parts) == 0 {
+	if o.Outbound {
+		ctx = context.WithValue(ctx, outboundInjectionContextKey{}, true)
+	}
+	builder := s.newCheckerTextBuilder(ctx, o.Surface)
+	if o.UseBody {
+		for _, view := range views {
+			if !builder.add(view) {
+				break
+			}
+		}
+	} else {
+		builder.addTexts(texts)
+	}
+	parts := builder.parts
+	if len(parts) == 0 && builder.reason == "" {
 		return result
 	}
 	transport := o.Transport
@@ -102,19 +112,11 @@ func (s *Scanner) ComposeBufferedInjection(ctx context.Context, o BufferedInject
 	if direction == "" {
 		direction = "response"
 	}
-	var submitted int64
-	for _, p := range parts {
-		submitted += int64(len(p.Text))
-	}
-	completeness := o.Completeness
-	if completeness == nil {
-		completeness = &checker.Completeness{Status: checker.Complete}
-	}
 	item := checker.Item{
 		ID: "buffered-" + o.Surface, Kind: checker.KindText, Surface: o.Surface,
-		Transport: transport, Direction: direction, ExtractionVersion: "buffered-text/v1",
-		Parts: parts, OriginalBytes: originalBytes, SubmittedBytes: submitted,
-		Completeness: completeness,
+		Transport: transport, Direction: direction, ExtractionVersion: "buffered-text/v2",
+		Parts: parts, OriginalBytes: originalBytes, SubmittedBytes: builder.submitted,
+		Completeness: builder.completeness(o.Completeness),
 	}
 	ext, ok := s.AssessInjection(ctx, o.Surface, item)
 	if !ok {
@@ -128,36 +130,12 @@ func (s *Scanner) ComposeBufferedInjection(ctx context.Context, o BufferedInject
 		result.TransformedContent = ""
 	case ext.Block():
 		result.Clean = false
-		result.ScanError = fmt.Sprintf("injection checker %s did not assess content (%s)", ext.Checker, ext.Reason())
+		result.ScanError = fmt.Sprintf("injection checker %s did not assess content (%s)", ext.Checker, ext.DiagnosticReason())
 		result.TransformedContent = ""
 	case ext.Finding():
 		result.WarnedMatches = append(result.WarnedMatches, ResponseMatch{PatternName: CheckerPatternPrefix + ext.Checker})
 	}
 	return result
-}
-
-// InjectionTextParts preserves valid source text and labels Unicode views,
-// matching the MCP checker seam. Invalid byte runs become spaces, as in the
-// response body view, before any checker parts or normalized views are built.
-// It never adds base64 or hex decoded checker views.
-func InjectionTextParts(texts ...string) []checker.Part {
-	var parts []checker.Part
-	for i, text := range texts {
-		text = strings.ToValidUTF8(text, " ")
-		if text == "" {
-			continue
-		}
-		id := "text-" + strconv.Itoa(i)
-		parts = append(parts, checker.Part{ID: id, Role: "content", Representation: "original", Text: text})
-		tags := normalize.DecodeTags(text)
-		if tags != text {
-			parts = append(parts, checker.Part{ID: id + ":tags", Role: "decoded_view", Representation: "unicode_tags/v1", Text: tags})
-		}
-		if m := normalize.ForMatching(tags); m != text && m != tags {
-			parts = append(parts, checker.Part{ID: id + ":normalized", Role: "decoded_view", Representation: "for_matching/v1", Text: m})
-		}
-	}
-	return parts
 }
 
 // CheckerBlocked reports a deciding external finding. A transport's legacy
@@ -196,43 +174,4 @@ func (s *Scanner) ScanHookInjection(ctx context.Context, text, transport string,
 		s.ReportInjectionWarnings(ctx, []string{CheckerPatternPrefix + sp.Checker + " (" + string(result.Assessment.Status) + ")"})
 	}
 	return result
-}
-
-// bufferedBodyInjectionTexts follows the response body's established prose
-// boundary. Opaque bytes and image pixels are never checker content. Encoded
-// chain and decoded base64/hex views remain outside buffered checker routing.
-func bufferedBodyInjectionTexts(ctx context.Context, body []byte) ([]string, error) {
-	metadata, image, err := responseImageMetadata(body)
-	if image {
-		if err != nil {
-			return nil, fmt.Errorf("image metadata inspection failed: %w", err)
-		}
-		if len(metadata) == 0 {
-			return nil, nil
-		}
-		// Metadata combines formats with different encodings. Preserve valid
-		// UTF-8 and ASCII wording, separating invalid byte runs as in the
-		// non-image body view rather than sending invalid protocol text.
-		return []string{string(bytes.ToValidUTF8(metadata, []byte(" ")))}, nil
-	}
-	textual, err := isTextualResponseBody(ctx, body)
-	if err != nil {
-		return nil, err
-	}
-	if textual || hasResponseImageSignature(body) {
-		return []string{string(bytes.ToValidUTF8(body, []byte(" ")))}, nil
-	}
-	decoded, wide, err := decodeLikelyWideResponseBody(ctx, body)
-	if err != nil {
-		return nil, err
-	}
-	views, err := opaqueResponseTextView(ctx, body)
-	if err != nil {
-		return nil, err
-	}
-	texts := []string{views.retained, views.fragmented}
-	if wide {
-		texts = append([]string{decoded}, texts...)
-	}
-	return texts, nil
 }

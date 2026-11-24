@@ -1456,7 +1456,7 @@ prompt_injection_detection:
       peer_uid: 990                   # optional: refuse a socket owned by anyone else
       revision: {checker: runner/v1, model: model/v1, adapter: adapter/v1}
       timeout_ms: 2000
-      max_request_bytes: 262144
+      max_request_bytes: 262144       # includes decoded views and the request envelope
       max_response_bytes: 16384
     vendor:                           # the same protocol over HTTPS
       type: protocol
@@ -1522,10 +1522,20 @@ Rules:
   `allow_loopback_http: true`. Checker calls never use proxy environment
   variables, never follow redirects, and refuse cloud metadata and
   link-local addresses.
-- Each checker gets one item per MCP response or `tools/list` (one part per
-  tool, with findings attributed by part). Parts carry the original text plus
-  a decoded Unicode-tag view and a normalized view where they differ; base64
-  and hex decoded views are not sent yet.
+- Each checker gets one item per MCP response or `tools/list`. Description
+  findings are attributed to tools by part ID. Buffered text parts include
+  distinct Unicode-normalized and decoded text views, including base64 and hex.
+  A decode that is not text as a whole contributes its readable runs.
+  Each part is an independent view. If decoding reaches an inspection limit
+  or the complete request exceeds the byte limit, assessment is incomplete.
+  Tool descriptions use the same text view extraction and share one byte
+  budget across the list. Checker requests label these extraction formats
+  `buffered-text/v2`, `mcp-text/v2`, and `mcp-tool-text/v2`.
+- Size `max_request_bytes` for the full request. Submitted text in sample
+  inputs ranged from 1× the original for plain prose to roughly 2–5.4×
+  for JSON, HTML, encoded text, and text with entities or invisible separators.
+  The request envelope adds overhead. Exceeding this limit makes the
+  assessment incomplete, which withholds delivery in block mode.
 - Outcomes that are not a complete benign assessment, watch results and
   dropped watch calls are logged as `injection_checker` events, with no
   content and no provider text. A known-answer self-test runs against every

@@ -227,8 +227,24 @@ func TestNoCall(t *testing.T) {
 		{name: "action", item: func(i *Item) { i.Kind = KindAction }, state: StateNotAssessed, reason: ReasonUnsupported},
 		{name: "image", item: func(i *Item) { i.Kind = KindImage }, state: StateNotAssessed, reason: ReasonUnsupported},
 		{name: "malformed", item: func(i *Item) { i.Completeness = nil }, state: StateNotAssessed, reason: ReasonMalformed},
-		{name: "content_budget", policy: func(p *Policy) { p.MaxRequestBytes = 4 }, state: StateNotAssessed, reason: ReasonOverBudget},
-		{name: "envelope_budget", policy: func(p *Policy) { p.MaxRequestBytes = 10 }, state: StateNotAssessed, reason: ReasonOverBudget},
+		{name: "content_budget", policy: func(p *Policy) { p.MaxRequestBytes = 4 }, state: StateIncomplete, reason: ReasonOverBudget},
+		{name: "envelope_budget", policy: func(p *Policy) { p.MaxRequestBytes = 10 }, state: StateIncomplete, reason: ReasonOverBudget},
+		// A producer that stopped on the budget reports it locally, before any
+		// shape check: the budget stop can leave zero parts, which would
+		// otherwise read as a malformed item and fail the wrong way.
+		{name: "producer_over_budget_with_parts", item: func(i *Item) { i.Completeness = &Completeness{Status: Partial, Reason: ReasonOverBudget} }, state: StateIncomplete, reason: ReasonOverBudget},
+		{name: "producer_over_budget_no_parts", item: func(i *Item) {
+			i.Completeness = &Completeness{Status: Partial, Reason: ReasonOverBudget}
+			i.Parts, i.SubmittedBytes = nil, 0
+		}, state: StateIncomplete, reason: ReasonOverBudget},
+		{name: "producer_canceled_no_parts", item: func(i *Item) {
+			i.Completeness = &Completeness{Status: Partial, Reason: ReasonCanceled}
+			i.Parts, i.SubmittedBytes = nil, 0
+		}, state: StateNotAssessed, reason: ReasonCanceled},
+		{name: "producer_truncated_no_parts_is_malformed", item: func(i *Item) {
+			i.Completeness = &Completeness{Status: Partial, Reason: ReasonTruncated}
+			i.Parts, i.SubmittedBytes = nil, 0
+		}, state: StateNotAssessed, reason: ReasonMalformed},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -244,6 +260,32 @@ func TestNoCall(t *testing.T) {
 				t.Fatal(got)
 			}
 		})
+	}
+}
+
+// A build canceled after it produced parts still sends them. Only a build with
+// nothing to send is reported locally: a watch call runs on a context detached
+// from the canceled build, and a suspicious reading of what was built is a
+// finding that settleAfterCall and the partial-coverage rule both keep.
+func TestProducerCanceledWithPartsIsStillChecked(t *testing.T) {
+	var calls atomic.Int32
+	client := clientFor(t, func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		var req Request
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Error(err)
+			return
+		}
+		resp := testResponse(req)
+		resp.Classification = Suspicious
+		resp.Findings = []Finding{{ReasonID: "suspicious_instruction", PartIDs: []string{"part"}}}
+		_ = json.NewEncoder(w).Encode(resp)
+	})
+	item := testItem()
+	item.Completeness = &Completeness{Status: Partial, Reason: ReasonCanceled}
+	got := client.Check(t.Context(), item, testPolicy())
+	if got.State != StateFinding || calls.Load() != 1 {
+		t.Fatalf("canceled build with parts: %+v calls=%d, want the finding from one request", got, calls.Load())
 	}
 }
 

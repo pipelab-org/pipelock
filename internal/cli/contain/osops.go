@@ -30,6 +30,7 @@ import (
 // systemd. Real construction is via defaultInstallEnv(); tests build a
 // struct literal with their own hooks.
 type installEnv struct {
+	controlAuditDir string
 	// rfbSocketPath is an isolated test path; production uses the fixed /run path.
 	rfbSocketPath       string
 	displayTmpfilesPath string
@@ -326,6 +327,7 @@ func defaultInstallEnv(out io.Writer) *installEnv {
 		wrapperInvPath:           defaultWrapperInvPath,
 		toolsListPath:            defaultToolsListPath,
 		workspaceInvPath:         defaultWorkspaceInvPath,
+		controlAuditDir:          defaultControlAuditDir,
 		loopbackForwarderInvPath: defaultLoopbackForwarderInvPath,
 		evidenceACLInvPath:       defaultEvidenceACLInvPath,
 		viewerAccountMarkerPath:  defaultViewerAccountMarkerPath,

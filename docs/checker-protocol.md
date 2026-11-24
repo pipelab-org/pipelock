@@ -1,6 +1,6 @@
 # Injection checker protocol v1
 
-`internal/checker` defines one content assessment per request. A checker classifies content; callers retain delivery policy and independent security controls. The package contains the protocol, HTTP client, known-answer health check, the Jev adapter and mock conformance tests. `prompt_injection_detection.checkers` and `surfaces` select a checker for MCP tool results and tool descriptions; see [Per-surface selection](configuration.md#per-surface-selection). No other surface calls an external checker yet.
+`internal/checker` defines one content assessment per request. A checker classifies content; callers retain delivery policy and independent security controls. The package contains the protocol, HTTP client, known-answer health check, the Jev adapter and mock conformance tests. `prompt_injection_detection.checkers` and `surfaces` select a checker for supported buffered surfaces. See [Per-surface selection](configuration.md#per-surface-selection).
 
 ## Request
 
@@ -36,6 +36,8 @@ Send `POST` to an operator-configured endpoint such as `https://api.vendor.examp
 `input_binding` is the lowercase SHA-256 digest of the exact `item` JSON value bytes sent, excluding whitespace outside that value. The server hashes those raw bytes, without reserialization. The Go client emits compact JSON with `encoding/json`; `checker.Binding` computes its digest. This binds identity, labels, ordered content, context, counts, and completeness. It does not attest what a model actually evaluated.
 
 Each part has a unique nonempty ID, role, representation label, and exact UTF-8 text. Empty text is valid. Extractors define and version their surface, transport, direction, role, and representation labels. They preserve original and decoded/normalized views as separate ordered parts; producing views is outside this package. `original_bytes` counts source bytes before extraction. `submitted_bytes` is the sum of UTF-8 text bytes across all parts, including extra views, and can exceed original bytes. Neither count measures tokens or proves completeness.
+
+Assess each part independently. A part can be a separate extraction or an alternative view of the same content. Fragment reconstructions retain their synthetic newline boundaries and use `response_fragments/v1` or `response_fragment_decoded/v1`. Do not join independent parts.
 
 Completeness is mandatory: `complete` has no reason; `partial` requires a typed reason. Partial input never yields a complete benign assessment. Context is optional, with no implicit conversation history. Each value declares a name, value, origin, and trust label. `untrusted` is valid for any named origin; `authenticated` is accepted only with `origin: operator`. Tool output cannot assert authenticated intent. Callers establish provenance and redact credentials before submission; labels alone do not authenticate a source.
 
