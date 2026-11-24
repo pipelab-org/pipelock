@@ -17,6 +17,8 @@ func TestAllowedLossPresentation(t *testing.T) {
 		redaction            bool
 	}{
 		{pan[:4] + "." + pan[4:], "cell", "decimal", false},
+		{pan + ".99", "bare", "", false},
+		{"99." + pan, "bare", "", false},
 		{pan[:8] + "\t" + pan[8:], "bare", "control-boundary", false},
 		{long[:16] + "\t" + long[16:18] + "\t" + long[18:], "bare", "", false},
 		{pan[:8] + "\r\n" + pan[8:], "bare", "control-boundary", false},

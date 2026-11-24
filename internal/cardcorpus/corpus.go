@@ -317,6 +317,11 @@ func (c Case) AllowedLoss(redaction bool) string {
 	if dots == 1 && strings.Count(c.Value, ".") == 1 {
 		parts := strings.Split(c.Value, ".")
 		if allDigits(parts[0]) && allDigits(parts[1]) {
+			// A dot join excuses only a split card. One side that is already
+			// a complete non-published card stays enforceable.
+			if completeCardField(parts[0]) || completeCardField(parts[1]) {
+				return ""
+			}
 			return "decimal"
 		}
 	}
