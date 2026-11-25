@@ -83,6 +83,34 @@ func VerifyPaths(ctx context.Context, paths []string, opts Options) (Result, err
 	return verifyPaths(ctx, paths, opts, "")
 }
 
+// VerifyPathsWithActions visits actions from the same staged evidence that
+// produced a VALID result. It never calls visit for other verdicts.
+func VerifyPathsWithActions(ctx context.Context, paths []string, opts Options, visit func(Action) error) (Result, error) {
+	return verifyPathsInspect(ctx, paths, opts, "", func(v *verification) error {
+		if v.result.Verdict != "VALID" {
+			return nil
+		}
+		for _, lineage := range sortedKeys(v.histories) {
+			for _, stream := range v.histories[lineage] {
+				err := walkRecords(ctx, v.store, stream.open.Stream, stream.limit, func(r stagedRecord) error {
+					if r.Kind != kindAction {
+						return nil
+					}
+					action, err := unmarshalBody[Action](r)
+					if err != nil {
+						return err
+					}
+					return visit(action)
+				})
+				if err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
+}
+
 func verifyPaths(ctx context.Context, paths []string, opts Options, skip string) (Result, error) {
 	return verifyPathsInspect(ctx, paths, opts, skip, nil)
 }
