@@ -910,7 +910,8 @@ def measurement_recorded_failure(path: Path) -> bool:
             event = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if isinstance(event, dict) and event.get("Action") == "fail":
+        # go test -json reports a compile failure as build-fail (go help buildjson).
+        if isinstance(event, dict) and event.get("Action") in ("fail", "build-fail"):
             return True
     return False
 

@@ -795,6 +795,23 @@ func TestParent(t *testing.T) {
              self.assertRaisesRegex(ValueError, "changed-test race run failed"):
             self.measure_with(tests, resolve, killing, now, 1000.0, directory)
 
+    def test_deadline_mid_run_still_fails_after_a_recorded_build_failure(self):
+        # go test -json reports a compile failure as build-fail, with no fail
+        # event for the test. It is still a recorded failure.
+        first, second, tests, resolve, now, commands, plain, _ = self.paired_deadline_run(new_second=False)
+
+        def killing(command, stream, root, remaining):
+            if command[-1] == second and root == planner.ROOT:
+                stream.write(json.dumps({"ImportPath": command[-1] + ".test", "Action": "build-fail"}) + "\n")
+                stream.flush()
+                now[0] += remaining
+                raise planner.MeasurementDeadline("changed-test measurement timeout")
+            return plain(command, stream, root, remaining)
+
+        with tempfile.TemporaryDirectory() as directory, \
+             self.assertRaisesRegex(ValueError, "changed-test race run failed"):
+            self.measure_with(tests, resolve, killing, now, 1000.0, directory)
+
     def test_deadline_mid_run_keeps_the_head_when_its_base_is_killed(self):
         first, second, tests, resolve, now, commands, run = self.deadline_killed_run(False, Path("base"))
         with tempfile.TemporaryDirectory() as directory:

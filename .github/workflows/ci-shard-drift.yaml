@@ -99,9 +99,11 @@ jobs:
               status=1
               continue
             fi
+            # The step shell runs with errexit; capture the summarizer's exit
+            # code instead of letting a slow test end the step here.
+            rc=0
             out="$(python3 scripts/summarize_go_test_json.py --top 1 --top-tests 1 \
-              --allow-failed-packages --max-test-seconds "$EARLY_CEILING_SECONDS" < "$file")"
-            rc=$?
+              --allow-failed-packages --max-test-seconds "$EARLY_CEILING_SECONDS" < "$file")" || rc=$?
             if [ "$rc" -eq 3 ]; then
               # Keep only the per-test annotations, which name each test.
               printf '%s\n' "$out" | grep '^::error' || true

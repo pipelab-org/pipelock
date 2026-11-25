@@ -57,6 +57,16 @@ class FailedTestsTest(unittest.TestCase):
         self.assertEqual(bare, [])
         self.assertEqual(races, {"p": ["TestA"], "q": ["(package)"]})
 
+    def test_named_failure_in_a_package_level_race_is_the_race(self):
+        failed, bare, races = report.failed_tests(report.read_events(events(
+            {"Action": "fail", "Package": "p", "Test": "TestA"},
+            {"Action": "output", "Package": "p", "Output": "WARNING: DATA RACE\n"},
+            {"Action": "fail", "Package": "p"},
+        )))
+        self.assertEqual(failed, {})
+        self.assertEqual(races, {"p": ["TestA"]})
+        self.assertEqual(bare, [])
+
     def test_classification(self):
         self.assertEqual(report.classify(5, 5), "DETERMINISTIC")
         self.assertEqual(report.classify(1, 5), "FLAKY")
@@ -152,6 +162,43 @@ func TestPartial(t *testing.T) {
         with patch.object(report.subprocess, "run", return_value=completed):
             outcomes = report.rerun("example.test/p", ["TestA", "TestB"], "", 2, 30)
         self.assertEqual(outcomes, {"TestA": report.RACE_DETECTED, "TestB": report.RACE_DETECTED})
+
+    def test_rerun_that_times_out_after_a_race_keeps_the_race(self):
+        # The rerun printed a race and then stalled. The race is evidence;
+        # a test with no race output stays unknown.
+        output = "\n".join(json.dumps(event) for event in (
+            {"Action": "output", "Package": "example.test/p", "Test": "TestA", "Output": "WARNING: DATA RACE\n"},
+            {"Action": "pass", "Package": "example.test/p", "Test": "TestB"},
+        )).encode()
+        with patch.object(report.subprocess, "run",
+                          side_effect=subprocess.TimeoutExpired(["go", "test"], 90, output=output)):
+            outcomes = report.rerun("example.test/p", ["TestA", "TestB"], "", 2, 30)
+        self.assertEqual(outcomes, {"TestA": report.RACE_DETECTED, "TestB": -1})
+        with patch.object(report.subprocess, "run",
+                          side_effect=subprocess.TimeoutExpired(["go", "test"], 90, output=None)):
+            self.assertEqual(report.rerun("example.test/p", ["TestA"], "", 2, 30), {"TestA": -1})
+
+    def test_summary_rows_are_written_before_the_next_rerun(self):
+        # The caller's timeout can end a slow second rerun. The first
+        # package's row must already be in the step summary by then.
+        stream = "\n".join(events(
+            {"Action": "fail", "Package": "a", "Test": "TestA"},
+            {"Action": "fail", "Package": "b", "Test": "TestB"},
+        ))
+        with tempfile.TemporaryDirectory() as directory:
+            summary = Path(directory) / "summary.md"
+            seen = []
+
+            def fake_rerun(package, names, tags, reruns, timeout):
+                seen.append(summary.read_text(encoding="utf-8") if summary.exists() else "")
+                return {name: 1 for name in names}
+            with patch.object(report, "rerun", side_effect=fake_rerun), \
+                 patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": str(summary)}, clear=True), \
+                 patch("sys.stdin", io.StringIO(stream)), patch("sys.argv", ["ci_flake_report.py"]), \
+                 redirect_stdout(io.StringIO()):
+                self.assertEqual(report.main(), 0)
+        self.assertIn("| Package | Test | Reruns failed | Kind |", seen[0])
+        self.assertIn("| a | TestA | 1 of 5 | FLAKY |", seen[1])
 
     def test_data_race_during_rerun_is_classified_as_data_race_not_flaky(self):
         # A test that triggers a data race only on one rerun must be labeled
@@ -278,20 +325,20 @@ class WorkflowContractTest(unittest.TestCase):
             timing = Path(directory) / "timing"
             timing.mkdir()
             env = {**os.environ, "RUNNER_TEMP": directory, "EARLY_CEILING_SECONDS": "180"}
-            empty = subprocess.run(["bash", "-c", script], cwd=ROOT, env=env, capture_output=True, text=True)
+            empty = subprocess.run(["bash", "-e", "-c", script], cwd=ROOT, env=env, capture_output=True, text=True)
             self.assertEqual(empty.returncode, 1, empty.stdout + empty.stderr)
             (timing / "empty.json").write_text("")
-            empty_file = subprocess.run(["bash", "-c", script], cwd=ROOT, env=env, capture_output=True, text=True)
+            empty_file = subprocess.run(["bash", "-e", "-c", script], cwd=ROOT, env=env, capture_output=True, text=True)
             self.assertEqual(empty_file.returncode, 1, empty_file.stdout + empty_file.stderr)
             self.assertIn("Timing file empty", empty_file.stdout)
             (timing / "empty.json").write_text("\n".join(events(
                 {"Action": "start", "Package": "p"},
             )) + "\n")
-            start_only = subprocess.run(["bash", "-c", script], cwd=ROOT, env=env, capture_output=True, text=True)
+            start_only = subprocess.run(["bash", "-e", "-c", script], cwd=ROOT, env=env, capture_output=True, text=True)
             self.assertEqual(start_only.returncode, 1, start_only.stdout + start_only.stderr)
             self.assertIn("Timing file empty", start_only.stdout)
             (timing / "empty.json").write_text('not valid json "Action"\n')
-            corrupt = subprocess.run(["bash", "-c", script], cwd=ROOT, env=env, capture_output=True, text=True)
+            corrupt = subprocess.run(["bash", "-e", "-c", script], cwd=ROOT, env=env, capture_output=True, text=True)
             self.assertEqual(corrupt.returncode, 1, corrupt.stdout + corrupt.stderr)
             self.assertIn("Timing file empty", corrupt.stdout)
             (timing / "empty.json").unlink()
@@ -300,7 +347,7 @@ class WorkflowContractTest(unittest.TestCase):
                 {"Action": "pass", "Package": "p", "Test": "TestSlow", "Elapsed": 200.0},
                 {"Action": "pass", "Package": "p", "Elapsed": 200.0},
             )) + "\n")
-            slow = subprocess.run(["bash", "-c", script], cwd=ROOT, env=env, capture_output=True, text=True)
+            slow = subprocess.run(["bash", "-e", "-c", script], cwd=ROOT, env=env, capture_output=True, text=True)
             self.assertEqual(slow.returncode, 1, slow.stdout + slow.stderr)
             self.assertIn("TestSlow", slow.stdout)
             (timing / "slow.json").write_text("\n".join(events(
@@ -308,7 +355,7 @@ class WorkflowContractTest(unittest.TestCase):
                 {"Action": "pass", "Package": "p", "Test": "TestFast", "Elapsed": 30.0},
                 {"Action": "pass", "Package": "p", "Elapsed": 30.0},
             )) + "\n")
-            fast = subprocess.run(["bash", "-c", script], cwd=ROOT, env=env, capture_output=True, text=True)
+            fast = subprocess.run(["bash", "-e", "-c", script], cwd=ROOT, env=env, capture_output=True, text=True)
             self.assertEqual(fast.returncode, 0, fast.stdout + fast.stderr)
 
 

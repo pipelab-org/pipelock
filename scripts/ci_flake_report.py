@@ -72,7 +72,9 @@ def failed_tests(events) -> tuple[dict[str, list[str]], list[str], dict[str, lis
     for package, names in failed_raw.items():
         pkg_races = raced_tests.get(package, set())
         for name in names:
-            if name in pkg_races:
+            # A race line with no Test field belongs to the whole test process,
+            # so every named failure in that package is reported as the race.
+            if name in pkg_races or package in raced_packages:
                 races.setdefault(package, set()).add(name)
             else:
                 failed.setdefault(package, set()).add(name)
@@ -116,13 +118,18 @@ def rerun(package: str, names: list[str], tags: str, reruns: int, timeout: float
     command.extend(["-run=" + exact_names_regex(names), package])
     try:
         result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=timeout + 60)
-    except subprocess.TimeoutExpired:
-        return {name: -1 for name in names}
+        stdout, completed = result.stdout, True
+    except subprocess.TimeoutExpired as error:
+        # A rerun that printed a race and then stalled still raced. Keep what
+        # it printed; tests with no race evidence stay unknown.
+        partial = error.output or b""
+        stdout = partial.decode("utf-8", "replace") if isinstance(partial, bytes) else partial
+        completed = False
     failures = {name: 0 for name in names}
     finished = {name: 0 for name in names}
     raced: set[str] = set()
     package_raced = False
-    for event in read_events(result.stdout.splitlines()):
+    for event in read_events(stdout.splitlines()):
         if event.get("Package") != package:
             continue
         test = event.get("Test")
@@ -149,7 +156,7 @@ def rerun(package: str, names: list[str], tags: str, reruns: int, timeout: float
     for name in names:
         if name in raced or package_raced:
             outcomes[name] = RACE_DETECTED
-        elif finished[name] >= reruns:
+        elif completed and finished[name] >= reruns:
             outcomes[name] = failures[name]
         else:
             outcomes[name] = -1
@@ -175,11 +182,29 @@ def main() -> int:
     if args.reruns < 2:
         parser.error("--reruns must be at least 2")
 
+    # The caller runs this under a timeout. Flush every annotation and write
+    # every summary row as it is decided, so the rows already classified
+    # survive when that timeout ends a slow rerun.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(line_buffering=True)
+    summary = os.environ.get("GITHUB_STEP_SUMMARY")
+
+    class Rows(list):
+        def append(self, row: str) -> None:
+            super().append(row)
+            if summary:
+                with Path(summary).open("a", encoding="utf-8") as stream:
+                    stream.write(row + "\n")
+            else:
+                sys.stdout.write(row + "\n")
+
     failed, bare, races = failed_tests(read_events(sys.stdin))
-    lines = [f"## Failure classification: {args.label}", "",
-             f"Each failed test was rerun {args.reruns} times under -race. "
-             "The shard's own result is unchanged.", "",
-             "| Package | Test | Reruns failed | Kind |", "|---|---|---|---|"]
+    lines = Rows()
+    for row in (f"## Failure classification: {args.label}", "",
+                f"Each failed test was rerun {args.reruns} times under -race. "
+                "The shard's own result is unchanged.", "",
+                "| Package | Test | Reruns failed | Kind |", "|---|---|---|---|"):
+        lines.append(row)
     for package, names in sorted(races.items()):
         for name in names:
             print(f"::error title=Data race::{package} {name} reported a data race; not rerun, a race is a bug whether or not it repeats.")
@@ -215,13 +240,6 @@ def main() -> int:
                     print(f"::error title=Flaky test::{package} {name} failed {count} of {args.reruns} reruns after failing in the shard: fix its cause; the shard stays red.")
                 else:
                     print(f"::warning title=Unclassified failure::{package} {name}: the rerun did not finish.")
-    summary = os.environ.get("GITHUB_STEP_SUMMARY")
-    text = "\n".join(lines) + "\n"
-    if summary:
-        with Path(summary).open("a", encoding="utf-8") as stream:
-            stream.write(text)
-    else:
-        sys.stdout.write(text)
     return 0
 
 
