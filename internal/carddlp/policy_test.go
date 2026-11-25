@@ -158,36 +158,93 @@ func TestCardReceiptStrictIdentifiers(t *testing.T) {
 		ulid[0] = alphabet[raw[0]&7]
 		values := map[string]string{
 			"uuid4": uuid(4), "uuid7": uuid(7),
-			"request": fmt.Sprintf("s1-r%x-m000000", raw[:16]),
-			"sha256":  hex.EncodeToString(raw[:32]), "sha512": hex.EncodeToString(raw[:]),
+			"request":   fmt.Sprintf("s1-r%x-m000000", raw[:16]),
+			"req-uuid":  "req-" + uuid(4),
+			"session":   "proxy.run." + hex.EncodeToString(raw[:16]),
+			"sha256":    hex.EncodeToString(raw[:32]),
+			"sha512":    hex.EncodeToString(raw[:]),
 			"base64":    base64.StdEncoding.EncodeToString(raw[:32]),
 			"base64url": base64.RawURLEncoding.EncodeToString(raw[:64]),
 			"base32":    base32.StdEncoding.EncodeToString(raw[:32]),
 			"ulid":      string(ulid[:]),
 		}
 		for kind, value := range values {
-			if VisitStrict(value, func(Candidate) bool { return true }) {
+			// A dash-grouped traffic card that happens to use a UUID shape is
+			// the ordinary grammar, not a strict-only false hit.
+			traffic := Visit(value, false, func(c Candidate) bool {
+				return !c.PublicExample && !IsPublicTestPAN(c.Digits)
+			})
+			strict := VisitStrict(value, func(Candidate) bool { return true })
+			if strict && !traffic {
 				hits[kind]++
 			}
 		}
 	}
 	for kind, count := range hits {
-		t.Errorf("%s: %d identifier false hits", kind, count)
+		t.Errorf("%s: %d strict-only identifier false hits", kind, count)
+	}
+}
+
+func TestCardReceiptStrictKeepsTrafficGrammar(t *testing.T) {
+	pan := cardtest.Issuer("4019", 16)
+	spaced := cardtest.Grouped(pan, " ")
+	uuidShape := pan[:8] + "-" + pan[8:12] + "-" + pan[12:16] + "-0000-000000000000"
+	for _, text := range []string{
+		"ref-" + pan,
+		"id:abc-" + spaced,
+		"x" + pan,
+		"?ref=a-" + pan,
+		"req-" + pan,
+		uuidShape,
+		"https://api.vendor.example/ref-" + pan,
+	} {
+		traffic := Visit(text, false, func(c Candidate) bool {
+			return !c.PublicExample && c.Digits == pan
+		})
+		strict := VisitStrict(text, func(c Candidate) bool { return c.Digits == pan })
+		if !traffic || !strict {
+			t.Errorf("traffic=%v strict=%v text=%q", traffic, strict, text)
+		}
+	}
+	for _, text := range []string{"order_" + pan, "xx" + pan, "abc" + pan + "def"} {
+		if Visit(text, false, func(c Candidate) bool { return !c.PublicExample }) || VisitStrict(text, func(Candidate) bool { return true }) {
+			t.Errorf("letter-bounded tail became a card: %q", text)
+		}
 	}
 }
 
 func TestCardReceiptStrictIdentifierBoundaries(t *testing.T) {
 	pan := cardtest.Issuer("4019", 16)
 	id := "97304a31-7c5d-4f4e-2560-" + "783810564780"
-	for _, text := range []string{id, "11111111-1111-4111-8111-111111111111", "req-" + id, "s1-r6da769a44d020c06aa83633d966c593c-m000000"} {
-		if VisitStrict(text, func(Candidate) bool { return true }) {
+	// These samples are not traffic cards. The strict extra must not invent one.
+	for _, text := range []string{"11111111-1111-4111-8111-111111111111", "s1-r6da769a44d020c06aa83633d966c593c-m000000"} {
+		if Visit(text, false, func(c Candidate) bool { return !c.PublicExample }) || VisitStrict(text, func(Candidate) bool { return true }) {
 			t.Fatalf("identifier rejected: %q", text)
 		}
-		for _, sep := range []string{" ", "\t", "\r", "\n", ":", ",", "/"} {
-			for _, content := range []string{text + sep + pan, pan + sep + text} {
-				if !VisitStrict(content, func(c Candidate) bool { return c.Digits == pan }) {
-					t.Fatalf("identifier hid separate card: %q", content)
-				}
+		assertSeparateCard(t, text, pan)
+	}
+	// The last two groups of id are a dash-grouped traffic card. Receipts keep it.
+	for _, text := range []string{id, "req-" + id} {
+		var want string
+		if !Visit(text, false, func(c Candidate) bool {
+			if c.PublicExample {
+				return false
+			}
+			want = c.Digits
+			return true
+		}) || want == "" || !VisitStrict(text, func(c Candidate) bool { return c.Digits == want }) {
+			t.Fatalf("traffic card inside identifier dropped: %q", text)
+		}
+		assertSeparateCard(t, text, pan)
+	}
+}
+
+func assertSeparateCard(t *testing.T, text, pan string) {
+	t.Helper()
+	for _, sep := range []string{" ", "\t", "\r", "\n", ":", ",", "/"} {
+		for _, content := range []string{text + sep + pan, pan + sep + text} {
+			if !VisitStrict(content, func(c Candidate) bool { return c.Digits == pan }) {
+				t.Fatalf("identifier hid separate card: %q", content)
 			}
 		}
 	}

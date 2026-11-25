@@ -443,9 +443,14 @@ func TestReceiptScanIdentifierDoesNotLoseReceipt(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = rec.Close() })
-	// This chosen UUID's numeric tail used to be treated as a card. Identity
-	// fields cannot be redacted, so refusal loses the complete signed receipt.
-	detail := map[string]string{"request_id": "97304a31-7c5d-4f4e-2560-" + "783810564780"}
+	// Identity fields cannot be redacted, so a false card refusal loses the
+	// signed receipt. The unmutated UUID is a dash-grouped traffic card
+	// (2560-783810564780) and must still be refused. One changed digit is not.
+	refused := map[string]string{"request_id": "97304a31-7c5d-4f4e-2560-" + "783810564780"}
+	if _, err := rec.PreflightSignedReceiptDetail(refused); err == nil || !strings.Contains(err.Error(), "sensitive data") {
+		t.Fatalf("traffic card inside UUID: %v", err)
+	}
+	detail := map[string]string{"request_id": "97304a31-7c5d-4f4e-2560-" + "783810564781"}
 	if _, err := rec.PreflightSignedReceiptDetail(detail); err != nil {
 		t.Fatalf("identifier refused before signing: %v", err)
 	}

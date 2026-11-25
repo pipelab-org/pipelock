@@ -74,13 +74,23 @@ func VisitCorroborated(text string, yield func(Candidate) bool) bool {
 	return visit(text, candidateView{strictSeparators: true}, func(c Candidate) bool { return Corroborated(text, c) && yield(c) })
 }
 
-// VisitStrict scans receipt content, including every bounded digit window in a
-// separator-joined run. Neighbour digits and public fixtures cannot hide a real
-// card. Identifier tokens are barriers: their numeric substrings are not
-// standalone card presentations. This does not strip arbitrary receipt text.
-// Returned offsets refer to the ForCardText-normalized view.
+// VisitStrict scans receipt content. Every candidate the ordinary traffic
+// grammar admits is kept. The separator-stripped windows below are the strict
+// extra: neighbour digits and public fixtures cannot hide a real card there.
+// Identifier barriers limit only that extra pass. A letter-bearing token or a
+// canonical UUID is not, by itself, a separator-stripped card, but a
+// traffic-grammar card written inside it still stands. Returned offsets refer
+// to the ForCardText-normalized view.
 func VisitStrict(text string, yield func(Candidate) bool) bool {
 	text = normalize.ForCardText(text)
+	if Visit(text, false, func(c Candidate) bool {
+		if c.PublicExample || IsPublicTestPAN(c.Digits) {
+			return false
+		}
+		return yield(c)
+	}) {
+		return true
+	}
 	var run strings.Builder
 	var offsets []int
 	flush := func() bool {

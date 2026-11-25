@@ -128,7 +128,16 @@ func TestCardReceiptIdentifierProjection(t *testing.T) {
 	cfg.Internal = nil
 	sc := scanner.MustNew(cfg)
 	defer sc.Close()
-	id := "97304a31-7c5d-4f4e-2560-" + "783810564780"
+	cardID := "97304a31-7c5d-4f4e-2560-" + "783810564780"
+	cardRaw := mustJSON(t, map[string]string{"id": cardID, "target": "https://api.vendor.example:8443/" + cardID, "verdict": "allow"})
+	cardProj, err := testProducer.Project(cardRaw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep, err := Scan(t.Context(), sc.ScanTextForReceiptDLP, cardProj); err != nil || rep.Clean() {
+		t.Fatalf("traffic card inside UUID projection passed: %+v %v", rep, err)
+	}
+	id := "97304a31-7c5d-4f4e-2560-" + "783810564781"
 	raw := mustJSON(t, map[string]string{"id": id, "target": "https://api.vendor.example:8443/" + id, "verdict": "allow"})
 	proj, err := testProducer.Project(raw)
 	if err != nil {
