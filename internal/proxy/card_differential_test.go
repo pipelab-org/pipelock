@@ -32,6 +32,20 @@ const (
 	cardMainGolden   = "testdata/card-main-a689c65b1.jsonl.gz"
 )
 
+// cardRaceStride thins the corpus under the race detector. The full corpus
+// runs in normal builds, where the oracle's coverage lives. Under -race the
+// test checks the scanner workers for data races. Every 17th case still
+// covers each family, context, separator, and family-context and
+// context-separator pair, and stays under the per-test time ceiling. A
+// stride of 16 lines up with the 16 separators and misses pairs.
+const cardRaceStride = 17
+
+// cardCaseChecked reports whether case i runs in this build. Recording a
+// golden always uses the full corpus.
+func cardCaseChecked(i int) bool {
+	return !raceEnabled || *recordCardMain != "" || i%cardRaceStride == 0
+}
+
 var recordCardMain = flag.String("card-record-main", "", "write main oracle to this path (requires a detached checkout of the pinned main revision)")
 
 type (
@@ -122,7 +136,9 @@ func cardOracleVerdictsWithAction(t *testing.T, cases []cardcorpus.Case, action 
 		})
 	}
 	for i := range cases {
-		jobs <- i
+		if cardCaseChecked(i) {
+			jobs <- i
+		}
 	}
 	close(jobs)
 	wg.Wait()
@@ -144,6 +160,9 @@ func TestCardMainDifferential(t *testing.T) {
 	checkCardShippedBaseline(t, cases, got)
 	warn := cardOracleVerdictsWithAction(t, cases, config.ActionWarn)
 	for i, c := range cases {
+		if !cardCaseChecked(i) {
+			continue
+		}
 		for surface, name := range []string{"text", "json-body", "url", "redact"} {
 			bit := uint8(1 << surface)
 			if got[i]&bit != 0 && warn[i]&bit == 0 {
@@ -211,6 +230,9 @@ func TestCardMainDifferential(t *testing.T) {
 		if row.ID != c.ID {
 			t.Fatalf("golden row %d has id %s", i, row.ID)
 		}
+		if !cardCaseChecked(i) {
+			continue
+		}
 		for surface, name := range []string{"text", "json-body", "url", "redact"} {
 			bit := uint8(1 << surface)
 			before, after := row.Verdict&bit != 0, got[i]&bit != 0
@@ -255,6 +277,9 @@ func TestCardMainDifferential(t *testing.T) {
 	sort.Strings(keys)
 	for _, k := range keys {
 		t.Logf("transition %s: %d", k, totals[k]+details[k])
+	}
+	if raceEnabled {
+		t.Logf("race build: checked every %dth case", cardRaceStride)
 	}
 	t.Logf("corpus=%d unapproved-losses=%d elapsed=%s sha256=%s", len(cases), failures, time.Since(started), header.CorpusSHA256)
 	if failures > 0 {
@@ -328,6 +353,9 @@ func checkCardShippedBaseline(t *testing.T, cases []cardcorpus.Case, got []uint8
 		}
 		if row.ID != c.ID {
 			t.Fatalf("baseline row %d id %s", i, row.ID)
+		}
+		if !cardCaseChecked(i) {
+			continue
 		}
 		if lost := row.Verdict &^ got[i]; lost != 0 {
 			t.Errorf("new default pass vs shipped main: %s surfaces=%04b text=%q", c.ID, lost, c.Text)
