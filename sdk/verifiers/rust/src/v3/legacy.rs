@@ -24,7 +24,9 @@ use crate::{
     lifecycle::close_ends_chain,
     rawjson::{go_raw_message_bytes, object_member_span, EXT_SOURCE_KEY},
     receipt_group::{verify_receipt_groups_for_cutover, ReceiptGroupReport},
-    recorder::{extract_typed_from_lines, read_entry_lines_text, ExtractedReceipts},
+    recorder::{
+        extract_typed_from_lines, read_entry_lines_text, ExtractedReceipts, MAX_RECORDER_LINE_BYTES,
+    },
     recorder_chain::recorder_entry_hash,
     types::Receipt,
     util::{parse_json_line, reject_duplicate_keys, Result, VerifierError},
@@ -640,16 +642,28 @@ enum Mode {
 fn read_legacy(path: &Path) -> Result<(ExtractedReceipts, bool)> {
     let mut reader = BufReader::new(open(path)?);
     let mut batch = ExtractedReceipts::default();
-    let mut line = String::new();
+    let mut line = Vec::new();
     let mut mode = None;
     let mut prior = None::<(u64, String, String)>;
     let parsed_name = parse_evidence_filename(name(path));
     while reader
-        .read_line(&mut line)
+        .by_ref()
+        .take((MAX_RECORDER_LINE_BYTES + 3) as u64)
+        .read_until(b'\n', &mut line)
         .map_err(|e| crate::util::io_read_error(path, e))?
         != 0
     {
-        let text = crate::line_space::trim_go_space(&line);
+        let payload = line.strip_suffix(b"\n").map_or(line.as_slice(), |payload| {
+            payload.strip_suffix(b"\r").unwrap_or(payload)
+        });
+        if payload.len() > MAX_RECORDER_LINE_BYTES {
+            return Err(VerifierError::Invalid(
+                "line exceeds recorder entry limit".into(),
+            ));
+        }
+        let text = std::str::from_utf8(payload)
+            .map_err(|err| VerifierError::Invalid(format!("input is not UTF-8: {err}")))?;
+        let text = crate::line_space::trim_go_space(text);
         if !text.is_empty() {
             let value = parse_json_line(text, "read legacy discriminator")?;
             let kind = if value["record_type"] == EVIDENCE_RECORD {
@@ -848,6 +862,16 @@ fn consume(reader: &mut impl Read, literal: &[u8]) -> io::Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::{decode_inventory, digest, EMPTY_INVENTORY};
+
+    #[test]
+    fn rejects_oversized_unterminated_legacy_line() {
+        let path =
+            std::env::temp_dir().join(format!("pipelock-v3-legacy-line-{}", std::process::id()));
+        std::fs::write(&path, vec![b' '; (1 << 20) + 1]).unwrap();
+        let result = super::read_legacy(&path);
+        std::fs::remove_file(path).unwrap();
+        assert!(matches!(result, Err(err) if err.to_string().contains("recorder entry limit")));
+    }
 
     #[test]
     fn rejects_inventories_with_invalid_rows_order_and_shape() {

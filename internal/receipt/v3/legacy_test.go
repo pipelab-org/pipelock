@@ -103,6 +103,7 @@ func TestLegacyBatchDiscrimination(t *testing.T) {
 		{"legacy recorder", "evidence-example-0.jsonl", signed, true, false, 0, 1},
 		{"operational recorder", "evidence-example-0.jsonl", operational, true, false, 0, 0},
 		{"unknown format", "unknown.jsonl", []byte("{}"), false, false, 0, 0},
+		{"oversized legacy line", "unknown.jsonl", bytes.Repeat([]byte{' '}, recorder.MaxEntryLineBytes+1), false, true, 0, 0},
 		{"mixed record types", "mixed.jsonl", bytes.Join([][]byte{compact.Bytes(), v2}, []byte{'\n'}), false, true, 0, 0},
 		{"invalid JSON", "bad.jsonl", []byte("{"), false, true, 0, 0},
 		{"invalid action", "bad.jsonl", []byte("{\"version\":1,\"action_record\":[]}"), false, true, 0, 0},

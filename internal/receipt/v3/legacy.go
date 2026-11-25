@@ -333,22 +333,38 @@ func readLegacy(path string) (legacyBatch, bool, error) {
 	}
 	defer func() { _ = f.Close() }()
 	reader := bufio.NewReader(f)
+	var line []byte
 	var batch legacyBatch
 	var last *recorder.Entry
 	var entryMode string
 	for {
-		line, err := reader.ReadBytes('\n')
+		fragment, err := reader.ReadSlice('\n')
+		if len(line)+len(fragment) > recorder.MaxEntryLineBytes+2 {
+			return batch, false, errors.New("line exceeds recorder entry limit")
+		}
+		line = append(line, fragment...)
+		if errors.Is(err, bufio.ErrBufferFull) {
+			continue
+		}
 		if err != nil && !errors.Is(err, io.EOF) {
 			return batch, false, err
 		}
-		line = bytes.TrimSpace(line)
-		if len(line) == 0 {
+		payload := bytes.TrimSuffix(line, []byte{'\n'})
+		if len(payload) < len(line) {
+			payload = bytes.TrimSuffix(payload, []byte{'\r'})
+		}
+		if len(payload) > recorder.MaxEntryLineBytes {
+			return batch, false, errors.New("line exceeds recorder entry limit")
+		}
+		text := bytes.TrimSpace(payload)
+		line = line[:0]
+		if len(text) == 0 {
 			if errors.Is(err, io.EOF) {
 				break
 			}
 			continue
 		}
-		kind, parseErr := batch.add(line, &last, filepath.Base(path))
+		kind, parseErr := batch.add(text, &last, filepath.Base(path))
 		if parseErr != nil || entryMode != "" && entryMode != kind {
 			return batch, false, errors.New("malformed or mixed legacy record")
 		}
