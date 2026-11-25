@@ -94,7 +94,7 @@ fn shared_v3_corpus() {
          {reordered} reversed file orders, {identical} full documents identical"
     );
     assert!(failures.is_empty(), "{}", failures.join("\n"));
-    assert_eq!((projected, legacy), (388, 5));
+    assert_eq!((projected, legacy), (394, 5));
 }
 
 struct TestDirectory(PathBuf);
@@ -674,7 +674,7 @@ fn non_utf8_profile_names_keep_their_claim() {
         assert!(claims_input(&path).unwrap(), "{suffix}");
         let options: Options =
             serde_json::from_value(serde_json::json!({"directory": true})).unwrap();
-        let result = verify_paths(&[dir.0.clone()], &options).unwrap();
+        let result = verify_paths(std::slice::from_ref(&dir.0), &options).unwrap();
         let document: Value = serde_json::from_slice(result.json()).unwrap();
         assert!(
             document["findings"]
