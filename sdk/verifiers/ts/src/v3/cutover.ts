@@ -100,29 +100,35 @@ class InventoryReader {
 
 function decodeInventory(reader: InventoryReader, pin: Cutover): LegacyRow[] | undefined {
   if (!reader.eat('{"chains":[')) return undefined;
+  // Only an inventory a stream pins is compared row by row. An unreferenced one
+  // (chains < 0) is validated in constant memory: the ordering check needs the
+  // previous row and the pin check needs the count.
   const chains: LegacyRow[] = [];
+  let previous: LegacyRow | undefined;
+  let count = 0;
   if (!reader.eat("]")) {
     do {
       const row = reader.row();
-      const previous = chains.at(-1);
       if (
         !row ||
-        (pin.chains >= 0 && chains.length >= pin.chains) ||
+        (pin.chains >= 0 && count >= pin.chains) ||
         (previous && compareRows(previous, row) >= 0)
       )
         return undefined;
-      chains.push(row);
+      previous = row;
+      count++;
+      if (pin.chains >= 0) chains.push(row);
     } while (reader.eat(","));
     if (!reader.eat("]")) return undefined;
   }
-  if (pin.chains >= 0 && chains.length !== pin.chains) return undefined;
+  if (pin.chains >= 0 && count !== pin.chains) return undefined;
   if (reader.eat(journalPrefix) && (!isDigest(reader.take(digestWidth)) || !reader.eat('"')))
     return undefined;
   if (!reader.eat(',"v":1}') || !reader.matches(pin.inventory)) return undefined;
   return chains;
 }
 
-function readInventory(path: string | undefined, pin: Cutover): LegacyRow[] | string {
+export function readInventory(path: string | undefined, pin: Cutover): LegacyRow[] | string {
   if (!path) {
     if (pin.inventory !== emptyInventory) return "CUTOVER_INVENTORY_NOT_PRESENTED";
     return pin.chains > 0 ? "CUTOVER_INVENTORY_MISMATCH" : [];

@@ -858,15 +858,21 @@ fn decode_inventory(
     reader: &mut impl BufRead,
     count: Option<u64>,
 ) -> io::Result<Option<Vec<InventoryRow>>> {
+    // Only an inventory a stream pins (`count` is set) is compared row by row.
+    // An unreferenced one is validated in constant memory: the ordering check
+    // needs the previous row and the pin check needs the count.
+    let retain = count.is_some();
     let mut rows: Vec<InventoryRow> = Vec::new();
+    let mut previous: Option<(String, String)> = None;
+    let mut seen = 0_u64;
     if !consume(reader, b"{\"chains\":[")? {
         return Ok(None);
     }
     while reader.fill_buf()?.first() != Some(&b']') {
-        if count.is_some_and(|count| rows.len() as u64 >= count) {
+        if count.is_some_and(|count| seen >= count) {
             return Ok(None);
         }
-        if !rows.is_empty() && !consume(reader, b",")? {
+        if seen > 0 && !consume(reader, b",")? {
             return Ok(None);
         }
         // Every valid row fits in this bound from its four fixed fields,
@@ -880,15 +886,19 @@ fn decode_inventory(
             return Ok(None);
         };
         if !row.valid()
-            || rows
-                .last()
-                .is_some_and(|last| (&last.format, &last.chain) >= (&row.format, &row.chain))
+            || previous
+                .as_ref()
+                .is_some_and(|(format, chain)| (format, chain) >= (&row.format, &row.chain))
         {
             return Ok(None);
         }
-        rows.push(row);
+        previous = Some((row.format.clone(), row.chain.clone()));
+        seen += 1;
+        if retain {
+            rows.push(row);
+        }
     }
-    if count.is_some_and(|count| rows.len() as u64 != count) || !consume(reader, b"],\"")? {
+    if count.is_some_and(|count| seen != count) || !consume(reader, b"],\"")? {
         return Ok(None);
     }
     if reader.fill_buf()?.first() == Some(&b'j') {
@@ -932,6 +942,39 @@ mod tests {
         let result = super::read_legacy(&path);
         std::fs::remove_file(path).unwrap();
         assert!(matches!(result, Err(err) if err.to_string().contains("recorder entry limit")));
+    }
+
+    #[test]
+    fn unreferenced_inventory_is_validated_without_retaining_rows() {
+        let id = digest(EMPTY_INVENTORY);
+        let row = |chain: &str| {
+            format!(
+                "{{\"chain\":\"{chain}\",\"format\":\"evidence_v2\",\"record\":\"{id}\",\"seq\":0}}"
+            )
+        };
+        let first = digest(b"a");
+        let second = digest(b"b");
+        let (low, high) = if first < second {
+            (first, second)
+        } else {
+            (second, first)
+        };
+        let ordered = format!("{{\"chains\":[{},{}],\"v\":1}}", row(&low), row(&high));
+        assert_eq!(
+            decode_inventory(&mut ordered.as_bytes(), Some(2))
+                .unwrap()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert!(decode_inventory(&mut ordered.as_bytes(), None)
+            .unwrap()
+            .unwrap()
+            .is_empty());
+        let reversed = format!("{{\"chains\":[{},{}],\"v\":1}}", row(&high), row(&low));
+        assert!(decode_inventory(&mut reversed.as_bytes(), None)
+            .unwrap()
+            .is_none());
     }
 
     #[test]

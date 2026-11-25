@@ -21,7 +21,8 @@ import test from "node:test";
 import { canonicalV3, claimsV3Input, verifyV3Paths } from "../src/index.js";
 import { findPackageRoot } from "./paths.js";
 import { readV3Fixture, resignV3Fixture } from "./v3-fixtures.js";
-import { limits } from "../src/v3/wire.js";
+import { digest, limits } from "../src/v3/wire.js";
+import { readInventory } from "../src/v3/cutover.js";
 import { claimHold } from "../src/v3/decision.js";
 import { verifyLegacy } from "../src/v3/legacy.js";
 import { finding, newResult } from "../src/v3/result.js";
@@ -492,4 +493,29 @@ test("v3 hold ownership shares the decision index budget", () => {
   assert.equal(claimHold(holds, "other", "first", 1), "full");
   assert.equal(holds.size, 1);
   assert.ok([...holds.keys()].every((key) => key.length < 100));
+});
+
+test("v3 validates an unreferenced inventory without retaining its rows", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pipelock-v3-inventory-"));
+  try {
+    const row = (chain: string): string =>
+      `{"chain":"${chain}","format":"evidence_v2","record":"${digest(Buffer.from("r"))}","seq":0}`;
+    const [low, high] = [digest(Buffer.from("a")), digest(Buffer.from("b"))].sort();
+    const write = (name: string, rows: string[]): { path: string; inventory: string } => {
+      const raw = `{"chains":[${rows.join(",")}],"v":1}`;
+      const path = join(dir, name);
+      writeFileSync(path, raw);
+      return { path, inventory: digest(Buffer.from(raw)) };
+    };
+    const ordered = write("ordered.json", [row(low), row(high)]);
+    assert.equal((readInventory(ordered.path, { ...ordered, chains: 2 }) as unknown[]).length, 2);
+    assert.deepEqual(readInventory(ordered.path, { ...ordered, chains: -1 }), []);
+    const reversed = write("reversed.json", [row(high), row(low)]);
+    assert.equal(
+      readInventory(reversed.path, { ...reversed, chains: -1 }),
+      "CUTOVER_INVENTORY_MISMATCH",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
