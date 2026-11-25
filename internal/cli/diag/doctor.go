@@ -801,6 +801,14 @@ func checkDoctorFlightRecorder(cfg *config.Config) doctorReportCheck {
 			Next:    "enable flight_recorder to emit signed decision receipts",
 		}
 	}
+	if cfg.FlightRecorder.EffectiveReceiptFormat() == config.ReceiptFormatV3 {
+		// doctor cannot read v3 evidence. Refuse on the configuration itself so
+		// the answer does not flip from ok to fail when the first receipt lands.
+		return doctorReportCheck{
+			Name: "flight_recorder", Surface: doctorSurfaceConfig, Status: doctorStatusFail,
+			Configured: true, Detail: receiptinput.UnsupportedDirectory(doctorReceiptCommand, doctorReceiptReader).Error(),
+		}
+	}
 	if cfg.FlightRecorder.Dir == "" {
 		return doctorReportCheck{
 			Name:       "flight_recorder",
@@ -889,8 +897,13 @@ func checkDoctorFlightRecorder(cfg *config.Config) doctorReportCheck {
 	}
 }
 
+const (
+	doctorReceiptCommand = "doctor"
+	doctorReceiptReader  = "flight recorder evidence health"
+)
+
 func refuseDoctorFlightRecorderV3(dir string) error {
-	const command, reader = "doctor", "flight recorder evidence health"
+	const command, reader = doctorReceiptCommand, doctorReceiptReader
 	if err := receiptinput.Refuse(dir, command, reader); err != nil {
 		return err
 	}
