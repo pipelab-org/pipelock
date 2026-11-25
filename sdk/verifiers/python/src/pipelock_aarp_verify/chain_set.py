@@ -79,6 +79,8 @@ def _decode_signed(raw: bytes) -> Document:
 
 
 def _verify_artifact(value: Document, *, rotation: bool) -> Document:
+    if type(value.get("version")) is not int or value["version"] != 1:
+        raise ValueError("invalid signed restart artifact version")
     if rotation:
         fields, signature = _ROTATION_FIELDS, "endorsement"
         keys = ("prior_signer_key", "new_signer_key", "prior_tail_hash")

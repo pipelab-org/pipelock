@@ -351,3 +351,32 @@ def test_contested_opening_with_nonstring_lineage_is_unknown_membership():
         "contested": _Stream(limit=-1, fork=[invalid]),
     })
     assert _membership_known(state) is False
+
+
+def test_direct_rotation_endorsement_requires_supported_version(tmp_path):
+    import hashlib
+
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    prior = Ed25519PrivateKey.generate()
+    successor = Ed25519PrivateKey.generate()
+    key = prior.public_key().public_bytes_raw().hex()
+    fields = {
+        "version": 1,
+        "session_id": "example",
+        "prior_signer_key": key,
+        "new_signer_key": successor.public_key().public_bytes_raw().hex(),
+        "prior_final_seq": 0,
+        "prior_tail_hash": "0" * 64,
+        "rotated_at": "2026-01-01T00:00:00Z",
+    }
+
+    def endorsement(version):
+        value = {**fields, "version": version}
+        raw = chain_set._go_json({k: value[k] for k in chain_set._ROTATION_FIELDS})
+        message = hashlib.sha256(b"pipelock-rotation-endorsement-v1\0" + raw)
+        return {**value, "endorsement": "ed25519:" + prior.sign(message.digest()).hex()}
+
+    verify_base(tmp_path, "example", (key,), endorsements=(endorsement(1),))
+    with pytest.raises(ValueError, match="version"):
+        verify_base(tmp_path, "example", (key,), endorsements=(endorsement(2),))
