@@ -201,6 +201,9 @@ func scanExplainEventWithSanitizer(r io.Reader, id string, sanitizer explainEven
 			}
 			return out, fmt.Errorf("scan audit log: %w", err)
 		}
+		if err := receiptinput.RefusePayload(lineBytes, "explain event", "the audit event reader"); err != nil {
+			return out, err
+		}
 		line := strings.TrimSpace(string(lineBytes))
 		if line == "" {
 			continue

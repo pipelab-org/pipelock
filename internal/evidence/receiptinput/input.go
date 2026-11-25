@@ -5,6 +5,7 @@
 package receiptinput
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -57,8 +58,17 @@ func unsupported(command, reader string, directory bool) error {
 
 // RefusePayload applies the v3 content rule where evidence arrives as bytes.
 func RefusePayload(payload []byte, command, reader string) error {
-	if v3.ClaimsContent(payload) {
-		return unsupported(command, reader, false)
+	for remaining := payload; len(remaining) > 0; {
+		line := remaining
+		if nl := bytes.IndexByte(remaining, '\n'); nl >= 0 {
+			line = remaining[:nl]
+			remaining = remaining[nl+1:]
+		} else {
+			remaining = nil
+		}
+		if v3.ClaimsContent(line) {
+			return unsupported(command, reader, false)
+		}
 	}
 	return nil
 }

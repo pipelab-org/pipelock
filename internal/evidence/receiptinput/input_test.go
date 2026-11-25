@@ -60,5 +60,7 @@ func TestReceiptInputRefusal(t *testing.T) {
 	}
 	testreceipt.RequiresV3Refusal(t, receiptinput.Refuse(path, command, reader), command, reader)
 	testreceipt.RequiresV3Refusal(t, receiptinput.RefusePayload(data, command, reader), command, reader)
+	testreceipt.RequiresV3Refusal(t, receiptinput.RefusePayload(append([]byte("\n"), data...), command, reader), command, reader)
+	testreceipt.RequiresV3Refusal(t, receiptinput.RefusePayload(append(append([]byte{}, legacy...), data...), command, reader), command, reader)
 	testreceipt.RequiresV3Refusal(t, receiptinput.UnsupportedDirectory(command, reader), command, reader)
 }

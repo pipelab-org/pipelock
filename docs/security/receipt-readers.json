@@ -28,6 +28,12 @@
     "reason": "Uses recorder locking during follower bootstrap."
   },
   {
+    "package": "enterprise/conductor/controlplane",
+    "role": "refuses-v3",
+    "reason": "The Conductor audit ingest handler rejects receipt v3 payloads as HTTP 422.",
+    "test": "TestAuditIngestHandlerRefusesReceiptV3"
+  },
+  {
     "package": "enterprise/conductor/fleetreport",
     "role": "refuses-v3",
     "reason": "Fleet reports aggregate legacy receipt batches.",
@@ -43,6 +49,12 @@
     "role": "refuses-v3",
     "reason": "Session, scorecard, trust, detail and rebuild views use legacy evidence.",
     "test": "TestDashboardRefusesReceiptV3"
+  },
+  {
+    "package": "enterprise/fleet/sink",
+    "role": "refuses-v3",
+    "reason": "The fleet audit sink ingest handler rejects receipt v3 payloads as HTTP 422.",
+    "test": "TestFleetSinkRefusesReceiptV3"
   },
   {
     "package": "internal/ael",

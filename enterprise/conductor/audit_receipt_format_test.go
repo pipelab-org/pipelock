@@ -24,6 +24,17 @@ func TestAuditNamespaceRefusesReceiptV3(t *testing.T) {
 	env, _ := legacySessionFixture(t)
 	env.PayloadBytes = uint64(len(payload))
 	env.PayloadSHA256 = testBytesHash(payload)
-	_, err = env.PayloadNamespace(t.Context(), payload)
-	testreceipt.RequiresV3Refusal(t, err, "audit batch", "the fleet audit receiver")
+	for name, candidate := range map[string][]byte{
+		"direct":          payload,
+		"leading-newline": append([]byte("\n"), payload...),
+		"after-legacy":    append([]byte(`{"v":1,"seq":1,"type":"action_receipt"}`+"\n"), payload...),
+	} {
+		t.Run(name, func(t *testing.T) {
+			envCopy := env
+			envCopy.PayloadBytes = uint64(len(candidate))
+			envCopy.PayloadSHA256 = testBytesHash(candidate)
+			_, err := envCopy.PayloadNamespace(t.Context(), candidate)
+			testreceipt.RequiresV3Refusal(t, err, "audit batch", "the fleet audit receiver")
+		})
+	}
 }
