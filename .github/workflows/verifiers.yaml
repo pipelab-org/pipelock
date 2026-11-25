@@ -378,9 +378,10 @@ jobs:
         working-directory: sdk/verifiers/ts
         run: |
           npm ci
-          npm pack --pack-destination "$RUNNER_TEMP"
-          npm install --ignore-scripts --no-audit --no-fund \
-            --prefix "$RUNNER_TEMP/receipt-v3-npm" "$RUNNER_TEMP"/pipelock-verifier-ts-*.tgz
+          npm pack --json --pack-destination "$RUNNER_TEMP" > "$RUNNER_TEMP/receipt-v3-npm-pack.json"
+          node ../../conformance/receipt-v3-npm-lock.cjs package-lock.json \
+            "$RUNNER_TEMP/receipt-v3-npm-pack.json" "$RUNNER_TEMP/receipt-v3-npm"
+          npm ci --offline --ignore-scripts --no-audit --no-fund --prefix "$RUNNER_TEMP/receipt-v3-npm"
 
       - name: Install Rust verifier
         run: cargo install --locked --path sdk/verifiers/rust --root "$RUNNER_TEMP/receipt-v3-cargo"
