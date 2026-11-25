@@ -404,7 +404,7 @@ func TestObservedOutcomeFlushWithHeartbeatDisabled(t *testing.T) {
 	}
 }
 
-func TestOptionalGroupFailureWithholdsOnlyStartedAdmissions(t *testing.T) {
+func TestOptionalGroupFailureWithholdsAdmissionsAndAllowsLocalDenials(t *testing.T) {
 	for _, operation := range []string{"single", "batch", "local-denial"} {
 		t.Run(operation, func(t *testing.T) {
 			opts := writerTestOptions(t.TempDir())
@@ -431,6 +431,16 @@ func TestOptionalGroupFailureWithholdsOnlyStartedAdmissions(t *testing.T) {
 			case "local-denial":
 				if _, err := gate.AdmitDenialDelivery(t.Context(), action, PolicySnapshot{}); err != nil || len(w.repairs) != 0 {
 					t.Fatalf("local denial withheld or repaired: %v, %d repairs", err, len(w.repairs))
+				}
+			}
+			next := writerTestIntent("after-fatal-recovery")
+			if operation == "local-denial" {
+				if _, err := gate.AdmitDenialDelivery(t.Context(), next, PolicySnapshot{}); err != nil {
+					t.Fatalf("optional local denial withheld after fatal recovery: %v", err)
+				}
+			} else {
+				if token, err := gate.Admit(t.Context(), next, PolicySnapshot{}); token != nil || !errors.Is(err, ErrWriterUnavailable) {
+					t.Fatalf("optional admission after fatal recovery: token=%v, error=%v", token, err)
 				}
 			}
 		})
@@ -670,5 +680,58 @@ func TestSharedFlushHeartbeatAndRollover(t *testing.T) {
 	streams := verified.Histories[0].Streams
 	if len(streams) != 2 || streams[0].End != endedClosed || streams[1].End != endedClosed {
 		t.Fatalf("rollover did not link two sealed streams: %+v", streams)
+	}
+}
+
+func TestSharedFlushReservesSequenceForCancellationBeforeRollover(t *testing.T) {
+	w := requireWriter(t, writerTestOptions(t.TempDir()), localWriterStorage())
+	f := controlWriterFlushes(t, w)
+	w.gate <- struct{}{}
+	w.active.appended.Seq, w.active.confirmed.Seq = maxInteger-4, maxInteger-4
+	oldStream := w.active.id
+	w.release()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	request := appendTestIntent(t, w, f, ctx, "last-intent")
+	intentSync := awaitFlushEvent(t, f.syncs)
+	heartbeat := asyncWriterResult(func() error { return w.WriteHeartbeat(t.Context()) })
+	deadline, stop := context.WithTimeout(t.Context(), testwait.Deadline(5*time.Second))
+	defer stop()
+	for {
+		if err := w.acquire(deadline); err != nil {
+			t.Fatal("heartbeat did not wait for rollover")
+		}
+		rolling, tip := w.transition, w.active.appended.Seq
+		w.release()
+		if rolling {
+			break
+		}
+		if tip != maxInteger-3 {
+			t.Fatal("heartbeat used the last intent's settlement position")
+		}
+	}
+	cancel()
+	intentSync <- nil
+	awaitFlushEvent(t, f.writes)
+	repairSync := awaitFlushEvent(t, f.syncs)
+	requirePending(t, heartbeat)
+	repairSync <- nil
+	if err := awaitFlushEvent(t, request); !errors.Is(err, ErrEffectNotReleased) {
+		t.Fatalf("last admission could not settle: %v", err)
+	}
+	awaitFlushEvent(t, f.writes)
+	sealSync := awaitFlushEvent(t, f.syncs)
+	w.gate <- struct{}{}
+	stream, seq := w.active.id, w.active.appended.Seq
+	w.release()
+	if stream != oldStream || seq != maxInteger-1 {
+		t.Fatalf("last valid sequence was not reserved for the seal: got %s/%d", stream, seq)
+	}
+	sealSync <- nil
+	if err := awaitFlushEvent(t, heartbeat); err != nil {
+		t.Fatal(err)
+	}
+	if w.active.id == oldStream || w.active.confirmed.Seq != 1 {
+		t.Fatalf("heartbeat did not move to a successor: %+v", w.active)
 	}
 }

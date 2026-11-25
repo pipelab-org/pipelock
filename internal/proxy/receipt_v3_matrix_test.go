@@ -1747,7 +1747,7 @@ func v3UnrecoverableIntentFault(beforeFailure func()) func(string, string) (v3.S
 	}
 }
 
-func TestV3OptionalForwardRechecksTaskAfterReceiptWriteError(t *testing.T) {
+func TestV3OptionalForwardWithholdsAfterReceiptWriteStarts(t *testing.T) {
 	const actor = "bound-worker"
 	var rotate func()
 	var attempted bool
@@ -1780,7 +1780,7 @@ func TestV3OptionalForwardRechecksTaskAfterReceiptWriteError(t *testing.T) {
 	rotate = func() { rec.BeginNewTask("next task") }
 	w := httptest.NewRecorder()
 	p.handleForwardHTTP(w, req)
-	if !attempted || w.Code != http.StatusForbidden || upstreamCalls != 0 || !strings.Contains(w.Body.String(), session.TaskApprovalStale) {
+	if !attempted || w.Code != http.StatusForbidden || upstreamCalls != 0 || !strings.Contains(w.Body.String(), "receipt admission failed") {
 		t.Fatalf("write attempted=%t status=%d upstream calls=%d body=%q", attempted, w.Code, upstreamCalls, w.Body)
 	}
 }
@@ -1828,7 +1828,7 @@ func TestV3ResponseCollectors(t *testing.T) {
 	}
 }
 
-func TestV3OptionalInterceptRechecksTaskAfterReceiptWriteError(t *testing.T) {
+func TestV3OptionalInterceptWithholdsAfterReceiptWriteStarts(t *testing.T) {
 	p, _, _, target, ic := newTaintInterceptFixture(t, nil)
 	shared := &SessionState{}
 	shared.BeginNewTask("invocation")
@@ -1855,7 +1855,7 @@ func TestV3OptionalInterceptRechecksTaskAfterReceiptWriteError(t *testing.T) {
 		return &http.Response{StatusCode: http.StatusNoContent, Header: make(http.Header), Body: http.NoBody, Request: r}, nil
 	}))
 	w := interceptTaintRequest(t, handler, http.MethodPost, target)
-	if !attempted || w.Code != http.StatusForbidden || upstreamCalls != 0 || !strings.Contains(w.Body.String(), session.TaskApprovalStale) {
+	if !attempted || w.Code != http.StatusForbidden || upstreamCalls != 0 || !strings.Contains(w.Body.String(), "receipt admission failed") {
 		t.Fatalf("write attempted=%t status=%d upstream calls=%d body=%q", attempted, w.Code, upstreamCalls, w.Body)
 	}
 }

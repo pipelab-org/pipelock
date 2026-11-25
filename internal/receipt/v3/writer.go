@@ -449,9 +449,11 @@ func (w *StreamWriter) release() {
 // ErrWriterUnavailable means writes cannot resume on this writer.
 var ErrWriterUnavailable = errors.New("receipt writer is unavailable")
 
+var errWriterNeedsRestart = errors.New("receipt writer needs a verified restart")
+
 func (w *StreamWriter) ensureStream(ctx context.Context) error {
 	if w.fatal != nil {
-		return fmt.Errorf("%w: needs a verified restart: %w", ErrWriterUnavailable, w.fatal)
+		return errors.Join(ErrWriterUnavailable, errWriterNeedsRestart, w.fatal)
 	}
 	if w.active.file == nil {
 		err := w.publishOpen(ctx)
@@ -564,12 +566,15 @@ func (w *StreamWriter) waitForAppend(ctx context.Context) error {
 	return w.ensureStream(ctx)
 }
 
-func (w *StreamWriter) prepareAppend(ctx context.Context) error {
+func (w *StreamWriter) prepareAppend(ctx context.Context, records int64) error {
 	if err := w.waitForAppend(ctx); err != nil {
 		return err
 	}
-	// StreamClose.records also needs to fit within the wire integer limit.
-	if w.active.appended.Seq >= maxInteger-2 {
+	// A pending gate may need one settlement per record before rollover.
+	// Leave room for those records and StreamClose.records within the wire limit.
+	unconfirmed := w.active.appended.Seq - w.active.confirmed.Seq
+	available := maxInteger - 2 - w.active.appended.Seq - unconfirmed
+	if records > available/2 {
 		return w.rollover(ctx)
 	}
 	return nil
@@ -582,7 +587,7 @@ func (w *StreamWriter) WriteHeartbeat(ctx context.Context) error {
 		return err
 	}
 	defer w.release()
-	if err := w.prepareAppend(ctx); err != nil {
+	if err := w.prepareAppend(ctx, 1); err != nil {
 		return err
 	}
 	ticket := newWriteTicket(ctx, nil, writeConfirmed)

@@ -13,8 +13,7 @@ import (
 
 // EffectGate owns receipt admission and settlement for one stream. A zero gate
 // disables receipt recording. Required mode withholds on every admission write
-// error. Optional mode withholds after a failed started write,
-// since the writer then owns the refusal. An error from Admit prohibits release.
+// error. Optional mode withholds after a failed started write or fatal recovery. An error from Admit prohibits release.
 // A nil token with no error means release may proceed without a recorded intent.
 type EffectGate struct {
 	write               func(context.Context, Action, PolicySnapshot) error
@@ -74,7 +73,7 @@ type EffectToken struct {
 // supplies its identity, verdict and boundary. The gate sets its phase and
 // attempt fields. Each independently released effect needs its own action ID.
 func (g EffectGate) Admit(ctx context.Context, action Action, policy PolicySnapshot) (*EffectToken, error) {
-	return g.admit(ctx, []Action{action}, policy, g.write)
+	return g.admit(ctx, []Action{action}, policy, false)
 }
 
 // AdmitHeld writes the intent of a held call. Even on an optional stream,
@@ -115,7 +114,7 @@ func (g EffectGate) RecordApproval(ctx context.Context, action Action, policy Po
 // AdmitDenialDelivery uses best-effort recording for optional local denials.
 func (g EffectGate) AdmitDenialDelivery(ctx context.Context, action Action, policy PolicySnapshot) (*EffectToken, error) {
 	if !g.required && g.writeOptionalDenial != nil {
-		return g.admit(ctx, []Action{action}, policy, g.writeOptionalDenial)
+		return g.admit(ctx, []Action{action}, policy, true)
 	}
 	return g.Admit(ctx, action, policy)
 }
@@ -124,10 +123,10 @@ func (g EffectGate) AdmitDenialDelivery(ctx context.Context, action Action, poli
 // settle from the same observation. The first action identifies the primary
 // decision and supporting actions may reference it by ID.
 func (g EffectGate) AdmitBatch(ctx context.Context, actions []Action, policy PolicySnapshot) (*EffectToken, error) {
-	return g.admit(ctx, slices.Clone(actions), policy, g.write)
+	return g.admit(ctx, slices.Clone(actions), policy, false)
 }
 
-func (g EffectGate) admit(ctx context.Context, actions []Action, policy PolicySnapshot, write func(context.Context, Action, PolicySnapshot) error) (*EffectToken, error) {
+func (g EffectGate) admit(ctx context.Context, actions []Action, policy PolicySnapshot, bestEffort bool) (*EffectToken, error) {
 	if g.write == nil || len(actions) == 0 {
 		return nil, nil
 	}
@@ -142,13 +141,16 @@ func (g EffectGate) admit(ctx context.Context, actions []Action, policy PolicySn
 		actions[i].OutcomeClass = ""
 	}
 	var err error
-	if len(actions) == 1 {
-		err = write(ctx, actions[0], policy)
+	if bestEffort {
+		err = g.writeOptionalDenial(ctx, actions[0], policy)
+	} else if len(actions) == 1 {
+		err = g.write(ctx, actions[0], policy)
 	} else {
 		err = g.writeBatch(ctx, actions, policy)
 	}
 	if err != nil {
-		if g.required || errors.Is(err, ErrEffectNotReleased) || errors.Is(err, ErrActionPersistStarted) {
+		if g.required || errors.Is(err, ErrEffectNotReleased) || errors.Is(err, ErrActionPersistStarted) ||
+			!bestEffort && errors.Is(err, errWriterNeedsRestart) {
 			return nil, err
 		}
 		return nil, ctx.Err()

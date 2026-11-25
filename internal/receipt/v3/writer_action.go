@@ -63,7 +63,7 @@ func (w *StreamWriter) writeAction(ctx context.Context, action Action, policy Po
 	if !actionShape(action, w.open.Coverage.ReceiptsRequired) {
 		return errors.New("receipt action does not match its effect phase")
 	}
-	if err := w.prepareAppend(ctx); err != nil {
+	if err := w.prepareAppend(ctx, 1); err != nil {
 		return err
 	}
 	if action.Phase == phaseResolution {
@@ -117,7 +117,7 @@ func (w *StreamWriter) WriteAdmissionBatch(ctx context.Context, actions []Action
 		action.Policy = policy.ActionPolicy()
 		batch = append(batch, action)
 	}
-	if err := w.prepareAppend(ctx); err != nil {
+	if err := w.prepareAppend(ctx, int64(len(batch))); err != nil {
 		return err
 	}
 	ticket := newWriteTicket(ctx, batch, writeConfirmed)
@@ -130,12 +130,6 @@ func (w *StreamWriter) WriteAdmissionBatch(ctx context.Context, actions []Action
 func (w *StreamWriter) appendBatch(ctx context.Context, ticket *writeTicket) error {
 	for {
 		before := w.active.appended
-		if int64(len(ticket.actions)) > maxInteger-2-before.Seq {
-			if err := w.rollover(ctx); err != nil {
-				return err
-			}
-			before = w.active.appended
-		}
 		tip := before
 		var batch []byte
 		for _, action := range ticket.actions {
