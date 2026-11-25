@@ -398,8 +398,9 @@ func Defaults() *Config {
 			OnUndecodableEncoding: ActionBlock,
 		},
 		DLP: DLP{
-			ScanEnv:  true,
-			Patterns: DefaultDLPPatterns(),
+			CardBareAction: ActionBlock,
+			ScanEnv:        true,
+			Patterns:       DefaultDLPPatterns(),
 		},
 		CanaryTokens: CanaryTokens{
 			Enabled: false,

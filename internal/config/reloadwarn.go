@@ -54,6 +54,9 @@ func defaultMCPResponseTrust(trust string, existed bool) string {
 // potential security downgrades. Warnings don't block the reload.
 func ValidateReload(old, updated *Config) []ReloadWarning {
 	var warnings []ReloadWarning
+	if old.DLP.CardBareAction != ActionWarn && updated.DLP.CardBareAction == ActionWarn {
+		warnings = append(warnings, ReloadWarning{Field: "dlp.card_bare_action", Message: "uncorroborated bare card numbers in non-URL text changed from block to warn"})
+	}
 	if (old.PromptInjectionMode() == ActionBlock && updated.PromptInjectionMode() != ActionBlock) || (old.PromptInjectionMode() == ActionWarn && updated.PromptInjectionMode() == ActionAllow) {
 		warnings = append(warnings, ReloadWarning{Field: "prompt_injection_detection", Message: updated.PromptInjectionNotice()})
 	}

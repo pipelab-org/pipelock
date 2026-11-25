@@ -165,6 +165,10 @@ func (m *Matcher) AddDictionary(d Dictionary) error {
 func (m *Matcher) Scan(s string) []Match { return m.scanViews(s, s) }
 
 func (m *Matcher) scanViews(s, cardView string) []Match {
+	return m.scanViewsWithKey(s, cardView, "")
+}
+
+func (m *Matcher) scanViewsWithKey(s, cardView, key string) []Match {
 	if s == "" || m == nil {
 		return nil
 	}
@@ -174,7 +178,10 @@ func (m *Matcher) scanViews(s, cardView string) []Match {
 		view := s
 		if cp.class == ClassCreditCard {
 			view = cardView
-			carddlp.VisitText(view, func(c carddlp.Candidate) bool {
+			if carddlp.CorroboratedKey(key) {
+				view = s
+			}
+			carddlp.VisitTextWithKey(view, key, func(c carddlp.Candidate) bool {
 				if !c.PublicExample {
 					raw = append(raw, Match{Class: cp.class, Start: c.Start, End: c.End, Original: s[c.Start:c.End]})
 				}

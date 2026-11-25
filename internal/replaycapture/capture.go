@@ -150,7 +150,7 @@ func (e *Engine) Capture(s Scenario) (_ *CapturedScenario, err error) {
 		Dir:                evidenceDir,
 		CheckpointInterval: 1000,
 		Redact:             true, // redact-before-sign: emitter runs this pre-sign
-	}, sc.ScanTextForDLP, privKey)
+	}, sc.ScanTextForReceiptDLP, privKey)
 	if err != nil {
 		return nil, fmt.Errorf("scenario %s: recorder: %w", s.ID, err)
 	}

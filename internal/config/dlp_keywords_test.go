@@ -233,12 +233,13 @@ func TestDLPKeywordsLegacyPolicyHashGolden(t *testing.T) {
 	// the Vault service body became base64url. Rebaselined for the default
 	// request-policy undecodable-encoding action in the canonical config.
 	// Bumped for the Google editor ID-only path-entropy scope.
+	// Rebaselined for card_bare_action in the effective DLP policy.
 	// Balanced mode without default patterns remains independent of changes
 	// to the built-in corpus.
 	for _, tc := range []struct{ body, want string }{
-		{keywordConfigYAML(""), "d447496ad1cf0a572fd7075181865e8e5be5e57b4337f9479ea8e14088fba903"},
-		{"mode: balanced\n", "58513ecf2c901f729cce207e9946ff0e80a2affb62f3c8935a88c15427e329f1"},
-		{"mode: balanced\ndlp:\n  include_defaults: false\n", "095f172f1f69ad83995e813f9ae4b8702d14865658cbab092b02714bf5c45d6b"},
+		{keywordConfigYAML(""), "bba65c34a5f58af9c0a92366798e1884d3c69bc2a93e62bdf20609052d3e328b"},
+		{"mode: balanced\n", "c363c4cef34397c918414d66114e9913afb8aaf67ce217036c10799cc156a780"},
+		{"mode: balanced\ndlp:\n  include_defaults: false\n", "c8cd0108e949d3a40b855d76ea16390c92f2dec689c6614cc370595b75325ee0"},
 	} {
 		cfg, err := LoadBytes([]byte(tc.body))
 		if err != nil {

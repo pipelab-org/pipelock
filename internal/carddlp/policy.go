@@ -1,0 +1,122 @@
+// Copyright 2026 Pipelock contributors
+// SPDX-License-Identifier: Apache-2.0
+
+package carddlp
+
+import (
+	"regexp"
+	"strings"
+	"unicode/utf8"
+
+	"github.com/luckyPipewrench/pipelock/internal/normalize"
+)
+
+// Payment vocabulary is based on Microsoft Purview's credit card SIT:
+// https://learn.microsoft.com/en-us/purview/sit-defn-credit-card-number
+// This subset excludes ambiguous standalone words such as account and credit.
+// The symmetric 100-rune window is Pipelock policy, not Purview's 300 characters.
+var (
+	paymentContext = regexp.MustCompile(`(?i)(?:^|[^a-z0-9])(?:card[ _-]*[:#]|credit[ _-]*card|debit[ _-]*card|payment[ _-]*card|bank[ _-]*card|charge[ _-]*card|card[ _-]*(?:number|num|no|#|holder)|cc[ _-]*(?:number|num|#)|ccn|pan|primary[ _-]*account[ _-]*number|payment[ _-]*account[ _-]*number|visa|master[ _-]*card|amex|american[ _-]*express|diners[ _-]*club|unionpay|discover[ _-]*card|jcb[ _-]*card|cvv2?|cvc2?|security[ _-]*code|verification[ _-]*code|exp[ _-]*(?:date|month|year)|expiration|expiry|valid[ _-]*thru|good[ _-]*thru)(?:$|[^a-z0-9])`)
+	paymentKey     = regexp.MustCompile(`(?i)"(?:card|cc|card[ _-]*(?:no|number)|pan)"\s*:\s*"?[^"{}]*$`)
+	expiryContext  = regexp.MustCompile(`\b(?:0[1-9]|1[0-2])\s*/\s*(?:[0-9]{4}|[0-9]{2})\b`)
+)
+
+// Corroborated is a positive-only promotion. Adding a payment label, expiry,
+// or enclosing JSON card key never removes a candidate admitted by Visit.
+func Corroborated(text string, c Candidate) bool {
+	left, right := c.Start, c.End
+	for n := 0; n < 100 && left > 0; n++ {
+		_, size := utf8.DecodeLastRuneInString(text[:left])
+		left -= size
+	}
+	for n := 0; n < 100 && right < len(text); n++ {
+		_, size := utf8.DecodeRuneInString(text[right:])
+		right += size
+	}
+	context := text[left:right]
+	return paymentContext.MatchString(context) || hasCardExpiry(context) || paymentKey.MatchString(text[left:c.Start])
+}
+
+func hasCardExpiry(text string) bool {
+	for _, span := range expiryContext.FindAllStringIndex(text, -1) {
+		before, after := strings.TrimSpace(text[:span[0]]), strings.TrimSpace(text[span[1]:])
+		if !strings.HasSuffix(before, "/") && !strings.HasPrefix(after, "/") {
+			return true
+		}
+	}
+	return false
+}
+
+// CorroboratedKey recognizes an enclosing payment key independently of the
+// value's length. A field label is schema evidence, not a nearby text window.
+func CorroboratedKey(key string) bool {
+	key = normalize.ForCardText(key)
+	return paymentContext.MatchString(key) || paymentKey.MatchString("\""+key+"\":")
+}
+
+// VisitWithKey applies the same candidate grammar with an enclosing key.
+func VisitWithKey(text, key string, yield func(Candidate) bool) bool {
+	if CorroboratedKey(key) {
+		return visit(text, candidateView{strictSeparators: true}, yield)
+	}
+	return VisitCorroborated(text, yield)
+}
+
+// VisitCorroborated joins the ordinary presentation floor with additional
+// separator-joined candidates only when positive payment context is present.
+func VisitCorroborated(text string, yield func(Candidate) bool) bool {
+	if Visit(text, false, yield) {
+		return true
+	}
+	return visit(text, candidateView{strictSeparators: true}, func(c Candidate) bool { return Corroborated(text, c) && yield(c) })
+}
+
+// VisitStrict scans receipt content, including every bounded digit window in a
+// separator-joined run. Neighbour digits and public fixtures cannot hide a real
+// card. Letters remain barriers; this does not strip arbitrary receipt text.
+// Returned offsets refer to the ForCardText-normalized view.
+func VisitStrict(text string, yield func(Candidate) bool) bool {
+	text = normalize.ForCardText(text)
+	var run strings.Builder
+	var offsets []int
+	flush := func() bool {
+		digits := run.String()
+		publicEnds := make([]int, len(digits))
+		for public := range publicTestPANs {
+			for offset := 0; offset < len(digits); {
+				i := strings.Index(digits[offset:], public)
+				if i < 0 {
+					break
+				}
+				i += offset
+				for start := i; start+MinDigits <= i+len(public); start++ {
+					publicEnds[start] = max(publicEnds[start], i+len(public))
+				}
+				offset = i + 1
+			}
+		}
+		for start := 0; start < len(digits); start++ {
+			for size := MinDigits; size <= MaxDigits && start+size <= len(digits); size++ {
+				value := digits[start : start+size]
+				public := start+size <= publicEnds[start]
+				if !public && ValidCardNumber(value) && !IsPublicTestPAN(value) && yield(Candidate{Start: offsets[start], End: offsets[start+size-1] + 1, Digits: value}) {
+					return true
+				}
+			}
+		}
+		run.Reset()
+		offsets = offsets[:0]
+		return false
+	}
+	for i := 0; i < len(text); i++ {
+		if digit(text[i]) {
+			run.WriteByte(text[i])
+			offsets = append(offsets, i)
+		} else if !separator(text[i]) && !controlSeparator(text[i]) {
+			if flush() {
+				return true
+			}
+		}
+	}
+	return flush()
+}

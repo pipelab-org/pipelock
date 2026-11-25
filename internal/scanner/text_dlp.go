@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"html"
 	"net/url"
@@ -328,6 +329,7 @@ type TextDLPMatch struct {
 	cardPrefixRetry   bool
 	numberOnlyCardRun bool
 	informational     bool
+	CardConfidence    string `json:"card_confidence,omitempty"`
 	PatternName       string `json:"pattern_name"`
 	Severity          string `json:"severity"`
 	Encoded           string `json:"encoded,omitempty"` // Encoding of the matched view; empty for plaintext.
@@ -498,6 +500,7 @@ func (r TextDLPResult) Err() error {
 // (regex patterns, seed phrases, canary tokens, hostname-exfil) are unaffected
 // and run in both directions.
 type textDLPOptions struct {
+	receiptCards    bool // strict card floor on every decoded receipt view
 	skipURLUserinfo bool // component recursion stays within one text scan
 	typedCardView   bool // only extractor-produced boundaries carry numeric provenance
 	emitWarns       bool
@@ -591,7 +594,7 @@ func (s *Scanner) ScanRequestBodyTextPartsWithCardAtoms(ctx context.Context, par
 	scrubbedParts := make([]string, 0, len(parts))
 	for _, atom := range atoms {
 		card, _ := scrubEmbeddedSigV4Credentials(atom.Card)
-		scrubbedCards = append(scrubbedCards, extract.DLPAtom{Card: card, Number: atom.Number, Key: atom.Key})
+		scrubbedCards = append(scrubbedCards, extract.DLPAtom{Text: atom.Text, Card: card, Number: atom.Number, Key: atom.Key, ContextKey: atom.ContextKey})
 	}
 	var detections []sigV4Detection
 	for _, part := range parts {
@@ -600,6 +603,28 @@ func (s *Scanner) ScanRequestBodyTextPartsWithCardAtoms(ctx context.Context, par
 		detections = append(detections, partDetections...)
 	}
 	result := s.scanTextDLPViews(ctx, strings.Join(scrubbedParts, separator), extract.JoinCardAtoms(scrubbedCards, separator), textDLPOptions{emitWarns: true, scanSecretLeak: true, typedCardView: true})
+
+	for i, atom := range scrubbedCards {
+		if atom.Key {
+			continue
+		}
+		key := atom.ContextKey
+		// Preserve compatibility for callers supplying explicit key atoms.
+		if key == "" && i > 0 && scrubbedCards[i-1].Key {
+			key = scrubbedCards[i-1].Card
+		}
+		if key == "" {
+			continue
+		}
+		source := atom.Card
+		if atom.Number {
+			source = atom.Text
+		}
+		result.Matches = append(result.Matches, s.scanCorroboratedCardView(source, key)...)
+	}
+	if HasEnforcingMatch(result.Matches) {
+		result.Clean = false
+	}
 
 	for _, detection := range detections {
 		if detection.Expires <= sigV4LongExpiryThreshold {
@@ -611,6 +636,12 @@ func (s *Scanner) ScanRequestBodyTextPartsWithCardAtoms(ctx context.Context, par
 		break
 	}
 	return result
+}
+
+// ScanTextForReceiptDLP quietly applies strict card policy to plaintext and
+// every decoded view, independently of the traffic bare-card warning setting.
+func (s *Scanner) ScanTextForReceiptDLP(ctx context.Context, text string) TextDLPResult {
+	return ApplyReceiptCardPolicy(text, s.scanTextForDLP(ctx, text, textDLPOptions{scanSecretLeak: true, receiptCards: true}))
 }
 
 // ScanTextForDLPQuiet runs the same text-DLP detection logic as ScanTextForDLP
@@ -705,7 +736,7 @@ func (s *Scanner) ScanJSONCardRunsWithDepth(ctx context.Context, text string, ma
 	if !s.hasGenericCardPatterns() {
 		return nil
 	}
-	var matches []TextDLPMatch
+	matches := s.corroboratedCardMatches(text)
 	runs, limit := jsonnumber.CardRunsWithLimit(text, maxDepth)
 	if limit != jsonnumber.CardRunWithinBudget {
 		trimmed := strings.TrimSpace(text)
@@ -716,7 +747,7 @@ func (s *Scanner) ScanJSONCardRunsWithDepth(ctx context.Context, text string, ma
 		runs = jsonnumber.ScalarIntegerCardRuns(trimmed)
 	}
 	for _, run := range runs {
-		var memo decodingMemo
+		memo := decodingMemo{cardPolicyStrict: run.Reconstructed || run.DerivedNumber}
 		result := s.scanTextForDLPWithDecodes(ctx, run.Digits, textDLPOptions{patterns: textDLPCardPatterns}, &memo)
 		for i := range result.Matches {
 			if run.RetryOnly && !result.Matches[i].cardPrefixRetry {
@@ -739,6 +770,9 @@ func (s *Scanner) ScanJSONCardRunsWithDepth(ctx context.Context, text string, ma
 func (s *Scanner) classifyCardRun(match *TextDLPMatch, run jsonnumber.CardRun) {
 	match.span.ViewLabel = spanViewLabel("json_number_run", match.span.ViewLabel)
 	match.numberOnlyCardRun = run.NumberOnly
+	if run.NumberOnly && match.CardConfidence != "public_example" {
+		match.CardConfidence = "medium"
+	}
 	// Configured luhn rules decide whether there is a finding; the shared
 	// shipped-rule UNION decides whether typed reconstruction can enforce it.
 	informational := !run.EnforcesShippedRule()
@@ -766,7 +800,10 @@ func uninspectableEncodedContentMatch() TextDLPMatch {
 
 func (s *Scanner) scanTextDLPViews(ctx context.Context, text, cardView string, opts textDLPOptions) TextDLPResult {
 	shared := sharedDecodesFrom(ctx)
-	terminalInbound := !opts.scanSecretLeak || inboundDirection(ctx)
+	if opts.receiptCards {
+		shared = nil
+	}
+	terminalInbound := !opts.receiptCards && (!opts.scanSecretLeak || inboundDirection(ctx))
 	kindInsensitive := s.reassemblyPlan != nil && s.reassemblyPlan.kindInsensitive
 	allowance := &assembledAllowance{}
 	originalDecodes := textDecodingMemo(shared, terminalInbound, allowance, kindInsensitive)
@@ -830,6 +867,12 @@ func (s *Scanner) scanTextDLPViews(ctx context.Context, text, cardView string, o
 		original.Matches = append(original.Matches, cards.Matches...)
 		original.InformationalMatches = append(original.InformationalMatches, cards.InformationalMatches...)
 	}
+	if text != cardView || json.Valid([]byte(text)) {
+		original.Matches = append(original.Matches, s.corroboratedCardMatches(text)...)
+		if HasEnforcingMatch(original.Matches) {
+			original.Clean = false
+		}
+	}
 	for i := range original.Matches {
 		if text != cardView && original.Matches[i].genericCard {
 			original.Matches[i].span.ViewLabel = spanViewLabel("json_integer", original.Matches[i].span.ViewLabel)
@@ -884,6 +927,7 @@ func (s *Scanner) scanTextDLPViews(ctx context.Context, text, cardView string, o
 		}
 		seenRuns[run] = struct{}{}
 		runDecodes := textDecodingMemo(shared, terminalInbound, allowance, kindInsensitive)
+		runDecodes.cardPolicyStrict = run.Reconstructed || run.DerivedNumber
 		runDecodes.scanStop = originalDecodes.scanStop
 		runDecodes.reassemblyPatternLimit = textDLPCardPatterns
 		runResult := s.scanTextForDLPWithDecodes(ctx, run.Digits, opts, runDecodes)
@@ -922,6 +966,7 @@ func (s *Scanner) scanTextDLPViews(ctx context.Context, text, cardView string, o
 func (s *Scanner) scanTextForDLPWithDecodes(ctx context.Context, text string, opts textDLPOptions, decodes *decodingMemo) TextDLPResult {
 	if decodes != nil {
 		decodes.scanCtx = ctx
+		decodes.receiptCards = decodes.receiptCards || opts.receiptCards
 		// A later pass must not reset a stop inherited from its enclosing scan.
 		decodes.scanStop = decodes.scanStop || !decodes.terminalCanceled()
 	}
@@ -942,7 +987,7 @@ func (s *Scanner) scanTextForDLPDetectors(ctx context.Context, text string, opts
 		decodes = &decodingMemo{}
 	}
 	if decodes != nil {
-		decodes.inbound = !opts.scanSecretLeak || inboundDirection(ctx)
+		decodes.inbound = !opts.receiptCards && (!opts.scanSecretLeak || inboundDirection(ctx))
 	}
 	if decodes != nil {
 		decodes.reassemblyPlan = s.reassemblyPlan
@@ -1504,6 +1549,12 @@ func (s *Scanner) matchDLPPatternsLoweredWithDecodes(text, encoding, proseSource
 		}
 		return projected
 	}
+	if decodes != nil && decodes.receiptCards && patterns != textDLPNonCardPatterns {
+		if match, found := strictReceiptCardMatch(cardProjection(), encoding); found {
+			matches = append(matches, match)
+		}
+	}
+
 	var shape dlpShapeSummary
 	var candidates []int
 	if patterns == textDLPCardPatterns {
@@ -1518,6 +1569,9 @@ func (s *Scanner) matchDLPPatternsLoweredWithDecodes(text, encoding, proseSource
 			return matches
 		}
 		p := s.dlpPatterns[idx]
+		if decodes != nil && decodes.receiptCards {
+			p = p.forReceipt()
+		}
 		if !patterns.includes(p.genericCard) {
 			continue
 		}
@@ -1536,6 +1590,45 @@ func (s *Scanner) matchDLPPatternsLoweredWithDecodes(text, encoding, proseSource
 			if matchText != text {
 				matchPositions, matchFolded = nil, &projectedFolded
 			}
+		}
+		if p.cardPrefixRetry && !p.cardURL {
+			var proof *cardLiteralProof
+			seenInfo := make(map[string]bool)
+			carddlp.VisitCorroborated(matchText, func(c carddlp.Candidate) bool {
+				if !p.accepts(matchText, c.Start, c.End) {
+					return false
+				}
+				publicExample := c.PublicExample && p.isPublicExample(matchText, c.Start, c.End)
+				corroborated := carddlp.Corroborated(matchText, c)
+				bare := c.End-c.Start == len(c.Digits)
+				// Only literal, uncorroborated contiguous text is eligible.
+				// Any normalization or actual decoding retains enforcement.
+				medium := (decodes == nil || !decodes.cardPolicyStrict) && !publicExample && bare && !corroborated && encoding == ""
+				if medium {
+					if proof == nil {
+						proof = newCardLiteralProof(proseSource, matchText)
+					}
+					medium = proof.literal(c)
+				}
+				warn := medium && s.cardBareAction == config.ActionWarn
+				m := p.textDLPFinding(matchText, encoding, c.Start, c.End, publicExample || warn)
+				m.CardConfidence = "high"
+				if publicExample {
+					m.CardConfidence = "public_example"
+				} else if medium {
+					m.CardConfidence = "medium"
+				}
+				m.keywordGated = m.keywordGated || corroborated
+				if m.IsInformational() {
+					if seenInfo[m.CardConfidence] {
+						return false
+					}
+					seenInfo[m.CardConfidence] = true
+				}
+				matches = append(matches, m)
+				return !m.IsInformational()
+			})
+			continue
 		}
 		pattern := p
 		var example *textByteSpan

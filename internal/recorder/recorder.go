@@ -2136,7 +2136,7 @@ func NewWithScanner(cfg Config, sc *scanner.Scanner, key ed25519.PrivateKey) (*R
 	}
 	var rf RedactFunc
 	if cfg.Redact {
-		rf = sc.ScanTextForDLP
+		rf = sc.ScanTextForReceiptDLP
 	}
 	r, err := New(cfg, rf, key)
 	if err != nil {
@@ -2148,7 +2148,7 @@ func NewWithScanner(cfg Config, sc *scanner.Scanner, key ed25519.PrivateKey) (*R
 		// keeps warn telemetry to the one request scan that owns it. The
 		// scanner generation is immutable for this recorder's lifetime, so a
 		// text it judged clean is remembered across receipts and requests.
-		cached, err := receiptcontent.NewCachedDetector(sc.ScanTextForDLPQuiet, receiptcontent.DefaultCleanCacheEntries)
+		cached, err := receiptcontent.NewCachedDetector(sc.ScanTextForReceiptDLP, receiptcontent.DefaultCleanCacheEntries)
 		if err != nil {
 			_ = r.Close()
 			return nil, err

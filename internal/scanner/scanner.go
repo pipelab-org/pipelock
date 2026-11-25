@@ -366,6 +366,7 @@ type Scanner struct {
 	// knownSecretEncodings holds each secret's encoded forms, built once for
 	// the same reason. A secret missing from it is encoded per scan.
 	knownSecretEncodings       map[string]*knownSecretEncodings
+	cardBareAction             string
 	minEnvSecretLen            int // minimum env var length for leak detection
 	responseMatchingLiterals   *matchingLiterals
 	responsePatterns           []*compiledPattern
@@ -506,6 +507,7 @@ type compiledPattern struct {
 	// Candidate enumeration uses the shared bounded digit-group scanner.
 	cardPrefixRetry bool
 	cardURL         bool // URL components admit non-canonical digit groupings
+	cardReceipt     bool // local receipt matchers admit published control-separated fixtures
 	// builtInCreditCard carries loader-verified built-in provenance for the
 	// shipped Credit Card Number rule so operator-configured rules with
 	// identical fields never receive numeric card-join relief.
@@ -906,6 +908,7 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 	}
 
 	// Set minimum env secret length from config (default 16)
+	s.cardBareAction = cfg.DLP.CardBareAction
 	s.minEnvSecretLen = cfg.DLP.MinEnvSecretLength
 	if s.minEnvSecretLen <= 0 {
 		s.minEnvSecretLen = 16

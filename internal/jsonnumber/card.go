@@ -30,6 +30,8 @@ var boundarySeparator = regexp.MustCompile(`,\x1f([sntu]?),`)
 // CardRun retains the provenance of a candidate as well as its digits.
 // NumberOnly requires at least two pieces, all JSON number integer components.
 type CardRun struct {
+	Reconstructed  bool // candidate crosses two or more scalar pieces
+	DerivedNumber  bool // a numeric scalar omitted fraction or exponent syntax
 	Digits         string
 	SpaceCandidate string // complete pieces joined by one ASCII space, or an exact WINDOW hit
 	NumberOnly     bool
@@ -80,6 +82,7 @@ func (run CardRun) EnforcesShippedRule() bool {
 }
 
 type cardPiece struct {
+	derived   bool
 	digits    string
 	spelling  string // string piece as written when it contains rule separators
 	number    bool
@@ -152,6 +155,7 @@ func appendCardSubruns(runs []CardRun, pieces []cardPiece) []CardRun {
 		var candidate strings.Builder
 		var spaced strings.Builder
 		numberOnly := true
+		derived := false
 		untrusted := false
 		for end := start; end < len(pieces); end++ {
 			candidate.WriteString(pieces[end].digits)
@@ -163,6 +167,7 @@ func appendCardSubruns(runs []CardRun, pieces []cardPiece) []CardRun {
 			} else {
 				spaced.WriteString(pieces[end].digits)
 			}
+			derived = derived || pieces[end].derived
 			numberOnly = numberOnly && pieces[end].number
 			untrusted = untrusted || pieces[end].untrusted
 			size := candidate.Len()
@@ -175,7 +180,7 @@ func appendCardSubruns(runs []CardRun, pieces []cardPiece) []CardRun {
 					if untrusted {
 						spaceCandidate = value
 					}
-					runs = append(runs, CardRun{Digits: value, SpaceCandidate: spaceCandidate, NumberOnly: numberOnly && end > start && !untrusted})
+					runs = append(runs, CardRun{DerivedNumber: derived, Reconstructed: end > start, Digits: value, SpaceCandidate: spaceCandidate, NumberOnly: numberOnly && end > start && !untrusted})
 				}
 			}
 		}
@@ -244,7 +249,7 @@ func appendCardWindows(runs []CardRun, pieces []cardPiece) []CardRun {
 			}
 		}
 		if count > 1 {
-			run := CardRun{Digits: c.Digits, SpaceCandidate: text[c.Start:c.End], NumberOnly: !stringHit}
+			run := CardRun{Reconstructed: true, Digits: c.Digits, SpaceCandidate: text[c.Start:c.End], NumberOnly: !stringHit}
 			// Preserve whole-match semantics for operator Luhn regexes. WINDOW
 			// candidates absent from complete-piece reconstruction are fallback-only.
 			if _, exists := seen[run]; exists {
@@ -403,12 +408,12 @@ func CardRunsWithLimit(text string, maxDepth int) ([]CardRun, CardRunLimit) {
 			integer, _, _ = strings.Cut(integer, "E")
 			windows = append(windows, cardPiece{spelling: integer, number: true})
 			if allDigits(integer) {
-				pieces = append(pieces, cardPiece{digits: integer, number: true})
+				pieces = append(pieces, cardPiece{digits: integer, number: true, derived: strings.ContainsAny(v.String(), ".eE")})
 			} else {
 				flush()
 				// A minus sign ends adjacency, but does not exempt a single card.
 				if unsigned, signed := strings.CutPrefix(integer, "-"); signed && allDigits(unsigned) {
-					runs = appendCardSubruns(runs, []cardPiece{{digits: unsigned, number: true}})
+					runs = appendCardSubruns(runs, []cardPiece{{digits: unsigned, number: true, derived: strings.ContainsAny(v.String(), ".eE")}})
 				}
 			}
 		default:
@@ -435,7 +440,7 @@ func ScalarIntegerCardRuns(number string) []CardRun {
 	if !allDigits(integer) || len(integer) > cardRunMaxDigits {
 		return nil
 	}
-	return appendCardSubruns(nil, []cardPiece{{digits: integer, number: true}})
+	return appendCardSubruns(nil, []cardPiece{{digits: integer, number: true, derived: strings.ContainsAny(number, ".eE")}})
 }
 
 func allDigits(value string) bool {

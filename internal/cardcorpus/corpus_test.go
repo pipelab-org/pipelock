@@ -4,6 +4,7 @@
 package cardcorpus
 
 import (
+	"encoding/base64"
 	"strings"
 	"testing"
 )
@@ -121,5 +122,35 @@ func TestAllowedLossSurfaceInputs(t *testing.T) {
 		if got := AllowedLoss(tc.surface, tc.input); got != tc.want {
 			t.Errorf("surface=%s input=%q got=%q want=%q", tc.surface, tc.input, got, tc.want)
 		}
+	}
+}
+
+func TestAllowedBareWarningBoundaries(t *testing.T) {
+	pan := number("4019", 16, 1)
+	for _, tc := range []struct {
+		input string
+		want  bool
+	}{
+		{pan, true},
+		{`{"value":"` + pan + `"}`, true},
+		{`["` + pan + `"]`, true},
+		{"visa " + pan, false},
+		{`{"card":"` + pan + `"}`, false},
+		{pan + " 12/28", false},
+		{"https://api.vendor.example/" + pan, false},
+		{pan[:8] + " " + pan[8:], false},
+		{`["` + pan[:8] + `","` + pan[8:] + `"]`, false},
+	} {
+		if got := AllowedBareWarning("text", tc.input); got != tc.want {
+			t.Fatalf("%q got=%v want=%v", tc.input, got, tc.want)
+		}
+	}
+}
+
+func TestAllowedBareWarningRejectsMixedEncoding(t *testing.T) {
+	pan := number("4019", 16, 1)
+	input := `{"value":"` + pan + `","encoded":"` + base64.StdEncoding.EncodeToString([]byte(pan)) + `"}`
+	if AllowedBareWarning("text", input) {
+		t.Fatal("literal candidate authorized an encoded sibling")
 	}
 }
