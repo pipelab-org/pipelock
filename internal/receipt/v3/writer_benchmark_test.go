@@ -134,7 +134,13 @@ func benchmarkWriterMessages(b *testing.B, format string, connections int, gap t
 					return
 				}
 				if gap != 0 && i+connections < b.N {
-					time.Sleep(gap)
+					timer := time.NewTimer(gap)
+					select {
+					case <-timer.C:
+					case <-b.Context().Done():
+						timer.Stop()
+						return
+					}
 				}
 			}
 		})
