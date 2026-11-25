@@ -683,6 +683,10 @@ func AllowedBareWarning(surface, input string) bool {
 		if view.url || view.joined {
 			continue
 		}
+		// JSON escapes such as \/ can hide payment context from the raw check.
+		if warningPromotion.MatchString(view.text) {
+			return false
+		}
 		text := view.text
 		groups := lossDigits.FindAllStringIndex(text, -1)
 		for i := range groups {

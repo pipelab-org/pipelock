@@ -177,4 +177,7 @@ func TestAllowedBareWarningRejectsCorroboratedKeysAndTrailing(t *testing.T) {
 	if !AllowedBareWarning("json-body", `{"value":["`+pan+`","note"]}`) {
 		t.Fatal("card wholly inside one array member treated as reconstructed")
 	}
+	if AllowedBareWarning("json-body", `{"value":"`+pan+` 12\/28"}`) {
+		t.Fatal("escaped expiry in a decoded JSON value ignored")
+	}
 }
