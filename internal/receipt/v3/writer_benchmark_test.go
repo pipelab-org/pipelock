@@ -112,7 +112,7 @@ func BenchmarkConcurrentDurableActionWriter(b *testing.B) {
 	}
 }
 
-type benchmarkMessage func(context.Context, uint64) error
+type benchmarkMessage func(context.Context, int) error
 
 func benchmarkWriterMessages(b *testing.B, format string, connections int, gap time.Duration, openV3 func(*testing.B, *atomic.Uint64) (benchmarkMessage, func() error)) {
 	var syncs atomic.Uint64
@@ -129,7 +129,7 @@ func benchmarkWriterMessages(b *testing.B, format string, connections int, gap t
 	for conn := range connections {
 		wg.Go(func() {
 			for i := conn; i < b.N; i += connections {
-				if err := message(b.Context(), uint64(i)); err != nil { //nolint:gosec // i is a nonnegative iteration number.
+				if err := message(b.Context(), i); err != nil {
 					b.Error(err)
 					return
 				}
@@ -174,8 +174,8 @@ func benchmarkV3WriterOptions(b *testing.B, syncs *atomic.Uint64, opts StreamWri
 	}
 	gate := NewEffectGate(writer)
 	policy := CapturePolicy(opts.PolicyHash)
-	return func(ctx context.Context, id uint64) error {
-		intent := writerTestIntent(strconv.FormatUint(id, 10))
+	return func(ctx context.Context, id int) error {
+		intent := writerTestIntent(strconv.Itoa(id))
 		token, err := gate.Admit(ctx, intent, policy)
 		if err != nil {
 			return err
@@ -202,9 +202,9 @@ func benchmarkLegacyWriter(b *testing.B, syncs *atomic.Uint64) (benchmarkMessage
 	if err := emitter.InitError(); err != nil {
 		b.Fatal(err)
 	}
-	return func(_ context.Context, id uint64) error {
+	return func(_ context.Context, id int) error {
 		return emitter.EmitDurable(legacy.EmitOpts{
-			ActionID: strconv.FormatUint(id, 10), Target: intent.Target, Transport: intent.Transport,
+			ActionID: strconv.Itoa(id), Target: intent.Target, Transport: intent.Transport,
 			Method: intent.Method, Verdict: intent.Verdict,
 		})
 	}, rec.Close
