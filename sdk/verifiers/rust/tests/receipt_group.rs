@@ -153,7 +153,6 @@ fn shared_native_ael_matrix() {
     .unwrap();
     let cases = matrix.as_array().unwrap();
     assert_eq!(cases.len(), 119);
-    let mut compared = 0;
     for case in cases {
         let name = case["name"].as_str().unwrap();
         let group_id = case["group_id"].as_str().unwrap();
@@ -171,20 +170,19 @@ fn shared_native_ael_matrix() {
             batched.push(row);
             Ok(())
         });
-        if let Ok(summary) = checked {
-            compared += 1;
-            assert_eq!(summary.groups, batched.len(), "{name}");
-            assert_eq!(
-                batched
-                    .iter()
-                    .rfind(|row| row.group_id == group_id)
-                    .map(|row| row.verdict.as_str()),
-                Some(want),
-                "{name}: {batched:?}"
-            );
-            if name.contains("__torn-early") || name.contains("__bad-middle-json") {
-                assert!(summary.invalid > 0, "{name}: {summary:?}");
-            }
+        let summary =
+            checked.unwrap_or_else(|error| panic!("{name}: batch inventory error: {error}"));
+        assert_eq!(summary.groups, batched.len(), "{name}");
+        assert_eq!(
+            batched
+                .iter()
+                .rfind(|row| row.group_id == group_id)
+                .map(|row| row.verdict.as_str()),
+            Some(want),
+            "{name}: {batched:?}"
+        );
+        if name.contains("__torn-early") || name.contains("__bad-middle-json") {
+            assert!(summary.invalid > 0, "{name}: {summary:?}");
         }
 
         if name == "predecessor__signed-close-head-disagrees" {
@@ -205,7 +203,6 @@ fn shared_native_ael_matrix() {
                 .contains("GROUP_INCOMPLETE"));
         }
     }
-    assert!(compared > 0, "directory verification produced no reports");
     let controls: Value = serde_json::from_slice(
         &fs::read(cases_root.parent().unwrap().join("controls.json")).unwrap(),
     )
