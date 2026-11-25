@@ -17,6 +17,7 @@ import (
 	"github.com/fsnotify/fsnotify"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // stubWatcher is a Watcher that drives Findings() from a pre-seeded
@@ -125,7 +126,7 @@ func waitForConsumerWatcherError(t *testing.T, errs <-chan error, want string) {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("watcher error = %q, want %q", err, want)
 		}
-	case <-time.After(filesentryPositiveBackstop):
+	case <-time.After(testwait.Deadline(filesentryPositiveBackstop)):
 		t.Fatalf("timeout waiting for watcher error containing %q", want)
 	}
 }
@@ -190,7 +191,7 @@ func TestConsumeFindings_BlockMode_SkippedAgentWritesDoNotCancel(t *testing.T) {
 			if finding.Path != path || !finding.IsAgent {
 				t.Errorf("OnBlock finding = %+v, want agent finding for %q", finding, path)
 			}
-		case <-time.After(filesentryPositiveBackstop):
+		case <-time.After(testwait.Deadline(filesentryPositiveBackstop)):
 			t.Fatal("timeout waiting for normal-sized agent Finding to cancel")
 		}
 		finish()

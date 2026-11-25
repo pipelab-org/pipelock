@@ -22,6 +22,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // TestRequestPolicyAuditModeTransports is the premise for configured
@@ -300,7 +301,7 @@ func runConnectPolicyAudit(t *testing.T, enforce bool) policyAuditObs {
 	_ = conn.Close()
 	select {
 	case <-handlerDone:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("CONNECT handler did not return")
 	}
 	// The dial completes in the kernel before the accept loop counts it, so a

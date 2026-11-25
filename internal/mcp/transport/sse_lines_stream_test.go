@@ -12,6 +12,8 @@ import (
 	"testing"
 	"testing/iotest"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestSSELineSplitterCRBoundaryDoesNotWaitForAnotherRead(t *testing.T) {
@@ -45,7 +47,7 @@ func TestSSELineSplitterCRDelimitedLiveEvent(t *testing.T) {
 		data, err := NewSSEReader(reader).ReadMessage()
 		readDone <- result{data, err}
 	}()
-	timer := time.NewTimer(time.Second)
+	timer := time.NewTimer(testwait.Deadline(time.Second))
 	defer timer.Stop()
 	select {
 	case got := <-readDone:

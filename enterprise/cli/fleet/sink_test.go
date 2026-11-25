@@ -28,6 +28,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor"
 	"github.com/luckyPipewrench/pipelock/enterprise/fleet/sink"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestTrustedAuditKeyResolver_InlineAndFile(t *testing.T) {
@@ -316,7 +317,7 @@ func TestSignalContextCancel(t *testing.T) {
 	cancel()
 	select {
 	case <-ctx.Done():
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("signal context did not cancel")
 	}
 }

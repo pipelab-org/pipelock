@@ -12,6 +12,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/edition"
 	"github.com/luckyPipewrench/pipelock/internal/edition/licenseclocktest"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestAgentLicenseContext(t *testing.T) {
@@ -35,7 +36,7 @@ func TestAgentLicenseContext(t *testing.T) {
 			}
 			select {
 			case <-ctx.Done():
-			case <-time.After(time.Second):
+			case <-time.After(testwait.Deadline(time.Second)):
 				t.Fatal("revocation did not cancel context")
 			}
 			if !errors.Is(context.Cause(ctx), errAgentLicenseRevoked) {

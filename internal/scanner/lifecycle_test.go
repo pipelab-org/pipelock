@@ -40,7 +40,7 @@ func TestScanner_BeginUse_OkBeforeClose(t *testing.T) {
 	}()
 	select {
 	case <-doneCh:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("Close blocked despite balanced BeginUse/release")
 	}
 	if !sc.Closed() {

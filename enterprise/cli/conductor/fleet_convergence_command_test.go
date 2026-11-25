@@ -27,6 +27,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor/controlplane"
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor/convergence"
 	"github.com/luckyPipewrench/pipelock/internal/license"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 	"github.com/spf13/cobra"
 )
 
@@ -414,7 +415,7 @@ func TestFetchExpectedLatestBatches_BoundsConcurrencyAndHonorsCancellation(t *te
 	}()
 	select {
 	case <-server.auditBarrierHit:
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("audit reads did not reach the concurrency barrier")
 	}
 	if got := server.maxConcurrentAuditRequests(); got != maxConcurrentAuditBatchReads {

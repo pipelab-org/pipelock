@@ -20,6 +20,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/shield"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 const (
@@ -63,7 +64,7 @@ func readWithin(t *testing.T, body io.Reader) ([]byte, error) {
 	select {
 	case r := <-done:
 		return r.b, r.err
-	case <-time.After(testBodyReadLimit):
+	case <-time.After(testwait.Deadline(testBodyReadLimit)):
 		t.Fatalf("body read did not finish within %s", testBodyReadLimit)
 		return nil, nil
 	}

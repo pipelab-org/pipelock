@@ -23,6 +23,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // placeholderAWS is the expected upstream-facing placeholder for an AWS
@@ -839,7 +840,7 @@ func TestWSProxy_Redaction_UnredactableAWSResourceIDFailsClosedOnExemptHost(t *t
 		if strings.Contains(string(got), secret) {
 			t.Fatalf("backend received the raw AWS key: %q", got)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("AKIA frame was never delivered to the backend")
 	}
 

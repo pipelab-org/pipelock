@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 	"gopkg.in/yaml.v3"
 )
 
@@ -1621,7 +1622,7 @@ func TestInstallReloadInterleavingConvergesOnLatestConfig(t *testing.T) {
 
 	select {
 	case <-installEnteredLock:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("install never entered its locked section after reload released the shared lock")
 	}
 	<-installDone

@@ -18,6 +18,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 type lateConnectHijacker struct {
@@ -114,7 +115,7 @@ func TestConnectLateDenialEvidence(t *testing.T) {
 			_ = conn.Close()
 			select {
 			case <-done:
-			case <-time.After(5 * time.Second):
+			case <-time.After(testwait.Deadline(5 * time.Second)):
 				t.Fatal("CONNECT handler did not finish")
 			}
 			if err := recorder.Close(); err != nil {

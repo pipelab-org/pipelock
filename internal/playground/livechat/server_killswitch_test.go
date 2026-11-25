@@ -11,6 +11,8 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 type blockingContainmentVerifier struct {
@@ -178,7 +180,7 @@ func TestServer_KillSwitch_RejectsSessionStartedDuringKill(t *testing.T) {
 
 	select {
 	case <-verifier.entered:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("session did not reach containment verifier")
 	}
 	srv.Kill()
@@ -191,7 +193,7 @@ func TestServer_KillSwitch_RejectsSessionStartedDuringKill(t *testing.T) {
 		if status != http.StatusServiceUnavailable {
 			t.Fatalf("session status during kill = %d, want 503", status)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(testwait.Deadline(10 * time.Second)):
 		t.Fatal("session request did not finish after kill release")
 	}
 

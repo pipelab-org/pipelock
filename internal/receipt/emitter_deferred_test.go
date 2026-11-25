@@ -61,7 +61,7 @@ func waitSignal(t *testing.T, ch <-chan struct{}, label string) {
 	t.Helper()
 	select {
 	case <-ch:
-	case <-time.After(10 * time.Second):
+	case <-time.After(testwait.Deadline(10 * time.Second)):
 		t.Fatalf("timed out waiting for %s", label)
 	}
 }
@@ -95,7 +95,7 @@ func TestEmitDurableConfirmsOutsideChainLock(t *testing.T) {
 			if err != nil {
 				t.Fatalf("emit %d: %v", i, err)
 			}
-		case <-time.After(10 * time.Second):
+		case <-time.After(testwait.Deadline(10 * time.Second)):
 			t.Fatalf("emit %d did not complete", i)
 		}
 	}

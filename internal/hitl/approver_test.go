@@ -471,7 +471,7 @@ func TestApprover_TimeoutThenSuccess(t *testing.T) {
 		if d2 != OutcomeAllow {
 			t.Fatalf("expected allow after drain, got %d", d2)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("timed out waiting for second HITL decision")
 	}
 }

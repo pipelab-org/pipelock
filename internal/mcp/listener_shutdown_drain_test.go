@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/httpstream"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestRunHTTPListenerProxy_DrainResult(t *testing.T) {
@@ -74,7 +75,7 @@ func TestRunHTTPListenerProxy_DrainResult(t *testing.T) {
 			}()
 			select {
 			case <-entered:
-			case <-time.After(10 * time.Second):
+			case <-time.After(testwait.Deadline(10 * time.Second)):
 				t.Fatal("request did not reach upstream")
 			}
 			cancel()
@@ -93,13 +94,13 @@ func TestRunHTTPListenerProxy_DrainResult(t *testing.T) {
 				} else if err != nil {
 					t.Errorf("clean drain = %v", err)
 				}
-			case <-time.After(10 * time.Second):
+			case <-time.After(testwait.Deadline(10 * time.Second)):
 				t.Fatal("listener did not stop")
 			}
 			// Before releasing the upstream, the force-close must unblock the client.
 			select {
 			case <-requestDone:
-			case <-time.After(10 * time.Second):
+			case <-time.After(testwait.Deadline(10 * time.Second)):
 				t.Fatal("downstream request was not closed")
 			}
 		})

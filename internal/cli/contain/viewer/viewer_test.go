@@ -17,6 +17,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 type leaseLogWriter struct {
@@ -299,7 +301,7 @@ func TestLeaseEventSequenceSurvivesConcurrentLogging(t *testing.T) {
 	go func() { done <- v.Serve(context.Background(), client, "control") }()
 	select {
 	case <-handler.entered:
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("reservation did not reach logger")
 	}
 	seconds.Store(5)
@@ -383,7 +385,7 @@ func TestExpiredControlLeaseCannotRenew(t *testing.T) {
 	logs := captureLeaseLogs(v)
 	first, _, firstDone := startViewer(t, v, "control")
 	seconds.Store(31)
-	deadline := time.After(time.Second)
+	deadline := time.After(testwait.Deadline(time.Second))
 	for {
 		v.mu.Lock()
 		cleared := v.lease.conn == nil
@@ -570,7 +572,7 @@ func TestViewerLeaseRenewsWhileConnected(t *testing.T) {
 		t.Fatal(err)
 	}
 	seconds.Store(20)
-	deadline := time.After(time.Second)
+	deadline := time.After(testwait.Deadline(time.Second))
 	tick := time.NewTicker(20 * time.Millisecond)
 	defer tick.Stop()
 	for {

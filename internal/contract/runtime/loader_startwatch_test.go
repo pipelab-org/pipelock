@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 type errCollector struct {
@@ -48,7 +50,7 @@ func TestLoader_StartWatch_RestartWaitsForCatchUp(t *testing.T) {
 	loader.reloadMu.Unlock()
 	select {
 	case <-returned:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("restart did not finish after catch-up was released")
 	}
 	if restartStop != nil {
@@ -300,7 +302,7 @@ func TestLoader_StartWatch_CancelBeforeArmedReturnsError(t *testing.T) {
 		if startErr == nil {
 			t.Fatal("StartWatch reported success after its context was cancelled before the watch armed")
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("StartWatch did not return after cancellation")
 	}
 }

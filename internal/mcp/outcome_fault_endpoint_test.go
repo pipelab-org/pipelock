@@ -189,7 +189,7 @@ func (p *settlementProbe) runStdio(t *testing.T, ctx context.Context, cancel con
 			if err != nil {
 				t.Logf("proxy exited during cleanup: %v", err)
 			}
-		case <-time.After(settlementBound):
+		case <-time.After(testwait.Deadline(settlementBound)):
 			t.Error("transport did not exit after cancellation")
 		}
 	}()
@@ -375,7 +375,7 @@ func (p *settlementProbe) runStdio(t *testing.T, ctx context.Context, cancel con
 			if err != nil {
 				t.Fatal(err)
 			}
-		case <-time.After(settlementBound):
+		case <-time.After(testwait.Deadline(settlementBound)):
 			t.Fatal("release did not finish")
 		}
 	}
@@ -401,7 +401,7 @@ func (p *settlementProbe) runStdio(t *testing.T, ctx context.Context, cancel con
 		if p.cell.fault == settlementTimeout && strings.Contains(logs.String(), "timeout") {
 			p.fault.Add(1)
 		}
-	case <-time.After(settlementBound):
+	case <-time.After(testwait.Deadline(settlementBound)):
 		t.Fatal("transport did not finish before the teardown deadline")
 	}
 }
@@ -453,7 +453,7 @@ func (p *settlementProbe) runListener(t *testing.T, ctx context.Context, cancel 
 			if err != nil {
 				t.Logf("HTTP listener exited: %v", err)
 			}
-		case <-time.After(settlementBound):
+		case <-time.After(testwait.Deadline(settlementBound)):
 			t.Error("HTTP listener did not stop")
 		}
 	})

@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // Exercise the transport, which detaches its dial context from the request.
@@ -66,7 +68,7 @@ func TestTransportSetupCancellation(t *testing.T) {
 				var setup context.Context
 				select {
 				case setup = <-started:
-				case <-time.After(3 * time.Second):
+				case <-time.After(testwait.Deadline(3 * time.Second)):
 					t.Fatal("setup did not start")
 				}
 				deadline, bounded := setup.Deadline()
@@ -156,7 +158,7 @@ func TestUnixPeerCheckCancellation(t *testing.T) {
 	defer func() { _ = conn.Close() }()
 	select {
 	case <-started:
-	case <-time.After(3 * time.Second):
+	case <-time.After(testwait.Deadline(3 * time.Second)):
 		t.Fatal("peer check did not start")
 	}
 	cancel()
@@ -165,7 +167,7 @@ func TestUnixPeerCheckCancellation(t *testing.T) {
 	}
 	select {
 	case <-stopped:
-	case <-time.After(3 * time.Second):
+	case <-time.After(testwait.Deadline(3 * time.Second)):
 		t.Fatal("peer socket read survived cancellation")
 	}
 }

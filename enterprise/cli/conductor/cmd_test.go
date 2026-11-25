@@ -31,6 +31,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestWaitForServeShutdownDrainsBeforeStoreClose(t *testing.T) {
@@ -43,7 +44,7 @@ func TestWaitForServeShutdownDrainsBeforeStoreClose(t *testing.T) {
 	}()
 	select {
 	case <-ctx.Done():
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("shutdown was not requested")
 	}
 	select {
@@ -54,7 +55,7 @@ func TestWaitForServeShutdownDrainsBeforeStoreClose(t *testing.T) {
 	close(drained)
 	select {
 	case <-returned:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("serve did not return after HTTP drain completed")
 	}
 }

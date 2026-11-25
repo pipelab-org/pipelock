@@ -27,6 +27,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 type captureMetadataObserver struct {
@@ -236,7 +237,7 @@ func requireCaptureMetadata(t *testing.T, got capture.CaptureSummary, surface, s
 
 func waitCaptureRecord(t *testing.T, obs *captureMetadataObserver, surface, subsurface string) capture.CaptureSummary {
 	t.Helper()
-	deadline := time.After(2 * time.Second)
+	deadline := time.After(testwait.Deadline(2 * time.Second))
 	for {
 		select {
 		case got := <-obs.ch:
@@ -251,7 +252,7 @@ func waitCaptureRecord(t *testing.T, obs *captureMetadataObserver, surface, subs
 
 func waitReverseDLPRecord(t *testing.T, obs *reverseDLPRecordObserver, subsurface string) capture.DLPVerdictRecord {
 	t.Helper()
-	deadline := time.After(2 * time.Second)
+	deadline := time.After(testwait.Deadline(2 * time.Second))
 	for {
 		select {
 		case got := <-obs.ch:
@@ -266,7 +267,7 @@ func waitReverseDLPRecord(t *testing.T, obs *reverseDLPRecordObserver, subsurfac
 
 func waitReverseResponseRecord(t *testing.T, obs *reverseDLPRecordObserver, subsurface string) capture.ResponseVerdictRecord {
 	t.Helper()
-	deadline := time.After(2 * time.Second)
+	deadline := time.After(testwait.Deadline(2 * time.Second))
 	for {
 		select {
 		case got := <-obs.responseCh:

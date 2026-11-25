@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func writeTestConfig(t *testing.T, path, mode string) {
@@ -24,7 +26,7 @@ func waitForReloaderReady(t *testing.T, r *Reloader) {
 	t.Helper()
 	select {
 	case <-r.ready:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("reloader did not become ready")
 	}
 }
@@ -40,7 +42,7 @@ func waitForReload(t *testing.T, r *Reloader, mode string) *Config {
 			t.Fatalf("expected mode %s, got %s", mode, cfg.Mode)
 		}
 		return cfg
-	case <-time.After(3 * time.Second):
+	case <-time.After(testwait.Deadline(3 * time.Second)):
 		t.Fatalf("timed out waiting for config reload to mode %s", mode)
 	}
 	return nil
@@ -82,7 +84,7 @@ func TestReloader_ReadyAccessorResolves(t *testing.T) {
 
 	select {
 	case <-r.Ready():
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("Ready() did not resolve after the watch was established")
 	}
 }
@@ -205,7 +207,7 @@ func TestReloader_RejectsPublicSuffixPassthroughAndRetainsActiveConfig(t *testin
 		if event.Err != nil || event.Config != active {
 			t.Fatalf("initial reload event = %+v, want the active config", event)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("timed out waiting for the initial reload event")
 	}
 
@@ -222,7 +224,7 @@ func TestReloader_RejectsPublicSuffixPassthroughAndRetainsActiveConfig(t *testin
 		if !strings.Contains(event.Err.Error(), "tls_interception.passthrough_domains") {
 			t.Fatalf("rejected passthrough reload error %q does not name tls_interception.passthrough_domains", event.Err)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("timed out waiting for the rejected passthrough reload event")
 	}
 	if got := active.TLSInterception.PassthroughDomains; len(got) != 1 || got[0] != exactHost {
@@ -271,7 +273,7 @@ func TestReloader_CloseStopsStart(t *testing.T) {
 	select {
 	case <-done:
 		// Start returned after Close
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("Start did not return after Close")
 	}
 }
@@ -308,7 +310,7 @@ func TestReloader_ContextCancellation(t *testing.T) {
 	select {
 	case <-done:
 		// Start returned after context cancelled
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("Start did not return after context cancellation")
 	}
 }
@@ -335,7 +337,7 @@ func TestReloader_StartIsOneShot(t *testing.T) {
 		if err != nil {
 			t.Fatalf("first Start returned error: %v", err)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("first Start did not return after context cancellation")
 	}
 

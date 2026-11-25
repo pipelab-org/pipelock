@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func relayTCPPair(t *testing.T) (*net.TCPConn, *net.TCPConn) {
@@ -87,7 +89,7 @@ func TestBufferedRelayPreservesDirectionalEOF(t *testing.T) {
 				if total != 12 {
 					t.Fatalf("relayed %d bytes, want 12", total)
 				}
-			case <-time.After(5 * time.Second):
+			case <-time.After(testwait.Deadline(5 * time.Second)):
 				t.Fatal("relay did not finish after both directions ended")
 			}
 		})
@@ -162,7 +164,7 @@ func TestBidirectionalCopyRelaysAndCountsBytes(t *testing.T) {
 		if n != int64(len(payload)) {
 			t.Fatalf("copied %d, want %d", n, len(payload))
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("relay did not finish")
 	}
 }

@@ -23,6 +23,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // Fixture credentials are assembled at runtime so no literal credential
@@ -326,7 +327,7 @@ func TestIssuerCookieFlushAllowsDuringWrite(t *testing.T) {
 	go func() { defer close(done); s.flush(now, true) }()
 	select {
 	case <-entered:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("write did not start")
 	}
 	allowed := make(chan bool, 1)
@@ -336,7 +337,7 @@ func TestIssuerCookieFlushAllowsDuringWrite(t *testing.T) {
 		if !ok {
 			t.Fatal("issued cookie was denied during write")
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		close(release)
 		<-done
 		t.Fatal("allows blocked on disk write")
@@ -377,7 +378,7 @@ func TestIssuerCookieFlushRetireConcurrent(t *testing.T) {
 	go func() { defer close(done); s.flush(time.Now(), true) }()
 	select {
 	case <-entered:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("write did not start")
 	}
 	retired := make(chan string, 1)

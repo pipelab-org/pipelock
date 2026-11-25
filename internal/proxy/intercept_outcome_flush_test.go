@@ -30,6 +30,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // TestInterceptOutcomeResponseFlushBeforeReceipt checks delivery while outcome storage is blocked.
@@ -140,7 +141,7 @@ func TestInterceptOutcomeResponseFlushBeforeReceipt(t *testing.T) {
 				}()
 				select {
 				case <-storage.entered:
-				case <-time.After(5 * time.Second):
+				case <-time.After(testwait.Deadline(5 * time.Second)):
 					t.Fatal("outcome emitter did not enter storage")
 				}
 				select {
@@ -148,7 +149,7 @@ func TestInterceptOutcomeResponseFlushBeforeReceipt(t *testing.T) {
 					if err != nil {
 						t.Fatalf("response not delivered while outcome storage blocked: %v", err)
 					}
-				case <-time.After(5 * time.Second):
+				case <-time.After(testwait.Deadline(5 * time.Second)):
 					t.Fatal("response buffered behind outcome storage")
 				}
 				if failures.Load() != 0 {
@@ -166,7 +167,7 @@ func TestInterceptOutcomeResponseFlushBeforeReceipt(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-				case <-time.After(5 * time.Second):
+				case <-time.After(testwait.Deadline(5 * time.Second)):
 					t.Fatal("tunnel did not finish after outcome release")
 				}
 				wantFailures := int32(0)
@@ -379,7 +380,7 @@ func TestInterceptTunnelOutcomeFlushStalledClient(t *testing.T) {
 			if err != nil {
 				t.Errorf("tunnel exit: %v", err)
 			}
-		case <-time.After(3 * time.Second):
+		case <-time.After(testwait.Deadline(3 * time.Second)):
 			t.Error("tunnel did not exit")
 		}
 	})
@@ -400,7 +401,7 @@ func TestInterceptTunnelOutcomeFlushStalledClient(t *testing.T) {
 		if ar.Verdict != config.ActionAllow || ar.Pattern != "status=200 bytes=unknown reason="+httpstream.Cancelled {
 			t.Fatalf("stalled tunnel outcome = %+v", ar)
 		}
-	case <-time.After(3 * time.Second):
+	case <-time.After(testwait.Deadline(3 * time.Second)):
 		t.Fatal("inner HTTP flush prevented outcome storage")
 	}
 }

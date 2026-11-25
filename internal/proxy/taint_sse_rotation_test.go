@@ -21,6 +21,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/edition"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // rotatingStreamWriter rotates the session task inside every client write
@@ -86,7 +87,7 @@ func waitStreamFlush(t *testing.T, w *rotatingStreamWriter, done <-chan struct{}
 	case <-w.flushed:
 	case <-done:
 		t.Fatal("stream ended before the event was flushed")
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("stream did not flush the event")
 	}
 }
@@ -241,7 +242,7 @@ func TestHTTPSSETaskRotationMidStream(t *testing.T) {
 					_ = writer.Close()
 					select {
 					case <-done:
-					case <-time.After(5 * time.Second):
+					case <-time.After(testwait.Deadline(5 * time.Second)):
 						t.Error("stream handler did not finish")
 					}
 				})
@@ -388,7 +389,7 @@ func TestReverseSSETaskRotationMidStream(t *testing.T) {
 			cancel()
 			select {
 			case <-done:
-			case <-time.After(5 * time.Second):
+			case <-time.After(testwait.Deadline(5 * time.Second)):
 				t.Error("reverse stream did not finish")
 			}
 		})

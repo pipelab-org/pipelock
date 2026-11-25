@@ -60,7 +60,7 @@ func TestSessionExit_HTTPForwardStopsBridge(t *testing.T) {
 		if err != nil && !errors.Is(err, context.Canceled) {
 			t.Fatalf("RunHTTPProxy = %v, want clean session exit", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("HTTP bridge stayed alive after the spawning session exited")
 	}
 
@@ -88,7 +88,7 @@ func TestSessionExit_HTTPForwardBoundsNonClosableInput(t *testing.T) {
 
 	select {
 	case <-clientIn.started:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("HTTP bridge never started reading the non-closable client input")
 	}
 
@@ -97,14 +97,14 @@ func TestSessionExit_HTTPForwardBoundsNonClosableInput(t *testing.T) {
 		if err != nil && !errors.Is(err, context.Canceled) {
 			t.Fatalf("RunHTTPProxy = %v, want clean session-bound shutdown", err)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("HTTP bridge waited indefinitely for non-closable input after session exit")
 	}
 
 	clientIn.unblock()
 	select {
 	case <-clientIn.returned:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("non-closable HTTP input did not release after the test")
 	}
 }
@@ -142,7 +142,7 @@ func TestSessionExit_HTTPForwardLiveSessionIsNotTornDown(t *testing.T) {
 	select {
 	case err := <-done:
 		t.Logf("goroutine result: %v", err)
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("HTTP bridge did not stop after its input closed")
 	}
 }
@@ -173,7 +173,7 @@ func TestSessionExit_HTTPListenerStops(t *testing.T) {
 		if err != nil {
 			t.Fatalf("RunHTTPListenerProxy = %v, want clean session exit", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("HTTP listener stayed alive after the spawning session exited")
 	}
 
@@ -223,7 +223,7 @@ func TestSessionExit_HTTPListenerLiveSessionIsNotTornDown(t *testing.T) {
 		if err != nil {
 			t.Fatalf("RunHTTPListenerProxy after cancel = %v", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("HTTP listener did not stop after context cancellation")
 	}
 }

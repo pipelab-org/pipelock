@@ -11,6 +11,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestScanRecorderRejectsFIFOWithoutBlocking(t *testing.T) {
@@ -34,7 +36,7 @@ func TestScanRecorderRejectsFIFOWithoutBlocking(t *testing.T) {
 		if err == nil {
 			t.Fatal("accepted FIFO receipt entry")
 		}
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("scanRecorder blocked opening FIFO receipt entry")
 	}
 }

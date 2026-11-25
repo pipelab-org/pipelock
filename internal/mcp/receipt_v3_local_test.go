@@ -2700,7 +2700,9 @@ func checkMCPV3StdioReportsDenialFailureAfterForwarding(t *testing.T, sandboxed 
 	defer cancel()
 	forwarded := make(chan struct{})
 	entered := make(chan struct{})
-	const grace = 3 * time.Second
+	// Scale the production grace itself so the forwarding bound stays half of
+	// it on a CI runner; scaling only the bound would exceed the grace.
+	grace := testwait.Deadline(3 * time.Second)
 	row := v3MCPMatrixRow{required: true, scenario: "local denial intent write fail"}
 	writerOpts := mcpMatrixWriterOptions(t, row, transportMCPStdio, nil, func(count int) {
 		if count == 2 {

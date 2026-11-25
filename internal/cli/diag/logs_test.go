@@ -113,7 +113,7 @@ func TestLogsCmd_FollowMode(t *testing.T) {
 		if err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("logs follow did not exit after context cancel")
 	}
 
@@ -167,7 +167,7 @@ func TestLogsCmd_FollowWithFilter(t *testing.T) {
 		if err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("logs follow did not exit")
 	}
 

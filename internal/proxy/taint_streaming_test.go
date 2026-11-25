@@ -18,6 +18,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/session"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // Notify only after the scanner releases an event. The handler remains blocked
@@ -95,7 +96,7 @@ func testHTTPStreamingTaint(t *testing.T, intercept bool) {
 				_ = writer.Close()
 				select {
 				case <-done:
-				case <-time.After(5 * time.Second):
+				case <-time.After(testwait.Deadline(5 * time.Second)):
 					t.Error("stream handler did not finish")
 				}
 			})
@@ -104,7 +105,7 @@ func testHTTPStreamingTaint(t *testing.T, intercept bool) {
 			case <-stream.released:
 			case <-done:
 				t.Fatal("stream ended before event release")
-			case <-time.After(5 * time.Second):
+			case <-time.After(testwait.Deadline(5 * time.Second)):
 				t.Fatal("stream did not release event")
 			}
 			select {
@@ -139,7 +140,7 @@ func testHTTPStreamingTaint(t *testing.T, intercept bool) {
 			_ = writer.Close()
 			select {
 			case <-done:
-			case <-time.After(5 * time.Second):
+			case <-time.After(testwait.Deadline(5 * time.Second)):
 				t.Fatal("stream did not finish after EOF")
 			}
 			wantSources := 1
@@ -182,7 +183,7 @@ func writeTaintStream(t *testing.T, writer *io.PipeWriter, payload string) {
 		if err != nil {
 			t.Fatal(err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		_ = writer.Close()
 		t.Fatalf("stream write timed out: %v", <-done)
 	}
@@ -273,7 +274,7 @@ func TestHTTPResponseTaintBeforeDelivery(t *testing.T) {
 				_ = writer.Close()
 				select {
 				case <-done:
-				case <-time.After(5 * time.Second):
+				case <-time.After(testwait.Deadline(5 * time.Second)):
 					t.Error("response handler did not finish")
 				}
 			})
@@ -283,7 +284,7 @@ func TestHTTPResponseTaintBeforeDelivery(t *testing.T) {
 			var risk session.SessionRisk
 			select {
 			case risk = <-w.first:
-			case <-time.After(5 * time.Second):
+			case <-time.After(testwait.Deadline(5 * time.Second)):
 				t.Fatal("no body byte released")
 			}
 			want := session.TaintExternalUntrusted
@@ -306,7 +307,7 @@ func TestHTTPResponseTaintBeforeDelivery(t *testing.T) {
 			_ = writer.Close()
 			select {
 			case <-done:
-			case <-time.After(5 * time.Second):
+			case <-time.After(testwait.Deadline(5 * time.Second)):
 				t.Fatal("response did not finish")
 			}
 			if w.Code != http.StatusOK {

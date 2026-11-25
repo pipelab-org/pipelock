@@ -23,6 +23,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 type bridgeIntegrityWriter struct {
@@ -187,7 +188,7 @@ func TestMCPBridgeStreamIntegrity(t *testing.T) {
 					select {
 					case err := <-bridgeDone:
 						t.Logf("goroutine result: %v", err)
-					case <-time.After(time.Second):
+					case <-time.After(testwait.Deadline(time.Second)):
 						t.Fatal("cancelled bridge did not finish")
 					}
 				}
@@ -239,7 +240,7 @@ func waitBridgeSignal(t *testing.T, done <-chan struct{}) {
 	t.Helper()
 	select {
 	case <-done:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("stream bridge goroutine did not finish")
 	}
 }

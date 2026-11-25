@@ -19,6 +19,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/proxy"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 	"github.com/spf13/cobra"
 )
 
@@ -251,7 +252,7 @@ func TestConnectThroughProxyRejectsMalformedAndContradictoryResponses(t *testing
 			}
 			select {
 			case <-done:
-			case <-time.After(2 * time.Second):
+			case <-time.After(testwait.Deadline(2 * time.Second)):
 				t.Fatal("proxy peer did not complete before deadline")
 			}
 		})

@@ -246,7 +246,7 @@ func TestViewerServeReplacesOnlyStaleOwnedSocket(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("viewer did not stop")
 	}
 	for _, kind := range []string{"regular", "symlink"} {

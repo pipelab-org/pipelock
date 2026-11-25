@@ -16,6 +16,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/playground"
 	"github.com/luckyPipewrench/pipelock/internal/playground/livechat"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // testDelegationRoot returns a usable signing root and its canonical digest.
@@ -87,7 +88,7 @@ func TestServer_CreateVMSession_SendsBoundDelegation(t *testing.T) {
 	var req captured
 	select {
 	case req = <-got:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("the VM never received a session request")
 	}
 

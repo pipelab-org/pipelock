@@ -19,6 +19,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 const (
@@ -1790,7 +1792,7 @@ func TestHTTPClient_GETStreamCarriesPipelockToken(t *testing.T) {
 		if got != token {
 			t.Fatalf("GET stream token = %q, want %q", got, token)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("GET stream never reached the server")
 	}
 }

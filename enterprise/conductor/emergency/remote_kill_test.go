@@ -22,6 +22,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 var testNow = time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
@@ -615,7 +616,7 @@ func TestRemoteKillApplierSerializesCounterCheckAcrossInstances(t *testing.T) {
 	}()
 	select {
 	case <-blockingKS.reached:
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("lower-counter Apply did not reach kill switch")
 	}
 

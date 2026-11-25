@@ -10,6 +10,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/session"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestSessionStoreEvictionProtectsRetainedRecorder(t *testing.T) {
@@ -128,7 +129,7 @@ func TestSessionStoreEvictionSerializesProtection(t *testing.T) {
 				if removed || sm.SessionByKey("listener") != rec {
 					t.Fatal("concurrent policy observation was discarded")
 				}
-			case <-time.After(5 * time.Second):
+			case <-time.After(testwait.Deadline(5 * time.Second)):
 				t.Fatal("eviction did not finish after recorder unlock")
 			}
 		})

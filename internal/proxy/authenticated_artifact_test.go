@@ -20,6 +20,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	domrules "github.com/luckyPipewrench/pipelock/internal/rules"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 type artifactRoundTripper func(*http.Request) (*http.Response, error)
@@ -112,7 +113,7 @@ func TestReadAuthenticatedArtifactBody_DeadlineClosesBlockedRead(t *testing.T) {
 	}()
 	select {
 	case <-body.started:
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("body read did not start")
 	}
 	select {
@@ -120,7 +121,7 @@ func TestReadAuthenticatedArtifactBody_DeadlineClosesBlockedRead(t *testing.T) {
 		if !errors.Is(err, context.DeadlineExceeded) {
 			t.Fatalf("read error=%v, want deadline exceeded", err)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("deadline did not close blocked artifact body")
 	}
 }

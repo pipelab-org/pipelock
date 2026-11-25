@@ -354,7 +354,7 @@ func newServerTestWebhook(t *testing.T) (string, <-chan serverTestWebhookEvent) 
 
 func waitForRuleBundleWebhookEvent(t *testing.T, events <-chan serverTestWebhookEvent) serverTestWebhookEvent {
 	t.Helper()
-	timer := time.NewTimer(5 * time.Second)
+	timer := time.NewTimer(testwait.Deadline(5 * time.Second))
 	defer timer.Stop()
 	for {
 		select {

@@ -25,6 +25,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 const testSessionAPIToken = "test-session-api-token"
@@ -1595,7 +1596,7 @@ func TestSessionManager_WithMutableIdentitySession_BlocksConcurrentWriteLock(t *
 
 	select {
 	case <-entered:
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("mutation callback did not start")
 	}
 
@@ -1615,7 +1616,7 @@ func TestSessionManager_WithMutableIdentitySession_BlocksConcurrentWriteLock(t *
 	// the 50ms window pass before the goroutine even reaches sm.mu.Lock().
 	select {
 	case <-writerStarted:
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("writer goroutine did not start")
 	}
 
@@ -1635,13 +1636,13 @@ func TestSessionManager_WithMutableIdentitySession_BlocksConcurrentWriteLock(t *
 		if res.err != nil {
 			t.Fatalf("unexpected mutation err: %v", res.err)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("mutation did not complete after release")
 	}
 
 	select {
 	case <-writerAcquired:
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("concurrent writer did not acquire sm.mu after mutation completed")
 	}
 	close(writerRelease)
@@ -1715,7 +1716,7 @@ func TestSessionManager_WithMutableIdentitySession_BlocksEvictionDuringMutation(
 
 			select {
 			case <-entered:
-			case <-time.After(time.Second):
+			case <-time.After(testwait.Deadline(time.Second)):
 				t.Fatal("mutation callback did not start")
 			}
 
@@ -1729,7 +1730,7 @@ func TestSessionManager_WithMutableIdentitySession_BlocksEvictionDuringMutation(
 
 			select {
 			case <-evictStarted:
-			case <-time.After(time.Second):
+			case <-time.After(testwait.Deadline(time.Second)):
 				t.Fatal("evictor goroutine did not start")
 			}
 
@@ -1754,13 +1755,13 @@ func TestSessionManager_WithMutableIdentitySession_BlocksEvictionDuringMutation(
 					t.Fatal("mutation did not produce a task ID")
 				}
 				mutatedID = res.mutatedID
-			case <-time.After(time.Second):
+			case <-time.After(testwait.Deadline(time.Second)):
 				t.Fatal("mutation did not complete after release")
 			}
 
 			select {
 			case <-evictDone:
-			case <-time.After(time.Second):
+			case <-time.After(testwait.Deadline(time.Second)):
 				t.Fatal("eviction-triggering GetOrCreate did not resume after mutation completed")
 			}
 

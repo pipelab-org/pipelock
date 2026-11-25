@@ -20,6 +20,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // A FIFO at the managed path must be refused PROMPTLY. O_NOFOLLOW refuses a
@@ -57,7 +59,7 @@ func TestRepairManagedConfigMode_RefusesFifoWithoutBlocking(t *testing.T) {
 		if got.applied {
 			t.Error("FIFO reported as repaired")
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(testwait.Deadline(10 * time.Second)):
 		t.Fatal("repair blocked on a FIFO; an unprivileged account can hang a privileged install")
 	}
 }

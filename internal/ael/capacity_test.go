@@ -13,6 +13,8 @@ import (
 	"testing"
 	"testing/synctest"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestCapacityConcurrentAdmissionsLeaveVerifiableClose(t *testing.T) {
@@ -311,7 +313,7 @@ func TestCapacitySplitsAlreadyReservedRecordsAfterStop(t *testing.T) {
 	defer finish()
 	select {
 	case <-closed:
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("stop callback did not run")
 	}
 	child, err := parent.Split(1)

@@ -23,6 +23,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // airlockSessionKeyClientIP is the client IP the loopback test HTTP client
@@ -554,7 +555,7 @@ func TestAirlockCancel_ConnectTunnel_TornDownOnScopedEscalation(t *testing.T) {
 	}
 	select {
 	case <-relayLive:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("precondition: tunnel relay never delivered the probe byte")
 	}
 	sess := sm.SessionByKey(responseTaintSessionKey(nil, agent, clientIP, envelope.ActorAuthSelfDeclared))

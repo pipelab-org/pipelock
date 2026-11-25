@@ -26,6 +26,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestBuildResponseExplainReportNamesMatchWithoutEchoingPayload(t *testing.T) {
@@ -715,7 +716,7 @@ func TestReadExplainResponseBodyObservesCancellation(t *testing.T) {
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("cancelled read error = %v, want context.Canceled", err)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(testwait.Deadline(10 * time.Second)):
 		t.Fatal("cancelled read did not return; the stdin read ignores cancellation")
 	}
 }
@@ -871,7 +872,7 @@ func TestReadExplainResponseBodyDoesNotHangOnUncloseableReader(t *testing.T) {
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("cancelled read error = %v, want context.Canceled", err)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(testwait.Deadline(10 * time.Second)):
 		t.Fatal("cancellation hung on a reader whose Close does nothing")
 	}
 }

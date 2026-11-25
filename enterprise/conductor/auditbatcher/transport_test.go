@@ -21,6 +21,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestTransportDrain(t *testing.T) {
@@ -383,7 +385,7 @@ func TestTransportRun_GracefulShutdown(t *testing.T) {
 
 			select {
 			case <-attempted:
-			case <-time.After(time.Second):
+			case <-time.After(testwait.Deadline(time.Second)):
 				t.Fatal("transport did not attempt send within 1s")
 			}
 			cancel()
@@ -393,7 +395,7 @@ func TestTransportRun_GracefulShutdown(t *testing.T) {
 				if !errors.Is(err, context.Canceled) {
 					t.Fatalf("Run() = %v, want context.Canceled", err)
 				}
-			case <-time.After(time.Second):
+			case <-time.After(testwait.Deadline(time.Second)):
 				t.Fatal("Run() did not return within 1s after context cancellation")
 			}
 			wg.Wait()

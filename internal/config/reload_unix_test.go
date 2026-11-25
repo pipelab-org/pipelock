@@ -13,11 +13,13 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func signalUntilReload(t *testing.T, r *Reloader, mode string) *Config {
 	t.Helper()
-	deadline := time.After(3 * time.Second)
+	deadline := time.After(testwait.Deadline(3 * time.Second))
 	ticker := time.NewTicker(25 * time.Millisecond)
 	defer ticker.Stop()
 	for {

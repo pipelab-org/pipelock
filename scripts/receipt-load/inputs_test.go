@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 	"gopkg.in/yaml.v3"
 )
 
@@ -368,7 +369,7 @@ func TestHoldLockSerializesRuns(t *testing.T) {
 	release()
 	select {
 	case <-acquired:
-	case <-time.After(10 * time.Second):
+	case <-time.After(testwait.Deadline(10 * time.Second)):
 		t.Fatal("the lock was not released")
 	}
 }

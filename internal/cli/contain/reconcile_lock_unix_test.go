@@ -13,6 +13,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // TestContainmentReconcileLockPathForDerivesFromRulesPath pins the shared
@@ -95,7 +97,7 @@ func TestWithContainmentReconcileLockRefusesFIFOWithoutBlocking(t *testing.T) {
 		if !strings.Contains(err.Error(), "not a regular file") {
 			t.Fatalf("error = %v, want it to name the non-regular-file refusal", err)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("withContainmentReconcileLock blocked on a FIFO instead of refusing it immediately via the fstat check")
 	}
 }

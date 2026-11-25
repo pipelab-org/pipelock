@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/license"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 	"github.com/rs/zerolog"
 )
 
@@ -3350,7 +3351,7 @@ func TestTrialSupportResendThenRefundProducesRevocation(t *testing.T) {
 	}()
 	select {
 	case <-emailEntered:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("resend did not reach email delivery")
 	}
 	revokeDone := make(chan error, 1)

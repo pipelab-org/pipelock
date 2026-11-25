@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 const protocolTestVersion = "2025-06-18"
@@ -364,7 +366,7 @@ func (r *protocolPausedReader) Close() error {
 
 func awaitProtocolTestValue[T any](t *testing.T, values <-chan T, phase string) T {
 	t.Helper()
-	timer := time.NewTimer(5 * time.Second)
+	timer := time.NewTimer(testwait.Deadline(5 * time.Second))
 	defer timer.Stop()
 	select {
 	case value := <-values:

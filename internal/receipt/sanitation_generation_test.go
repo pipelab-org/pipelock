@@ -17,6 +17,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestEmitterSanitationUnknownRedactorFallback(t *testing.T) {
@@ -127,7 +128,7 @@ func TestEmitterSanitationOutsideChain(t *testing.T) {
 	}()
 	select {
 	case <-seen:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		em.chainMu.Unlock()
 		err := <-done
 		t.Fatalf("sanitation stayed behind chain lock; emit error: %v", err)

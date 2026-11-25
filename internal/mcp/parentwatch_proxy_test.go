@@ -135,7 +135,7 @@ func TestRunProxy_SessionExitTerminatesIgnoringServer(t *testing.T) {
 	}()
 	select {
 	case <-outputForwardStarted:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("RunProxy never entered the server-output forwarding loop")
 	}
 	close(parentDied)
@@ -145,7 +145,7 @@ func TestRunProxy_SessionExitTerminatesIgnoringServer(t *testing.T) {
 		if err != nil && !errors.Is(err, ErrSubprocessExit) {
 			t.Errorf("RunProxy = %v, want no scanner error after session teardown", err)
 		}
-	case <-time.After(20 * time.Second):
+	case <-time.After(testwait.Deadline(20 * time.Second)):
 		t.Fatal("RunProxy never returned after the spawning session died; the proxy leaked")
 	}
 
@@ -210,7 +210,7 @@ func TestRunProxy_LiveSessionIsNotTornDown(t *testing.T) {
 	select {
 	case err := <-done:
 		t.Logf("goroutine result: %v", err)
-	case <-time.After(20 * time.Second):
+	case <-time.After(testwait.Deadline(20 * time.Second)):
 		t.Fatal("RunProxy did not shut down after context cancellation")
 	}
 }
@@ -250,7 +250,7 @@ func TestRunProxy_SessionExitBoundsNonClosableInputDrain(t *testing.T) {
 
 	select {
 	case <-clientIn.started:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("RunProxy never started reading the non-closable client input")
 	}
 	close(parentDied)
@@ -260,14 +260,14 @@ func TestRunProxy_SessionExitBoundsNonClosableInputDrain(t *testing.T) {
 		if err != nil && !errors.Is(err, ErrSubprocessExit) {
 			t.Errorf("RunProxy = %v, want clean session-bound shutdown", err)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("RunProxy waited indefinitely for non-closable input after session exit")
 	}
 
 	clientIn.unblock()
 	select {
 	case <-clientIn.returned:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("non-closable client input did not release after the test")
 	}
 }
@@ -347,7 +347,7 @@ func TestRunProxy_BlockedLogWriterDoesNotWedgeTeardown(t *testing.T) {
 
 	select {
 	case <-logW.entered:
-	case <-time.After(10 * time.Second):
+	case <-time.After(testwait.Deadline(10 * time.Second)):
 		t.Fatal("stderr copier never reached the log writer; test setup is wrong")
 	}
 	close(parentDied)
@@ -359,7 +359,7 @@ func TestRunProxy_BlockedLogWriterDoesNotWedgeTeardown(t *testing.T) {
 		if err != nil && !errors.Is(err, ErrSubprocessExit) {
 			t.Errorf("RunProxy = %v, want a clean session-bound shutdown", err)
 		}
-	case <-time.After(20 * time.Second):
+	case <-time.After(testwait.Deadline(20 * time.Second)):
 		t.Fatal("RunProxy never returned while the log writer was blocked; teardown deadlocked on its own diagnostic")
 	}
 }
@@ -383,7 +383,7 @@ func TestDrainStderr_ReleasesEscapedPipeHolder(t *testing.T) {
 		}
 		select {
 		case <-stderrDone:
-		case <-time.After(5 * time.Second):
+		case <-time.After(testwait.Deadline(5 * time.Second)):
 			t.Fatal("stderr copier remained blocked after the drain timeout")
 		}
 	})

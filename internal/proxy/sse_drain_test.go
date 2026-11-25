@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/httpstream"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // A downstream copier can close the pipe and return while onComplete still
@@ -31,7 +32,7 @@ func TestReverseSSECompletionDrain(t *testing.T) {
 				}
 				select {
 				case <-finished:
-				case <-time.After(5 * time.Second):
+				case <-time.After(testwait.Deadline(5 * time.Second)):
 					t.Error("completion did not stop")
 				}
 			}()
@@ -51,7 +52,7 @@ func TestReverseSSECompletionDrain(t *testing.T) {
 			h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil))
 			select {
 			case <-callback:
-			case <-time.After(5 * time.Second):
+			case <-time.After(testwait.Deadline(5 * time.Second)):
 				t.Fatal("completion did not start")
 			}
 			if !pending {

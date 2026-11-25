@@ -11,6 +11,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // A FIFO with no writer must be refused at once. A loader that opened it
@@ -31,7 +33,7 @@ func TestReadResponsePassFixtureRefusesFIFO(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "not a regular file") {
 			t.Fatalf("FIFO: got %v, want a not-a-regular-file error", err)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(testwait.Deadline(10 * time.Second)):
 		t.Fatal("reading a FIFO fixture blocked")
 	}
 }

@@ -32,6 +32,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // Block the existing v2 recorder seam, after the v1 outcome but before its
@@ -206,7 +207,7 @@ func TestOutcomeResponseFlushBeforeReceipt(t *testing.T) {
 				}()
 				select {
 				case <-storage.entered:
-				case <-time.After(5 * time.Second):
+				case <-time.After(testwait.Deadline(5 * time.Second)):
 					t.Fatal("outcome emitter did not enter storage")
 				}
 				select {
@@ -214,7 +215,7 @@ func TestOutcomeResponseFlushBeforeReceipt(t *testing.T) {
 					if err != nil {
 						t.Fatalf("response not delivered while outcome storage blocked: %v", err)
 					}
-				case <-time.After(5 * time.Second):
+				case <-time.After(testwait.Deadline(5 * time.Second)):
 					t.Fatal("response buffered behind outcome storage")
 				}
 				select {
@@ -225,13 +226,13 @@ func TestOutcomeResponseFlushBeforeReceipt(t *testing.T) {
 				// The client has closed its response before the outcome finishes.
 				select {
 				case <-cancelled:
-				case <-time.After(5 * time.Second):
+				case <-time.After(testwait.Deadline(5 * time.Second)):
 					t.Fatal("client disconnect did not cancel the request before outcome completion")
 				}
 				release()
 				select {
 				case <-done:
-				case <-time.After(5 * time.Second):
+				case <-time.After(testwait.Deadline(5 * time.Second)):
 					t.Fatal("handler did not finish outcome emission")
 				}
 				receipts := rph.findReceipts(t)
@@ -596,7 +597,7 @@ func runOutcomeFlushFailure(t *testing.T, surface string, disconnect bool, write
 			if !errors.Is(err, http.ErrServerClosed) {
 				t.Errorf("server exit: %v", err)
 			}
-		case <-time.After(3 * time.Second):
+		case <-time.After(testwait.Deadline(3 * time.Second)):
 			t.Error("server did not exit")
 		}
 	})
@@ -624,7 +625,7 @@ func runOutcomeFlushFailure(t *testing.T, surface string, disconnect bool, write
 		if !disconnect && writeTimeout == 0 && (len(writer.deadlines) != 1 || writer.deadlines[0].IsZero()) {
 			t.Fatalf("missing bounded flush deadline: %v", writer.deadlines)
 		}
-	case <-time.After(3 * time.Second):
+	case <-time.After(testwait.Deadline(3 * time.Second)):
 		t.Fatal("outcome recording remained blocked on a client that never reads")
 	}
 	var found bool
@@ -779,7 +780,7 @@ func testOutcomeSyntheticResponseBeforeReceipt(t *testing.T, surface, condition 
 			if err != nil {
 				t.Errorf("server exit: %v", err)
 			}
-		case <-time.After(5 * time.Second):
+		case <-time.After(testwait.Deadline(5 * time.Second)):
 			t.Error("server did not finish after storage release")
 		}
 	})
@@ -817,7 +818,7 @@ func testOutcomeSyntheticResponseBeforeReceipt(t *testing.T, surface, condition 
 	}()
 	select {
 	case <-storage.entered:
-	case <-time.After(4 * time.Second):
+	case <-time.After(testwait.Deadline(4 * time.Second)):
 		t.Fatal("outcome recorder did not enter storage")
 	}
 	if err := <-orderingResult; err != nil {

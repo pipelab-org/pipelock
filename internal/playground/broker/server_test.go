@@ -25,6 +25,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/playground"
 	"github.com/luckyPipewrench/pipelock/internal/playground/livechat"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 const (
@@ -417,7 +418,7 @@ func expectDestroyed(t *testing.T, ch <-chan string) {
 	t.Helper()
 	select {
 	case <-ch:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("timed out waiting for fake VM destroy")
 	}
 }
@@ -990,7 +991,7 @@ func TestServer_EndToEndProxyAndRelease(t *testing.T) {
 		if code == "" || code == brokerTestCode {
 			t.Fatalf("VM code = %q, want fresh code distinct from public invite", code)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("VM did not receive session create")
 	}
 	env := provider.createdEnv(0)
@@ -1011,7 +1012,7 @@ func TestServer_EndToEndProxyAndRelease(t *testing.T) {
 		if got != "hello" {
 			t.Fatalf("VM message = %q, want hello", got)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("VM did not receive message")
 	}
 
@@ -1030,12 +1031,12 @@ func TestServer_EndToEndProxyAndRelease(t *testing.T) {
 		if !strings.HasPrefix(line, "data: ") {
 			t.Fatalf("first stream line = %q, want data event", line)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("stream event was buffered until close")
 	}
 	select {
 	case <-vm.streamStarted:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("VM stream did not start")
 	}
 	close(vm.streamRelease)
@@ -1282,7 +1283,7 @@ func TestServer_TokenIsolation(t *testing.T) {
 		if got != "for A only" {
 			t.Fatalf("VM A got %q", got)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("VM A did not receive its token-routed message")
 	}
 	select {
@@ -1698,7 +1699,7 @@ func TestServer_CreateVMSession_HTTPErrorNotRetried(t *testing.T) {
 	}
 	select {
 	case <-destroyed:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("VM was not destroyed after a failed session create (must fail closed)")
 	}
 }
@@ -1727,7 +1728,7 @@ func TestServer_CreateVMSession_ReadyTimeoutFailsClosed(t *testing.T) {
 	}
 	select {
 	case <-destroyed:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("VM was not destroyed after readiness timeout (must fail closed)")
 	}
 }
@@ -2189,7 +2190,7 @@ func TestServer_BundleSlowDownloadDoesNotHoldKitBuildSlot(t *testing.T) {
 	}()
 	select {
 	case <-entered:
-	case <-time.After(3 * time.Second):
+	case <-time.After(testwait.Deadline(3 * time.Second)):
 		t.Fatal("first kit did not reach its blocked response write")
 	}
 
@@ -2205,7 +2206,7 @@ func TestServer_BundleSlowDownloadDoesNotHoldKitBuildSlot(t *testing.T) {
 		if got != http.StatusOK {
 			t.Fatalf("second kit status = %d, want 200", got)
 		}
-	case <-time.After(3 * time.Second):
+	case <-time.After(testwait.Deadline(3 * time.Second)):
 		t.Fatal("second kit build waited for first client's blocked response write")
 	}
 }
@@ -2255,12 +2256,12 @@ func TestServer_BundleKitBuildQueueIsBounded(t *testing.T) {
 	go func() { firstDone <- request() }()
 	select {
 	case <-started:
-	case <-time.After(3 * time.Second):
+	case <-time.After(testwait.Deadline(3 * time.Second)):
 		t.Fatal("first kit build did not start")
 	}
 	secondDone := make(chan int, 1)
 	go func() { secondDone <- request() }()
-	deadline := time.After(3 * time.Second)
+	deadline := time.After(testwait.Deadline(3 * time.Second))
 	ticker := time.NewTicker(time.Millisecond)
 	defer ticker.Stop()
 	for len(srv.kitBuildQueue) != 2 {
@@ -2322,7 +2323,7 @@ func TestServer_BundleCanceledBuildReleasesSlot(t *testing.T) {
 	}()
 	select {
 	case <-started:
-	case <-time.After(3 * time.Second):
+	case <-time.After(testwait.Deadline(3 * time.Second)):
 		t.Fatal("first kit build did not start")
 	}
 	cancel()
@@ -2331,7 +2332,7 @@ func TestServer_BundleCanceledBuildReleasesSlot(t *testing.T) {
 		if rec.Code != 0 || rec.Body.Len() != 0 {
 			t.Fatalf("canceled kit build wrote response: status=%d body=%q", rec.Code, rec.Body.String())
 		}
-	case <-time.After(3 * time.Second):
+	case <-time.After(testwait.Deadline(3 * time.Second)):
 		t.Fatal("canceled kit build did not finish")
 	}
 	if len(srv.kitBuildSlots) != 0 || len(srv.kitBuildQueue) != 0 {
@@ -2373,7 +2374,7 @@ func TestServer_BundleCanceledWaitReleasesQueuePermit(t *testing.T) {
 		srv.Handler().ServeHTTP(rec, req)
 		done <- rec
 	}()
-	deadline := time.After(3 * time.Second)
+	deadline := time.After(testwait.Deadline(3 * time.Second))
 	tick := time.NewTicker(time.Millisecond)
 	defer tick.Stop()
 	for len(srv.kitBuildQueue) != 1 {
@@ -2389,7 +2390,7 @@ func TestServer_BundleCanceledWaitReleasesQueuePermit(t *testing.T) {
 		if rec.Code != 0 || rec.Body.Len() != 0 {
 			t.Fatalf("canceled kit waiter wrote response: status=%d body=%q", rec.Code, rec.Body.String())
 		}
-	case <-time.After(3 * time.Second):
+	case <-time.After(testwait.Deadline(3 * time.Second)):
 		t.Fatal("canceled kit waiter did not finish")
 	}
 	if len(srv.kitBuildQueue) != 0 {
@@ -2574,14 +2575,14 @@ func TestServer_BundleConcurrentRawRetryReleasesVM(t *testing.T) {
 	}()
 	select {
 	case <-vm.bundleHeld:
-	case <-time.After(3 * time.Second):
+	case <-time.After(testwait.Deadline(3 * time.Second)):
 		t.Fatal("kit fetch did not reach VM")
 	}
 	rawDone := make(chan requestResult, 1)
 	go func() {
 		rawDone <- request(bundleURL)
 	}()
-	deadline := time.After(3 * time.Second)
+	deadline := time.After(testwait.Deadline(3 * time.Second))
 	tick := time.NewTicker(time.Millisecond)
 	defer tick.Stop()
 	for {
@@ -2607,7 +2608,7 @@ func TestServer_BundleConcurrentRawRetryReleasesVM(t *testing.T) {
 			if got.status != http.StatusOK {
 				t.Fatalf("%s status = %d, want 200", name, got.status)
 			}
-		case <-time.After(3 * time.Second):
+		case <-time.After(testwait.Deadline(3 * time.Second)):
 			t.Fatalf("%s request did not finish", name)
 		}
 	}
@@ -2692,7 +2693,7 @@ func TestServer_BundleConcurrentVariantsHoldVMUntilAllDone(t *testing.T) {
 	// Wait until the kit fetch has actually reached the VM (in-flight).
 	select {
 	case <-vm.bundleHeld:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("kit fetch never reached the VM")
 	}
 
@@ -2791,7 +2792,7 @@ func TestServer_BundleConcurrentIdenticalCoalesced(t *testing.T) {
 	go func() { r1 <- run() }() // leader: blocks at the VM, holding the fetch lock
 	select {
 	case <-vm.bundleHeld:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("first kit fetch never reached the VM")
 	}
 	go func() { r2 <- run() }() // follower: blocks on the per-variant fetch lock

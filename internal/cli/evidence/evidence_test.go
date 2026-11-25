@@ -31,6 +31,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/evidenceview"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 const (
@@ -586,7 +587,7 @@ func TestServeCmd_NoLicenseRequired(t *testing.T) {
 	var listenLine string
 	select {
 	case listenLine = <-stdout.ch:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatalf("free serve did not bind without a license; output=%s", stdout.String())
 	}
 	endpoint := strings.TrimSpace(strings.TrimPrefix(listenLine, "pipelock evidence serve listening on "))
@@ -621,7 +622,7 @@ func TestServeCmd_NoLicenseRequired(t *testing.T) {
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("serve shutdown error = %v, want context canceled", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("serve did not shut down after context cancellation")
 	}
 }

@@ -25,6 +25,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 const testTLSCRLBody = "compatibility-ok"
@@ -237,7 +238,7 @@ func TestTLSCRLBoundListener(t *testing.T) {
 			if err != nil {
 				t.Error(err)
 			}
-		case <-time.After(10 * time.Second):
+		case <-time.After(testwait.Deadline(10 * time.Second)):
 			t.Error("shutdown timed out")
 		}
 	})
@@ -430,7 +431,7 @@ func startTLSCRLHTTPSProxy(t *testing.T) (*url.URL, *x509.Certificate, string) {
 			if err != nil {
 				t.Error(err)
 			}
-		case <-time.After(10 * time.Second):
+		case <-time.After(testwait.Deadline(10 * time.Second)):
 			t.Error("shutdown timed out")
 		}
 	})

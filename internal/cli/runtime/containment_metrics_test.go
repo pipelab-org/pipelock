@@ -209,7 +209,7 @@ func TestNewServer_ContainmentUnsafeMetricsDisablesListenerAndReportsCritical(t 
 		t.Fatalf("critical containment drift was not reported:\n%s", stderr.String())
 	}
 
-	deadline := time.NewTimer(3 * time.Second)
+	deadline := time.NewTimer(testwait.Deadline(3 * time.Second))
 	defer deadline.Stop()
 	for {
 		select {

@@ -23,6 +23,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/cli/presets"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // SSH identification strings: each side of an SSH connection sends one as its
@@ -90,7 +91,7 @@ func (u *tunnelUpstream) waitReceived(t *testing.T) []byte {
 	select {
 	case got := <-u.received:
 		return got
-	case <-time.After(10 * time.Second):
+	case <-time.After(testwait.Deadline(10 * time.Second)):
 		t.Fatal("upstream connection was never closed by the proxy")
 		return nil
 	}

@@ -23,6 +23,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // Transport-parity regression fixtures. These tests pin the observable
@@ -550,7 +551,7 @@ func TestRunWSProxy_ParityRedactsToolCallArguments(t *testing.T) {
 	select {
 	case b := <-forwardedCh:
 		fwd = string(b)
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		_ = pw.Close()
 		wg.Wait()
 		t.Fatal("upstream never received the forwarded tool-call frame")

@@ -156,7 +156,7 @@ func TestDashboardStartupCancellation(t *testing.T) {
 		if err != nil {
 			t.Fatalf("canceled serve: %v", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("serve did not terminate after cancellation")
 	}
 	prepared.close()
@@ -187,7 +187,7 @@ func TestDashboardStartupAlreadyCanceled(t *testing.T) {
 		if err != nil && !errors.Is(err, context.Canceled) {
 			t.Fatalf("already canceled serve: %v", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("already canceled serve did not terminate")
 	}
 }

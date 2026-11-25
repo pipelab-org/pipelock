@@ -152,7 +152,7 @@ func TestKillSwitchActivationNotBlockedByStalledDeferredSendStdio(t *testing.T) 
 		ks.SetAPI(true)
 		close(activated)
 	}()
-	deadline := time.NewTimer(2 * time.Second)
+	deadline := time.NewTimer(testwait.Deadline(2 * time.Second))
 	defer deadline.Stop()
 	select {
 	case <-activated:

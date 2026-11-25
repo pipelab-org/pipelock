@@ -19,6 +19,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestPercentile(t *testing.T) {
@@ -346,7 +348,7 @@ func TestRunLoadTestCancellationDuringRampWaitsForStartedUsers(t *testing.T) {
 
 	select {
 	case <-started:
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("first virtual user did not start")
 	}
 	cancel()

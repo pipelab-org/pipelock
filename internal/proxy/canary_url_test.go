@@ -19,6 +19,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 const browserCanaryFixture = "browser-fixture-canary-marker"
@@ -123,7 +124,7 @@ func TestCanaryURLWithoutKnownSecretsAcrossHTTPPaths(t *testing.T) {
 			defer func() { _ = allowed.Body.Close() }()
 			select {
 			case <-arrived:
-			case <-time.After(5 * time.Second):
+			case <-time.After(testwait.Deadline(5 * time.Second)):
 				t.Fatal("owned endpoint did not witness the positive route")
 			}
 			wantStatus := http.StatusOK

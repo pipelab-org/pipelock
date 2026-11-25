@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // TestKillSwitchActivationNotBlockedByStalledDeferredSend proves a claimed
@@ -49,7 +51,7 @@ func TestKillSwitchActivationNotBlockedByStalledDeferredSend(t *testing.T) {
 				activate(t, c)
 				close(done)
 			}()
-			timer := time.NewTimer(2 * time.Second)
+			timer := time.NewTimer(testwait.Deadline(2 * time.Second))
 			defer timer.Stop()
 			select {
 			case <-done:

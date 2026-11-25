@@ -952,7 +952,7 @@ func TestVerifyConnRefusesServerRowStuckMidAccept(t *testing.T) {
 	var res result
 	select {
 	case res = <-done:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("VerifyConn still retrying after 5s, want a refusal at the 50ms retry cap")
 	}
 	if elapsed := time.Since(start); elapsed > 2*time.Second {

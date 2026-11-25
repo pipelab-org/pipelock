@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 type blockingProviderLog struct {
@@ -90,7 +92,7 @@ func TestProviderHealthLoggingDoesNotHoldStateMutex(t *testing.T) {
 	}()
 	select {
 	case <-snapshotDone:
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("Snapshot blocked behind provider log write")
 	}
 	close(log.release)

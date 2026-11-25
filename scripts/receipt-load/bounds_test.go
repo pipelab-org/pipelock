@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestSummaryRejectsFailedVerifier(t *testing.T) {
@@ -176,7 +177,7 @@ func TestFailedSignalHasBoundedWait(t *testing.T) {
 		if !p.stopped {
 			t.Fatal("cleanup did not retry termination")
 		}
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		_ = original.Kill()
 		<-done
 		t.Fatal("failed signal waited without a deadline")

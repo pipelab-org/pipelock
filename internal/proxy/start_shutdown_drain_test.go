@@ -80,7 +80,7 @@ func testServeUntilShutdownWaitsForInFlightHandlers(t *testing.T, cancelContext 
 	}()
 	select {
 	case <-entered:
-	case <-time.After(10 * time.Second):
+	case <-time.After(testwait.Deadline(10 * time.Second)):
 		t.Fatal("request never reached the handler")
 	}
 
@@ -113,7 +113,7 @@ func testServeUntilShutdownWaitsForInFlightHandlers(t *testing.T, cancelContext 
 		if !errors.Is(err, wantServeErr) {
 			t.Fatalf("serveUntilShutdown = %v, want %v", err, wantServeErr)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(testwait.Deadline(10 * time.Second)):
 		t.Fatal("serveUntilShutdown did not return after the handler drained")
 	}
 	select {
@@ -140,7 +140,7 @@ func TestServeUntilShutdownServeFailureDrainsWithoutCancel(t *testing.T) {
 		if !errors.Is(err, want) {
 			t.Fatalf("serveUntilShutdown = %v, want %v", err, want)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(testwait.Deadline(10 * time.Second)):
 		t.Fatal("serveUntilShutdown blocked after serve failed")
 	}
 	if !shutdownCalled {
@@ -169,7 +169,7 @@ func TestServeUntilShutdownCancelWithNothingInFlight(t *testing.T) {
 		if !errors.Is(err, http.ErrServerClosed) {
 			t.Fatalf("serveUntilShutdown = %v, want ErrServerClosed", err)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(testwait.Deadline(10 * time.Second)):
 		t.Fatal("serveUntilShutdown did not return after cancel")
 	}
 	if shutdowns != 1 {
@@ -236,7 +236,7 @@ func waitAccepting(t *testing.T, ln closeErrListener, what string) {
 	t.Helper()
 	select {
 	case <-ln.accepting:
-	case <-time.After(10 * time.Second):
+	case <-time.After(testwait.Deadline(10 * time.Second)):
 		t.Fatalf("%s never called Accept", what)
 	}
 }
@@ -260,7 +260,7 @@ func TestShutdownAgentServersReportsIncompleteDrain(t *testing.T) {
 		if !errors.Is(serveErr, http.ErrServerClosed) {
 			t.Fatalf("agent Serve = %v, want ErrServerClosed", serveErr)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(testwait.Deadline(10 * time.Second)):
 		t.Fatal("agent server did not stop")
 	}
 }
@@ -292,7 +292,7 @@ func TestStartReportsIncompleteDrainFromEveryListener(t *testing.T) {
 				t.Errorf("StartWithListener = %v, want cause %v", err, want)
 			}
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(testwait.Deadline(10 * time.Second)):
 		t.Fatal("StartWithListener did not return after cancel")
 	}
 }

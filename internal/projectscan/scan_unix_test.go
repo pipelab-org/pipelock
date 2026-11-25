@@ -12,6 +12,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestScanFiles_SymlinkTargetsAreInspectedByTarget(t *testing.T) {
@@ -42,7 +44,7 @@ func TestScanFiles_SymlinkTargetsAreInspectedByTarget(t *testing.T) {
 				if len(findings) != 1 || !strings.Contains(findings[0].Message, "Could not inspect .env for secrets ("+tc.reason+")") {
 					t.Fatalf("got %+v, want one %q inspection warning", findings, tc.reason)
 				}
-			case <-time.After(10 * time.Second):
+			case <-time.After(testwait.Deadline(10 * time.Second)):
 				t.Fatal("scan blocked on a symlinked special file")
 			}
 		})
@@ -108,7 +110,7 @@ func TestReadSecretCandidate_FIFODoesNotBlock(t *testing.T) {
 		if r.reason != "not a regular file" || r.data != nil {
 			t.Fatalf("FIFO read = %q, %q; want refusal", r.data, r.reason)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(testwait.Deadline(10 * time.Second)):
 		t.Fatal("reading a FIFO candidate blocked")
 	}
 }

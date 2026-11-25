@@ -31,6 +31,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/deferred"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 type settlementTransport uint8
@@ -780,7 +781,7 @@ func (p *settlementProbe) wsUpstream(t *testing.T) string {
 		}()
 		select {
 		case <-done:
-		case <-time.After(settlementBound):
+		case <-time.After(testwait.Deadline(settlementBound)):
 			t.Error("WebSocket fixture handlers did not stop")
 		}
 	})

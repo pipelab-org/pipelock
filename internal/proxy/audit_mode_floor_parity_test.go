@@ -24,6 +24,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // TestAuditModeConnectSNIRequireTLS records the opaque-tunnel refusal.
@@ -72,7 +73,7 @@ func TestAuditModeConnectSNIRequireTLS(t *testing.T) {
 					if got != 0 {
 						t.Fatalf("upstream received %d refused bytes", got)
 					}
-				case <-time.After(5 * time.Second):
+				case <-time.After(testwait.Deadline(5 * time.Second)):
 					t.Fatal("upstream connection did not end")
 				}
 			}
@@ -211,7 +212,7 @@ func TestAuditModeWebSocketNegotiationFloor(t *testing.T) {
 				// Its connection has ended, and only the benign frame arrived.
 				select {
 				case <-backendDone:
-				case <-time.After(5 * time.Second):
+				case <-time.After(testwait.Deadline(5 * time.Second)):
 					t.Fatal("backend connection did not end")
 				}
 				if got := frames(); got != 1 {

@@ -23,6 +23,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 const (
@@ -1652,7 +1653,7 @@ func TestReload_CEEAdmissionSnapshotsPolicyAndStateTogether(t *testing.T) {
 		if !ok {
 			t.Fatal("permissive reload failed")
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("permissive reload remained wedged after the admission released its snapshot")
 	}
 	p.ceeAdmissionLocked = nil

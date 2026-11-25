@@ -23,6 +23,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/session"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 type listenerDiagnosisStore struct {
@@ -608,7 +609,7 @@ func TestHTTPListenerDiagnosis_DeleteCancelsInFlightTokenState(t *testing.T) {
 
 	select {
 	case <-started:
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("delayed request did not reach upstream")
 	}
 	deleteReq, err := http.NewRequestWithContext(context.Background(), http.MethodDelete, baseURL+"/", nil)
@@ -634,7 +635,7 @@ func TestHTTPListenerDiagnosis_DeleteCancelsInFlightTokenState(t *testing.T) {
 		if got.status == http.StatusOK || strings.Contains(got.body, `"result"`) {
 			t.Fatalf("deleted session forwarded delayed response: status=%d body=%s", got.status, got.body)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("delayed request did not finish after release")
 	}
 }
@@ -697,7 +698,7 @@ func TestHTTPListenerDiagnosis_DeletePreventsInFlightGETSSEWrite(t *testing.T) {
 
 	select {
 	case <-started:
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("GET stream did not reach upstream")
 	}
 	deleteReq, err := http.NewRequestWithContext(context.Background(), http.MethodDelete, baseURL+"/", nil)
@@ -723,7 +724,7 @@ func TestHTTPListenerDiagnosis_DeletePreventsInFlightGETSSEWrite(t *testing.T) {
 		if strings.Contains(got.body, "late-after-delete") {
 			t.Fatalf("deleted state emitted late SSE event: status=%d body=%s", got.status, got.body)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("GET stream did not finish after release")
 	}
 }

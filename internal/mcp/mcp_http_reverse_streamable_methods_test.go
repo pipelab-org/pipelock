@@ -32,6 +32,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 type streamableUpstreamObservation struct {
@@ -70,7 +71,7 @@ func receiveStreamableUpstreamObservation(t *testing.T, ch <-chan streamableUpst
 	select {
 	case obs := <-ch:
 		return obs
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("timed out waiting for upstream observation")
 		return streamableUpstreamObservation{}
 	}

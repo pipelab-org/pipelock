@@ -17,6 +17,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestIsClientErrorReplyRequiresRequestID(t *testing.T) {
@@ -373,7 +375,7 @@ func TestHTTPClient_SendMessage_StalledRefusalIsBoundedByTheReader(t *testing.T)
 		if err != nil {
 			t.Fatalf("SendMessage: %v", err)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(testwait.Deadline(10 * time.Second)):
 		t.Fatal("SendMessage blocked on a stalled refusal body")
 	}
 	_, err := NewTimeoutReader(reader, 50*time.Millisecond).ReadMessage()
