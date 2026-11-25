@@ -386,10 +386,17 @@ var defaultDLPPatternSet = []DLPPattern{
 	// Source: unverified, current binding carried from defaults.
 	// Publisher documentation: https://replicate.com/docs/topics/authentication
 	{Name: "Replicate API Token", Regex: `r8_[a-f0-9]{40}\b`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"api.replicate.com"}, CredentialAudienceCarrierMask: CredentialAudienceCarrierAuthorizationBearer},
+	// Together AI keys carry a "tgp_v1_" prefix and a base64url suffix; the
+	// publisher CLI redacts them by the "tgp_" prefix:
+	// https://github.com/togethercomputer/together-py/blob/main/src/together/lib/cli/_track_cli.py
+	// Published keys carry a 43-character suffix (32 bytes, unpadded). The
+	// earlier "tok_" shape had no publisher source and, matched
+	// case-insensitively, fired on Google OAuth access tokens whose base64url
+	// body happened to contain "Tok_" followed by 40 alphanumerics.
 	// https://docs.together.ai/docs/quickstart documents api.together.ai.
 	// The publisher SDK uses api.together.xyz/v1:
 	// https://github.com/togethercomputer/together-python/blob/807b79024fdcc4c3d37f49cc65b8d885322ae6b4/src/together/constants.py
-	{Name: "Together AI Key", Regex: `tok_[a-z0-9]{40,}\b`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"api.together.ai", "api.together.xyz"}, CredentialAudienceCarrierMask: CredentialAudienceCarrierAuthorizationBearer},
+	{Name: "Together AI Key", Regex: `tgp_v1_[A-Za-z0-9_-]{40,}`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"api.together.ai", "api.together.xyz"}, CredentialAudienceCarrierMask: CredentialAudienceCarrierAuthorizationBearer},
 	// Pinecone API keys: "pcsk_" prefix followed by alphanumeric.
 	// Source: https://docs.pinecone.io/guides/get-started/authentication
 	{Name: "Pinecone API Key", Regex: `pcsk_[a-zA-Z0-9]{36,}\b`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"api.pinecone.io"}, CredentialAudienceCarrierMask: CredentialAudienceCarrierAPIKey},

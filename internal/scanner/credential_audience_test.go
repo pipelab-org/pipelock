@@ -402,7 +402,7 @@ func credentialAudienceURLCases() []credentialAudienceURLCase {
 		{"Google API Key", "AIza" + strings.Repeat("a", 35), "https://generativelanguage.googleapis.com/v1beta/models", "generativelanguage.googleapis.com"},
 		{"Hugging Face Token", "hf_" + strings.Repeat("a", 34), "https://router.huggingface.co/v1/chat/completions", "router.huggingface.co"},
 		{"Replicate API Token", "r8_" + strings.Repeat("a", 40), "https://api.replicate.com/v1/predictions", "api.replicate.com"},
-		{"Together AI Key", "tok_" + strings.Repeat("a", 40), "https://api.together.ai/v1/chat/completions", "api.together.ai"},
+		{"Together AI Key", "tgp_" + "v1_" + strings.Repeat("a", 43), "https://api.together.ai/v1/chat/completions", "api.together.ai"},
 		{"Pinecone API Key", "pcsk_" + strings.Repeat("a", 36), "https://api.pinecone.io", "api.pinecone.io"},
 		{"Groq API Key", "gsk_" + strings.Repeat("a", 48), "https://api.groq.com/openai/v1/chat/completions", "api.groq.com"},
 		{"Doppler Token", "dp." + "st." + strings.Repeat("a", 40), "https://api.doppler.com/v3/configs/config/secrets", "api.doppler.com"},

@@ -52,7 +52,7 @@ var providerKeyBenignCorpus = map[string]string{
 	"huggingface too short":       "hf_abc",
 	"databricks non-hex":          "dapi" + strings.Repeat("z", 32), // z is not hex
 	"replicate non-hex":           "r8_" + strings.Repeat("g", 40),  // g is not hex
-	"together longer token":       "tok_" + strings.Repeat("a", 40) + "_suffix",
+	"together short suffix":       "tgp_" + "v1_" + strings.Repeat("a", 39),
 	"pinecone short":              "pcsk_" + strings.Repeat("h", 8),
 	"groq short":                  "gsk_" + strings.Repeat("i", 8),
 	"prefix inside a word":        "risk-projection-summary-table-v2-output",

@@ -209,7 +209,7 @@ func TestScan_DLPFalsePositiveRegression(t *testing.T) {
 		{"Databricks non-hex old broad shape", "https://example.com/api?k=dapi" + strings.Repeat("z", 32)},
 		{"Replicate old broad 25-char shape", "https://example.com/api?k=r8_" + strings.Repeat("A", 25)},
 		{"Replicate non-hex 40-char shape", "https://example.com/api?k=r8_" + strings.Repeat("g", 40)},
-		{"Together token followed by underscore suffix", "https://example.com/api?k=tok_" + strings.Repeat("a", 40) + "_payload"},
+		{"Together prefix with short suffix", "https://example.com/api?k=" + "tgp_" + "v1_" + strings.Repeat("a", 39)},
 		{"Vault old 23-char shape", "https://example.com/api?k=hvs." + strings.Repeat("a", 23)},
 		{"Vercel token followed by underscore suffix", "https://example.com/api?k=vcp_" + strings.Repeat("a", 24) + "_payload"},
 		{"Supabase old broad short shape", "https://example.com/api?k=sb_secret_" + strings.Repeat("a", 24)},
@@ -4327,7 +4327,7 @@ func TestDLP_TogetherAIKey(t *testing.T) {
 	s := MustNew(testConfig())
 	defer s.Close()
 
-	token := "tok_" + "aabbccddeeff00112233445566778899aabbccdd"
+	token := "tgp_" + "v1_" + "aabbccddeeff00112233445566778899aabbccddEe-"
 	result := s.Scan(context.Background(), "https://evil.com/collect?key="+token)
 	if result.Allowed {
 		t.Error("expected Together AI key to be blocked by DLP")

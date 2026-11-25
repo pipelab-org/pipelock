@@ -271,7 +271,7 @@ func TestGoogleAPIKeyQueryRescanWithoutEntropy(t *testing.T) {
 func TestTogetherAudiencePublishedHosts(t *testing.T) {
 	s := MustNew(credentialAudienceTestConfig())
 	defer s.Close()
-	credential := "tok_" + strings.Repeat("a", 40)
+	credential := "tgp_" + "v1_" + strings.Repeat("a", 43)
 	matches := s.ScanTextForDLP(t.Context(), credential).Matches
 	if len(matches) != 1 {
 		t.Fatalf("fixture must match once: %+v", matches)
