@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"slices"
 	"testing"
 	"time"
 
@@ -299,6 +300,23 @@ func v3CutoverRecipes(t *testing.T) []v3Recipe {
 		recipes = append(recipes, v3Recipe{
 			group: 9, name: row.name, verdict: row.verdict, code: row.code, request: req,
 			files: []v3File{row.file, {name, row.legacy}},
+		})
+	}
+	bare, err := actionreceipt.Marshal(chain[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range []struct {
+		name, code string
+		bytes      []byte
+	}{
+		{"legacy-object-after-action", "LEGACY_INVALID", slices.Concat(bare, []byte("\n{}\n"))},
+		{"legacy-null-after-action", "LEGACY_INVALID", slices.Concat(bare, []byte("\nnull\n"))},
+		{"legacy-null-first", "UNRECOGNIZED_FILE", []byte("null\n")},
+	} {
+		recipes = append(recipes, v3Recipe{
+			group: 9, name: row.name, code: row.code, verdict: "INVALID",
+			files: []v3File{owned, {"example.jsonl", row.bytes}},
 		})
 	}
 	return append(recipes, v3RotatedCutoverRecipes(t)...)

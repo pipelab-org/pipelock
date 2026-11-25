@@ -132,7 +132,7 @@ function readLegacy(path: string): Batch {
     if (!line) return;
     const item: Receipt = JSON.parse(line);
     if (item === null || typeof item !== "object" || Array.isArray(item)) {
-      if (item !== null) throw new Error("malformed legacy record");
+      if (item !== null || mode) throw new Error("malformed legacy record");
       unrecognized = true;
       return;
     }

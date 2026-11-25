@@ -350,7 +350,11 @@ def read_legacy_file(path: Path) -> tuple[RecorderRun, bool]:
         text = trim_go_space(raw.decode("utf-8"))
         if not text:
             continue
-        entry = _json(text)
+        entry = json.loads(text, object_pairs_hook=_reject_duplicate_pairs)
+        if entry is None and not mode:
+            return run, False
+        if not isinstance(entry, dict):
+            raise ReceiptError("malformed or mixed legacy record")
         if entry.get("record_type") == V2_RECORD_TYPE:
             kind = "evidence"
         elif (
@@ -367,7 +371,9 @@ def read_legacy_file(path: Path) -> tuple[RecorderRun, bool]:
         ):
             kind = "recorder"
         else:
-            return RecorderRun(), False
+            if mode:
+                raise ReceiptError("malformed or mixed legacy record")
+            return run, False
         if mode and kind != mode:
             raise ReceiptError("malformed or mixed legacy record")
         mode = kind
