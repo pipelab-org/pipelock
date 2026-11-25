@@ -183,7 +183,10 @@ func ResolveDirectory(dir, locationID string) (string, error) {
 			}
 		}
 	}
-	location, err := recorder.ResolveEvidenceLocation(dir, locationID)
+	// An explicit location selects one directory for the profile verifier, which
+	// checks any receipt-profile files in it. The root listing must not refuse
+	// the selection, so this is one of the verifier's mixed-profile opt-ins.
+	location, err := recorder.ResolveEvidenceLocation(dir, locationID, recorder.MixedReceiptProfiles)
 	if err != nil {
 		return "", err
 	}

@@ -46,6 +46,7 @@ func TestResolveDirectory(t *testing.T) {
 		{name: "v3 root", dir: mixed, want: mixedAbs},
 		{name: "legacy location", dir: legacy, want: filepath.Join(legacy, "operational")},
 		{name: "explicit location skips the v3 root", dir: mixed, location: "missing", wantErr: "missing"},
+		{name: "explicit legacy location in a v3 root", dir: mixed, location: "operational", want: filepath.Join(mixedAbs, "operational")},
 		{name: "missing directory", dir: filepath.Join(t.TempDir(), "missing"), wantErr: "missing"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

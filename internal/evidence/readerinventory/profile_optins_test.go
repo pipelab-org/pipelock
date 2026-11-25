@@ -23,6 +23,7 @@ func TestMixedReceiptProfileOptIns(t *testing.T) {
 		"internal/receipt/v3/legacy.go:verifyLegacy:ResolveBaseSessionsExcludingReceiptGroups": 1,
 		"internal/receipt/v3/legacy.go:verifyLegacy:EvidenceLocation":                          1,
 		"internal/receipt/v3/legacy.go:verifyLegacyContinuity:VerifyBase":                      1,
+		"internal/receipt/v3/command/command.go:ResolveDirectory:ResolveEvidenceLocation":      1,
 	}
 	got := make(map[string]int)
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
