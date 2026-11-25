@@ -173,9 +173,11 @@ class PayloadParser:
 def parse_payload(raw: bytes, trailing_code: str = "PAYLOAD_LAYOUT") -> Document:
     try:
         parser = PayloadParser(raw)
-        value = parser.object()
     except UnicodeDecodeError as exc:
-        raise WireError("PAYLOAD_LAYOUT") from exc
+        # An invalid byte can be outside the payload object.
+        PayloadParser(raw[: exc.start]).object()
+        raise WireError(trailing_code) from exc
+    value = parser.object()
     if parser.pos != len(parser.text):
         raise WireError(trailing_code)
     return value

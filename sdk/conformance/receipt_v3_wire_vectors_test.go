@@ -133,6 +133,7 @@ func v3LayoutRecipes(t *testing.T) []v3Recipe {
 		recipes = append(recipes, v3Invalid(1, tc.name, "LINE_LAYOUT", withClose(v3LineTransform(t, tc.line, tc.from, tc.to))))
 	}
 	recipes = append(recipes,
+		v3Invalid(1, "invalid-utf8-after-payload", "LINE_LAYOUT", v3File{first, v3LineTransform(t, head, "}}\n", "}\xff}\n")}),
 		v3Invalid(1, "bom", "LINE_LAYOUT", v3File{first, append([]byte{0xef, 0xbb, 0xbf}, head.line...)}),
 		v3Invalid(1, "damaged-first-line", "LINE_LAYOUT", v3File{first, append([]byte("broken\n"), valid.bytes...)}),
 		v3Invalid(1, "unclaimed-v3", "V3_CONTENT_UNCLAIMED", v3File{"receipt.jsonl", valid.bytes}),
