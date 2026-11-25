@@ -408,11 +408,12 @@ func walkHistoryEntries(input io.Reader, path, sessionID string, consume func(En
 	reader := bufio.NewReader(input)
 	line := make([]byte, 0, 4096)
 	var bytesRead int64
+	lineNum := 1
 	for {
 		fragment, readErr := reader.ReadSlice('\n')
 		bytesRead += int64(len(fragment))
 		if len(line)+len(fragment) > maxEntryWireLineBytes {
-			return fmt.Errorf("line exceeds %d-byte recorder entry limit", MaxEntryLineBytes)
+			return fmt.Errorf("line %d: exceeds %d-byte recorder entry limit", lineNum, MaxEntryLineBytes)
 		}
 		line = append(line, fragment...)
 		if errors.Is(readErr, bufio.ErrBufferFull) {
@@ -432,18 +433,18 @@ func walkHistoryEntries(input io.Reader, path, sessionID string, consume func(En
 			payload := bytes.TrimSuffix(line, []byte{'\n'})
 			payload = bytes.TrimSuffix(payload, []byte{'\r'})
 			if len(payload) > MaxEntryLineBytes {
-				return fmt.Errorf("line exceeds %d-byte recorder entry limit", MaxEntryLineBytes)
+				return fmt.Errorf("line %d: exceeds %d-byte recorder entry limit", lineNum, MaxEntryLineBytes)
 			}
 			if TrimEntryLine(string(payload)) != "" {
 				entry, err := ParseEntryLine(payload)
 				if err != nil {
-					return fmt.Errorf("parsing entry: %w", err)
+					return fmt.Errorf("line %d: parsing entry: %w", lineNum, err)
 				}
 				if !acceptedEntryVersions[entry.Version] {
-					return fmt.Errorf("unsupported entry version %d (accepted: 1, 2, 3)", entry.Version)
+					return fmt.Errorf("line %d: unsupported entry version %d (accepted: 1, 2, 3)", lineNum, entry.Version)
 				}
 				if err := ValidateEntrySchema(entry); err != nil {
-					return err
+					return fmt.Errorf("line %d: %w", lineNum, err)
 				}
 				if entry.SessionID != sessionID {
 					return entrySessionError(entry, sessionID)
@@ -453,6 +454,7 @@ func walkHistoryEntries(input io.Reader, path, sessionID string, consume func(En
 				}
 			}
 		}
+		lineNum++
 		line = line[:0]
 		if errors.Is(readErr, io.EOF) {
 			return nil
@@ -516,6 +518,15 @@ func ReadHistoryEntriesFromReader(r io.Reader) ([]Entry, error) {
 	return entries, nil
 }
 
+// EvidenceFileReadError adds file context to an error returned by the
+// evidence reader. Callers that supply their own context can unwrap it.
+type EvidenceFileReadError struct {
+	err error
+}
+
+func (e *EvidenceFileReadError) Error() string { return "reading evidence file: " + e.err.Error() }
+func (e *EvidenceFileReadError) Unwrap() error { return e.err }
+
 // WalkEvidenceFile walks one recorder file through the evidence readers'
 // secured open: it refuses a symlinked or non-regular file, refuses a torn
 // final write, reads only the bytes present when the file was opened, and
@@ -538,7 +549,7 @@ func WalkEvidenceFile(path string, raw io.Writer, consume func(Entry) error) (os
 		return nil, err
 	}
 	if err := inspectJSONLTail(file, info, file.Name(), evidenceTailValidator(nil)); err != nil {
-		return nil, finishHistoryPathRead(file, info, identity, fmt.Errorf("reading evidence file: %w", err))
+		return nil, finishHistoryPathRead(file, info, identity, &EvidenceFileReadError{err: err})
 	}
 	var src io.Reader = io.NewSectionReader(file, 0, info.Size())
 	if raw != nil {
@@ -547,7 +558,7 @@ func WalkEvidenceFile(path string, raw io.Writer, consume func(Entry) error) (os
 	_, bytesRead, err := walkEntriesFromReader(src, entryReadLimits{}, consume)
 	err = finishHistoryPathRead(file, info, identity, err)
 	if err != nil {
-		return nil, fmt.Errorf("reading evidence file: %w", err)
+		return nil, &EvidenceFileReadError{err: err}
 	}
 	if bytesRead != info.Size() {
 		return nil, fmt.Errorf("reading evidence file: read %d of %d bytes", bytesRead, info.Size())
