@@ -107,6 +107,11 @@ func runShadow(cmd *cobra.Command, flags shadowFlags) error {
 	if err != nil {
 		return err
 	}
+	if flags.sessionsDir == "" && flags.agent != "" && filepath.IsAbs(cfg.Learn.CaptureDir) {
+		if err := receiptinput.RefuseTree(cfg.Learn.CaptureDir, command, "shadow replay"); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("inspect configured capture dir: %w", err)
+		}
+	}
 	cfg.Internal = nil
 	cfg.DLP.ScanEnv = false
 

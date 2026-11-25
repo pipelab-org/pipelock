@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -36,10 +37,12 @@ func VisitPathCommands(root *cobra.Command, visit func(*cobra.Command)) {
 	}
 	_, operands, _ := strings.Cut(root.Use, " ")
 	candidate := pathOperand.MatchString(operands)
-	root.LocalFlags().VisitAll(func(flag *pflag.Flag) {
+	// Cobra merges parent persistent flags lazily.
+	root.InheritedFlags()
+	root.Flags().VisitAll(func(flag *pflag.Flag) {
 		switch flag.Name {
 		case "chain", "dir", "location", "input", "file", "receipt-out", "sessions", "log", "events", "config":
-			candidate = candidate || flag.Name != "config" || root.Name() == "doctor"
+			candidate = true
 		default:
 			name := strings.ToLower(flag.Name)
 			usage := strings.ToLower(flag.Usage)
@@ -60,7 +63,6 @@ func VisitPathCommands(root *cobra.Command, visit func(*cobra.Command)) {
 type ReceiptProbe struct {
 	Args      []string
 	Directory bool
-	Doctor    bool
 }
 
 // RunReceiptCommandOracle exercises the current command tree with writer
@@ -120,7 +122,14 @@ func oracleFixtures(t *testing.T) []oracleFixture {
 	if err := signing.SavePrivateKey(v3FixtureKey(), keyFile); err != nil {
 		t.Fatal(err)
 	}
-	signed, damaged, renamed, nested, mixed := t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir()
+	captureSession := func() string {
+		dir := filepath.Join(t.TempDir(), "example")
+		if err := os.Mkdir(dir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+	signed, damaged, renamed, nested, mixed := captureSession(), captureSession(), captureSession(), captureSession(), captureSession()
 	signedFile, public := V3(t, signed, false)
 	damagedFile, _ := V3(t, damaged, true)
 	raw := oracleReadFile(t, signedFile)
@@ -174,8 +183,9 @@ func runReceiptProbe(t *testing.T, run func([]string, io.Writer) int, name strin
 	side := t.TempDir()
 	configPath := filepath.Join(side, "pipelock.yaml")
 	config := "{}\n"
-	if probe.Doctor {
-		config = fmt.Sprintf("flight_recorder:\n  enabled: true\n  dir: %q\n  signing_key_path: %q\n", fixture.dir, fixture.keyFile)
+	if slices.Contains(probe.Args, "$config") {
+		config = fmt.Sprintf("flight_recorder:\n  enabled: true\n  dir: %q\n  signing_key_path: %q\nlearn:\n  capture_dir: %q\nlogging:\n  output: file\n  file: %q\n",
+			fixture.dir, fixture.keyFile, filepath.Dir(fixture.dir), fixture.file)
 	}
 	oracleWriteFile(t, configPath, []byte(config))
 	replace := strings.NewReplacer("$dir", fixture.dir, "$file", fixture.file, "$pub", fixture.key,
@@ -197,12 +207,6 @@ func runReceiptProbe(t *testing.T, run func([]string, io.Writer) int, name strin
 	// The verifier prints its diagnostic after its report on failures.
 	if line, _, _ := strings.Cut(out.String(), "\n"); json.Unmarshal([]byte(line), &result) == nil && result.Kind == "verify_result" {
 		validReceiptProbeResult(t, code, result.ExitCode, result.Verdict, fixture.name)
-		return
-	}
-	if probe.Doctor && strings.Contains(out.String(), "receipt v3 evidence: ") {
-		if code == 0 && !strings.Contains(out.String(), "receipt v3 evidence: VALID\n") {
-			t.Fatal("doctor returned success without a VALID v3 verdict")
-		}
 		return
 	}
 	if code == 0 || !strings.Contains(out.String(), "pipelock verify-receipt") {
