@@ -364,8 +364,9 @@ func AllowedLoss(surface, input string) string {
 type lossInput struct {
 	text        string
 	url, joined bool
-	// parts counts the non-joined array members a joined view concatenates.
-	parts int
+	// bounds holds the offsets in a joined view where one array member ends
+	// and the next begins.
+	bounds []int
 }
 
 func lossInputs(input string) []lossInput {
@@ -470,14 +471,16 @@ func lossJSONInputs(dec *json.Decoder) ([]lossInput, error) {
 		}
 		if v == '[' {
 			var joined strings.Builder
-			parts := 0
+			var bounds []int
 			for _, field := range out {
 				if !field.joined {
+					if joined.Len() > 0 {
+						bounds = append(bounds, joined.Len())
+					}
 					joined.WriteString(field.text)
-					parts++
 				}
 			}
-			out = append(out, lossInput{text: joined.String(), joined: true, parts: parts})
+			out = append(out, lossInput{text: joined.String(), joined: true, bounds: bounds})
 		}
 		return out, nil
 	}
@@ -674,7 +677,7 @@ func AllowedBareWarning(surface, input string) bool {
 	for _, view := range views {
 		// A card reconstructed from several array members is not a bare
 		// presentation, even when a sibling value is.
-		if view.joined && view.parts > 1 && joinedCard(view.text) {
+		if view.joined && joinedCard(view.text, view.bounds) {
 			return false
 		}
 		if view.url || view.joined {
@@ -732,16 +735,26 @@ func AllowedBareWarning(surface, input string) bool {
 	return found
 }
 
-// joinedCard reports whether any digit window of a joined array view is a
-// complete card field.
-func joinedCard(text string) bool {
-	for _, group := range lossDigits.FindAllString(text, -1) {
-		for start := 0; start < len(group); start++ {
-			for end := start + 14; end <= len(group) && end-start <= 19; end++ {
-				if completeCardField(group[start:end]) {
+// joinedCard reports whether a joined array view reconstructs a complete card
+// field that spans a member boundary. A card wholly inside one member is that
+// member's own presentation and is judged there.
+func joinedCard(text string, bounds []int) bool {
+	for _, group := range lossDigits.FindAllStringIndex(text, -1) {
+		for start := group[0]; start < group[1]; start++ {
+			for end := start + 14; end <= group[1] && end-start <= 19; end++ {
+				if spansBound(start, end, bounds) && completeCardField(text[start:end]) {
 					return true
 				}
 			}
+		}
+	}
+	return false
+}
+
+func spansBound(start, end int, bounds []int) bool {
+	for _, b := range bounds {
+		if start < b && b < end {
+			return true
 		}
 	}
 	return false

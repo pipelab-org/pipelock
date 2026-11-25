@@ -174,4 +174,7 @@ func TestAllowedBareWarningRejectsCorroboratedKeysAndTrailing(t *testing.T) {
 	if !AllowedBareWarning("json-body", `{"value":["`+pan+`"]}`) {
 		t.Fatal("single-member array card no longer eligible")
 	}
+	if !AllowedBareWarning("json-body", `{"value":["`+pan+`","note"]}`) {
+		t.Fatal("card wholly inside one array member treated as reconstructed")
+	}
 }
