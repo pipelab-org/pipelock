@@ -303,6 +303,20 @@ func supportDecls(fset *token.FileSet, file string, parsed *ast.File, into map[p
 							return err
 						}
 					}
+					// A named variable whose initializer calls a function
+					// also runs that call at package initialization for every
+					// test, whether or not a test names the variable: treat
+					// it as a hook like a blank variable.
+					if d.Tok == token.VAR && !blank && callsFunction(sp) {
+						source, err := formatted(fset, sp)
+						if err != nil {
+							return err
+						}
+						inits[key] = append(inits[key], "var "+source)
+						if err := add("func", "\x00blank", "\x00blank", sp, sp); err != nil {
+							return err
+						}
+					}
 					// A blank variable's initializer runs at package
 					// initialization for every test, like init, and no test
 					// names it. Record it in the same ordered sequence. A
@@ -330,15 +344,43 @@ func supportDecls(fset *token.FileSet, file string, parsed *ast.File, into map[p
 	return nil
 }
 
-// importName is the default file-local name of an import path: its last
-// element, skipping a major-version suffix such as /v2.
+// importName approximates the default file-local name of an import path,
+// which Go takes from the imported package's package clause. Without loading
+// every import, use the conventions that clause follows: the last element,
+// skipping a major-version element such as /v2, without a gopkg.in-style
+// .vN suffix or a go- prefix or -go suffix, and up to the first dot or dash.
 func importName(importPath string) string {
 	parts := strings.Split(importPath, "/")
 	name := parts[len(parts)-1]
 	if len(parts) > 1 && len(name) > 1 && name[0] == 'v' && strings.Trim(name[1:], "0123456789") == "" {
 		name = parts[len(parts)-2]
 	}
+	if i := strings.LastIndex(name, ".v"); i > 0 && strings.Trim(name[i+2:], "0123456789") == "" && len(name) > i+2 {
+		name = name[:i]
+	}
+	name = strings.TrimSuffix(strings.TrimPrefix(name, "go-"), "-go")
+	if i := strings.IndexAny(name, ".-"); i > 0 {
+		name = name[:i]
+	}
 	return name
+}
+
+// callsFunction reports whether a variable's initializer calls a function
+// outside a function literal, so it runs code at package initialization.
+func callsFunction(spec *ast.ValueSpec) bool {
+	found := false
+	for _, value := range spec.Values {
+		ast.Inspect(value, func(n ast.Node) bool {
+			switch n.(type) {
+			case *ast.FuncLit:
+				return false
+			case *ast.CallExpr:
+				found = true
+			}
+			return !found
+		})
+	}
+	return found
 }
 
 // usesIota reports whether a constant spec's values mention iota, so its

@@ -279,6 +279,28 @@ func TestOtherDone(t *testing.T) { <-context.Background().Done() }
                                 "hook_test.go": 'package fixture_test\nimport fixture "example.test/fixture"\nfunc init() { _ = fixture.Helper() }\n'})
             self.assertEqual(self.select(repo, head, hook, support=True), {"TestX", "TestInternal"})
 
+    def test_named_variable_initializer_call_is_a_package_hook(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = FixtureRepo(Path(directory))
+            hook = 'package fixture\nfunc register() bool {{ return {value} }}\nvar registered = register()\n'
+            base = repo.commit({
+                "hook_test.go": hook.format(value="true"),
+                "a_test.go": 'package fixture\nimport "testing"\nfunc TestOne(t *testing.T) {}\n',
+            })
+            head = repo.commit({"hook_test.go": hook.format(value="false")})
+            # No test names registered, but its initializer runs for every test.
+            self.assertEqual(self.select(repo, base, head, support=True), {"TestOne"})
+
+    def test_versioned_import_path_binds_its_package_name(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = FixtureRepo(Path(directory))
+            helpers = 'package fixture\nimport "gopkg.in/yaml.{v}"\nfunc encode() any {{ return yaml.Marshal }}\nfunc plain() int {{ return 1 }}\n'
+            uses = ('package fixture\nimport "testing"\nfunc TestEncode(t *testing.T) { _ = encode() }\n'
+                    'func TestPlain(t *testing.T) { _ = plain() }\n')
+            base = repo.commit({"h_test.go": helpers.format(v="v2"), "a_test.go": uses})
+            head = repo.commit({"h_test.go": helpers.format(v="v3")})
+            self.assertEqual(self.select(repo, base, head, support=True), {"TestEncode"})
+
     def test_rebound_import_selects_only_its_users(self):
         with tempfile.TemporaryDirectory() as directory:
             repo = FixtureRepo(Path(directory))
