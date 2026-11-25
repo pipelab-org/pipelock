@@ -398,6 +398,7 @@ def _membership_known(v: Verification) -> bool:
         and (
             item.unknown
             or "previous" not in item.body
+            or not isinstance(item.body.get("lineage"), str)
             or item.body.get("lineage") not in v.histories
         )
         for stream in v.streams.values()

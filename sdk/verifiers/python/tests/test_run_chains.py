@@ -334,3 +334,20 @@ def test_excluded_optional_group_close_is_absent(tmp_path):
     finally:
         _recorder_file_exclusions.reset(marker)
     assert result["verdict"] == GROUP_INCOMPLETE
+
+
+def test_contested_opening_with_nonstring_lineage_is_unknown_membership():
+    from types import SimpleNamespace
+
+    from pipelock_aarp_verify.v3.legacy import _membership_known
+    from pipelock_aarp_verify.v3.verify import _Stream
+
+    root = _Stream(body={"legacy_cutover": {}})
+    invalid = SimpleNamespace(kind="stream_open", unknown=False, body={
+        "previous": {},
+        "lineage": [],
+    })
+    state = SimpleNamespace(histories={"a": [root]}, streams={
+        "contested": _Stream(limit=-1, fork=[invalid]),
+    })
+    assert _membership_known(state) is False
