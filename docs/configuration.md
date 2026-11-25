@@ -117,7 +117,7 @@ Some checks can still block, because a log entry can't undo the damage once it h
 - A recognized credential leaving in a request. Once it's sent, it's exposed.
 - A request to a private network or cloud metadata address, where cloud credentials are served.
 - Content a check needed to read but couldn't, such as a request-policy body over the size limit or one that won't parse. A finding Pipelock never saw can't be logged. Some of these cases have their own settings, and some, such as an incomplete archive upload, can pass.
-- Other controls that don't read `enforce`, such as the kill switch and adaptive escalation.
+- Other controls that don't read `enforce`, such as the kill switch, adaptive escalation and session taint. With taint on under the `balanced` or `strict` policy, a request taint sends for approval after untrusted exposure is refused when no approver can answer, as when Pipelock runs as a background service. The `permissive` taint policy records the exposure and lets the request continue to the other checks.
 
 This is a summary. Relaxing one check never forwards a request that another check blocks.
 
