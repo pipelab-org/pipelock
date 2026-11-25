@@ -343,14 +343,56 @@ def test_contested_opening_with_nonstring_lineage_is_unknown_membership():
     from pipelock_aarp_verify.v3.verify import _Stream
 
     root = _Stream(body={"legacy_cutover": {}})
-    invalid = SimpleNamespace(kind="stream_open", unknown=False, body={
-        "previous": {},
-        "lineage": [],
-    })
-    state = SimpleNamespace(histories={"a": [root]}, streams={
-        "contested": _Stream(limit=-1, fork=[invalid]),
-    })
+    invalid = SimpleNamespace(
+        kind="stream_open",
+        unknown=False,
+        body={
+            "previous": {},
+            "lineage": [],
+        },
+    )
+    state = SimpleNamespace(
+        histories={"a": [root]},
+        streams={
+            "contested": _Stream(limit=-1, fork=[invalid]),
+        },
+    )
     assert _membership_known(state) is False
+
+
+def test_group_inventory_propagates_unreadable_genesis(tmp_path, monkeypatch):
+    from pipelock_aarp_verify import legacy_directory
+    from pipelock_aarp_verify.group import GroupVerificationError
+
+    shard = tmp_path / "evidence-proxy-0.jsonl"
+    shard.write_text("{}\n")
+
+    def unreadable(path):
+        assert path == shard
+        raise GroupVerificationError(
+            "read receipt session evidence"
+        ) from PermissionError("access denied")
+
+    monkeypatch.setattr(legacy_directory, "_open_evidence_file", unreadable)
+    with pytest.raises(PermissionError, match="access denied"):
+        verify_receipt_groups(tmp_path, [])
+
+
+def test_group_inventory_starts_before_candidate_reads(tmp_path, monkeypatch):
+    from pipelock_aarp_verify import legacy_directory
+
+    shard = tmp_path / "evidence-proxy-0.jsonl"
+    shard.write_text("{}\n")
+    first = legacy_directory._first_entry
+    orphan = tmp_path / ("receipt-group-" + "1" * 32 + "-close.json")
+
+    def publish_during_discovery(path):
+        orphan.touch()
+        return first(path)
+
+    monkeypatch.setattr(legacy_directory, "_first_entry", publish_during_discovery)
+    with pytest.raises(OSError, match="changed during verification"):
+        verify_receipt_groups(tmp_path, [])
 
 
 def test_direct_rotation_endorsement_requires_supported_version(tmp_path):
@@ -380,36 +422,3 @@ def test_direct_rotation_endorsement_requires_supported_version(tmp_path):
     verify_base(tmp_path, "example", (key,), endorsements=(endorsement(1),))
     with pytest.raises(ValueError, match="version"):
         verify_base(tmp_path, "example", (key,), endorsements=(endorsement(2),))
-
-def test_group_inventory_propagates_unreadable_genesis(tmp_path, monkeypatch):
-    from pipelock_aarp_verify import legacy_directory
-    from pipelock_aarp_verify.group import GroupVerificationError
-
-    shard = tmp_path / "evidence-proxy-0.jsonl"
-    shard.write_text("{}\n")
-
-    def unreadable(path):
-        assert path == shard
-        raise GroupVerificationError(
-            "read receipt session evidence"
-        ) from PermissionError("access denied")
-
-    monkeypatch.setattr(legacy_directory, "_open_evidence_file", unreadable)
-    with pytest.raises(PermissionError, match="access denied"):
-        verify_receipt_groups(tmp_path, [])
-
-def test_group_inventory_starts_before_candidate_reads(tmp_path, monkeypatch):
-    from pipelock_aarp_verify import legacy_directory
-
-    shard = tmp_path / "evidence-proxy-0.jsonl"
-    shard.write_text("{}\n")
-    first = legacy_directory._first_entry
-    orphan = tmp_path / ("receipt-group-" + "1" * 32 + "-close.json")
-
-    def publish_during_discovery(path):
-        orphan.touch()
-        return first(path)
-
-    monkeypatch.setattr(legacy_directory, "_first_entry", publish_during_discovery)
-    with pytest.raises(OSError, match="changed during verification"):
-        verify_receipt_groups(tmp_path, [])

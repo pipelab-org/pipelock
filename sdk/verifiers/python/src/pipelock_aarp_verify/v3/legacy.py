@@ -355,16 +355,20 @@ def _read_inventory_row(source: BinaryIO) -> bytes | None:
     return None
 
 
-def _read_inventory(path: Path, pin: str, chains: int) -> list[Document] | None:
+def _read_inventory(
+    path: Path, pin: str, chains: int, *, retain_rows: bool = True
+) -> list[Document] | None:
     prefix = b'{"chains":['
     with _open_regular_input(path) as source:
         if source.read(len(prefix)) != prefix:
             return None
         hashed = hashlib.sha256(prefix)
         rows: list[Document] = []
+        previous: Identity | None = None
+        count = 0
         token = source.read(1)
         while token == b"{":
-            if 0 <= chains <= len(rows):
+            if 0 <= chains <= count:
                 return None
             raw = _read_inventory_row(source)
             if raw is None:
@@ -373,9 +377,15 @@ def _read_inventory(path: Path, pin: str, chains: int) -> list[Document] | None:
                 row = parse_payload(raw)
             except WireError:
                 return None
-            if not _valid_row(row) or (rows and _identity(rows[-1]) >= _identity(row)):
+            if not _valid_row(row):
                 return None
-            rows.append(row)
+            identity = _identity(row)
+            if previous is not None and previous >= identity:
+                return None
+            previous = identity
+            count += 1
+            if retain_rows:
+                rows.append(row)
             hashed.update(raw)
             token = source.read(1)
             if token != b",":
@@ -384,7 +394,7 @@ def _read_inventory(path: Path, pin: str, chains: int) -> list[Document] | None:
             token = source.read(1)
             if token != b"{":
                 return None
-        if token != b"]" or (chains >= 0 and len(rows) != chains):
+        if token != b"]" or (chains >= 0 and count != chains):
             return None
         tail = source.read(_INVENTORY_ITEM_LIMIT)
         if not _INVENTORY_TAIL.fullmatch(tail) or source.read(1):
@@ -477,7 +487,7 @@ def verify_cutover(
                 unproven[opener.id] = opener
     for pin in sorted(inventories.keys() - checked):
         for path in inventories[pin]:
-            if _read_inventory(path, pin, -1) is None:
+            if _read_inventory(path, pin, -1, retain_rows=False) is None:
                 v.add("CUTOVER_INVENTORY_MISMATCH")
     if old.keys() - listed:
         v.add("LEGACY_CHAIN_UNLISTED" if known else "LEGACY_MEMBERSHIP_UNKNOWN")
