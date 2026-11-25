@@ -385,7 +385,7 @@ func TestTLSCRLFailureAndWarning(t *testing.T) {
 }
 
 func TestTLSCRLHTTPSClient(t *testing.T) {
-	proxyURL, _, ca, target := startTLSCRLHTTPSProxy(t)
+	proxyURL, ca, target := startTLSCRLHTTPSProxy(t)
 	trust := x509.NewCertPool()
 	trust.AddCert(ca)
 	client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL), TLSClientConfig: &tls.Config{RootCAs: trust, MinVersion: tls.VersionTLS12}}, Timeout: 10 * time.Second}
@@ -402,12 +402,12 @@ func TestTLSCRLHTTPSClient(t *testing.T) {
 }
 
 // startTLSCRLHTTPSProxy runs an intercepting proxy in front of a TLS upstream
-// and returns the proxy URL, its config, the interception CA and the upstream URL.
-func startTLSCRLHTTPSProxy(t *testing.T) (*url.URL, *config.Config, *x509.Certificate, string) {
+// and returns the proxy URL, the interception CA and the upstream URL.
+func startTLSCRLHTTPSProxy(t *testing.T) (*url.URL, *x509.Certificate, string) {
 	t.Helper()
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, testTLSCRLBody) }))
 	t.Cleanup(upstream.Close)
-	p, cfg, ca := newTLSCRLProxy(t, func(c *config.Config) {
+	p, _, ca := newTLSCRLProxy(t, func(c *config.Config) {
 		c.ForwardProxy.Enabled = true
 		c.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	})
@@ -438,7 +438,7 @@ func startTLSCRLHTTPSProxy(t *testing.T) (*url.URL, *config.Config, *x509.Certif
 	if err != nil {
 		t.Fatal(err)
 	}
-	return proxyURL, cfg, ca, upstream.URL
+	return proxyURL, ca, upstream.URL
 }
 
 func tlsCRLClientRequest(t *testing.T, target string) *http.Request {

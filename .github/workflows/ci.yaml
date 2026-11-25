@@ -1447,7 +1447,7 @@ jobs:
         run: go test -count=1 -run "TestWindows" ./internal/config/...
 
       - name: Built-in Schannel curl accepts intercepted certificates
-        run: go test -count=1 -run "^TestWindowsTLSCRLSchannel$" ./internal/proxy/
+        run: go test -count=1 -run "^TestWindowsSchannelUsesCRLDistributionPoint$" ./internal/certgen/
 
       - name: Replace and roll back a running Windows executable
         run: go test -count=1 ./internal/cli/selfupdate/...
