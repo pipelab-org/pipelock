@@ -798,35 +798,32 @@ func TestAgentListenerBinding(t *testing.T) {
 	}))
 	t.Cleanup(func() { backend.Close() })
 
-	// Bind free ports for the agent and main listeners.
+	// Bind both listeners on ephemeral ports directly and hand them to the
+	// servers without closing, eliminating the close-then-rebind TOCTOU window
+	// where another test could steal a port and accept the readiness dial.
+	ctx, cancel := context.WithCancel(context.Background())
 	lc := net.ListenConfig{}
-	agentLn, listenErr := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
-	if listenErr != nil {
-		t.Fatalf("failed to get free port: %v", listenErr)
+	agentLn, agentLnErr := lc.Listen(ctx, "tcp4", "127.0.0.1:0")
+	if agentLnErr != nil {
+		cancel()
+		t.Fatalf("bind agent listener: %v", agentLnErr)
+	}
+	mainLn, mainLnErr := lc.Listen(ctx, "tcp4", "127.0.0.1:0")
+	if mainLnErr != nil {
+		_ = agentLn.Close()
+		cancel()
+		t.Fatalf("bind main listener: %v", mainLnErr)
 	}
 	agentAddr := agentLn.Addr().String()
+	mainAddr := mainLn.Addr().String()
 
 	enforceFalse := false
-
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	cfg.FetchProxy.TimeoutSeconds = 5
-	mainLn, mainErr := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
-	if mainErr != nil {
-		t.Fatalf("failed to get free port for main: %v", mainErr)
-	}
-	cfg.FetchProxy.Listen = mainLn.Addr().String()
-	// Both probe listeners stay open until both ports are chosen: closing the
-	// agent probe first let the kernel hand the same port to the main probe,
-	// so the proxy then tried to bind one address twice.
-	if agentAddr == cfg.FetchProxy.Listen {
-		t.Fatalf("premise: agent and main listeners share %s", agentAddr)
-	}
-	_ = agentLn.Close() // free the ports for the proxy to bind
-	_ = mainLn.Close()
-
+	cfg.FetchProxy.Listen = mainAddr
 	cfg.Agents = map[string]config.AgentProfile{
 		testListenerAgent: {
 			Mode:      config.ModeAudit,
@@ -837,24 +834,30 @@ func TestAgentListenerBinding(t *testing.T) {
 
 	logger := audit.NewNop()
 	sc := scanner.MustNew(cfg)
-	t.Cleanup(func() { sc.Close() })
+	t.Cleanup(sc.Close)
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
+		_ = agentLn.Close()
+		_ = mainLn.Close()
+		cancel()
 		t.Fatalf("proxy.New: %v", err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	t.Cleanup(func() { p.Close() })
+	var agentSrv *http.Server
+	t.Cleanup(func() {
+		cancel()
+		if agentSrv != nil {
+			shutCtx, shutCancel := context.WithTimeout(context.Background(), testwait.Deadline(2*time.Second))
+			_ = agentSrv.Shutdown(shutCtx)
+			shutCancel()
+		}
+		p.Close()
+	})
 
 	// Start agent listener manually (proxy.Start() no longer manages these;
 	// the CLI layer owns agent listener lifecycle).
 	handler := p.Handler()
-	agentLn2, agentLnErr := (&net.ListenConfig{}).Listen(ctx, "tcp", agentAddr)
-	if agentLnErr != nil {
-		t.Fatalf("bind agent listener: %v", agentLnErr)
-	}
-	agentSrv := &http.Server{
+	agentSrv = &http.Server{
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			r = r.WithContext(edition.WithAgentOverride(r.Context(), testListenerAgent))
 			handler.ServeHTTP(w, r)
@@ -863,18 +866,17 @@ func TestAgentListenerBinding(t *testing.T) {
 	}
 	p.RegisterAgentServer(agentSrv)
 	go func() {
-		if srvErr := agentSrv.Serve(agentLn2); srvErr != nil && !errors.Is(srvErr, http.ErrServerClosed) {
+		if srvErr := agentSrv.Serve(agentLn); srvErr != nil && !errors.Is(srvErr, http.ErrServerClosed) {
 			t.Logf("agent listener error: %v", srvErr)
 		}
 	}()
 
-	// Start proxy in background (Start() blocks).
+	// Start proxy on the already-bound main listener (blocks until cancel).
 	startErr := make(chan error, 1)
-	go func() { startErr <- p.Start(ctx) }()
+	go func() { startErr <- p.StartWithListener(ctx, mainLn) }()
 
-	// Wait for both listeners to be ready.
-	waitForListener(t, cfg.FetchProxy.Listen)
-	waitForListener(t, agentAddr)
+	waitForListener(t, mainAddr, startErr)
+	waitForListener(t, agentAddr, startErr)
 
 	// Request to the agent listener: should get listener-agent identity
 	// even without X-Pipelock-Agent header. The agent is in audit mode
@@ -923,7 +925,7 @@ func TestAgentListenerBinding(t *testing.T) {
 	}
 
 	// Request to main listener: should NOT have listener-agent identity.
-	mainReq, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+cfg.FetchProxy.Listen+"/fetch?url="+blockedURL, nil)
+	mainReq, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+mainAddr+"/fetch?url="+blockedURL, nil)
 	mainResp, mainRespErr := http.DefaultClient.Do(mainReq)
 	if mainRespErr != nil {
 		t.Fatalf("GET main listener: %v", mainRespErr)
@@ -950,18 +952,24 @@ func TestAgentListenerBinding(t *testing.T) {
 	select {
 	case err := <-startErr:
 		if err != nil {
-			t.Errorf("proxy.Start returned error: %v", err)
+			t.Fatalf("proxy.StartWithListener returned error: %v", err)
 		}
 	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("proxy.StartWithListener did not exit within deadline")
 	}
 }
 
-// waitForListener polls a TCP address until it accepts connections.
-func waitForListener(t *testing.T, addr string) {
+// waitForListener polls an already-bound listener until it accepts connections,
+// failing promptly if the proxy server exits first.
+func waitForListener(t *testing.T, addr string, startErr <-chan error) {
 	t.Helper()
 	d := net.Dialer{Timeout: 100 * time.Millisecond}
 	testwait.For(t, 3*time.Second, func() bool {
+		select {
+		case err := <-startErr:
+			t.Fatalf("proxy exited before %s accepted: %v", addr, err)
+		default:
+		}
 		conn, err := d.DialContext(context.Background(), "tcp", addr)
 		if err == nil {
 			_ = conn.Close()

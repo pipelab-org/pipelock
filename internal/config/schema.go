@@ -1343,6 +1343,7 @@ func (e PathEntropyExclusion) RouteScope() string {
 
 // DLP configures data loss prevention scanning.
 type DLP struct {
+	CardBareAction     string       `yaml:"card_bare_action"` // block (default) or warn for uncorroborated bare text cards
 	ScanEnv            bool         `yaml:"scan_env"`
 	SecretsFile        string       `yaml:"secrets_file"`
 	MinEnvSecretLength int          `yaml:"min_env_secret_length"` // minimum env var length for leak detection (default 16)

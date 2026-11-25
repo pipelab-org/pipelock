@@ -13,9 +13,9 @@ import (
 
 func TestListenAddrsReturnsDistinctFreeAddrs(t *testing.T) {
 	const count = 4
-	addrs := ListenAddrs(t, count)
+	addrs := listenAddrs(t, count)
 	if len(addrs) != count {
-		t.Fatalf("ListenAddrs returned %d addrs, want %d", len(addrs), count)
+		t.Fatalf("listenAddrs returned %d addrs, want %d", len(addrs), count)
 	}
 
 	seen := make(map[string]struct{}, count)

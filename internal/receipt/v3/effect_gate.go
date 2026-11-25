@@ -13,11 +13,11 @@ import (
 
 // EffectGate owns receipt admission and settlement for one stream. A zero gate
 // disables receipt recording. Required mode withholds on every admission write
-// error. Optional mode withholds when the writer reports ErrEffectNotReleased,
-// since the writer then owns the refusal. An error from Admit prohibits release.
+// error. Optional mode withholds after a failed started write or fatal recovery. An error from Admit prohibits release.
 // A nil token with no error means release may proceed without a recorded intent.
 type EffectGate struct {
 	write               func(context.Context, Action, PolicySnapshot) error
+	writeObserved       func(context.Context, Action, PolicySnapshot) error
 	writeOptionalDenial func(context.Context, Action, PolicySnapshot) error
 	writeBatch          func(context.Context, []Action, PolicySnapshot) error
 	required            bool
@@ -31,9 +31,12 @@ func NewEffectGate(writer *StreamWriter) EffectGate {
 	}
 	return EffectGate{
 		write: writer.WriteAction, writeBatch: writer.WriteAdmissionBatch,
+		writeObserved: func(ctx context.Context, action Action, policy PolicySnapshot) error {
+			return writer.writeAction(ctx, action, policy, writeObserved)
+		},
 		required: writer.open.Coverage.ReceiptsRequired,
 		writeOptionalDenial: func(ctx context.Context, action Action, policy PolicySnapshot) error {
-			return writer.writeAction(ctx, action, policy, true)
+			return writer.writeAction(ctx, action, policy, writeBestEffort)
 		},
 	}
 }
@@ -70,7 +73,7 @@ type EffectToken struct {
 // supplies its identity, verdict and boundary. The gate sets its phase and
 // attempt fields. Each independently released effect needs its own action ID.
 func (g EffectGate) Admit(ctx context.Context, action Action, policy PolicySnapshot) (*EffectToken, error) {
-	return g.admit(ctx, []Action{action}, policy)
+	return g.admit(ctx, []Action{action}, policy, false)
 }
 
 // AdmitHeld writes the intent of a held call. Even on an optional stream,
@@ -111,13 +114,7 @@ func (g EffectGate) RecordApproval(ctx context.Context, action Action, policy Po
 // AdmitDenialDelivery uses best-effort recording for optional local denials.
 func (g EffectGate) AdmitDenialDelivery(ctx context.Context, action Action, policy PolicySnapshot) (*EffectToken, error) {
 	if !g.required && g.writeOptionalDenial != nil {
-		writeTerminal := g.write
-		g.write = g.writeOptionalDenial
-		token, err := g.Admit(ctx, action, policy)
-		if token != nil {
-			token.gate.write = writeTerminal
-		}
-		return token, err
+		return g.admit(ctx, []Action{action}, policy, true)
 	}
 	return g.Admit(ctx, action, policy)
 }
@@ -126,10 +123,10 @@ func (g EffectGate) AdmitDenialDelivery(ctx context.Context, action Action, poli
 // settle from the same observation. The first action identifies the primary
 // decision and supporting actions may reference it by ID.
 func (g EffectGate) AdmitBatch(ctx context.Context, actions []Action, policy PolicySnapshot) (*EffectToken, error) {
-	return g.admit(ctx, slices.Clone(actions), policy)
+	return g.admit(ctx, slices.Clone(actions), policy, false)
 }
 
-func (g EffectGate) admit(ctx context.Context, actions []Action, policy PolicySnapshot) (*EffectToken, error) {
+func (g EffectGate) admit(ctx context.Context, actions []Action, policy PolicySnapshot, bestEffort bool) (*EffectToken, error) {
 	if g.write == nil || len(actions) == 0 {
 		return nil, nil
 	}
@@ -143,9 +140,17 @@ func (g EffectGate) admit(ctx context.Context, actions []Action, policy PolicySn
 		actions[i].EffectRelation = relationBefore
 		actions[i].OutcomeClass = ""
 	}
-	err := g.writeIntents(ctx, actions, policy)
+	var err error
+	if bestEffort {
+		err = g.writeOptionalDenial(ctx, actions[0], policy)
+	} else if len(actions) == 1 {
+		err = g.write(ctx, actions[0], policy)
+	} else {
+		err = g.writeBatch(ctx, actions, policy)
+	}
 	if err != nil {
-		if g.required || errors.Is(err, ErrEffectNotReleased) {
+		if g.required || errors.Is(err, ErrEffectNotReleased) || errors.Is(err, ErrActionPersistStarted) ||
+			!bestEffort && errors.Is(err, errWriterNeedsRestart) {
 			return nil, err
 		}
 		return nil, ctx.Err()
@@ -155,13 +160,6 @@ func (g EffectGate) admit(ctx context.Context, actions []Action, policy PolicySn
 		return nil, errors.Join(err, token.Refuse(ctx))
 	}
 	return token, nil
-}
-
-func (g EffectGate) writeIntents(ctx context.Context, actions []Action, policy PolicySnapshot) error {
-	if len(actions) == 1 {
-		return g.write(ctx, actions[0], policy)
-	}
-	return g.writeBatch(ctx, actions, policy)
 }
 
 // Refuse records a blocking decision for an effect that was never admitted.
@@ -181,7 +179,10 @@ func (g EffectGate) Refuse(ctx context.Context, action Action, policy PolicySnap
 
 // Refuse settles an admitted intent whose effect is known never to have started.
 func (t *EffectToken) Refuse(ctx context.Context) error {
-	return t.settle(ctx, outcomeNotReleased, relationNotAttempted, verdictBlock)
+	if t == nil {
+		return nil
+	}
+	return t.settle(ctx, outcomeNotReleased, relationNotAttempted, verdictBlock, t.gate.write)
 }
 
 // ConfirmDelivery settles after the transport's confirmation runs. Confirmation
@@ -194,19 +195,27 @@ func (t *EffectToken) ConfirmDelivery(ctx context.Context, confirm func() (bool,
 	if err != nil || !complete {
 		return errors.Join(err, t.SettleOnExit(ctx))
 	}
-	return t.settle(ctx, "completed", relationAfter, "")
+	return t.settleObserved(ctx, "completed", relationAfter)
 }
 
 // SettleOnExit records attempt_unknown when no stronger observation settled the
 // intent. It is safe after any terminal method and on a nil token.
 func (t *EffectToken) SettleOnExit(ctx context.Context) error {
-	return t.settle(ctx, "attempt_unknown", "unknown", "")
+	return t.settleObserved(ctx, "attempt_unknown", "unknown")
 }
 
-func (t *EffectToken) settle(ctx context.Context, outcome, relation, verdict string) error {
+func (t *EffectToken) settleObserved(ctx context.Context, outcome, relation string) error {
 	if t == nil {
 		return nil
 	}
+	write := t.gate.writeObserved
+	if write == nil {
+		write = t.gate.write
+	}
+	return t.settle(ctx, outcome, relation, "", write)
+}
+
+func (t *EffectToken) settle(ctx context.Context, outcome, relation, verdict string, write func(context.Context, Action, PolicySnapshot) error) error {
 	var err error
 	t.once.Do(func() {
 		ctx, cancel := t.gate.finalizationContext(ctx)
@@ -218,7 +227,7 @@ func (t *EffectToken) settle(ctx context.Context, outcome, relation, verdict str
 			if verdict != "" {
 				action.Verdict = verdict
 			}
-			err = errors.Join(err, t.gate.write(ctx, action, t.policy))
+			err = errors.Join(err, write(ctx, action, t.policy))
 		}
 	})
 	return err

@@ -80,6 +80,9 @@ type mcpMatrixFile struct {
 	scenario              string
 	cancel                context.CancelFunc
 	beforeSync            func(int)
+	matchActionSync       func(v3.Action) bool
+	beforeActionSync      func()
+	actionSyncArmed       atomic.Bool
 }
 
 func (f *mcpMatrixFile) Write(p []byte) (int, error) {
@@ -87,12 +90,38 @@ func (f *mcpMatrixFile) Write(p []byte) (int, error) {
 	if f.scenario == "second SSE intent write fail" && bytes.Contains(p, []byte(secondSSEMethod)) && bytes.Contains(p, []byte(`"phase":"intent"`)) {
 		return 0, errors.New("second SSE intent fixture append failure")
 	}
+	replyFault := f.scenario == "reply intent write fail" || f.scenario == "reply intent sync fail"
+	replyIntent := replyFault && mcpMatrixWriteMatches(p, func(a v3.Action) bool {
+		return a.Phase == "intent" && a.EffectBoundary == mcpDownstreamDeliveryBoundary
+	})
 	if (f.writeCount == 2 && f.scenario == "intent write fail") ||
-		(f.writeCount == 4 && f.scenario == "reply intent write fail") ||
+		(replyIntent && f.scenario == "reply intent write fail") ||
 		(f.writeCount == 3 && (f.scenario == "local denial intent write fail" || f.scenario == "preadmitted reply intent write fail")) {
 		return 0, errors.New("fixture append failure")
 	}
-	return f.File.Write(p)
+	n, err := f.File.Write(p)
+	if err == nil && (replyIntent || f.matchActionSync != nil && mcpMatrixWriteMatches(p, f.matchActionSync)) {
+		f.actionSyncArmed.Store(true)
+	}
+	return n, err
+}
+
+func mcpMatrixWriteMatches(data []byte, match func(v3.Action) bool) bool {
+	for line := range bytes.SplitAfterSeq(data, []byte{'\n'}) {
+		if len(line) == 0 {
+			continue
+		}
+		envelope, code := v3.ExportDSSE(line)
+		if code != "" {
+			continue
+		}
+		var decoded struct{ Payload []byte }
+		var record struct{ Body v3.Action }
+		if json.Unmarshal(envelope, &decoded) == nil && json.Unmarshal(decoded.Payload, &record) == nil && match(record.Body) {
+			return true
+		}
+	}
+	return false
 }
 
 func (f *mcpMatrixFile) Sync() error {
@@ -100,8 +129,13 @@ func (f *mcpMatrixFile) Sync() error {
 	if f.beforeSync != nil {
 		f.beforeSync(f.syncCount)
 	}
-	if f.syncCount == 4 && f.scenario == "reply intent sync fail" {
-		return errors.New("fixture reply sync failure")
+	if f.actionSyncArmed.Swap(false) {
+		if f.beforeActionSync != nil {
+			f.beforeActionSync()
+		}
+		if f.scenario == "reply intent sync fail" {
+			return errors.New("fixture reply sync failure")
+		}
 	}
 	if f.syncCount == 2 {
 		if f.scenario == "intent sync fail" {
@@ -172,7 +206,23 @@ func decodeMCPMatrixActions(dir string) ([]v3.Action, error) {
 	return decodeMCPMatrixReceiptFiles(dir, false)
 }
 
+type mcpMatrixReadMode uint8
+
+const (
+	mcpMatrixConfirmed mcpMatrixReadMode = iota
+	mcpMatrixLive
+	mcpMatrixPhysical
+)
+
 func decodeMCPMatrixReceiptFiles(dir string, live bool) ([]v3.Action, error) {
+	mode := mcpMatrixConfirmed
+	if live {
+		mode = mcpMatrixLive
+	}
+	return readMCPMatrixFileActions(dir, mode)
+}
+
+func readMCPMatrixFileActions(dir string, mode mcpMatrixReadMode) ([]v3.Action, error) {
 	paths, err := filepath.Glob(filepath.Join(dir, "*.receipt-v3.jsonl"))
 	if err != nil {
 		return nil, err
@@ -184,12 +234,13 @@ func decodeMCPMatrixReceiptFiles(dir string, live bool) ([]v3.Action, error) {
 	}
 	var records []record
 	previous := make(map[string]string)
+	writeErrorPins := make(map[string]int64)
 	for _, path := range paths {
 		data, err := os.ReadFile(filepath.Clean(path))
 		if err != nil {
 			return nil, err
 		}
-		if live {
+		if mode == mcpMatrixLive {
 			// The peer can read the next append while observing the wire.
 			// Only the closed-history check requires the complete file.
 			data = data[:bytes.LastIndexByte(data, '\n')+1]
@@ -218,6 +269,9 @@ func decodeMCPMatrixReceiptFiles(dir string, live bool) ([]v3.Action, error) {
 				}
 				if opened.Previous != nil {
 					previous[payload.Stream] = opened.Previous.Stream
+					if opened.Previous.Ended == "write_error" {
+						writeErrorPins[opened.Previous.Stream] = opened.Previous.Seq
+					}
 				}
 			case "action":
 				entry := record{Stream: payload.Stream, Seq: payload.Seq}
@@ -249,6 +303,11 @@ func decodeMCPMatrixReceiptFiles(dir string, live bool) ([]v3.Action, error) {
 	})
 	actions := make([]v3.Action, 0, len(records))
 	for _, r := range records {
+		// A repair may duplicate landed bytes beyond a failed stream's pin.
+		// Receipt appraisal uses only the predecessor's confirmed prefix.
+		if pin, failed := writeErrorPins[r.Stream]; failed && mode != mcpMatrixPhysical && r.Seq > pin {
+			continue
+		}
 		actions = append(actions, r.Body)
 	}
 	return actions, nil
@@ -537,6 +596,16 @@ func exerciseMCPV3Row(t *testing.T, row v3MCPMatrixRow) {
 		t.Fatal(err)
 	}
 
+	linkageActions := actions
+	if row.scenario == "intent sync fail" {
+		// Local denial attribution references the failed intent when its
+		// bytes landed. Keep the physical record for that assertion.
+		linkageActions, err = readMCPMatrixFileActions(writerOpts.Dir, mcpMatrixPhysical)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
 	upstream, readErr := os.ReadFile(filepath.Clean(seen))
 	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
 		t.Fatal(readErr)
@@ -586,7 +655,7 @@ func exerciseMCPV3Row(t *testing.T, row v3MCPMatrixRow) {
 			t.Fatal("no delivery intent before local reply")
 		}
 		if !stdioInvalidReply {
-			assertLocalMCPDeliveries(t, actions, "1")
+			assertLocalMCPDeliveries(t, linkageActions, "1")
 		}
 	} else if client.output.Len() != 0 {
 		t.Fatalf("unexpected reply: %s", client.output.String())
@@ -637,7 +706,7 @@ func exerciseMCPV3Row(t *testing.T, row v3MCPMatrixRow) {
 	} else if stdioInvalidReply {
 		scenario = "stdio invalid reply"
 	}
-	assertMCPMatrixTerminal(t, scenario, actions)
+	assertMCPMatrixTerminal(t, scenario, linkageActions)
 }
 
 func assertMCPMatrixTerminal(t *testing.T, scenario string, actions []v3.Action) {
@@ -906,6 +975,19 @@ func runMCPMatrixWS(t *testing.T, ctx context.Context, in io.Reader, out io.Writ
 	return RunWSProxy(ctx, rd, out, io.Discard, wsURL(srv), opts)
 }
 
+type mcpMatrixReplySignal struct {
+	lockedHTTPBuffer
+	signal func()
+}
+
+func (w *mcpMatrixReplySignal) Write(p []byte) (int, error) {
+	n, err := w.lockedHTTPBuffer.Write(p)
+	if err == nil && w.contains(heldNativeReply) {
+		w.signal()
+	}
+	return n, err
+}
+
 func TestMCPV3IntentPrecedesWebSocketWriteLock(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(5*time.Second))
 	defer cancel()
@@ -913,18 +995,24 @@ func TestMCPV3IntentPrecedesWebSocketWriteLock(t *testing.T) {
 	intent := make(chan struct{})
 	pong := make(chan struct{})
 	row := v3MCPMatrixRow{required: true}
-	writerOpts := mcpMatrixWriterOptions(t, row, deferred.SurfaceMCPWS, cancel, func(count int) {
-		switch count {
-		case 5: // Header and the first exchange.
-			close(firstSettled)
-		case 6: // Second send intent.
-			close(intent)
-			select {
-			case <-pong:
-			case <-ctx.Done():
+	writerOpts := mcpMatrixWriterOptions(t, row, deferred.SurfaceMCPWS, cancel, nil)
+	create := writerOpts.CreateTempFile
+	writerOpts.CreateTempFile = func(dir, pattern string) (v3.StreamFile, error) {
+		file, err := create(dir, pattern)
+		if fixture, ok := file.(*mcpMatrixFile); ok {
+			fixture.matchActionSync = func(a v3.Action) bool {
+				return a.Phase == "intent" && a.EffectBoundary == mcpUpstreamSendBoundary && a.RequestID == "2"
+			}
+			fixture.beforeActionSync = func() {
+				close(intent)
+				select {
+				case <-pong:
+				case <-ctx.Done():
+				}
 			}
 		}
-	})
+		return file, err
+	}
 	writer, err := v3.OpenStreamWriter(ctx, writerOpts)
 	if err != nil {
 		t.Fatal(err)
@@ -959,16 +1047,13 @@ func TestMCPV3IntentPrecedesWebSocketWriteLock(t *testing.T) {
 	defer srv.Close()
 	in, input := io.Pipe()
 	defer func() { _ = input.Close() }()
-	var out lockedHTTPBuffer
+	out := mcpMatrixReplySignal{signal: sync.OnceFunc(func() { close(firstSettled) })}
 	done := make(chan error, 1)
 	opts := MCPProxyOpts{Scanner: testScannerForWS(t)}.WithV3ReceiptWriter(writer)
 	go func() { done <- RunWSProxy(ctx, in, &out, io.Discard, wsURL(srv), opts) }()
 	_, _ = io.WriteString(input, jsonToolsCallEcho+"\n")
 	select {
 	case <-firstSettled:
-		if !out.contains(heldNativeReply) {
-			t.Fatal("first WebSocket reply was not delivered")
-		}
 	case <-ctx.Done():
 		t.Fatal("first WebSocket exchange did not settle")
 	}
@@ -1301,19 +1386,7 @@ func TestMCPV3PolicyRedirectRefusal(t *testing.T) {
 					!strings.Contains(client.String(), "policy redirect is not available while v3 receipts are enabled") {
 					t.Errorf("client refusal missing: %s", client.String())
 				}
-				waitForMCPV3DeliveryOutcome(t, writerOpts.Dir)
-				if err := writer.Close(ctx, nil); err != nil {
-					t.Fatal(err)
-				}
-				key := writerOpts.SigningKey.Public().(ed25519.PublicKey)
-				verified, err := v3.VerifyPaths(ctx, []string{writerOpts.Dir}, v3.Options{Directory: true, Keys: []ed25519.PublicKey{key}})
-				if err != nil || verified.Integrity != "ok" {
-					t.Fatalf("verify: %+v (%v)", verified, err)
-				}
-				actions, err := readMCPMatrixActions(writerOpts.Dir)
-				if err != nil {
-					t.Fatal(err)
-				}
+				actions := verifiedMCPV3RegressionActions(t, writer, writerOpts)
 				if len(actions) != 3 || actions[0].EffectBoundary != mcpDownstreamDeliveryBoundary || actions[0].Verdict != config.ActionBlock {
 					t.Fatalf("expected one signed refusal and its delivery, got %+v", actions)
 				}
@@ -1375,7 +1448,6 @@ func exerciseMCPV3ListenerEarlyInputRefusal(t *testing.T, scenario string) {
 		}),
 	}.WithV3ReceiptWriter(writer)
 	got, _ := driveA2AHTTPDepth(t, upstream.URL, cleanToolsCallRequest, opts, "listener")
-	waitForMCPV3DeliveryOutcome(t, writerOpts.Dir)
 	if scenario == "intent write fail" {
 		if !bytes.Contains(got, []byte("receipt admission failed")) {
 			t.Fatalf("expected generic receipt admission error: %s", got)
@@ -1411,6 +1483,11 @@ func openMCPV3RegressionWriter(t *testing.T, surface string) (*v3.StreamWriter, 
 
 func verifiedMCPV3RegressionActions(t *testing.T, writer *v3.StreamWriter, opts v3.StreamWriterOptions) []v3.Action {
 	t.Helper()
+	// Same drain as localMCPReceiptActions: the listener's deferred outcome
+	// append is still running when the client returns. Close replays repairs
+	// afterwards, so a missing repair outcome still fails the assertions below
+	// rather than this wait.
+	drainMCPReceiptProducers(t)
 	if err := writer.Close(t.Context(), nil); err != nil {
 		t.Fatal(err)
 	}

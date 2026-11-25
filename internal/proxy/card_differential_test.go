@@ -57,8 +57,13 @@ func cardCorpusHash(cases []cardcorpus.Case) string {
 }
 
 func cardOracleVerdicts(t *testing.T, cases []cardcorpus.Case) []uint8 {
+	return cardOracleVerdictsWithAction(t, cases, config.ActionBlock)
+}
+
+func cardOracleVerdictsWithAction(t *testing.T, cases []cardcorpus.Case, action string) []uint8 {
 	t.Helper()
 	cfg := config.Defaults()
+	cfg.DLP.CardBareAction = action
 	cfg.Internal = nil
 	cfg.DLP.ScanEnv = false
 	// Keep the shipped card rule from each checkout, including its validator and
@@ -136,6 +141,19 @@ func TestCardMainDifferential(t *testing.T) {
 	}
 	header := cardOracleHeader{cardMainRevision, cardCorpusHash(cases), len(cases)}
 	got := cardOracleVerdicts(t, cases)
+	checkCardShippedBaseline(t, cases, got)
+	warn := cardOracleVerdictsWithAction(t, cases, config.ActionWarn)
+	for i, c := range cases {
+		for surface, name := range []string{"text", "json-body", "url", "redact"} {
+			bit := uint8(1 << surface)
+			if got[i]&bit != 0 && warn[i]&bit == 0 {
+				input := []string{c.Text, c.JSON, c.URL, c.Text}[surface]
+				if !cardcorpus.AllowedBareWarning(name, input) {
+					t.Errorf("unapproved warn loss %s %s: %q", name, c.ID, input)
+				}
+			}
+		}
+	}
 	if *recordCardMain != "" {
 		head, err := cardCheckoutHead()
 		if err != nil || head != cardMainRevision {
@@ -278,5 +296,45 @@ func cardCheckoutHead() (string, error) {
 			return "", fmt.Errorf("no Git checkout above the test directory")
 		}
 		dir = parent
+	}
+}
+
+// checkCardShippedBaseline pins the shipped presentation floor separately from the
+// earlier migration oracle. Policy changes permit no new default-config passes.
+func checkCardShippedBaseline(t *testing.T, cases []cardcorpus.Case, got []uint8) {
+	t.Helper()
+	f, err := os.Open("testdata/card-main-98a06a950.jsonl.gz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	z, err := gzip.NewReader(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = z.Close() }()
+	dec := json.NewDecoder(z)
+	var header cardOracleHeader
+	if err := dec.Decode(&header); err != nil {
+		t.Fatal(err)
+	}
+	if header.Revision != "98a06a950aa398d16817d09060d1c0d0f6ba2e5e" || header.CorpusSHA256 != cardCorpusHash(cases) || header.Cases != len(cases) {
+		t.Fatalf("invalid shipped baseline: %+v", header)
+	}
+	for i, c := range cases {
+		var row cardOracleRow
+		if err := dec.Decode(&row); err != nil {
+			t.Fatal(err)
+		}
+		if row.ID != c.ID {
+			t.Fatalf("baseline row %d id %s", i, row.ID)
+		}
+		if lost := row.Verdict &^ got[i]; lost != 0 {
+			t.Errorf("new default pass vs shipped main: %s surfaces=%04b text=%q", c.ID, lost, c.Text)
+		}
+	}
+	var extra cardOracleRow
+	if err := dec.Decode(&extra); err != io.EOF {
+		t.Fatalf("trailing baseline data: %v", err)
 	}
 }

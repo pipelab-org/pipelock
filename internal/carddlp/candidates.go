@@ -31,7 +31,7 @@ func VisitWindow(text string, yield func(Candidate) bool) bool {
 	return visit(text, candidateView{openEdges: true}, yield)
 }
 
-type candidateView struct{ allGroups, openEdges bool }
+type candidateView struct{ allGroups, openEdges, strictSeparators bool }
 
 func visit(text string, view candidateView, yield func(Candidate) bool) bool {
 	for start := 0; start < len(text); {
@@ -52,7 +52,7 @@ func visit(text string, view candidateView, yield func(Candidate) bool) bool {
 			canonicalSeparators, legacySeparators, dottedSeparators := true, true, true
 			controls, visible := false, false
 			presentationAllowed := func(groupCount int) bool {
-				if view.allGroups || groupCount == 1 {
+				if view.allGroups || view.strictSeparators || groupCount == 1 {
 					return true
 				}
 				if controls {
@@ -86,7 +86,7 @@ func visit(text string, view candidateView, yield func(Candidate) bool) bool {
 					}
 				}
 				sepStart := at
-				for at < len(text) && ((view.allGroups && (urlSeparator(text[at]) || controlSeparator(text[at]))) || (!view.allGroups && (separator(text[at]) || controlSeparator(text[at])) && (at-sepStart < 2 || text[at] == ' ' || text[at] == '-' || controls || controlSeparator(text[at])))) {
+				for at < len(text) && ((view.strictSeparators && (separator(text[at]) || controlSeparator(text[at]))) || (view.allGroups && (urlSeparator(text[at]) || controlSeparator(text[at]))) || (!view.allGroups && (separator(text[at]) || controlSeparator(text[at])) && (at-sepStart < 2 || text[at] == ' ' || text[at] == '-' || controls || controlSeparator(text[at])))) {
 					controls = controls || controlSeparator(text[at])
 					visible = visible || !controlSeparator(text[at])
 					canonicalSeparators = canonicalSeparators && text[at] != ',' && !controlSeparator(text[at])

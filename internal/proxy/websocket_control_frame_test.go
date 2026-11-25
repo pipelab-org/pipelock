@@ -23,7 +23,6 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
-	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 type capturedWSFrame struct {
@@ -478,19 +477,6 @@ func TestWSProxyUpstreamControlResponseAskEmitsOneBlockReceipt(t *testing.T) {
 				t.Fatalf("upstream frame = (%v, %x), want policy-violation close", upstreamClose.opcode, upstreamClose.payload)
 			}
 			_ = conn.Close()
-			// The close frame is written before the relay returns to handleWebSocket,
-			// which then emits the terminal session_close receipt. Wait for that
-			// completed lifecycle before closing the recorder: otherwise this test
-			// observes either the response-scan decision alone or its valid terminal
-			// companion depending on scheduling.
-			testwait.For(t, waitForReceiptTimeout, func() bool {
-				for _, rcpt := range extractReceiptsFromDir(t, rph.dir) {
-					if rcpt.ActionRecord.Layer == "session_close" {
-						return true
-					}
-				}
-				return false
-			}, "%s session-close receipt", opCodeLabel(opcode))
 
 			var responseBlocks, sessionCloseBlocks int
 			for _, rcpt := range rph.findReceipts(t) {

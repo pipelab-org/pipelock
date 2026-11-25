@@ -27,6 +27,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/proxy"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
+	"github.com/luckyPipewrench/pipelock/internal/testport"
 	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
@@ -121,10 +122,16 @@ func TestMCPOperatorAPIInstallsLiveTaskPermissionWithoutDefer(t *testing.T) {
 		}
 		return line
 	}
-	if reply := call(1, params); !strings.Contains(reply, "task_approval_unavailable") || delivered.Load() != 0 {
-		t.Fatalf("ungranted write delivered=%d response=%s", delivered.Load(), reply)
+	// The digest is keyed per process, so the operator copies it from the refusal.
+	refusal := call(1, params)
+	if !strings.Contains(refusal, "task_approval_unavailable") || delivered.Load() != 0 {
+		t.Fatalf("ungranted write delivered=%d response=%s", delivered.Load(), refusal)
 	}
-	action := session.TaskAction{Method: "tools/call", Destination: binding, Tool: "write_file", Digest: fmt.Sprintf("%x", sha256.Sum256([]byte(params)))}
+	_, digest, found := strings.Cut(refusal, "digest ")
+	if !found || len(digest) < sha256.Size*2 {
+		t.Fatalf("refusal carries no digest: %s", refusal)
+	}
+	action := session.TaskAction{Method: "tools/call", Destination: binding, Tool: "write_file", Digest: digest[:sha256.Size*2]}
 	grant := struct {
 		TaskID     string                 `json:"task_id"`
 		Permission session.TaskPermission `json:"permission"`
@@ -198,17 +205,6 @@ func deferredOpTestManager(t *testing.T) *deferred.Manager {
 	return m
 }
 
-func freeAddr(t *testing.T) string {
-	t.Helper()
-	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp4", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("bind: %v", err)
-	}
-	addr := ln.Addr().String()
-	_ = ln.Close()
-	return addr
-}
-
 // TestStartDeferredOperatorAPI_NoListenerWhenUnset proves the surface is not
 // exposed (no listener started) when api_listen is unset, defer is disabled, or
 // no live manager exists - and that the returned stop is a safe no-op.
@@ -246,7 +242,13 @@ func TestStartDeferredOperatorAPI_NoListenerWhenUnset(t *testing.T) {
 // it behind the admin bearer token.
 func TestStartDeferredOperatorAPI_ServesDeferredRoutes(t *testing.T) {
 	const token = "op-token"
-	addr := freeAddr(t)
+	testport.WithRetry(t, 1, func(addrs []string) error {
+		return serveDeferredOperatorRoutes(t, token, addrs[0])
+	})
+}
+
+func serveDeferredOperatorRoutes(t *testing.T, token, addr string) error {
+	t.Helper()
 	cfg := &config.Config{}
 	cfg.KillSwitch.APIListen = addr
 	cfg.KillSwitch.APIToken = token
@@ -256,7 +258,10 @@ func TestStartDeferredOperatorAPI_ServesDeferredRoutes(t *testing.T) {
 	defer cancel()
 	stop, err := startDeferredOperatorAPI(ctx, cfg, mgr, audit.NewNop(), io.Discard)
 	if err != nil {
-		t.Fatalf("start: %v", err)
+		if stop != nil {
+			stop()
+		}
+		return fmt.Errorf("start: %w", err)
 	}
 	defer stop()
 
@@ -326,42 +331,47 @@ func TestStartDeferredOperatorAPI_ServesDeferredRoutes(t *testing.T) {
 	if got := mgr.Snapshot(); len(got) != 0 {
 		t.Fatalf("hold still held after deny: %d", len(got))
 	}
+	return nil
 }
 
 func TestStartDeferredOperatorAPI_UsesEnvAPIToken(t *testing.T) {
 	token := "op-env-" + "val"
 	t.Setenv(killswitch.EnvAPIToken, token)
-	addr := freeAddr(t)
-	cfg := &config.Config{}
-	cfg.KillSwitch.APIListen = addr
-	mgr := deferredOpTestManager(t)
+	testport.WithRetry(t, 1, func(addrs []string) error {
+		cfg := &config.Config{}
+		cfg.KillSwitch.APIListen = addrs[0]
+		mgr := deferredOpTestManager(t)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	stop, err := startDeferredOperatorAPI(ctx, cfg, mgr, audit.NewNop(), io.Discard)
-	if err != nil {
-		t.Fatalf("start: %v", err)
-	}
-	defer stop()
-
-	client := &http.Client{Timeout: 5 * time.Second}
-	base := "http://" + addr
-	testwait.For(t, 3*time.Second, func() bool {
-		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/v1/deferred", nil)
-		req.Header.Set("Authorization", "Bearer "+token)
-		resp, reqErr := client.Do(req)
-		if reqErr != nil {
-			return false
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		stop, err := startDeferredOperatorAPI(ctx, cfg, mgr, audit.NewNop(), io.Discard)
+		if err != nil {
+			if stop != nil {
+				stop()
+			}
+			return fmt.Errorf("start: %w", err)
 		}
-		_ = resp.Body.Close()
-		return resp.StatusCode == http.StatusOK
-	}, "deferred operator API with env token on %s", addr)
+		defer stop()
+		client := &http.Client{Timeout: 5 * time.Second}
+		base := "http://" + addrs[0]
+		testwait.For(t, 3*time.Second, func() bool {
+			req, _ := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/v1/deferred", nil)
+			req.Header.Set("Authorization", "Bearer "+token)
+			resp, reqErr := client.Do(req)
+			if reqErr != nil {
+				return false
+			}
+			_ = resp.Body.Close()
+			return resp.StatusCode == http.StatusOK
+		}, "deferred operator API with env token on %s", addrs[0])
+		return nil
+	})
 }
 
 func TestStartDeferredOperatorAPI_MissingTokenFailsFast(t *testing.T) {
 	t.Setenv(killswitch.EnvAPIToken, "")
 	cfg := &config.Config{}
-	cfg.KillSwitch.APIListen = freeAddr(t)
+	cfg.KillSwitch.APIListen = "127.0.0.1:0"
 
 	stop, err := startDeferredOperatorAPI(context.Background(), cfg, deferredOpTestManager(t), audit.NewNop(), io.Discard)
 	if err == nil {

@@ -1583,6 +1583,9 @@ func (c *Config) validateLogging() error {
 }
 
 func (c *Config) validateDLP(warnings *[]Warning) error {
+	if c.DLP.CardBareAction != ActionBlock && c.DLP.CardBareAction != ActionWarn {
+		return fmt.Errorf("dlp.card_bare_action must be block or warn, got %q", c.DLP.CardBareAction)
+	}
 	if err := c.validateDLPPatternConfig(warnings); err != nil {
 		return err
 	}

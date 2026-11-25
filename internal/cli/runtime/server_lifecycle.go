@@ -345,6 +345,9 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 	defer s.cleanup()
 	proxyDrainIncomplete := false
 	defer func() { startErr = errors.Join(startErr, s.finishReceiptV3(proxyDrainIncomplete)) }()
+	if err := s.requiredReceiptGroupError(); err != nil {
+		return err
+	}
 
 	var reloadWG sync.WaitGroup
 	defer reloadWG.Wait()

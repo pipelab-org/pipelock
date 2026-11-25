@@ -36,6 +36,8 @@ type decodingMemoKey struct {
 // stopped at a depth or work bound with decodable work left. It is a property of the
 // scan, not of one view, so it survives cache hits and unretained decodes.
 type decodingMemo struct {
+	receiptCards        bool          // strict policy follows the existing decode pipeline
+	cardPolicyStrict    bool          // reconstructed card runs never use bare-text warn policy
 	urlCardDecodes      *decodingMemo // deferred card-only views finalize after the parent
 	minimumDecodedBytes int           // necessary output width for a restricted pattern partition
 	urlCardWork         uint64        // scan-local URL work makes a decoded result ineligible for caching

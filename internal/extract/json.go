@@ -904,13 +904,28 @@ func AllStringsFromJSONOrderedResult(raw json.RawMessage) JSONStringsResult {
 
 	var result []string
 	var atoms []DLPAtom
-	appendAtom := func(text, card string, number, key bool) {
-		atoms = append(atoms, DLPAtom{Text: text, Card: card, Number: number, Key: key})
-	}
 	type frame struct {
 		object, expectKey bool
+		key, contextKey   string
 	}
 	var stack []frame
+	valueKey := func() string {
+		if len(stack) == 0 {
+			return ""
+		}
+		f := stack[len(stack)-1]
+		if f.object {
+			return f.key
+		}
+		return f.contextKey
+	}
+	appendAtom := func(text, card string, number, key bool) {
+		contextKey := ""
+		if !key {
+			contextKey = valueKey()
+		}
+		atoms = append(atoms, DLPAtom{Text: text, Card: card, Number: number, Key: key, ContextKey: contextKey})
+	}
 	depth := 0
 	truncated := false
 	for {
@@ -926,7 +941,7 @@ func AllStringsFromJSONOrderedResult(raw json.RawMessage) JSONStringsResult {
 			switch v {
 			case '{', '[':
 				depth++
-				stack = append(stack, frame{object: v == '{', expectKey: v == '{'})
+				stack = append(stack, frame{object: v == '{', expectKey: v == '{', contextKey: valueKey()})
 				// depth counts the open container, so this container sits at
 				// recursive value depth depth-1. Match the recursive walk: an
 				// empty container at the limit is inspectable; content past
@@ -950,6 +965,7 @@ func AllStringsFromJSONOrderedResult(raw json.RawMessage) JSONStringsResult {
 				appendAtom(v, v, false, key)
 			}
 			if key {
+				stack[len(stack)-1].key = v
 				stack[len(stack)-1].expectKey = false
 				continue
 			}

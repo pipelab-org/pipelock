@@ -72,6 +72,17 @@ func TestCardJSONDirectRunPolicy(t *testing.T) {
 	t.Cleanup(s.Close)
 	for _, tt := range cardtest.JSONCases() {
 		matches := s.ScanJSONCardRuns(t.Context(), tt.Body)
+		var runs []TextDLPMatch
+		for _, match := range matches {
+			if match.RequiresKeywordContext() {
+				if match.IsInformational() || match.CardConfidence != "high" {
+					t.Fatal("corroborated evidence lost enforcement")
+				}
+				continue
+			}
+			runs = append(runs, match)
+		}
+		matches = runs
 		// Complete string cards use the ordinary string scan.
 		if tt.Name == "number run and string card" || tt.Name == "uneven then whole card" {
 			// The standalone string card is enforced by the ordinary scan;

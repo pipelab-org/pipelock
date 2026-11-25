@@ -52,6 +52,9 @@ func NewGeneratedID() GeneratedID {
 // carries this process's origin proof.
 const RequestIDPrefix = "req-"
 
+// TaskIDPrefix labels task identifiers minted with the generated-ID proof.
+const TaskIDPrefix = "task-"
+
 var requestIDRE = regexp.MustCompile(`^req-(?:[0-9]+|[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$`)
 
 // ValidRequestID reports whether s has the proxy's request ID shape: a

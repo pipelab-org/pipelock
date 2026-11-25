@@ -14,6 +14,7 @@ import (
 	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
 
 	"github.com/luckyPipewrench/pipelock/internal/contract"
+	"github.com/luckyPipewrench/pipelock/internal/receiptcontent"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
@@ -233,6 +234,9 @@ func TestSignReceiptGeneratesDefaultsAndPropagatesFailures(t *testing.T) {
 	rcpt, err := SignReceipt(contractreceipt.PayloadContractPromoteCommitted, payload, ReceiptContext{}, signer, signing.PurposeReceiptSigning)
 	if err != nil {
 		t.Fatalf("SignReceipt defaults: %v", err)
+	}
+	if !receiptcontent.VerifyGeneratedID(rcpt.EventID) {
+		t.Fatal("generated event lacks origin proof")
 	}
 	if rcpt.EventID == "" || rcpt.Timestamp.IsZero() {
 		t.Fatalf("receipt missing generated event id or timestamp: %+v", rcpt)

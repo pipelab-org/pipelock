@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -1433,7 +1434,9 @@ func TestCovDispNetnsForwardCmdWrapsForwarderFailure(t *testing.T) {
 
 func TestCovDispNetnsForwardCmdReturnsCleanlyOnCancel(t *testing.T) {
 	target := newDoorwayEcho(t)
-	addr := testport.ListenAddrs(t, 1)[0]
+	// The test never dials the forwarder. An ephemeral listen has no
+	// close-then-rebind window.
+	addr := "127.0.0.1:0"
 
 	cmd := netnsForwardCmd()
 	out := &lockedBuffer{}
@@ -1486,37 +1489,67 @@ func TestCovDispRunNetnsForwardSystemdListenerFailureIsWrapped(t *testing.T) {
 
 func TestCovDispRunNetnsForwardLogsPerConnectionFailure(t *testing.T) {
 	staleDoorway := covDispStaleUnixSocket(t)
-	addr := testport.ListenAddrs(t, 1)[0]
+	testport.WithRetry(t, 1, func(addrs []string) error {
+		addr := addrs[0]
+		out := &lockedBuffer{}
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		done := make(chan error, 1)
+		go func() { done <- runNetnsForward(ctx, netnsForwardOpts{listen: addr, target: staleDoorway}, out) }()
 
-	out := &lockedBuffer{}
-	ctx, cancel := context.WithCancel(context.Background())
+		if err := waitForNetnsForwardListen(out, done); err != nil {
+			return err
+		}
+
+		conn, dialErr := (&net.Dialer{}).DialContext(context.Background(), "tcp", addr)
+		if dialErr != nil {
+			return fmt.Errorf("dial forwarder: %w", dialErr)
+		}
+		t.Cleanup(func() { _ = conn.Close() })
+
+		testwait.For(t, testwait.Deadline(5*time.Second), func() bool {
+			return strings.Contains(out.String(), "contained-namespace proxy connection failed")
+		}, "forwarder never logged the failed per-connection forward")
+		if !strings.Contains(out.String(), "dial host doorway") {
+			return fmt.Errorf("connection-failure log missing the dial detail: %s", out.String())
+		}
+
+		cancel()
+		select {
+		case err := <-done:
+			if err != nil && !errors.Is(err, context.Canceled) {
+				return err
+			}
+		case <-time.After(testwait.Deadline(5 * time.Second)):
+			return errors.New("forwarder did not stop after cancel")
+		}
+		return nil
+	})
+}
+
+// waitForNetnsForwardListen returns the forwarder's error when it exits
+// before announcing the listener, so a stolen port can be retried.
+func waitForNetnsForwardListen(out *lockedBuffer, done <-chan error) error {
+	ctx, cancel := context.WithTimeout(context.Background(), testwait.Deadline(5*time.Second))
 	defer cancel()
-	done := make(chan error, 1)
-	go func() { done <- runNetnsForward(ctx, netnsForwardOpts{listen: addr, target: staleDoorway}, out) }()
-
-	testwait.For(t, testwait.Deadline(5*time.Second), func() bool {
-		return strings.Contains(out.String(), "contained-namespace proxy")
-	}, "forwarder never reported its listener")
-
-	conn, dialErr := (&net.Dialer{}).DialContext(context.Background(), "tcp", addr)
-	if dialErr != nil {
-		t.Fatalf("dial forwarder: %v", dialErr)
-	}
-	t.Cleanup(func() { _ = conn.Close() })
-
-	testwait.For(t, testwait.Deadline(5*time.Second), func() bool {
-		return strings.Contains(out.String(), "contained-namespace proxy connection failed")
-	}, "forwarder never logged the failed per-connection forward")
-	if !strings.Contains(out.String(), "dial host doorway") {
-		t.Fatalf("connection-failure log missing the dial detail: %s", out.String())
-	}
-
-	cancel()
-	select {
-	case err := <-done:
-		t.Logf("goroutine result: %v", err)
-	case <-time.After(testwait.Deadline(5 * time.Second)):
-		t.Fatal("forwarder did not stop after cancel")
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case err := <-done:
+			return fmt.Errorf("forwarder exited before listening: %w", err)
+		default:
+		}
+		if strings.Contains(out.String(), "contained-namespace proxy") {
+			return nil
+		}
+		select {
+		case err := <-done:
+			return fmt.Errorf("forwarder exited before listening: %w", err)
+		case <-ctx.Done():
+			return fmt.Errorf("forwarder never reported its listener: %w", ctx.Err())
+		case <-ticker.C:
+		}
 	}
 }
 

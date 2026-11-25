@@ -887,6 +887,35 @@ def measurement_base(base: str):
                 raise subprocess.CalledProcessError(removed.returncode, removed.args)
 
 
+class MeasurementDeadline(ValueError):
+    """A package's measurement was still running when the shared deadline hit."""
+
+
+def measurement_recorded_failure(path: Path) -> bool:
+    """Whether a deadline-killed run already recorded a test or package failure.
+
+    The kill leaves no process exit code. A flushed fail event is the same
+    failed measurement as a nonzero exit; ignoring it would keep the recorded
+    weight and let that failure pass the gate.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        # go test -json reports a compile failure as build-fail (go help buildjson).
+        if isinstance(event, dict) and event.get("Action") in ("fail", "build-fail"):
+            return True
+    return False
+
+
 def run_measurement(command: list[str], stream, root: Path, remaining: float) -> int:
     """Bound compilation as well as tests, and reap descendants on timeout."""
     with subprocess.Popen(command, stdout=stream, cwd=root, start_new_session=True) as process:
@@ -895,7 +924,7 @@ def run_measurement(command: list[str], stream, root: Path, remaining: float) ->
         except subprocess.TimeoutExpired:
             os.killpg(process.pid, signal.SIGKILL)
             process.wait()
-            raise ValueError("changed-test measurement timeout") from None
+            raise MeasurementDeadline("changed-test measurement timeout") from None
         except BaseException:
             os.killpg(process.pid, signal.SIGKILL)
             process.wait()
@@ -1083,10 +1112,18 @@ def measure_changed_tests(
             stream = json_out.with_suffix(f".{'base' if base_side else 'head'}.{index}.json")
             names = base_selected[package] if base_side else selected[package]
             pair_started = clock()
-            result = measured_selection(
-                {package: names}, [package] if package in whole else [], tags, stream,
-                base_root if base_side else ROOT, remaining_seconds,
-            )
+            try:
+                result = measured_selection(
+                    {package: names}, [package] if package in whole else [], tags, stream,
+                    base_root if base_side else ROOT, remaining_seconds,
+                )
+            except MeasurementDeadline:
+                # A fail event already flushed has no exit code after the kill.
+                # That is a failed measurement on either side, not an unmeasured
+                # package that keeps its recorded weight.
+                if measurement_recorded_failure(stream):
+                    raise ValueError(f"changed-test race run failed: {package}; inspect {stream}") from None
+                raise
             if base_side:
                 base_seconds += clock() - pair_started
                 base_streams.append(stream)
@@ -1127,7 +1164,14 @@ def measure_changed_tests(
             if remaining_seconds() < MEASURE_MIN_START_SECONDS:
                 skipped.append(package)
                 continue
-            head_results[package] = measure(package, base_side=False)
+            # A package can start with a minute left and still be running at
+            # the deadline. It is then no more measured than one that could not
+            # start, so it keeps its recorded weight the same way. A failing
+            # test is not a deadline and still fails the gate.
+            try:
+                head_results[package] = measure(package, base_side=False)
+            except MeasurementDeadline:
+                skipped.append(package)
         head_only: dict = {"trees": {}, "packages": {}}
         for result in head_results.values():
             merge_overrides(head_only, result)
@@ -1141,7 +1185,10 @@ def measure_changed_tests(
                 if remaining_seconds() < MEASURE_MIN_START_SECONDS:
                     base_skipped.append(package)
                     continue
-                merge_overrides(base_overrides, measure(package, base_side=True))
+                try:
+                    merge_overrides(base_overrides, measure(package, base_side=True))
+                except MeasurementDeadline:
+                    base_skipped.append(package)
             for package in edited_order:
                 if package not in head_results or package not in base_selected:
                     continue
@@ -1152,7 +1199,10 @@ def measure_changed_tests(
                     # base at its recorded weight.
                     base_skipped.append(package)
                     continue
-                merge_overrides(base_overrides, measure(package, base_side=True))
+                try:
+                    merge_overrides(base_overrides, measure(package, base_side=True))
+                except MeasurementDeadline:
+                    base_skipped.append(package)
         else:
             print("Every shard fits the budget at head; base measurement cannot change the verdict and was not run")
         for result in head_results.values():

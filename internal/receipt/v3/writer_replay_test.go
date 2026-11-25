@@ -287,11 +287,21 @@ func abandonWriterReplay(w *StreamWriter) error {
 	if w == nil {
 		return nil
 	}
-	var err error
-	if w.active.file != nil {
-		err = w.active.file.Close()
-	}
-	return errors.Join(err, w.lock.Close())
+	w.closeOnce.Do(func() {
+		close(w.closeRequested)
+		if w.stopHeartbeat != nil {
+			w.stopHeartbeat()
+		}
+		close(w.flushStop)
+		<-w.flushDone
+		var err error
+		if w.active.file != nil {
+			err = w.active.file.Close()
+		}
+		w.closeErr = errors.Join(err, w.lock.Close())
+		close(w.closeDone)
+	})
+	return w.closeErr
 }
 
 func observeWriterReplay(t *testing.T, opts StreamWriterOptions, root *os.Root) writerReplayObservation {

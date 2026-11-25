@@ -5,7 +5,6 @@ package mcp
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -292,8 +291,8 @@ func mcpCEEFragmentSessionKey(sessionKey, path string) string {
 	if path == "" {
 		return sessionKey
 	}
-	digest := sha256.Sum256([]byte(path))
-	return sessionKey + "|mcp-arg|" + fmt.Sprintf("%x", digest[:])
+	digest := fingerprint("cee-fragment-path", []byte(path))
+	return sessionKey + "|mcp-arg|" + fmt.Sprintf("%x", digest)
 }
 
 type ceeRecordMCPOptions struct {
@@ -601,12 +600,12 @@ const (
 
 func mcpCEEFragmentFindingKey(stream string, payload []byte, patternName string) (string, mcpCEEFragmentStreamKind) {
 	if strings.HasSuffix(stream, mcpCEESingletonStreamSuffix) {
-		digest := sha256.Sum256(payload)
-		return strings.TrimSuffix(stream, mcpCEESingletonStreamSuffix) + "|" + fmt.Sprintf("%x", digest[:]) + "|" + patternName, mcpCEEFragmentSingletonStream
+		digest := fingerprint("cee-fragment-finding", payload)
+		return strings.TrimSuffix(stream, mcpCEESingletonStreamSuffix) + "|" + fmt.Sprintf("%x", digest) + "|" + patternName, mcpCEEFragmentSingletonStream
 	}
 	if index := strings.Index(stream, mcpCEEArgumentStreamSuffix+"$"); index >= 0 {
-		digest := sha256.Sum256(payload)
-		return stream[:index] + "|" + fmt.Sprintf("%x", digest[:]) + "|" + patternName, mcpCEEFragmentArgumentStream
+		digest := fingerprint("cee-fragment-finding", payload)
+		return stream[:index] + "|" + fmt.Sprintf("%x", digest) + "|" + patternName, mcpCEEFragmentArgumentStream
 	}
 	return "", mcpCEEFragmentRawStream
 }

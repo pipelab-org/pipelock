@@ -206,19 +206,16 @@ func TestMCPV3HeldRequestsAndNotifications(t *testing.T) {
 	}
 }
 
+var errHeldFixtureActionAppend = errors.New("fixture action append failure")
+
 type heldFaultFile struct {
 	*os.File
 	fail func(v3.Action) bool
 }
 
 func (f heldFaultFile) Write(buf []byte) (int, error) {
-	envelope, code := v3.ExportDSSE(buf)
-	if code == "" {
-		var signed struct{ Payload []byte }
-		var body struct{ Body v3.Action }
-		if json.Unmarshal(envelope, &signed) == nil && json.Unmarshal(signed.Payload, &body) == nil && f.fail(body.Body) {
-			return 0, errors.New("fixture action append failure")
-		}
+	if mcpMatrixWriteMatches(buf, f.fail) {
+		return 0, errHeldFixtureActionAppend
 	}
 	return f.File.Write(buf)
 }
@@ -427,19 +424,31 @@ func TestMCPV3HeldAncestryWitnesses(t *testing.T) {
 	}
 }
 
-func verifiedHeldActions(t *testing.T, writer *v3.StreamWriter, opts v3.StreamWriterOptions, interrupted bool) []v3.Action {
+func verifiedHeldActions(t *testing.T, writer *v3.StreamWriter, opts v3.StreamWriterOptions, interrupted bool, closeCause ...error) []v3.Action {
 	t.Helper()
 	if !interrupted {
 		return verifiedMCPV3RegressionActions(t, writer, opts)
 	}
-	if err := writer.Close(t.Context(), nil); err != nil {
-		t.Fatal(err)
+	var wantCloseError error
+	if len(closeCause) != 0 {
+		wantCloseError = closeCause[0]
+	}
+	if err := writer.Close(t.Context(), nil); !errors.Is(err, wantCloseError) {
+		t.Fatalf("close interrupted writer = %v, want %v", err, wantCloseError)
 	}
 	key := opts.SigningKey.Public().(ed25519.PublicKey)
 	result, err := v3.VerifyPaths(t.Context(), []string{opts.Dir}, v3.Options{Directory: true, Keys: []ed25519.PublicKey{key}})
-	if err != nil || result.Integrity != "ok" || result.Verdict != "VALID PREFIX, END UNPROVEN" ||
-		len(result.Findings) != 1 || result.Findings[0].Code != "END_UNPROVEN" {
+	wantFindings := 1
+	if wantCloseError != nil {
+		wantFindings = 2
+	}
+	if err != nil || result.Integrity != "ok" || result.Verdict != "VALID PREFIX, END UNPROVEN" || len(result.Findings) != wantFindings {
 		t.Fatalf("verify repaired stream: %+v (%v)", result, err)
+	}
+	for _, finding := range result.Findings {
+		if finding.Code != "END_UNPROVEN" {
+			t.Fatalf("unexpected interrupted-stream finding: %+v", finding)
+		}
 	}
 	actions, err := readMCPMatrixActions(opts.Dir)
 	if err != nil {
@@ -1101,7 +1110,11 @@ func TestMCPV3HeldCancellationBeforeAllowPersistence(t *testing.T) {
 			if sent {
 				t.Fatal("cancelled approval sent a payload")
 			}
-			assertHeldEvidence(t, verifiedHeldActions(t, writer, writerOpts, failBlock), want)
+			if failBlock {
+				assertHeldEvidence(t, verifiedHeldActions(t, writer, writerOpts, true, errHeldFixtureActionAppend), want)
+				return
+			}
+			assertHeldEvidence(t, verifiedHeldActions(t, writer, writerOpts, false), want)
 		})
 	}
 }

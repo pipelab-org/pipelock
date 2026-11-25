@@ -10,11 +10,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/testport"
 	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
@@ -133,8 +135,26 @@ func TestContainmentMetricsHandlersEnforceSourcePolicyAndStatsLoopback(t *testin
 func TestServer_ContainmentMetricsExposureServesOnlyAllowedScraper(t *testing.T) {
 	t.Setenv(config.ContainmentManagedEnvKey, config.ContainmentManagedEnvValue)
 	host := containmentNonLoopbackIPv4(t)
-	metricsAddr, fetchListen := reserveDistinctTCPPorts(t, host)
-	configBody := fmt.Sprintf(`mode: balanced
+	stderr := &syncBuffer{}
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("server output:\n%s", stderr.String())
+		}
+	})
+	// The ports are reserved and released before the server binds them, so
+	// another process can take one in between. A lost race is retried with
+	// fresh ports, as testport.WithRetry does; any other startup error fails
+	// at once instead of surfacing later as an unexplained scrape timeout.
+	var (
+		s           *Server
+		done        <-chan error
+		metricsAddr string
+		client      *http.Client
+	)
+	for attempt := 1; ; attempt++ {
+		var fetchListen string
+		metricsAddr, fetchListen = reserveDistinctTCPPorts(t, host)
+		configBody := fmt.Sprintf(`mode: balanced
 metrics_listen: %q
 containment:
   metrics_exposure:
@@ -145,28 +165,60 @@ containment:
     reason: Prometheus scrape
     expires_at: %q
 `, metricsAddr, host+"/32", time.Now().UTC().Add(time.Hour).Format(time.RFC3339))
-	stderr := &syncBuffer{}
-	s, err := NewServer(ServerOpts{
-		ConfigFile:                        writeServerTestConfig(t, configBody),
-		Listen:                            fetchListen,
-		ListenChanged:                     true,
-		Stdout:                            stderr,
-		Stderr:                            stderr,
-		allowEphemeralListenersForTesting: true,
-	})
-	if err != nil {
-		t.Fatalf("NewServer: %v", err)
+		var err error
+		s, err = NewServer(ServerOpts{
+			ConfigFile:                        writeServerTestConfig(t, configBody),
+			Listen:                            fetchListen,
+			ListenChanged:                     true,
+			Stdout:                            stderr,
+			Stderr:                            stderr,
+			allowEphemeralListenersForTesting: true,
+		})
+		if err != nil {
+			t.Fatalf("NewServer: %v", err)
+		}
+		done = startContainmentMetricsTestServer(t, s)
+		dialer := &net.Dialer{LocalAddr: &net.TCPAddr{IP: net.ParseIP(host)}}
+		client = &http.Client{
+			Transport: &http.Transport{
+				Proxy:       nil,
+				DialContext: dialer.DialContext,
+			},
+			Timeout: time.Second,
+		}
+		t.Cleanup(client.CloseIdleConnections)
+		var startErr error
+		returned := false
+		testwait.For(t, 3*time.Second, func() bool {
+			select {
+			case startErr = <-done:
+				returned = true
+				return true
+			default:
+			}
+			// Bind is exclusive, so this line proves the port is this
+			// server's and not another process that took it after release.
+			if !strings.Contains(stderr.String(), "pipelock: metrics listening on "+metricsAddr) {
+				return false
+			}
+			request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+metricsAddr+"/metrics", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			response, err := client.Do(request)
+			if err != nil {
+				return false
+			}
+			_ = response.Body.Close()
+			return true
+		}, "configured metrics listener to accept a scrape")
+		if !returned {
+			break
+		}
+		if !testport.IsBindCollision(startErr) || attempt == 3 {
+			t.Fatalf("Start returned before serving: %v", startErr)
+		}
 	}
-	done := startContainmentMetricsTestServer(t, s)
-	dialer := &net.Dialer{LocalAddr: &net.TCPAddr{IP: net.ParseIP(host)}}
-	client := &http.Client{
-		Transport: &http.Transport{
-			Proxy:       nil,
-			DialContext: dialer.DialContext,
-		},
-		Timeout: time.Second,
-	}
-	t.Cleanup(client.CloseIdleConnections)
 	get := func(path string) int {
 		t.Helper()
 		status := 0

@@ -1292,6 +1292,9 @@ Key-free evidence capture:
 				if heartbeatErr == nil {
 					return nil
 				}
+				if useV3 {
+					return fmt.Errorf("flight_recorder.require_receipts is enabled but receipt stream recovery failed: %w", heartbeatErr)
+				}
 				return fmt.Errorf("flight_recorder.require_receipts is enabled but receipt heartbeat emission failed: %w", heartbeatErr)
 			}
 			var receiptWriter *v3.StreamWriter
@@ -1406,7 +1409,11 @@ Key-free evidence capture:
 						}
 					}
 					receiptWriter, err = openReceipt(heartbeatCtx, cfg, recPrivKey, rec, postureResult,
-						runtimeReceiptStreamOptions{surfaces: surfaces, onHeartbeatError: setRequiredHeartbeatErr})
+						runtimeReceiptStreamOptions{
+							surfaces:           surfaces,
+							onFatalError:       setRequiredHeartbeatErr,
+							onDelayedSyncError: func(err error) { logDelayedReceiptSync(auditLogger, err) },
+						})
 					if err != nil {
 						return fmt.Errorf("open v3 receipt writer: %w", err)
 					}

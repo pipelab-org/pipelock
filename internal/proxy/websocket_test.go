@@ -19,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -322,40 +323,58 @@ func setupWSProxyWithLogger(t *testing.T, logger *audit.Logger, cfgMod func(*con
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-
-	go func() {
-		mux := http.NewServeMux()
-		mux.HandleFunc("/fetch", p.handleFetch)
-		mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
-			if handlerDone != nil {
-				defer handlerDone()
-			}
-			p.handleWebSocket(w, r)
-		})
-		mux.HandleFunc("/health", p.handleHealth)
-
-		handler := p.buildHandler(mux)
-
-		srv := &http.Server{
-			Handler:           handler,
-			ReadHeaderTimeout: 5 * time.Second,
-			BaseContext: func(_ net.Listener) context.Context {
-				return ctx
-			},
+	// Shutdown does not wait for a hijacked relay. Count the handler so a
+	// receipt reader can wait until session_close is appended, which happens
+	// before handleWebSocket returns. Add happens before the hijack, and
+	// Shutdown has closed the listener before Wait, so Add cannot race Wait.
+	var inflight sync.WaitGroup
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fetch", p.handleFetch)
+	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+		inflight.Add(1)
+		defer inflight.Done()
+		if handlerDone != nil {
+			defer handlerDone()
 		}
+		p.handleWebSocket(w, r)
+	})
+	mux.HandleFunc("/health", p.handleHealth)
+	srv := &http.Server{
+		Handler:           p.buildHandler(mux),
+		ReadHeaderTimeout: 5 * time.Second,
+		BaseContext: func(_ net.Listener) context.Context {
+			return ctx
+		},
+	}
+	go func() { _ = srv.Serve(ln) }()
 
-		go func() {
-			<-ctx.Done()
-			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	var once sync.Once
+	stop := func() {
+		once.Do(func() {
+			cancel()
+			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), testwait.Deadline(5*time.Second))
 			defer shutdownCancel()
-			_ = srv.Shutdown(shutdownCtx)
-		}()
-
-		_ = srv.Serve(ln)
-	}()
+			shutdownErr := srv.Shutdown(shutdownCtx)
+			if shutdownErr != nil && !errors.Is(shutdownErr, http.ErrServerClosed) {
+				t.Errorf("shutdown websocket proxy: %v", shutdownErr)
+				return
+			}
+			finished := make(chan struct{})
+			go func() {
+				inflight.Wait()
+				close(finished)
+			}()
+			select {
+			case <-finished:
+			case <-time.After(testwait.Deadline(10 * time.Second)):
+				t.Errorf("websocket handler still running")
+			}
+		})
+	}
+	registerProxyReceiptProducerStop(t, stop)
 
 	proxyAddr := ln.Addr().String()
-	return proxyAddr, p, cancel
+	return proxyAddr, p, stop
 }
 
 // dialWSConn connects to the proxy /ws endpoint and returns the raw connection.

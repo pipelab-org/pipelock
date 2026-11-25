@@ -83,7 +83,7 @@ func URLSpans(text string) []URLSpan {
 }
 
 func visitTextView(text string, yield func(Candidate) bool) bool {
-	if Visit(text, false, yield) {
+	if VisitCorroborated(text, yield) {
 		return true
 	}
 	if !strings.Contains(text, "://") {

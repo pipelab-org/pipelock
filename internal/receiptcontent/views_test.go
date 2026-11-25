@@ -42,7 +42,7 @@ func testDetector(t *testing.T) Detector {
 		t.Fatalf("scanner.New: %v", err)
 	}
 	t.Cleanup(sc.Close)
-	return sc.ScanTextForDLPQuiet
+	return sc.ScanTextForReceiptDLP
 }
 
 var testProducer = Register(Schema{
@@ -263,7 +263,7 @@ func TestScanBudgetExhaustionRejects(t *testing.T) {
 		// the part count alone.
 		var values []string
 		for i := 0; i <= scanner.SubsequenceMaxParts; i++ {
-			values = append(values, strconv.Itoa(i))
+			values = append(values, "item"+strconv.Itoa(i))
 		}
 		p, err := testProducer.Project(mustJSON(t, map[string]any{"list": values}))
 		if err != nil {
