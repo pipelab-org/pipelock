@@ -366,17 +366,26 @@ pub(crate) fn first_group_gate(path: &Path) -> Result<Option<Value>, String> {
         return Ok(None);
     }
     let file = open_checked_regular(path, &metadata)?;
-    let mut first = Vec::new();
-    BufReader::new(file.take((1 << 20) + 1))
-        .read_until(b'\n', &mut first)
-        .map_err(unavailable_read)?;
-    let Some(first) = first.strip_suffix(b"\n") else {
-        return Ok(None);
+    let mut reader = BufReader::new(file);
+    // The first entry is the first non-blank line, as the full recorder reader
+    // reads it; a line without its terminator is a torn write, not an entry.
+    let text = loop {
+        let mut line = Vec::new();
+        let read = (&mut reader)
+            .take((1 << 20) + 1)
+            .read_until(b'\n', &mut line)
+            .map_err(unavailable_read)?;
+        let Some(complete) = line.strip_suffix(b"\n").filter(|_| read > 0) else {
+            return Ok(None);
+        };
+        let Ok(text) = std::str::from_utf8(complete) else {
+            return Ok(None);
+        };
+        if !crate::line_space::trim_go_space(text).is_empty() {
+            break text.to_owned();
+        }
     };
-    let Ok(text) = std::str::from_utf8(first) else {
-        return Ok(None);
-    };
-    let Ok(lines) = read_entry_lines_text(text) else {
+    let Ok(lines) = read_entry_lines_text(&text) else {
         return Ok(None);
     };
     Ok(lines
@@ -2566,6 +2575,24 @@ mod inventory_tests {
         );
         assert_eq!(report.verdict, "GROUP_INCOMPLETE", "{report:?}");
         let _ = fs::remove_dir_all(unavailable);
+    }
+
+    #[test]
+    fn first_group_gate_skips_leading_blank_lines() {
+        let dir = std::env::temp_dir().join(format!("pipelock-first-gate-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = r#"{"v":1,"seq":0,"type":"receipt_group_v1","session_id":"x","detail":{"group_id":"g"}}"#;
+        let gated = dir.join("gated");
+        std::fs::write(&gated, format!("\n \t\n{entry}\n")).unwrap();
+        let found = super::first_group_gate(&gated).unwrap().unwrap();
+        assert_eq!(found["group_id"], "g");
+        let torn = dir.join("torn");
+        std::fs::write(&torn, format!("\n{entry}")).unwrap();
+        assert!(super::first_group_gate(&torn).unwrap().is_none());
+        let blank = dir.join("blank");
+        std::fs::write(&blank, "\n\n").unwrap();
+        assert!(super::first_group_gate(&blank).unwrap().is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
 

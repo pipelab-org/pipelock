@@ -74,3 +74,23 @@ func TestVerifyBaseRejectsOwnGroupOpenedDuringVerification(t *testing.T) {
 		t.Fatal("a group opened for the base during verification left the report healthy")
 	}
 }
+
+// The first recorder entry is the first non-blank line, so a leading blank
+// line does not hide a group gate from the ordinary resolver.
+func TestFirstGroupEvidenceEntrySkipsLeadingBlankLines(t *testing.T) {
+	dir := t.TempDir()
+	session := "other.run.0123456789abcdef0123456789abcdef"
+	writeGateShard(t, dir, session)
+	path := filepath.Join(dir, "evidence-"+session+"-0.jsonl")
+	raw, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append([]byte("\n\n"), raw...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	first, seen, err := firstGroupEvidenceEntry(path)
+	if err != nil || !seen || first.Type != recorder.GroupGateEntryType {
+		t.Fatalf("first entry = %+v seen=%t err=%v", first, seen, err)
+	}
+}
