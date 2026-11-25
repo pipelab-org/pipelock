@@ -368,21 +368,25 @@ impl Inspection {
     }
 }
 
+struct SegmentAppraisal<'a> {
+    store: &'a Store,
+    doc: &'a mut Document,
+    streams: &'a BTreeMap<String, super::history::Stream>,
+}
+
 fn appraise_segment(
-    store: &Store,
-    doc: &mut Document,
+    context: &mut SegmentAppraisal<'_>,
     counts: &mut Counts,
     inspection: &Inspection,
     piece: &Segment,
     segment: usize,
-    streams: &BTreeMap<String, super::history::Stream>,
 ) -> Result<()> {
     let mut decisions: HashMap<String, Decision> = HashMap::new();
     for id in &piece.ids {
-        let Some(limit) = streams[id].limit else {
+        let Some(limit) = context.streams[id].limit else {
             continue;
         };
-        for record in store.records(id, limit) {
+        for record in context.store.records(id, limit) {
             let record = record?;
             if record.kind != "action" || record.body_code.is_some() {
                 continue;
@@ -402,7 +406,7 @@ fn appraise_segment(
                 && !decision.advance(&action, !piece.rooted)
             {
                 decision.failed = true;
-                doc.add_record(INCONSISTENT, &record);
+                context.doc.add_record(INCONSISTENT, &record);
             }
         }
     }
@@ -464,16 +468,13 @@ impl Verifier<'_> {
                 full = false;
                 continue;
             }
+            let mut context = SegmentAppraisal {
+                store: &self.store,
+                doc: &mut self.doc,
+                streams: &self.streams,
+            };
             for (index, piece) in segments.iter().enumerate() {
-                appraise_segment(
-                    &self.store,
-                    &mut self.doc,
-                    &mut counts,
-                    &inspection,
-                    piece,
-                    index,
-                    &self.streams,
-                )?;
+                appraise_segment(&mut context, &mut counts, &inspection, piece, index)?;
             }
         }
         self.doc.counts = counts.document(full);
