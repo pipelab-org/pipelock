@@ -354,8 +354,10 @@ func setupWSProxyWithLogger(t *testing.T, logger *audit.Logger, cfgMod func(*con
 			cancel()
 			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), testwait.Deadline(5*time.Second))
 			defer shutdownCancel()
-			if err := srv.Shutdown(shutdownCtx); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				t.Errorf("shutdown websocket proxy: %v", err)
+			shutdownErr := srv.Shutdown(shutdownCtx)
+			if shutdownErr != nil && !errors.Is(shutdownErr, http.ErrServerClosed) {
+				t.Errorf("shutdown websocket proxy: %v", shutdownErr)
+				return
 			}
 			finished := make(chan struct{})
 			go func() {

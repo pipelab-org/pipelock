@@ -6,7 +6,6 @@ package proxy
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -21,7 +20,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
-	"github.com/luckyPipewrench/pipelock/internal/testport"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // doReq is a test helper that creates and executes an HTTP request with context.
@@ -216,15 +215,6 @@ func TestKillSwitchPortIsolation_APIOnSeparatePort(t *testing.T) {
 // api_listen is empty (default), the API routes are registered on the
 // main proxy port as before.
 func TestKillSwitchPortIsolation_DefaultBehavior(t *testing.T) {
-	testport.WithRetry(t, 1, func(addrs []string) error {
-		return exerciseKillSwitchOnProxyPort(t, addrs[0])
-	})
-}
-
-// exerciseKillSwitchOnProxyPort starts the proxy on addr and checks the API
-// route. Start's bind error is returned so a stolen port is retried.
-func exerciseKillSwitchOnProxyPort(t *testing.T, addr string) error {
-	t.Helper()
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
@@ -233,7 +223,7 @@ func exerciseKillSwitchOnProxyPort(t *testing.T, addr string) error {
 
 	logger, loggerErr := audit.New("json", "stdout", "", false, false)
 	if loggerErr != nil {
-		return fmt.Errorf("audit logger: %w", loggerErr)
+		t.Fatalf("audit logger: %v", loggerErr)
 	}
 	defer logger.Close()
 	sc := scanner.MustNew(cfg)
@@ -246,21 +236,61 @@ func exerciseKillSwitchOnProxyPort(t *testing.T, addr string) error {
 	// Build proxy WITH kill switch API routes (default behavior).
 	p, err := New(cfg, logger, sc, m, WithKillSwitch(ks), WithKillSwitchAPI(ksAPI))
 	if err != nil {
-		return fmt.Errorf("proxy.New: %w", err)
+		t.Fatalf("proxy.New: %v", err)
 	}
+	defer p.Close()
 
-	// Start reads the listen address from this config pointer.
+	// Bind an ephemeral listener directly and hand it to StartWithListener,
+	// eliminating the close-then-rebind TOCTOU window where another test could
+	// steal the port and answer /health.
+	ctx, cancel := context.WithCancel(context.Background())
+	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp4", "127.0.0.1:0")
+	if err != nil {
+		cancel()
+		t.Fatalf("bind: %v", err)
+	}
+	addr := ln.Addr().String()
 	cfg.FetchProxy.Listen = addr
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
 	startErr := make(chan error, 1)
-	go func() { startErr <- p.Start(ctx) }()
+	go func() { startErr <- p.StartWithListener(ctx, ln) }()
+	var consumedStart bool
+	defer func() {
+		cancel()
+		if consumedStart {
+			return
+		}
+		select {
+		case err := <-startErr:
+			if err != nil {
+				t.Errorf("proxy.StartWithListener: %v", err)
+			}
+		case <-time.After(testwait.Deadline(5 * time.Second)):
+			t.Error("proxy.StartWithListener did not exit within deadline")
+		}
+	}()
+
 	client := &http.Client{Timeout: 5 * time.Second}
-	if err := waitForProxyHealth(client, addr, startErr); err != nil {
-		return err
-	}
+	healthURL := fmt.Sprintf("http://%s/health", addr)
+	testwait.For(t, 2*time.Second, func() bool {
+		select {
+		case err := <-startErr:
+			consumedStart = true
+			t.Fatalf("proxy exited before /health: %v", err)
+		default:
+		}
+		req, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
+		if reqErr != nil {
+			t.Fatalf("health request: %v", reqErr)
+		}
+		resp, doErr := client.Do(req)
+		if doErr == nil {
+			code := resp.StatusCode
+			_ = resp.Body.Close()
+			return code == http.StatusOK
+		}
+		return false
+	}, "proxy health endpoint on %s", addr)
 
 	// API route should be reachable on the main port.
 	resp := doReq(t, client, http.MethodGet,
@@ -270,49 +300,6 @@ func exerciseKillSwitchOnProxyPort(t *testing.T, addr string) error {
 	// Should NOT be 404 - route is registered.
 	if resp.StatusCode == http.StatusNotFound {
 		t.Error("expected API route to be registered on main port when api_listen is empty")
-	}
-	return nil
-}
-
-// waitForProxyHealth polls /health and returns Start's error when the proxy
-// exits first. A bind collision then reaches testport.WithRetry.
-func waitForProxyHealth(client *http.Client, addr string, startErr <-chan error) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	ticker := time.NewTicker(5 * time.Millisecond)
-	defer ticker.Stop()
-	healthURL := fmt.Sprintf("http://%s/health", addr)
-	for {
-		select {
-		case err := <-startErr:
-			if err == nil {
-				return errors.New("proxy.Start returned before /health")
-			}
-			return err
-		default:
-		}
-		req, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
-		if reqErr != nil {
-			return fmt.Errorf("health request: %w", reqErr)
-		}
-		resp, doErr := client.Do(req)
-		if doErr == nil {
-			code := resp.StatusCode
-			_ = resp.Body.Close()
-			if code == http.StatusOK {
-				return nil
-			}
-		}
-		select {
-		case err := <-startErr:
-			if err == nil {
-				return errors.New("proxy.Start returned before /health")
-			}
-			return err
-		case <-ctx.Done():
-			return fmt.Errorf("timed out waiting for proxy health on %s: %w", addr, ctx.Err())
-		case <-ticker.C:
-		}
 	}
 }
 
