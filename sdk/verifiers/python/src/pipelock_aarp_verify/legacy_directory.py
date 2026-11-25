@@ -130,20 +130,6 @@ def verify_receipt_groups(
     Inventory errors raise instead of letting partial results imply a pass.
     """
     root = Path(directory)
-    entries = sorted(
-        p for p in root.iterdir() if p.name not in _recorder_file_exclusions.get()
-    )
-    artifacts = [p for p in entries if p.name.startswith("receipt-group-")]
-    gates = []
-    for path in entries:
-        parsed = _parse_evidence_filename(path.name)
-        if parsed is None or parsed[1] != 0:
-            continue
-        first = _first_entry(path)
-        if first and first["type"] == _GATE_ENTRY_TYPE:
-            gates.append(first.get("detail"))
-    if not artifacts and not gates:
-        return []
     identity = root.lstat()
     before = _inventory(root)
 
@@ -157,6 +143,18 @@ def verify_receipt_groups(
 
     reports = []
     try:
+        entries = sorted(
+            p for p in root.iterdir() if p.name not in _recorder_file_exclusions.get()
+        )
+        artifacts = [p for p in entries if p.name.startswith("receipt-group-")]
+        gates = []
+        for path in entries:
+            parsed = _parse_evidence_filename(path.name)
+            if parsed is None or parsed[1] != 0:
+                continue
+            first = _first_entry(path)
+            if first and first["type"] == _GATE_ENTRY_TYPE:
+                gates.append(first.get("detail"))
         openings = []
         for artifact in artifacts:
             name = artifact.name

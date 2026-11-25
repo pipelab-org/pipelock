@@ -397,3 +397,19 @@ def test_group_inventory_propagates_unreadable_genesis(tmp_path, monkeypatch):
     monkeypatch.setattr(legacy_directory, "_open_evidence_file", unreadable)
     with pytest.raises(PermissionError, match="access denied"):
         verify_receipt_groups(tmp_path, [])
+
+def test_group_inventory_starts_before_candidate_reads(tmp_path, monkeypatch):
+    from pipelock_aarp_verify import legacy_directory
+
+    shard = tmp_path / "evidence-proxy-0.jsonl"
+    shard.write_text("{}\n")
+    first = legacy_directory._first_entry
+    orphan = tmp_path / ("receipt-group-" + "1" * 32 + "-close.json")
+
+    def publish_during_discovery(path):
+        orphan.touch()
+        return first(path)
+
+    monkeypatch.setattr(legacy_directory, "_first_entry", publish_during_discovery)
+    with pytest.raises(OSError, match="changed during verification"):
+        verify_receipt_groups(tmp_path, [])
