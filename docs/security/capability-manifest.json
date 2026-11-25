@@ -1275,6 +1275,10 @@
         },
         {
           "kind": "command",
+          "value": "pipelock-verifier v3"
+        },
+        {
+          "kind": "command",
           "value": "pipelock-verifier verify-run"
         }
       ]
