@@ -6,6 +6,7 @@
 import io
 import json
 import os
+import re
 import subprocess
 import tempfile
 import unittest
@@ -85,6 +86,43 @@ func TestBroken(t *testing.T) { t.Fatal("always") }
             self.assertIn("TestFlaky failed 1 of 3 reruns", text)
             self.assertIn("| example.test/fixture | TestFlaky | 1 of 3 | FLAKY |", text)
 
+    def test_rerun_that_dies_before_every_repeat_is_unknown(self):
+        # One recorded failure, then the test process exits. That is not a
+        # finished sample of three runs, so it must not be called flaky.
+        source = '''package fixture
+import (
+	"os"
+	"testing"
+)
+var runs int
+func TestPartial(t *testing.T) {
+	runs++
+	if runs == 1 {
+		t.Fatal("first")
+	}
+	os.Exit(2)
+}
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "go.mod").write_text("module example.test/fixture\n\ngo 1.26\n")
+            (root / "fixture_test.go").write_text(source)
+            stream = "\n".join(events(
+                {"Action": "fail", "Package": "example.test/fixture", "Test": "TestPartial"},
+                {"Action": "fail", "Package": "example.test/fixture"},
+            ))
+            out = io.StringIO()
+            env = {k: v for k, v in os.environ.items() if k != "GITHUB_STEP_SUMMARY"}
+            with patch.object(report, "ROOT", root), patch.dict(os.environ, env, clear=True), \
+                 patch("sys.stdin", io.StringIO(stream)), \
+                 patch("sys.argv", ["ci_flake_report.py", "--reruns", "3"]), \
+                 redirect_stdout(out):
+                self.assertEqual(report.main(), 0)
+            text = out.getvalue()
+            self.assertIn("Unclassified failure", text)
+            self.assertIn("| example.test/fixture | TestPartial | rerun did not finish | UNKNOWN |", text)
+            self.assertNotIn("FLAKY", text)
+
     def test_too_many_failures_are_not_rerun(self):
         stream = "\n".join(events(*[{"Action": "fail", "Package": "p", "Test": f"Test{i}"}
                                      for i in range(report.MAX_TESTS + 1)]))
@@ -117,6 +155,8 @@ class WorkflowContractTest(unittest.TestCase):
         run = "\n".join(step.get("run", "") for step in self.hunter["jobs"]["hunt"]["steps"])
         self.assertIn('-count="$HUNT_COUNT"', run)
         self.assertIn("ci_flake_report.py", run)
+        self.assertIn('if [ -z "$packages" ]; then', run)
+        self.assertLess(run.index('if [ -z "$packages" ]; then'), run.index("go test"))
         self.assertIn('exit "$test_status"', run, "a found flake must fail the run")
 
     def test_main_race_jobs_classify_failures_without_changing_the_result(self):
@@ -127,6 +167,19 @@ class WorkflowContractTest(unittest.TestCase):
                 self.assertIn("ci_flake_report.py", run)
                 # The classifier runs before the original status is returned.
                 self.assertLess(run.index("ci_flake_report.py"), run.index('exit "$test_status"'))
+                self.assertIn('timeout 900 python3 scripts/ci_flake_report.py', run)
+                attempt = int(re.search(r"--attempt-timeout-seconds (\d+)", run).group(1))
+                classify = int(re.search(r"\btimeout (\d+) python3 scripts/ci_flake_report.py", run).group(1))
+                # The previous 68-minute cap was two 31-minute attempts plus 6
+                # minutes for setup, kill grace, and upload. Classification is
+                # sequential with those attempts and has to leave the 6 minutes.
+                setup_margin = 68 * 60 - 2 * 31 * 60
+                self.assertEqual(setup_margin, 6 * 60)
+                self.assertGreaterEqual(
+                    self.ci[job]["timeout-minutes"] * 60,
+                    2 * attempt + classify + setup_margin,
+                    "the classifier must finish before the job timeout cancels the shard",
+                )
 
     def test_ceiling_early_warning_fails_closed_on_an_empty_scan(self):
         step = next(s for s in self.drift["jobs"]["drift"]["steps"]
@@ -139,6 +192,11 @@ class WorkflowContractTest(unittest.TestCase):
             env = {**os.environ, "RUNNER_TEMP": directory, "EARLY_CEILING_SECONDS": "180"}
             empty = subprocess.run(["bash", "-c", script], cwd=ROOT, env=env, capture_output=True, text=True)
             self.assertEqual(empty.returncode, 1, empty.stdout + empty.stderr)
+            (timing / "empty.json").write_text("")
+            empty_file = subprocess.run(["bash", "-c", script], cwd=ROOT, env=env, capture_output=True, text=True)
+            self.assertEqual(empty_file.returncode, 1, empty_file.stdout + empty_file.stderr)
+            self.assertIn("Timing file empty", empty_file.stdout)
+            (timing / "empty.json").unlink()
             (timing / "slow.json").write_text("\n".join(events(
                 {"Action": "run", "Package": "p", "Test": "TestSlow"},
                 {"Action": "pass", "Package": "p", "Test": "TestSlow", "Elapsed": 200.0},

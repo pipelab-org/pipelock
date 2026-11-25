@@ -91,6 +91,13 @@ jobs:
             exit 1
           fi
           while IFS= read -r -d '' file; do
+            # A zero-byte or non-event file passes the directory check and the
+            # summarizer exits 0 on it. That is an empty scan and must not pass.
+            if [ ! -s "$file" ] || ! grep -q '"Action"' "$file"; then
+              echo "::error title=Timing file empty::$file has no go test events; an empty scan must not pass"
+              status=1
+              continue
+            fi
             out="$(python3 scripts/summarize_go_test_json.py --top 1 --top-tests 1 \
               --allow-failed-packages --max-test-seconds "$EARLY_CEILING_SECONDS" < "$file")"
             rc=$?

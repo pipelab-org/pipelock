@@ -361,8 +361,11 @@ jobs:
     if: ${{ github.event_name == 'push' }}
     runs-on: ubuntu-latest
     name: race-oss (1.26, ${{ matrix.shard }})
-    # Two 31-minute whole-command attempts, kill grace, plus setup and upload.
-    timeout-minutes: 68
+    # Two 31-minute whole-command attempts (62m), 15 minutes to classify a
+    # failure, and 6 minutes for setup, kill grace, and upload. The classifier
+    # runs only after a failure, and the step still has to reach its own exit:
+    # a job timeout cancels the shard before that exit and skips the timing upload.
+    timeout-minutes: 83
     strategy:
       fail-fast: false
       max-parallel: 6
@@ -789,8 +792,11 @@ jobs:
     if: ${{ github.event_name == 'push' }}
     runs-on: ubuntu-latest
     name: race-enterprise (1.26, ${{ matrix.shard }})
-    # Two 31-minute whole-command attempts, kill grace, plus setup and upload.
-    timeout-minutes: 68
+    # Two 31-minute whole-command attempts (62m), 15 minutes to classify a
+    # failure, and 6 minutes for setup, kill grace, and upload. The classifier
+    # runs only after a failure, and the step still has to reach its own exit:
+    # a job timeout cancels the shard before that exit and skips the timing upload.
+    timeout-minutes: 83
     strategy:
       fail-fast: false
       max-parallel: 6

@@ -102,8 +102,10 @@ def rerun(package: str, names: list[str], tags: str, reruns: int, timeout: float
             finished[test] += 1
             if event.get("Action") == "fail":
                 failures[test] += 1
-    # A rerun that crashed or timed out before every run finished is unknown.
-    return {name: (failures[name] if finished[name] >= reruns or failures[name] else -1) for name in names}
+    # A rerun that crashed or timed out before every requested run finished is
+    # unknown, including when a run had already failed. A partial count would
+    # call that flake and hide that the rerun did not finish.
+    return {name: failures[name] if finished[name] >= reruns else -1 for name in names}
 
 
 def classify(failures: int, reruns: int) -> str:

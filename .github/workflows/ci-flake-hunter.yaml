@@ -62,6 +62,10 @@ jobs:
           set -o pipefail
           set +e
           packages="$(python3 scripts/ci_test_packages.py --tags enterprise --shard "$TEST_SHARD")" || exit $?
+          if [ -z "$packages" ]; then
+            echo "::error title=No packages::shard ${TEST_SHARD} selected no packages"
+            exit 1
+          fi
           test_selector="$(python3 scripts/ci_test_packages.py --shard "$TEST_SHARD" --selector)" || exit $?
           package_parallelism=2
           if [[ "$TEST_SHARD" == proxy-* ]]; then
