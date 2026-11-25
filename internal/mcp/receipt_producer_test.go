@@ -15,7 +15,6 @@ import (
 type receiptProducerStops struct {
 	mu      sync.Mutex
 	stops   []func()
-	done    bool
 	cleanup bool
 }
 
@@ -39,17 +38,13 @@ func registerMCPReceiptProducerStop(t *testing.T, stop func()) {
 			mcpReceiptProducers.Delete(t)
 		})
 	}
-	if set.done {
-		set.mu.Unlock()
-		stop()
-		return
-	}
 	set.stops = append(set.stops, stop)
 	set.mu.Unlock()
 }
 
-// drainMCPReceiptProducers runs each registered drain once. A second call,
-// including the cleanup after a reader already drained, does nothing.
+// drainMCPReceiptProducers runs and forgets the drains registered so far. A
+// server started after that waits for the next reader or for test cleanup, not
+// for registration, so a test can read receipts and then start another server.
 func drainMCPReceiptProducers(t *testing.T) {
 	t.Helper()
 	v, ok := mcpReceiptProducers.Load(t)
@@ -58,13 +53,8 @@ func drainMCPReceiptProducers(t *testing.T) {
 	}
 	set := v.(*receiptProducerStops)
 	set.mu.Lock()
-	if set.done {
-		set.mu.Unlock()
-		return
-	}
 	stops := set.stops
 	set.stops = nil
-	set.done = true
 	set.mu.Unlock()
 	for _, stop := range stops {
 		stop()
