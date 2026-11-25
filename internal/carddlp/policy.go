@@ -6,6 +6,7 @@ package carddlp
 import (
 	"regexp"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
@@ -108,15 +109,34 @@ func VisitStrict(text string, yield func(Candidate) bool) bool {
 		offsets = offsets[:0]
 		return false
 	}
-	for i := 0; i < len(text); i++ {
-		if digit(text[i]) {
+	for i := 0; i < len(text); {
+		size := 1
+		switch {
+		case digit(text[i]):
 			run.WriteByte(text[i])
 			offsets = append(offsets, i)
-		} else if !separator(text[i]) && !controlSeparator(text[i]) {
-			if flush() {
+		case separator(text[i]) || controlSeparator(text[i]):
+		default:
+			var unicodeSeparator bool
+			if text[i] >= utf8.RuneSelf {
+				var r rune
+				r, size = utf8.DecodeRuneInString(text[i:])
+				unicodeSeparator = strictUnicodeSeparator(r)
+			}
+			if !unicodeSeparator && flush() {
 				return true
 			}
 		}
+		i += size
 	}
 	return flush()
+}
+
+// strictUnicodeSeparator reports the non-ASCII dashes, minus signs and spaces
+// that receipts treat like their ASCII separators, so a typographic dash or a
+// no-break space cannot split a card out of strict receipt scanning. Unicode
+// classifies them as dash punctuation (Pd) or space separators (Zs); U+2212
+// MINUS SIGN is a math symbol and is listed explicitly.
+func strictUnicodeSeparator(r rune) bool {
+	return r == '\u2212' || unicode.Is(unicode.Pd, r) || unicode.Is(unicode.Zs, r)
 }

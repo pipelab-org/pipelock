@@ -44,7 +44,7 @@ func TestCardCorroborationMonotonic(t *testing.T) {
 func TestCardReceiptStrictSplits(t *testing.T) {
 	pan := cardtest.Issuer("4019", 16)
 	for split := 1; split < len(pan); split++ {
-		for _, sep := range []string{" ", "\t", "\r", "\n", ".", "-", "/", "_", ",", "\u200b"} {
+		for _, sep := range []string{" ", "\t", "\r", "\n", ".", "-", "/", "_", ",", "\u200b", "\u2010", "\u2011", "\u2012", "\u2013", "\u2014", "\u2015", "\u2212", "\ufe63", "\uff0d", "\u00a0", "\u2007", "\u202f", "\u3000"} {
 			for _, text := range []string{pan[:split] + sep + pan[split:], "1234" + sep + pan[:split] + sep + pan[split:] + sep + "5678", strings.Repeat("4242", 4) + sep + pan[:split] + sep + pan[split:] + sep + strings.Repeat("4242", 4)} {
 				if !VisitStrict(text, func(Candidate) bool { return true }) {
 					t.Fatalf("strict missed %q", text)
