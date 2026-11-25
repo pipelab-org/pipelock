@@ -255,6 +255,37 @@ func TestOtherDone(t *testing.T) { <-context.Background().Done() }
             head = repo.commit({"hook_test.go": 'package fixture\nfunc register(int) bool { return true }\nvar _ = register(2)\n'})
             self.assertEqual(self.select(repo, base, head, support=True), {"TestOne"})
 
+    def test_blank_variable_callee_change_selects_the_whole_package(self):
+        # The initializer text is unchanged. init() already selects every test
+        # when its callee changes; a blank variable runs at init too, including
+        # for the external test package in the same test binary.
+        with tempfile.TemporaryDirectory() as directory:
+            repo = FixtureRepo(Path(directory))
+            base = repo.commit({
+                "hook_test.go": 'package fixture\nfunc register(int) bool { return true }\nvar _ = register(1)\n',
+                "a_test.go": 'package fixture\nimport "testing"\nfunc TestOne(t *testing.T) {}\n',
+                "x_test.go": 'package fixture_test\nimport "testing"\nfunc TestX(t *testing.T) {}\n',
+            })
+            head = repo.commit({
+                "hook_test.go": 'package fixture\nfunc register(int) bool { return false }\nvar _ = register(1)\n',
+            })
+            self.assertEqual(self.select(repo, base, head, support=True), {"TestOne", "TestX"})
+
+    def test_external_hook_reaches_internal_tests(self):
+        # go test links both packages into one binary: a TestMain in the
+        # external package runs the internal tests too. Two TestMains fail
+        # the build, so there is one hook.
+        with tempfile.TemporaryDirectory() as directory:
+            repo = FixtureRepo(Path(directory))
+            base = repo.commit({
+                "a_test.go": 'package fixture\nimport "testing"\nfunc TestOne(t *testing.T) {}\n',
+                "x_test.go": 'package fixture_test\nimport "testing"\nfunc TestX(t *testing.T) {}\n',
+            })
+            head = repo.commit({
+                "x_test.go": 'package fixture_test\nimport "testing"\nfunc TestMain(m *testing.M) { m.Run() }\nfunc TestX(t *testing.T) {}\n',
+            })
+            self.assertEqual(self.select(repo, base, head, support=True), {"TestOne", "TestX"})
+
     def test_repeated_blank_import_is_not_a_change(self):
         with tempfile.TemporaryDirectory() as directory:
             repo = FixtureRepo(Path(directory))

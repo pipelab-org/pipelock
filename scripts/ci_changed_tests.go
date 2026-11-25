@@ -257,13 +257,23 @@ func supportDecls(fset *token.FileSet, file string, parsed *ast.File, into map[p
 					}
 					// A blank variable's initializer runs at package
 					// initialization for every test, like init, and no test
-					// names it. Record it in the same ordered sequence.
+					// names it. Record it in the same ordered sequence. A
+					// variable also keeps the initializer's references, under
+					// its own id so it does not merge with func init: a change
+					// to a declaration it names selects the whole package, as
+					// a change reached through init does. A blank constant
+					// does not run; its text is still part of the sequence.
 					if blank {
 						source, err := formatted(fset, sp)
 						if err != nil {
 							return err
 						}
 						inits[key] = append(inits[key], d.Tok.String()+" "+source)
+						if d.Tok == token.VAR {
+							if err := add("func", "\x00blank", "\x00blank", sp, sp); err != nil {
+								return err
+							}
+						}
 					}
 				}
 			}
@@ -375,7 +385,10 @@ func affectedNames(base, head map[string]support, baseInits, headInits, baseBlan
 			}
 		}
 		if !grew {
-			if affected["init"] || affected["TestMain"] {
+			// "\x00blank" is the synthetic hook for a package-level
+			// `var _ = ...` initializer. It runs for every test, and no
+			// test names it.
+			if affected["init"] || affected["TestMain"] || affected["\x00blank"] {
 				whole = true
 			}
 			return affected, whole
@@ -516,15 +529,22 @@ func selectTests(base, head string, includeSupport bool) ([]test, error) {
 		}
 		return false
 	}
-	// An external test package (foo_test) is compiled with package foo's
-	// test files, so it reaches their declarations as foo.Name. The reverse
-	// does not hold.
+	// The go command links an internal test package and its external
+	// (_test) package into one test binary. The external package can call
+	// the internal package's exported test helpers and runs its hooks. The
+	// internal package cannot call the external package's helpers. An
+	// external hook still runs for every test in the binary, so only that
+	// whole-package impact crosses back.
 	reaches := func(item test) bool {
 		if reachedBy(item, item.pkg) {
 			return true
 		}
 		internal, external := strings.CutSuffix(item.pkg.name, "_test")
-		return external && reachedBy(item, packageKey{item.pkg.dir, internal})
+		if external {
+			return reachedBy(item, packageKey{item.pkg.dir, internal})
+		}
+		other, ok := impacts[packageKey{item.pkg.dir, item.pkg.name + "_test"}]
+		return ok && other.whole
 	}
 	changed := []test{}
 	for key, item := range inventories[1] {
