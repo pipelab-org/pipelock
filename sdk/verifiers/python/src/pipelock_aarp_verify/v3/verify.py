@@ -320,7 +320,7 @@ class Verification:
                 self.keys[record.signer] = validate_key(raw)
 
     def stage_files(self, files: list[_Input]) -> None:
-        max_starts: dict[str, int] = defaultdict(lambda: -1)
+        max_starts: dict[str, int] = {}
         tails = []
         for evidence in files:
             if evidence.code:
@@ -328,7 +328,7 @@ class Verification:
                 continue
             stream, start, last, torn = self._stage_file(evidence)
             if last is not None:
-                max_starts[stream] = max(max_starts[stream], start)
+                max_starts[stream] = max(max_starts.get(stream, start), start)
                 if torn:
                     tails.append((start, last))
         for start, last in tails:

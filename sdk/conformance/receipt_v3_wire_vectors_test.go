@@ -444,6 +444,8 @@ func v3StreamRecipes(t *testing.T) []v3Recipe {
 	torn := s.file(0, 1)
 	torn.bytes = append(torn.bytes, []byte("{\"incomplete\"")...)
 	recipes = append(recipes, v3Recipe{group: 4, name: "torn-tail", code: "TORN_TAIL", verdict: "VALID PREFIX, END UNPROVEN", files: []v3File{torn}})
+	unnamed := v3File{"receipts.jsonl", slices.Concat([]byte("broken\nbroken\n"), torn.bytes)}
+	recipes = append(recipes, v3Recipe{group: 4, name: "unnamed-damaged-torn-tail", code: "LINE_LAYOUT", verdict: "INVALID", request: v3Request{Format: "v3"}, files: []v3File{unnamed}})
 	file := s.finish(t)
 	duplicate := v3File{"copy/" + file.name, file.bytes}
 	recipes = append(recipes, v3Recipe{group: 4, name: "copied-records", verdict: "VALID", files: []v3File{file, duplicate}})

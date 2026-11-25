@@ -111,12 +111,15 @@ class Verifier implements Verification {
       }
       const state = this.stageFile(file);
       if (!state.complete) continue;
-      maxStarts.set(state.stream, Math.max(maxStarts.get(state.stream) ?? 0, state.start));
+      maxStarts.set(
+        state.stream,
+        Math.max(maxStarts.get(state.stream) ?? state.start, state.start),
+      );
       if (state.torn && state.last) tails.push({ start: state.start, last: state.last });
     }
     for (const { start, last } of tails) {
       if (last.kind === "stream_close") this.add("DATA_AFTER_CLOSE", last);
-      else if (start < (maxStarts.get(last.stream) ?? 0)) this.add("FILE_LAYOUT", last.stream);
+      else if (start < maxStarts.get(last.stream)!) this.add("FILE_LAYOUT", last.stream);
       else this.add("TORN_TAIL", last);
     }
     this.store.seal();

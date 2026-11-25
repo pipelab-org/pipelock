@@ -212,7 +212,9 @@ func (v *verification) stageInputFiles(files []inputFile, write recordWriter) er
 		if !state.complete {
 			continue
 		}
-		maxStarts[state.stream] = max(maxStarts[state.stream], state.start)
+		if previous, ok := maxStarts[state.stream]; !ok || previous < state.start {
+			maxStarts[state.stream] = state.start
+		}
 		if state.torn {
 			tails = append(tails, tornFile{state.start, state.last})
 		}

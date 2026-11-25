@@ -423,7 +423,7 @@ impl Verifier<'_> {
                 offset += 1;
             }
             if let Some(last) = state.last {
-                let max = last_starts.entry(state.stream).or_insert(0);
+                let max = last_starts.entry(state.stream).or_insert(state.start);
                 *max = (*max).max(state.start);
                 if !line.is_empty() {
                     tails.push((state.start, last));
