@@ -239,6 +239,9 @@ func resolveAgentCaptureInputs(captureRoot, agent string) ([]string, error) {
 	seen := make(map[string]struct{})
 
 	exactDir := filepath.Join(captureRoot, agent)
+	if err := receiptinput.Refuse(exactDir, "learn compile", "contract inference"); errors.Is(err, receiptinput.ErrUnsupported) {
+		return nil, err
+	}
 	if validateCaptureSessionDir(exactDir, agent) {
 		matches, err := filepath.Glob(filepath.Join(exactDir, "*.jsonl"))
 		if err != nil {
@@ -262,6 +265,9 @@ func resolveAgentCaptureInputs(captureRoot, agent string) ([]string, error) {
 			continue
 		}
 		sessionDir := filepath.Join(captureRoot, entry.Name())
+		if err := receiptinput.Refuse(sessionDir, "learn compile", "contract inference"); errors.Is(err, receiptinput.ErrUnsupported) {
+			return nil, err
+		}
 		// Defense in depth: a name-prefix match is not enough. Require the
 		// first capture entry's self-attested agent to match the requested
 		// agent so a planted sibling like "agent-a|poison/" cannot silently

@@ -9,9 +9,11 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/testreceipt"
@@ -69,4 +71,37 @@ func TestLearnReceiptWritesUseCeremonyLock(t *testing.T) {
 	if err := withLegacyReceiptOutput("learn ratify", out, "", write); err != nil || !called {
 		t.Fatalf("ordinary legacy write called=%t: %v", called, err)
 	}
+}
+
+func TestLearnCompileAgentRefusesV3SessionDir(t *testing.T) {
+	captureRoot := t.TempDir()
+	v3Session := filepath.Join(captureRoot, "agent-a")
+	legacySession := filepath.Join(captureRoot, "agent-a-legacy")
+	if err := os.Mkdir(v3Session, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(legacySession, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	testreceipt.V3(t, v3Session, false)
+	// Put a valid legacy capture entry in the sibling directory so skipping the
+	// v3 session directory silently succeeds on the sibling.
+	rec, err := recorder.New(recorder.Config{Dir: legacySession, Enabled: true}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rec.Record(recorder.Entry{
+		SessionID: "agent-a-legacy",
+		Type:      capture.EntryTypeCapture,
+		Detail:    []byte(`{"agent":"agent-a"}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Defaults()
+	cfg.Learn.CaptureDir = captureRoot
+	_, compileErr := resolveCompileInputs(cfg, compileFlags{agent: "agent-a", since: time.Hour})
+	testreceipt.RequiresV3Refusal(t, compileErr, "learn compile", "contract inference")
 }

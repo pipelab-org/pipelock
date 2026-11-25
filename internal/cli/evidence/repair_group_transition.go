@@ -31,7 +31,13 @@ func repairGroupTransitionCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("load opening key: %w", err)
 			}
-			hash, err := receipt.RepairReceiptGroupTransition(filepath.Clean(dir), groupID, key, priorKeys, verification.Options{Context: cmd.Context()})
+			hash, err := receipt.RepairReceiptGroupTransitionWithGuard(
+				filepath.Clean(dir), groupID, key, priorKeys,
+				verification.Options{Context: cmd.Context()},
+				func(lockedDir string) error {
+					return receiptinput.Refuse(lockedDir, "evidence repair-group-transition", "the legacy evidence reader")
+				},
+			)
 			if err != nil {
 				return err
 			}

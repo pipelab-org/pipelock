@@ -4,10 +4,13 @@
 package playground
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
+	"github.com/luckyPipewrench/pipelock/internal/evidence/receiptinput"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 )
 
@@ -118,6 +121,9 @@ const verdictBlock = "block"
 // carry secret-shaped canary values. The caller must ensure the evidence file
 // was produced with redaction enabled.
 func MediatorEventsFromEvidence(evidenceFile string) ([]MediatorEvent, error) {
+	if err := receiptinput.Refuse(evidenceFile, "playground mediator", "the playground"); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
 	receipts, err := receipt.ExtractReceipts(evidenceFile)
 	if err != nil {
 		return nil, fmt.Errorf("mediator: extract receipts: %w", err)

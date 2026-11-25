@@ -87,7 +87,7 @@ func VerifyPaths(ctx context.Context, paths []string, opts Options) (Result, err
 // produced a VALID result. It never calls visit for other verdicts.
 func VerifyPathsWithActions(ctx context.Context, paths []string, opts Options, visit func(Action) error) (Result, error) {
 	return verifyPathsInspect(ctx, paths, opts, "", func(v *verification) error {
-		if v.result.Verdict != "VALID" {
+		if v.result.Verdict != "VALID" || visit == nil {
 			return nil
 		}
 		for _, lineage := range sortedKeys(v.histories) {

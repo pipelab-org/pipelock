@@ -18,3 +18,12 @@ func TestAssembleRefusesReceiptV3(t *testing.T) {
 		}
 	})
 }
+
+func TestPlaygroundMediatorAndVerifyRunRefuseReceiptV3(t *testing.T) {
+	testreceipt.EachV3(t, func(t *testing.T, dir, path string) {
+		_, medErr := MediatorEventsFromEvidence(path)
+		testreceipt.RequiresV3Refusal(t, medErr, "playground mediator", "the playground")
+		_, runErr := VerifyRun(dir, PublishedOrchestratorPubKeyHex)
+		testreceipt.RequiresV3Refusal(t, runErr, "verify-run", "the playground")
+	})
+}

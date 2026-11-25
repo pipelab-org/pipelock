@@ -208,18 +208,42 @@ func runExpire(cmd *cobra.Command, opts expireOptions, retentionChanged bool) er
 		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "retention disabled for %s; expired 0 old raw escrow sidecar(s)\n", filepath.Clean(dir))
 		return nil
 	}
-	rec, err := recorder.New(recorder.Config{
-		Enabled:       true,
-		Dir:           dir,
-		RetentionDays: retentionDays,
-	}, nil, nil)
-	if err != nil {
-		return fmt.Errorf("open flight recorder: %w", err)
+	var removed int
+	expire := func() error {
+		rec, err := recorder.New(recorder.Config{
+			Enabled:       true,
+			Dir:           dir,
+			RetentionDays: retentionDays,
+		}, nil, nil)
+		if err != nil {
+			if errors.Is(err, recorder.ErrLegacyEvidenceFormat) {
+				return receiptinput.UnsupportedDirectory("evidence expire", "the legacy evidence reader")
+			}
+			return fmt.Errorf("open flight recorder: %w", err)
+		}
+		defer func() { _ = rec.Close() }()
+		n, err := rec.ExpireOldFiles()
+		if err != nil {
+			return fmt.Errorf("expire evidence files: %w", err)
+		}
+		removed = n
+		return nil
 	}
-	defer func() { _ = rec.Close() }()
-	removed, err := rec.ExpireOldFiles()
-	if err != nil {
-		return fmt.Errorf("expire evidence files: %w", err)
+	if _, statErr := os.Stat(filepath.Clean(dir)); statErr == nil {
+		err := recorder.WithEvidenceWriterCeremonyLock(filepath.Clean(dir), func() error {
+			if err := receiptinput.Refuse(dir, "evidence expire", "the legacy evidence reader"); err != nil {
+				return err
+			}
+			return expire()
+		})
+		if errors.Is(err, recorder.ErrLegacyEvidenceFormat) {
+			return receiptinput.UnsupportedDirectory("evidence expire", "the legacy evidence reader")
+		}
+		if err != nil {
+			return err
+		}
+	} else if err := expire(); err != nil {
+		return err
 	}
 	_, _ = fmt.Fprintf(
 		cmd.OutOrStdout(),

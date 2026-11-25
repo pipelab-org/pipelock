@@ -5,6 +5,8 @@ package evidence
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/sha256"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,7 +14,10 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/luckyPipewrench/pipelock/internal/evidence/receiptinput"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/testreceipt"
+	"github.com/luckyPipewrench/pipelock/internal/verification"
 )
 
 func TestEvidenceCommandsRefuseReceiptV3(t *testing.T) {
@@ -90,4 +95,18 @@ func TestEvidenceCommandsRefuseV3RootWithLegacySubdirAndNestedV3Doctor(t *testin
 	testreceipt.V3(t, nestedV3, false)
 	_, doctorErr := runEvidenceDoctor(nestedRoot)
 	testreceipt.RequiresV3Refusal(t, doctorErr, "evidence doctor", "the evidence doctor")
+}
+
+func TestRepairGroupTransitionGuardRunsUnderCeremonyLock(t *testing.T) {
+	dir := t.TempDir()
+	testreceipt.V3(t, dir, false)
+	seed := sha256.Sum256([]byte("repair-guard-key"))
+	key := ed25519.NewKeyFromSeed(seed[:])
+	_, err := receipt.RepairReceiptGroupTransitionWithGuard(
+		dir, strings.Repeat("a", 32), key, nil, verification.Options{Context: t.Context()},
+		func(lockedDir string) error {
+			return receiptinput.Refuse(lockedDir, "evidence repair-group-transition", "the legacy evidence reader")
+		},
+	)
+	testreceipt.RequiresV3Refusal(t, err, "evidence repair-group-transition", "the legacy evidence reader")
 }

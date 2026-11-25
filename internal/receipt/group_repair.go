@@ -18,6 +18,12 @@ import (
 // stopped, terminal group. The opening must already bind every successor shard
 // and those shards must have verifiable session opens and native logs.
 func RepairReceiptGroupTransition(dir, groupID string, key ed25519.PrivateKey, priorSignerKeys []string, options verification.Options) (string, error) {
+	return RepairReceiptGroupTransitionWithGuard(dir, groupID, key, priorSignerKeys, options, nil)
+}
+
+// RepairReceiptGroupTransitionWithGuard runs beforeAct under the exclusive
+// ceremony lock before inspecting or mutating the evidence directory.
+func RepairReceiptGroupTransitionWithGuard(dir, groupID string, key ed25519.PrivateKey, priorSignerKeys []string, options verification.Options, beforeAct func(string) error) (string, error) {
 	trusted, err := TrustedGroupSignerKeys(EmitterConfig{PrivKey: key, PriorSignerKeys: priorSignerKeys})
 	if err != nil {
 		return "", err
@@ -31,6 +37,11 @@ func RepairReceiptGroupTransition(dir, groupID string, key ed25519.PrivateKey, p
 		return "", err
 	}
 	defer func() { _ = lock.Close() }()
+	if beforeAct != nil {
+		if err := beforeAct(dir); err != nil {
+			return "", err
+		}
+	}
 
 	open, openHash, err := readTopologicalGroupOpen(dir, openName, trusted)
 	if err != nil {
