@@ -38,6 +38,8 @@ import {
 import type { ChainResult, Receipt } from "./types.js";
 import { InvalidError, RuntimeError, decodeUTF8, readVerifierBytes, sha256Hex } from "./util.js";
 import { blankAfterGoTrim } from "./line-space.js";
+import { firstRecorderGroupGate } from "./group.js";
+
 export { blankAfterGoTrim } from "./line-space.js";
 
 export const FindingCorruptChain = "corrupt_chain";
@@ -134,6 +136,7 @@ export interface BaseReport {
 export interface BaseVerifyOptions {
   trustedKeys: string[];
   endorsements: RotationEndorsement[];
+  excludeReceiptGroupSessions?: boolean;
 }
 
 export function baseHealthy(report: BaseReport): boolean {
@@ -377,7 +380,7 @@ export function withPinnedEvidenceDirectorySync<T>(root: string, read: () => T):
   }
 }
 
-function indexRecorderFiles(dir: string): EvidenceIndex {
+function indexRecorderFiles(dir: string, excludeGroups = false): EvidenceIndex {
   const shards = new Map<string, { file: string; name: string; seq: bigint }[]>();
   const symlinks = new Map<string, string[]>();
   for (const de of readdirSync(dir, { withFileTypes: true })) {
@@ -398,6 +401,20 @@ function indexRecorderFiles(dir: string): EvidenceIndex {
     list.sort((a, b) =>
       a.seq !== b.seq ? (a.seq < b.seq ? -1 : 1) : a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
     );
+    const first = excludeGroups ? list.find((shard) => shard.seq === 0n) : undefined;
+    const firstLink = excludeGroups
+      ? symlinks.get(session)?.find((name) => parseEvidenceFilename(name)?.seqStart === 0n)
+      : undefined;
+    if (
+      excludeGroups &&
+      (!session ||
+        (first &&
+          (!firstLink || compareStrings(first.name, firstLink) < 0) &&
+          firstRecorderGroupGate(first.file)))
+    ) {
+      ix.symlinks.delete(session);
+      continue;
+    }
     ix.files.set(
       session,
       list.map((s) => s.file),
@@ -459,6 +476,11 @@ function compareStrings(a: string, b: string): number {
 // base in dir, sorted.
 export function resolveBaseSessions(dir: string, base: string): string[] {
   return sortedSessions(indexRecorderFiles(dir)).filter((s) => isBaseChain(s, base));
+}
+
+/** Resolve ordinary sessions without treating a gated group shard as a standalone run. */
+export function resolveBaseSessionsExcludingReceiptGroups(dir: string, base: string): string[] {
+  return sortedSessions(indexRecorderFiles(dir, true)).filter((s) => isBaseChain(s, base));
 }
 
 // EvidenceRefusedError is evidence the verifier will not read as the session
@@ -1147,7 +1169,12 @@ export async function verifyBase(
   base: string,
   opts: BaseVerifyOptions,
 ): Promise<BaseReport> {
-  return withBaseHistorySnapshot(dir, base, () => verifyBaseInner(dir, base, opts));
+  return withBaseHistorySnapshot(
+    dir,
+    base,
+    () => verifyBaseInner(dir, base, opts),
+    opts.excludeReceiptGroupSessions,
+  );
 }
 
 // Defer publication until all reads used to assemble a base report finish.
@@ -1155,14 +1182,15 @@ export async function withBaseHistorySnapshot<T>(
   dir: string,
   base: string,
   consume: () => Promise<T>,
+  excludeGroups = false,
 ): Promise<T> {
-  const before = baseInventory(dir, base);
+  const before = baseInventory(dir, base, true, excludeGroups);
   try {
     return await consume();
   } finally {
     let changed = true;
     try {
-      changed = baseInventory(dir, base) !== before;
+      changed = baseInventory(dir, base, true, excludeGroups) !== before;
     } catch {
       // Unavailable final inventory cannot support either verdict.
     }
@@ -1170,7 +1198,8 @@ export async function withBaseHistorySnapshot<T>(
   }
 }
 
-function baseInventory(dir: string, base: string, baseMode = true): string {
+function baseInventory(dir: string, base: string, baseMode = true, excludeGroups = false): string {
+  const ordinary = excludeGroups ? indexRecorderFiles(dir, true).files : undefined;
   const root = statSync(dir, { bigint: true });
   const items: unknown[] = [[root.dev.toString(), root.ino.toString()]];
   for (const name of readdirSync(dir).sort()) {
@@ -1178,6 +1207,7 @@ function baseInventory(dir: string, base: string, baseMode = true): string {
     if (
       !(
         parsed !== undefined &&
+        (!ordinary || ordinary.has(parsed.session)) &&
         (baseMode ? isBaseChain(parsed.session, base) : parsed.session === base)
       ) &&
       !(baseMode && chainLinkFilePredecessor(name) !== undefined)
@@ -1197,7 +1227,7 @@ async function verifyBaseInner(
   opts: BaseVerifyOptions,
 ): Promise<BaseReport> {
   const report: BaseReport = { base, chains: [], findings: [] };
-  const ix = indexRecorderFiles(dir);
+  const ix = indexRecorderFiles(dir, opts.excludeReceiptGroupSessions);
   const sessions = sortedSessions(ix).filter((s) => isBaseChain(s, base));
   const links = await readChainLinkFiles(dir);
   const add = (kind: string, session: string, detail: string): void => {

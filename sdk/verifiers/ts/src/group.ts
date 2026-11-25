@@ -1,6 +1,7 @@
 // Copyright 2026 Pipelock contributors
 // SPDX-License-Identifier: Apache-2.0
 
+import { fork, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   closeSync,
@@ -16,6 +17,7 @@ import {
   statSync,
 } from "node:fs";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import * as ed25519 from "@noble/ed25519";
 import { parseJSONStrict, RawNumber } from "./aarp/strictjson.js";
 import { evidenceChainKey, receiptHash, verifyChain } from "./chain.js";
@@ -24,12 +26,13 @@ import {
   readSessionEvidence,
   sessionEvidenceFiles,
   withPinnedEvidenceDirectory,
+  withPinnedEvidenceDirectorySync,
 } from "./chain-set.js";
 import { extractTypedFromEntries, parseEntryLinesText } from "./recorder.js";
 import { verifyRecorderChain } from "./recorder-chain.js";
 import type { Receipt, RecorderEntry } from "./types.js";
 import { goJSONMarshal, isCanonicalUTCTimestamp } from "./rotation.js";
-import { decodeUTF8, sha256Hex } from "./util.js";
+import { decodeUTF8, forEachVerifierJSONLLine, sha256Hex } from "./util.js";
 import { trimGoSpace } from "./line-space.js";
 
 export type ReceiptGroupVerdict = "GROUP_VALID" | "GROUP_INCOMPLETE" | "GROUP_INVALID";
@@ -626,11 +629,90 @@ function fileInventory(): string {
   return digest.digest("hex");
 }
 
+// Match the directory verifier's Go snapshot scope: top-level entries and
+// the AEL runs, including their optional keys and recorders directories.
+function groupDirectoryInventory(): string {
+  const digest = createHash("sha256");
+  const scan = (dir: string, optional = false): string[] => {
+    let root;
+    try {
+      root = lstatSync(dir, { bigint: true });
+    } catch (error) {
+      if (optional && (error as NodeJS.ErrnoException).code === "ENOENT") {
+        digest.update(JSON.stringify([dir, null]));
+        return [];
+      }
+      throw error;
+    }
+    if (!root.isDirectory())
+      throw new Error("receipt group inventory path is not a real directory");
+    digest.update(JSON.stringify([dir, root.dev.toString(), root.ino.toString()]));
+    const names = readdirSync(dir).sort();
+    for (const name of names) {
+      const child = lstatSync(path.join(dir, name), { bigint: true });
+      digest.update(
+        JSON.stringify([
+          dir,
+          name,
+          ...[child.dev, child.ino, child.mode, child.size, child.mtimeNs, child.ctimeNs].map(
+            String,
+          ),
+        ]),
+      );
+    }
+    return names;
+  };
+  scan(".");
+  for (const run of scan("ael")) {
+    if (!isHex(run, 32)) throw new Error("invalid native AEL run directory " + JSON.stringify(run));
+    const dir = path.join("ael", run);
+    scan(dir);
+    scan(path.join(dir, "keys"), true);
+    scan(path.join(dir, "recorders"), true);
+  }
+  return digest.digest("hex");
+}
+
+// Closed group shards are resolved through Go's recorder location
+// discovery. Its separate tree walk refuses symlinks and ambiguous roots.
+function verifyClosedGroupLocation(): void {
+  const locations: string[] = [];
+  const reserved =
+    /^\.pipelock-evidence-(?:compact-[a-zA-Z0-9]{6,12}|archive-[0-9]{8}T[0-9]{6}\.[0-9]{9}Z)$/u;
+  const scan = (dir: string) => {
+    const entries = readdirSync(dir, { withFileTypes: true });
+    if (
+      entries.some(
+        (entry) =>
+          !entry.isDirectory() &&
+          (parseEvidenceFilename(entry.name) ||
+            (entry.name.endsWith(".raw.enc") &&
+              parseEvidenceFilename(entry.name.slice(0, -".raw.enc".length) + ".jsonl"))),
+      )
+    )
+      locations.push(dir);
+    for (const entry of entries) {
+      const child = path.join(dir, entry.name);
+      if (entry.isSymbolicLink())
+        throw new Error("refuse symlink in evidence root: " + JSON.stringify(child));
+      if (entry.isDirectory() && !reserved.test(entry.name)) scan(child);
+    }
+  };
+  scan(".");
+  if (locations.length > 1)
+    throw new Error(
+      "multiple evidence locations found (" +
+        locations.sort().join(", ") +
+        "); select one location",
+    );
+}
+
 async function verifyGroupAt(
   groupID: string,
   trustedKeys: readonly string[],
   afterInventory?: () => void,
   beforeInventory?: () => void,
+  directoryReport = false,
 ): Promise<ReceiptGroupResult> {
   const result: ReceiptGroupResult = {
     group_id: groupID,
@@ -646,16 +728,18 @@ async function verifyGroupAt(
       }
     | undefined;
   let inventoryAttempted = false;
+  const inventory = directoryReport ? groupDirectoryInventory : fileInventory;
   try {
     if (!isHex(groupID, 32)) throw new Error("invalid receipt group ID");
     const trusted = new Set(trustedKeys.map((k) => k.trim().toLowerCase()).filter(Boolean));
     if (!trusted.size) throw new Error("receipt group verification requires a trusted signer key");
+    const transition = { trusted, directWriterProbe: directoryReport };
     const rootStart = statSync(".", { bigint: true }),
       aelStart = statSync("ael", { bigint: true });
     const physicalRoot = process.cwd();
     inventoryAttempted = true;
     beforeInventory?.();
-    const before = fileInventory();
+    const before = inventory();
     snapshot = {
       path: physicalRoot,
       root: { dev: rootStart.dev, ino: rootStart.ino },
@@ -685,9 +769,9 @@ async function verifyGroupAt(
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
       // Do not promote absent close to success; still validate any successor claim and inventory.
-      await verifySuccessorTransitionInventory(open, result.open_manifest_sha256, "", trusted);
+      await verifySuccessorTransitionInventory(open, result.open_manifest_sha256, "", transition);
       await verifyAELInventory(open, trusted, true);
-      checkDirectoryIdentity(physicalRoot, rootStart, aelStart, before);
+      checkDirectoryIdentity(physicalRoot, rootStart, aelStart, before, inventory);
       result.verdict = "GROUP_INCOMPLETE";
       result.error = "receipt group has no signed close manifest";
       return result;
@@ -696,6 +780,10 @@ async function verifyGroupAt(
     const close = normalizeNumbers(closeRaw, closeFields) as unknown as GroupClose;
     await verifySignature(closeRaw, closeFields, closeDomain, trusted);
     requireCloseBindsOpen(close, open, groupID, result.open_manifest_sha256);
+    if (directoryReport) {
+      result.close_manifest_sha256 = sha(closeBytes);
+      verifyClosedGroupLocation();
+    }
     for (let i = 0; i < close.shards.length; i++) {
       const claimed = close.shards[i] as GroupHead,
         actual = await verifyShard(open, result.open_manifest_sha256, i);
@@ -703,18 +791,18 @@ async function verifyGroupAt(
         throw new Error(`receipt group shard ${i} head differs from signed close`);
     }
     if (open.previous_group_id)
-      await verifyPredecessorTransition(open, result.open_manifest_sha256, trusted);
+      await verifyPredecessorTransition(open, result.open_manifest_sha256, transition);
     await verifySuccessorTransitionInventory(
       open,
       result.open_manifest_sha256,
       sha(closeBytes),
-      trusted,
+      transition,
     );
     const openAELTail = await verifyAELInventory(open, trusted, false);
     const predecessorIncomplete =
       open.previous_group_id &&
       !existsNoFollow(`receipt-group-${open.previous_group_id}-close.json`);
-    checkDirectoryIdentity(physicalRoot, rootStart, aelStart, before);
+    checkDirectoryIdentity(physicalRoot, rootStart, aelStart, before, inventory);
     result.close_manifest_sha256 = sha(closeBytes);
     result.verdict = openAELTail === "own" ? "GROUP_INCOMPLETE" : "GROUP_VALID";
     if (openAELTail)
@@ -729,11 +817,21 @@ async function verifyGroupAt(
     result.error = (err as Error).message;
     const code = (err as NodeJS.ErrnoException).code;
     const errno = (err as NodeJS.ErrnoException).errno;
-    if (typeof code === "string" && typeof errno === "number" && code !== "ENOENT")
+    if (
+      directoryReport
+        ? inventoryUnavailable(err)
+        : typeof code === "string" && typeof errno === "number" && code !== "ENOENT"
+    )
       result.verdict = "GROUP_INCOMPLETE";
     if (snapshot !== undefined) {
       try {
-        checkDirectoryIdentity(snapshot.path, snapshot.root, snapshot.ael, snapshot.inventory);
+        checkDirectoryIdentity(
+          snapshot.path,
+          snapshot.root,
+          snapshot.ael,
+          snapshot.inventory,
+          inventory,
+        );
       } catch {
         result.verdict = "GROUP_INCOMPLETE";
         result.error = "receipt group directory changed during verification";
@@ -796,6 +894,7 @@ function checkDirectoryIdentity(
   root: { dev: bigint; ino: bigint },
   ael: { dev: bigint; ino: bigint },
   before: string,
+  inventory = fileInventory,
 ): void {
   const re = statSync(".", { bigint: true }),
     ae = statSync("ael", { bigint: true }),
@@ -808,7 +907,7 @@ function checkDirectoryIdentity(
     re.ino !== root.ino ||
     ae.dev !== ael.dev ||
     ae.ino !== ael.ino ||
-    fileInventory() !== before
+    inventory() !== before
   )
     throw new Error("receipt group directory changed during verification");
 }
@@ -985,11 +1084,17 @@ function safeValue(value: unknown): number {
   throw new Error("invalid integer");
 }
 
+interface TransitionVerification {
+  trusted: Set<string>;
+  directWriterProbe: boolean;
+}
+
 async function verifyPredecessorTransition(
   open: GroupOpen,
   openHash: string,
-  trusted: Set<string>,
+  verification: TransitionVerification,
 ): Promise<void> {
+  const { trusted } = verification;
   const predecessorID = open.previous_group_id;
   const oldBytes = readChild(`receipt-group-${predecessorID}-open.json`),
     oldRaw = strictObject(oldBytes, openFields, "predecessor opening"),
@@ -1012,17 +1117,18 @@ async function verifyPredecessorTransition(
   }
   const trBytes = readChild(`receipt-group-${open.group_id}-transition.json`),
     trRaw = strictObject(trBytes, transitionFields, "group transition");
-  await verifyTransition(trRaw, open, old, openHash, sha(oldBytes), closeHash, trusted);
-  await verifySuccessorTransitionInventory(old, sha(oldBytes), closeHash, trusted, false);
+  await verifyTransition(trRaw, open, old, openHash, sha(oldBytes), closeHash, verification);
+  await verifySuccessorTransitionInventory(old, sha(oldBytes), closeHash, verification, false);
 }
 
 async function verifySuccessorTransitionInventory(
   open: GroupOpen,
   openHash: string,
   closeHash: string,
-  trusted: Set<string>,
+  verification: TransitionVerification,
   verifyLinks = true,
 ): Promise<void> {
+  const { trusted } = verification;
   let matched = 0;
   for (const name of readdirSync(".")) {
     if (!name.startsWith("receipt-group-") || !name.endsWith("-transition.json")) continue;
@@ -1055,7 +1161,7 @@ async function verifySuccessorTransitionInventory(
         sha(successorBytes),
         openHash,
         closeHash,
-        trusted,
+        verification,
       );
   }
 }
@@ -1369,8 +1475,9 @@ async function verifyTransition(
   newHash: string,
   oldHash: string,
   closeHash: string,
-  trusted: Set<string>,
+  verification: TransitionVerification,
 ): Promise<void> {
+  const { trusted } = verification;
   const t = normalizeNumbers(raw, transitionFields) as unknown as GroupTransition;
   await verifySignature(raw, transitionFields, transitionDomain, trusted);
   if (
@@ -1430,7 +1537,7 @@ async function verifyTransition(
       )
         throw new Error(`transition predecessor ${i} differs from signed close`);
     } else {
-      requirePredecessorWriterGone(p.session_id, i);
+      requirePredecessorWriterGone(p.session_id, i, verification.directWriterProbe);
       if (p.recovery_seal_sha256) {
         const sealBytes = readChild(`chain-link-${p.session_id}.json`, 64 * 1024);
         if (sha(sealBytes) !== p.recovery_seal_sha256)
@@ -1475,7 +1582,25 @@ function procLocksIsConclusive(): boolean {
 // state, or whose /proc/locks is namespace-filtered (a verifier outside the
 // initial PID namespace), cannot prove the writer exited and fails closed, as
 // Go does.
-function requirePredecessorWriterGone(session: string, index: number): void {
+// The directory verifier can use Linux's flock utility to probe the same
+// already opened file description as Go. A successful lock is released when
+// the caller closes the descriptor. Probe interruptions fail closed.
+function directFlockProbe(fd: number): boolean | undefined {
+  if (process.platform !== "linux") return undefined;
+  for (const binary of ["/usr/bin/flock", "/bin/flock"]) {
+    const result = spawnSync(binary, ["--nonblock", "--exclusive", "3"], {
+      stdio: ["ignore", "ignore", "ignore", fd],
+      timeout: 3000,
+    });
+    if (result.error && (result.error as NodeJS.ErrnoException).code === "ENOENT") continue;
+    if (result.status === 0) return true;
+    if (result.status === 1) return false;
+    throw new Error("platform cannot prove predecessor writer is gone");
+  }
+  return undefined;
+}
+
+function requirePredecessorWriterGone(session: string, index: number, direct: boolean): void {
   const fail = (why: string): never => {
     throw new Error(
       `incomplete predecessor shard ${index}: probe receipt group predecessor writer: ${why}`,
@@ -1492,6 +1617,11 @@ function requirePredecessorWriterGone(session: string, index: number): void {
       const opened = fstatSync(fd, { bigint: true });
       if (opened.dev !== before.dev || opened.ino !== before.ino)
         return fail("predecessor writer lock changed during probe");
+      if (direct) {
+        const gone = directFlockProbe(fd);
+        if (gone === false) return fail("receipt group predecessor writer still present");
+        if (gone === true) return;
+      }
       ino = opened.ino;
     } finally {
       closeSync(fd);
@@ -1674,4 +1804,224 @@ export async function verifyReceiptGroup(
       error: (err as Error).message,
     };
   }
+}
+
+/** Probe the first complete parsed entry, including when the shard ends torn. */
+export function firstRecorderGroupGate(file: string): { detail: unknown } | undefined {
+  try {
+    if (!lstatSync(file).isFile()) return undefined;
+    let first: RecorderEntry | undefined;
+    const done = Symbol("parsed first recorder entry");
+    try {
+      forEachVerifierJSONLLine(
+        file,
+        false,
+        (line) => {
+          first = parseEntryLinesText(line)[0]?.entry;
+          if (first) throw done;
+        },
+        false,
+        true,
+      );
+    } catch (error) {
+      if (error !== done) throw error;
+    }
+    if (first?.type === "receipt_group_v1") return { detail: first.detail };
+  } catch {
+    // Stable malformed legacy entries are classified by the ordinary verifier.
+  }
+  return undefined;
+}
+
+export interface ReceiptGroupInventoryResult {
+  groups: number;
+  incomplete: number;
+  invalid: number;
+  unavailable: boolean;
+  error?: string;
+}
+
+function inventoryUnavailable(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException).code;
+  return ["EACCES", "EPERM", "EIO", "EINTR", "EAGAIN", "ESTALE"].includes(code ?? "");
+}
+
+function groupGateID(detail: unknown): string {
+  const gate = object(detail, "receipt group gate");
+  const keys = [
+    "group_id",
+    "shard_index",
+    "session_id",
+    "open_manifest_sha256",
+    "signer_key",
+    "previous_group_id",
+    "previous_open_manifest_sha256",
+  ];
+  for (const [name, value] of Object.entries(gate)) {
+    if (
+      !keys.includes(name) ||
+      (name === "shard_index" ? !Number.isInteger(value) : typeof value !== "string")
+    )
+      throw new Error("invalid receipt group gate");
+  }
+  const id = str(gate.group_id, "receipt group gate ID");
+  if (!isHex(id, 32)) throw new Error("invalid receipt group gate ID");
+  return id;
+}
+
+/** Verify every published group and fail the inventory on unreadable or unknown artifacts. */
+export async function verifyReceiptGroupsInProcess(
+  dir: string,
+  trustedKeys: readonly string[],
+  visit: (group: ReceiptGroupResult) => void,
+): Promise<ReceiptGroupInventoryResult> {
+  const summary = newGroupInventory();
+  const report = (result: ReceiptGroupResult) => {
+    visit(result);
+    countGroup(summary, result);
+  };
+  const invalid = (group_id: string, error: string) =>
+    report({ group_id, error, verdict: "GROUP_INVALID", shard_count: 0 });
+
+  try {
+    await withPinnedEvidenceDirectory(dir, async () => {
+      if (!directoryHasGroups()) return;
+      const physicalRoot = process.cwd();
+      const root = statSync(".", { bigint: true });
+      const aelStart = lstatSync("ael", { bigint: true });
+      const before = groupDirectoryInventory();
+      try {
+        const names = readdirSync(".");
+        const openings: string[] = [];
+        for (const name of names) {
+          if (!name.startsWith("receipt-group-")) continue;
+          const parts = /^receipt-group-([0-9a-f]{32})-(open|close|transition)\.json$/u.exec(name);
+          if (!parts) throw new Error("unknown receipt group artifact " + JSON.stringify(name));
+          const [, id, phase] = parts;
+          if (phase === "open") openings.push(id);
+          else if (!existsNoFollow("receipt-group-" + id + "-open.json"))
+            invalid(id, "receipt group artifact has no opening manifest");
+        }
+        for (const name of names) {
+          const parsed = parseEvidenceFilename(name);
+          if (!parsed || parsed.seqStart !== 0n) continue;
+          const gate = firstRecorderGroupGate(name);
+          if (!gate) continue;
+          let id = "";
+          try {
+            id = groupGateID(gate.detail);
+            if (!existsNoFollow("receipt-group-" + id + "-open.json"))
+              throw new Error("receipt group gate has no opening manifest");
+          } catch (error) {
+            invalid(
+              id,
+              "gated session " + JSON.stringify(parsed.session) + ": " + (error as Error).message,
+            );
+          }
+        }
+        for (const id of openings.sort())
+          report(await verifyGroupAt(id, trustedKeys, undefined, undefined, true));
+      } finally {
+        let unchanged = false;
+        try {
+          checkDirectoryIdentity(physicalRoot, root, aelStart, before, groupDirectoryInventory);
+          unchanged = true;
+        } catch {
+          // The inventory can no longer support the earlier group reports.
+        }
+        if (!unchanged) {
+          summary.unavailable = true;
+          throw new Error("receipt group directory changed during verification");
+        }
+      }
+    });
+  } catch (error) {
+    summary.error = (error as Error).message;
+    summary.unavailable ||= inventoryUnavailable(error);
+  }
+  return summary;
+}
+
+function directoryHasGroups(): boolean {
+  return readdirSync(".").some(
+    (name) =>
+      name.startsWith("receipt-group-") ||
+      (parseEvidenceFilename(name)?.seqStart === 0n && firstRecorderGroupGate(name)),
+  );
+}
+
+function newGroupInventory(): ReceiptGroupInventoryResult {
+  return { groups: 0, incomplete: 0, invalid: 0, unavailable: false };
+}
+
+function countGroup(summary: ReceiptGroupInventoryResult, result: ReceiptGroupResult): void {
+  summary.groups++;
+  if (result.verdict === "GROUP_INCOMPLETE") summary.incomplete++;
+  if (result.verdict === "GROUP_INVALID") summary.invalid++;
+}
+
+export type GroupInventoryMessage =
+  { group: ReceiptGroupResult } | { summary: ReceiptGroupInventoryResult };
+
+/** Verify a directory without changing the calling process's working directory. */
+export async function verifyReceiptGroups(
+  dir: string,
+  trustedKeys: readonly string[],
+  visit: (group: ReceiptGroupResult) => void = () => {},
+): Promise<ReceiptGroupInventoryResult> {
+  const summary = newGroupInventory();
+  try {
+    if (!withPinnedEvidenceDirectorySync(dir, directoryHasGroups)) return summary;
+  } catch (error) {
+    return {
+      ...summary,
+      error: (error as Error).message,
+      unavailable: inventoryUnavailable(error),
+    };
+  }
+  // The legacy verifier pins directories by entering them. Its async reads
+  // run in a separate process so concurrent library calls keep their roots.
+  const worker = fileURLToPath(new URL("group-inventory-worker.js", import.meta.url));
+  const child = fork(worker, [], {
+    execArgv: [],
+    stdio: ["ignore", "ignore", "ignore", "ipc"],
+  });
+  return new Promise((resolve) => {
+    let final: ReceiptGroupInventoryResult | undefined;
+    child.on("message", (received) => {
+      if (summary.error !== undefined) return;
+      const message = received as GroupInventoryMessage;
+      if ("summary" in message) final = message.summary;
+      else {
+        try {
+          visit(message.group);
+          countGroup(summary, message.group);
+        } catch (error) {
+          summary.error = (error as Error).message;
+          child.kill();
+        }
+      }
+    });
+    child.once("error", (error) => {
+      summary.error = error.message;
+      summary.unavailable = true;
+    });
+    child.send({ dir, trustedKeys }, (error) => {
+      if (error && summary.error === undefined) {
+        summary.error = error.message;
+        summary.unavailable = true;
+        child.kill();
+      }
+    });
+    child.once("close", (code) => {
+      if (summary.error !== undefined) resolve(summary);
+      else if (code === 0 && final) resolve(final);
+      else
+        resolve({
+          ...summary,
+          unavailable: true,
+          error: "receipt group inventory worker did not finish",
+        });
+    });
+  });
 }

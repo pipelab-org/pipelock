@@ -3,6 +3,8 @@
 
 import {
   chmodSync,
+  appendFileSync,
+  copyFileSync,
   cpSync,
   existsSync,
   mkdirSync,
@@ -12,6 +14,7 @@ import {
   readlinkSync,
   renameSync,
   rmSync,
+  symlinkSync,
   truncateSync,
   writeFileSync,
 } from "node:fs";
@@ -30,10 +33,21 @@ import {
   setPidNamespaceProbeForTest,
   receiptGroupEvidencePresent,
   verifyReceiptGroup,
+  verifyReceiptGroups,
+  type ReceiptGroupResult,
   verifyReceiptGroupAfterInventoryForTest,
 } from "../src/group.js";
-import { parseEvidenceFilename } from "../src/chain-set.js";
+import {
+  baseHealthy,
+  parseEvidenceFilename,
+  resolveBaseSessions,
+  resolveBaseSessionsExcludingReceiptGroups,
+  verifyBase,
+} from "../src/chain-set.js";
+import { verifyV3Paths } from "../src/index.js";
+import { canonicalJSON } from "../src/v3/result.js";
 import { findPackageRoot } from "./paths.js";
+import { fixtureHash, readV3Fixture, resignV3Fixture } from "./v3-fixtures.js";
 
 const root = findPackageRoot(import.meta.url);
 const fixtureRoot = mkdtempSync(join(tmpdir(), "ts-receipt-group-fixtures-"));
@@ -273,6 +287,133 @@ test("Go-produced initial, successor, and recovery-successor groups verify", asy
       report = await verifyReceiptGroup(dir, id, keys(dir));
     assert.equal(report.verdict, "GROUP_VALID", `${name}: ${JSON.stringify(report)}`);
   }
+});
+
+test("directory verification reports every Go-produced group", async () => {
+  for (const [name, expected] of [
+    ["group-valid", ["GROUP_VALID"]],
+    ["group-successor", ["GROUP_VALID", "GROUP_VALID"]],
+    ["group-recovery-successor", ["GROUP_INCOMPLETE", "GROUP_VALID"]],
+  ] as const) {
+    const dir = join(fixtures, name);
+    const groups: ReceiptGroupResult[] = [];
+    const summary = await verifyReceiptGroups(dir, keys(dir), (result) => groups.push(result));
+    assert.equal(summary.error, undefined, name);
+    assert.deepEqual(groups.map((group) => group.verdict).sort(), expected, name);
+    assert.equal(summary.groups, expected.length);
+  }
+});
+
+test("directory verification detects orphan artifacts and gates before accepting a group", async (t) => {
+  const source = join(fixtures, "group-valid");
+  const dir = mkdtempSync(join(tmpdir(), "ts-group-orphans-"));
+  t.after(() => rmSync(dir, { recursive: true }));
+  const trusted = keys(source);
+  assert.equal((await verifyReceiptGroups(dir, trusted)).groups, 0);
+  mkdirSync(join(dir, "ael"));
+
+  const orphan = "a".repeat(32);
+  const close = join(dir, `receipt-group-${orphan}-close.json`);
+  writeFileSync(close, "orphan");
+  const visited: ReceiptGroupResult[] = [];
+  const collect = (group: ReceiptGroupResult) => visited.push(group);
+  assert.equal((await verifyReceiptGroups(dir, trusted, collect)).invalid, 1);
+  assert.match(visited.pop()!.error!, /no opening manifest/u);
+
+  const stopped = await verifyReceiptGroups(dir, trusted, () => {
+    throw new Error("visitor stopped");
+  });
+  assert.equal(stopped.groups, 0);
+  assert.equal(stopped.error, "visitor stopped");
+  const unknown = join(dir, "receipt-group-unrecognized");
+  writeFileSync(unknown, "");
+  assert.match((await verifyReceiptGroups(dir, trusted)).error!, /unknown receipt group artifact/u);
+  rmSync(unknown);
+  rmSync(close);
+
+  const evidence = readdirSync(source).find(
+    (name) => parseEvidenceFilename(name)?.seqStart === 0n,
+  )!;
+  copyFileSync(join(source, evidence), join(dir, evidence));
+  appendFileSync(join(dir, evidence), '{"torn":');
+  const summary = await verifyReceiptGroups(dir, trusted, collect);
+  assert.equal(summary.error, undefined);
+  assert.equal(summary.invalid, 1);
+  assert.equal(visited[0].group_id, groupID(source));
+  assert.match(visited[0].error!, /no opening manifest/u);
+
+  const session = parseEvidenceFilename(evidence)!.session;
+  const base = session.slice(0, session.indexOf(".run."));
+  assert.deepEqual(resolveBaseSessions(dir, base), [session]);
+  assert.deepEqual(resolveBaseSessionsExcludingReceiptGroups(dir, base), []);
+  const excluded = await verifyBase(dir, base, {
+    trustedKeys: trusted,
+    endorsements: [],
+    excludeReceiptGroupSessions: true,
+  });
+  assert.equal(baseHealthy(excluded), true);
+  assert.deepEqual(excluded.chains, []);
+});
+
+test("mixed v3 and receipt-group directories must pin the verified group", async (t) => {
+  const source = join(fixtures, "group-valid");
+  const dir = mkdtempSync(join(tmpdir(), "ts-v3-mixed-group-"));
+  t.after(() => rmSync(dir, { recursive: true }));
+  cpSync(source, dir, { recursive: true });
+  mkdirSync(join(dir, "unrelated"));
+  writeFileSync(join(dir, "unrelated", "note.txt"), "unrelated evidence");
+  const vector = resolve(root, "../../conformance/testdata/v3/g01-valid-line");
+  const request = JSON.parse(readFileSync(join(vector, "request.json"), "utf8")) as {
+    inputs: string[];
+    keys: string[];
+  };
+  const file = join(dir, request.inputs[0]);
+  copyFileSync(join(vector, request.inputs[0]), file);
+  const opts = { directory: true, keys: [...request.keys, ...keys(source)] };
+  const unlisted = await verifyV3Paths([dir], opts);
+  assert.equal(unlisted.result.verdict, "INVALID");
+  assert.deepEqual(unlisted.projection.finding_codes, ["LEGACY_CHAIN_UNLISTED"]);
+  const id = groupID(source);
+  assert.deepEqual(unlisted.result.legacy, [
+    { format: "receipt_group", chain: id, class: "pass", verdict: "GROUP_VALID" },
+  ]);
+
+  const group = await verifyReceiptGroup(source, id, keys(source));
+  const inventory = canonicalJSON({
+    chains: [
+      {
+        chain: id,
+        format: "receipt_group",
+        record: "sha256:" + group.close_manifest_sha256,
+        seq: group.shard_count,
+      },
+    ],
+    v: 1,
+  });
+  const inventoryHash = fixtureHash(inventory);
+  writeFileSync(join(dir, "receipt-v3-cutover-" + inventoryHash + ".json"), inventory);
+  const records = readV3Fixture(file);
+  records[0].payload.body.legacy_cutover = { inventory: "sha256:" + inventoryHash, chains: 1 };
+  writeFileSync(file, resignV3Fixture(records));
+  const pinned = await verifyV3Paths([dir], opts);
+  assert.equal(pinned.result.verdict, "VALID");
+  assert.deepEqual(pinned.result.legacy, unlisted.result.legacy);
+  assert.deepEqual(pinned.result.findings, []);
+  if (process.platform !== "win32") {
+    const link = join(dir, "unrelated", "trust-link");
+    symlinkSync("../trust.json", link);
+    const refused = await verifyV3Paths([dir], opts);
+    assert.deepEqual(refused.projection.finding_codes, ["LEGACY_INVALID"]);
+    assert.deepEqual(refused.result.legacy, [
+      { format: "receipt_group", chain: id, class: "failure", verdict: "GROUP_INVALID" },
+    ]);
+    rmSync(link);
+  }
+  rmSync(join(dir, `receipt-group-${id}-close.json`));
+  const incomplete = await verifyV3Paths([dir], opts);
+  assert.equal(incomplete.result.legacy[0].verdict, "GROUP_INCOMPLETE");
+  assert.ok(incomplete.result.findings.some((f) => f.code === "LEGACY_GROUP_INCOMPLETE"));
+  assert.ok(incomplete.result.findings.some((f) => f.code === "LEGACY_CHAIN_HEAD_MISMATCH"));
 });
 
 test("shared attack vectors reject both ends of a forged transition", async () => {
@@ -647,6 +788,53 @@ test("shared mutation vectors match the Go verdict", async () => {
   } finally {
     rmSync(temp, { recursive: true, force: true });
   }
+});
+
+test("directory verification matches the shared mutation vectors", async (t) => {
+  const vectors = JSON.parse(
+    readFileSync(resolve(root, "../receipt-group-mutation-vectors.json"), "utf8"),
+  ) as MutationVector[];
+  const temp = mkdtempSync(join(tmpdir(), "ts-receipt-group-directory-mutations-"));
+  t.after(() => rmSync(temp, { recursive: true, force: true }));
+  for (const item of vectors) {
+    const dir = join(temp, item.name);
+    cpSync(join(matrixFixtures, "cases", item.case), dir, { recursive: true });
+    for (const op of item.ops) applyMutation(dir, op);
+    const groups: ReceiptGroupResult[] = [];
+    const summary = await verifyReceiptGroups(dir, item.trusted_keys, (group) =>
+      groups.push(group),
+    );
+    const actual = groups.find((group) => group.group_id === item.group_id);
+    if (actual) assert.equal(actual.verdict, item.expected, item.name);
+    else {
+      assert.ok(summary.error, item.name);
+      assert.equal(
+        summary.unavailable ? "GROUP_INCOMPLETE" : "GROUP_INVALID",
+        item.expected,
+        item.name,
+      );
+    }
+  }
+});
+
+test("directory verification keeps concurrent roots and the caller's directory", async () => {
+  const cwd = process.cwd();
+  const one = join(fixtures, "group-valid");
+  const two = join(fixtures, "group-successor");
+  const pending = Promise.all([
+    verifyReceiptGroups(one, keys(one)),
+    verifyReceiptGroups(two, keys(two)),
+  ]);
+  assert.equal(process.cwd(), cwd);
+  const results = await pending;
+  assert.equal(process.cwd(), cwd);
+  assert.deepEqual(
+    results.map(({ groups, error, invalid }) => ({ groups, error, invalid })),
+    [
+      { groups: 1, error: undefined, invalid: 0 },
+      { groups: 2, error: undefined, invalid: 0 },
+    ],
+  );
 });
 
 test("a group shard file is not a skippable receipt chain outside group mode", () => {

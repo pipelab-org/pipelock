@@ -44,6 +44,7 @@ import {
 } from "./rotation.js";
 import type { Receipt } from "./types.js";
 import { runAARPCommand } from "./aarp/cli.js";
+import { runV3Command } from "./v3/cli.js";
 import { comparableProvenance, runProvenanceFixture } from "./provenance-proof.js";
 import {
   RuntimeError,
@@ -759,6 +760,8 @@ async function main(): Promise<number> {
       return runChainCommand(args);
     case "receipt":
       return runReceiptCommand(args);
+    case "v3":
+      return runV3Command(args);
     case "aarp":
       return runAARPCommand(args);
     case "provenance":
