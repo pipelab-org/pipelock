@@ -943,16 +943,18 @@ func TestOptionalAdmissionWithholdsAfterFatalRecoveryAndClose(t *testing.T) {
 	}
 }
 
+var errOneShotSyncFault = errors.New("injected one-shot sync fault")
+
 type oneShotSyncFaultFile struct {
 	StreamFile
+	armed   *atomic.Bool
 	faulted *atomic.Bool
-	syncs   atomic.Int64
-	at      int64
 }
 
 func (f *oneShotSyncFaultFile) Sync() error {
-	if f.syncs.Add(1) == f.at && f.faulted.CompareAndSwap(false, true) {
-		return errors.New("injected one-shot sync fault")
+	if f.armed.CompareAndSwap(true, false) {
+		f.faulted.Store(true)
+		return errOneShotSyncFault
 	}
 	return f.StreamFile.Sync()
 }
@@ -969,7 +971,7 @@ func TestSharedFlushConcurrentTrafficAndClose(t *testing.T) {
 			opts.idleFlushDelay = &delay
 			opts.Heartbeat = time.Second
 			storage := localWriterStorage()
-			var faulted atomic.Bool
+			var armed, faulted atomic.Bool
 			if withFault {
 				create := storage.createTemp
 				storage.createTemp = func(dir, pattern string) (StreamFile, error) {
@@ -977,7 +979,7 @@ func TestSharedFlushConcurrentTrafficAndClose(t *testing.T) {
 					if err != nil {
 						return nil, err
 					}
-					return &oneShotSyncFaultFile{StreamFile: file, faulted: &faulted, at: 3}, nil
+					return &oneShotSyncFaultFile{StreamFile: file, armed: &armed, faulted: &faulted}, nil
 				}
 			}
 			w := requireWriter(t, opts, storage)
@@ -1031,6 +1033,15 @@ func TestSharedFlushConcurrentTrafficAndClose(t *testing.T) {
 				}
 			})
 			awaitFlushEvent(t, started)
+			// Require a sync after arming the fault and before starting close.
+			// Other traffic may reach that sync before the heartbeat does.
+			armed.Store(withFault)
+			if err := w.WriteHeartbeat(t.Context()); err != nil && (!withFault || !errors.Is(err, errOneShotSyncFault)) {
+				t.Fatalf("checkpoint heartbeat: %v", err)
+			}
+			if faulted.Load() != withFault {
+				t.Fatalf("one-shot sync fault fired = %t, want %t", faulted.Load(), withFault)
+			}
 			closeErr := w.Close(context.Background(), nil)
 			wg.Wait()
 			if !withFault && closeErr != nil {
