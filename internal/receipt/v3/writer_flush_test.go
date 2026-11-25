@@ -1167,6 +1167,26 @@ func TestFlusherStopDispatchesQueuedFatalNotification(t *testing.T) {
 		close(idle)
 		<-proceed
 	})
+	// Cleanups run last-in first-out: release the paused flusher, then make
+	// sure the writer's own Close never closes flushStop a second time.
+	stopClosed := false
+	t.Cleanup(func() {
+		if !stopClosed {
+			return
+		}
+		select {
+		case <-w.flushDone:
+			w.gate <- struct{}{}
+			w.flushStop = make(chan struct{})
+			w.release()
+		case <-time.After(testwait.Deadline(time.Second)):
+			// The flusher never stopped. Skip the writer's Close instead.
+			w.closeOnce.Do(func() { close(w.closeDone) })
+		}
+	})
+	releaseFlusher := sync.OnceFunc(func() { close(proceed) })
+	t.Cleanup(releaseFlusher)
+
 	w.gate <- struct{}{}
 	w.onFlusherIdle = pause
 	w.wakeFlush()
@@ -1174,19 +1194,20 @@ func TestFlusherStopDispatchesQueuedFatalNotification(t *testing.T) {
 	awaitFlushEvent(t, idle)
 	w.gate <- struct{}{}
 	w.reportFatal(fault)
+	signalled := false
 	select {
 	case <-w.flushWake:
+		signalled = true
+		close(w.flushStop)
+		stopClosed = true
 	default:
+	}
+	w.release()
+	if !signalled {
 		t.Fatal("fatal report did not signal the paused flusher")
 	}
-	close(w.flushStop)
-	w.release()
-	close(proceed)
+	releaseFlusher()
 	awaitFlushEvent(t, w.flushDone)
-	// Close owns flushStop; give it a fresh channel to close at cleanup.
-	w.gate <- struct{}{}
-	w.flushStop = make(chan struct{})
-	w.release()
 
 	select {
 	case err := <-called:
