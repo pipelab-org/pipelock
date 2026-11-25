@@ -104,7 +104,8 @@ func (s *scope) shadows(name string) bool {
 	return sm != nil
 }
 
-// funcRoot is the function body scope, the one whose parent is the file.
+// funcRoot is the outermost function body scope, the one whose parent is
+// the file. For a function literal that is the enclosing declared function.
 func (s *scope) funcRoot() *scope {
 	cur := s
 	for cur.parent != nil && !cur.parent.file {
@@ -262,11 +263,20 @@ func (c *checker) checkFile() error {
 	c.names = namesOf(f)
 	c.declareTop(f)
 	for _, d := range f.Decls {
-		fn, ok := d.(*ast.FuncDecl)
-		if !ok || fn.Body == nil {
-			continue
+		switch n := d.(type) {
+		case *ast.FuncDecl:
+			if n.Body != nil {
+				c.walkFunc(c.fileScope, n.Recv, n.Type, n.Body)
+			}
+		case *ast.GenDecl:
+			// A function literal in a package-level var initializer, such as a
+			// table of test cases, is a function body like any other.
+			for _, spec := range n.Specs {
+				if vs, ok := spec.(*ast.ValueSpec); ok {
+					c.walkExprs(vs.Values, c.fileScope)
+				}
+			}
 		}
-		c.walkFunc(fn.Recv, fn.Type, fn.Body, nil)
 	}
 	return nil
 }
@@ -294,16 +304,16 @@ func (c *checker) declareTop(f *ast.File) {
 	}
 }
 
-func (c *checker) walkFunc(recv *ast.FieldList, typ *ast.FuncType, body *ast.BlockStmt, inherited map[string]bool) {
+// walkFunc walks a function body in a new scope under parent: the file scope
+// for a declared function, the enclosing scope for a function literal, so a
+// closure sees the test handles and timers it captures.
+func (c *checker) walkFunc(parent *scope, recv *ast.FieldList, typ *ast.FuncType, body *ast.BlockStmt) {
 	if body == nil {
 		return
 	}
 	// Parameters share the function body block. A short declaration there
 	// redeclares the parameter; it does not shadow it from a nested block.
-	sc := newScope(c.fileScope)
-	for name := range inherited {
-		sc.declare(name, &sym{handle: true})
-	}
+	sc := newScope(parent)
 	c.declareFields(recv, sc)
 	if typ != nil {
 		c.declareFields(typ.Params, sc)
@@ -531,7 +541,7 @@ func (c *checker) walkExpr(e ast.Expr, sc *scope) {
 		if !ok {
 			return n != nil
 		}
-		c.walkFunc(nil, fl.Type, fl.Body, visibleHandles(sc))
+		c.walkFunc(sc, nil, fl.Type, fl.Body)
 		return false
 	})
 }
@@ -540,23 +550,6 @@ func (c *checker) walkExprs(es []ast.Expr, sc *scope) {
 	for _, e := range es {
 		c.walkExpr(e, sc)
 	}
-}
-
-func visibleHandles(sc *scope) map[string]bool {
-	out := map[string]bool{}
-	seen := map[string]bool{}
-	for cur := sc; cur != nil && !cur.file; cur = cur.parent {
-		for name, sm := range cur.binds {
-			if seen[name] {
-				continue
-			}
-			seen[name] = true
-			if sm.handle {
-				out[name] = true
-			}
-		}
-	}
-	return out
 }
 
 func (c *checker) declareRange(s *ast.RangeStmt, sc *scope) {
@@ -751,11 +744,31 @@ func (c *checker) callArg(e ast.Expr, sc *scope, sel string) (ast.Expr, bool) {
 	return nil, false
 }
 
+// alreadyScaled reports whether a duration is, or is computed from, a
+// Deadline value: grace/2 with grace := testwait.Deadline(...) is scaled once
+// already, and wrapping it would scale it twice.
 func (c *checker) alreadyScaled(e ast.Expr, sc *scope) bool {
-	if c.isDeadline(e, sc) {
+	scaled := false
+	ast.Inspect(e, func(n ast.Node) bool {
+		if scaled {
+			return false
+		}
+		switch x := n.(type) {
+		case *ast.FuncLit:
+			return false
+		case *ast.CallExpr:
+			if c.isDeadline(x, sc) {
+				scaled = true
+				return false
+			}
+		case *ast.Ident:
+			if c.scaledIdent(x, sc, map[string]bool{}) {
+				scaled = true
+			}
+		}
 		return true
-	}
-	return c.scaledIdent(e, sc, map[string]bool{})
+	})
+	return scaled
 }
 
 // scaledIdent follows a duration identifier back to a Deadline value in this

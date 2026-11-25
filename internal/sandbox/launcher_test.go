@@ -150,6 +150,9 @@ func launchSandboxedToCompletion(t *testing.T, cfg LaunchConfig) error {
 	defer cancel()
 	cfg.Ctx = ctx
 
+	// The watchdog outlasts the context kill at any scale, and the failure
+	// message reports the duration actually waited.
+	watchdog := testwait.Deadline(sandboxLaunchTimeout + sandboxWatchdogGrace)
 	done := make(chan error, 1)
 	go func() {
 		cmd, err := LaunchSandboxed(cfg)
@@ -166,10 +169,10 @@ func launchSandboxedToCompletion(t *testing.T, cfg LaunchConfig) error {
 			t.Skipf("sandbox launch unavailable in this runner: %v", err)
 		}
 		return err
-	case <-time.After(testwait.Deadline(sandboxLaunchTimeout + sandboxWatchdogGrace)):
+	case <-time.After(watchdog):
 		cancel()
 		t.Fatalf("sandbox launch did not complete within %s; failing fast instead of hanging (kernel namespace/Landlock primitives may be broken)",
-			sandboxLaunchTimeout+sandboxWatchdogGrace)
+			watchdog)
 		return nil // unreachable; t.Fatalf stops the test
 	}
 }
@@ -178,6 +181,7 @@ func launchSandboxedStarted(t *testing.T, cfg LaunchConfig) (*exec.Cmd, context.
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), sandboxLaunchTimeout)
 	cfg.Ctx = ctx
+	watchdog := testwait.Deadline(sandboxLaunchTimeout + sandboxWatchdogGrace)
 
 	type launchResult struct {
 		cmd *exec.Cmd
@@ -199,10 +203,10 @@ func launchSandboxedStarted(t *testing.T, cfg LaunchConfig) (*exec.Cmd, context.
 			t.Fatalf("LaunchSandboxed: %v", res.err)
 		}
 		return res.cmd, cancel
-	case <-time.After(testwait.Deadline(sandboxLaunchTimeout + sandboxWatchdogGrace)):
+	case <-time.After(watchdog):
 		cancel()
 		t.Fatalf("sandbox launch did not start within %s; failing fast instead of hanging (kernel namespace/Landlock primitives may be broken)",
-			sandboxLaunchTimeout+sandboxWatchdogGrace)
+			watchdog)
 		return nil, cancel // unreachable; t.Fatalf stops the test
 	}
 }

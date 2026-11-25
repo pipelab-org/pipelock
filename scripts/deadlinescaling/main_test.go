@@ -224,6 +224,74 @@ func TestA(t *testing.T) {
 			arg:  "time.Second",
 		},
 		{
+			name: "package-level function literal",
+			src: head + `var cases = []func(*testing.T){
+	func(t *testing.T) {
+		select {
+		case <-time.After(5 * time.Second):
+			t.Fatal("timeout")
+		}
+	},
+}
+`,
+			want: 1,
+			arg:  "5 * time.Second",
+		},
+		{
+			name: "closure receives a timer from its enclosing function",
+			src: head + `func TestA(t *testing.T) {
+	deadline := time.After(2 * time.Second)
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-done:
+		case <-deadline:
+			t.Error("timeout")
+		}
+	}()
+}
+`,
+			want: 1,
+			arg:  "2 * time.Second",
+		},
+		{
+			name: "closure parameter shadows an enclosing timer",
+			src: head + `func TestA(t *testing.T) {
+	deadline := time.After(2 * time.Second)
+	_ = deadline
+	check := func(deadline <-chan time.Time) {
+		select {
+		case <-deadline:
+			t.Error("timeout")
+		}
+	}
+	check(nil)
+}
+`,
+			want: 0,
+		},
+		{
+			name: "duration derived from a scaled value",
+			src: `package p
+
+import (
+	"testing"
+	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
+)
+
+func TestA(t *testing.T) {
+	grace := testwait.Deadline(3 * time.Second)
+	select {
+	case <-time.After(grace / 2):
+		t.Fatal("timeout")
+	}
+}
+`,
+			want: 0,
+		},
+		{
 			name: "duration identifier already scaled",
 			src: `package p
 
