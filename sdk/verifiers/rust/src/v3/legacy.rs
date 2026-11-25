@@ -129,7 +129,7 @@ impl Verifier<'_> {
             found
                 .files
                 .iter()
-                .map(|file| name(&file.path).to_owned())
+                .map(|file| name(&file.path).into_owned())
                 .collect()
         } else {
             BTreeSet::new()
@@ -232,10 +232,10 @@ impl Verifier<'_> {
             if self.options.directory {
                 let dir = path.parent().expect("discovered directory");
                 dirs.insert(dir, false);
-                if group_artifact(name(path)) {
+                if group_artifact(&name(path)) {
                     continue;
                 }
-                if let Some((session, _)) = parse_evidence_filename(name(path)) {
+                if let Some((session, _)) = parse_evidence_filename(&name(path)) {
                     sessions.insert(session, dir);
                     continue;
                 }
@@ -338,8 +338,8 @@ impl Verifier<'_> {
             .iter()
             .filter_map(|path| {
                 let file = name(path);
-                let (session, _) = parse_evidence_filename(file)?;
-                bare_sessions.contains(&session).then_some(file.to_owned())
+                let (session, _) = parse_evidence_filename(&file)?;
+                bare_sessions.contains(&session).then(|| file.into_owned())
             })
             .collect::<BTreeSet<_>>();
         for (base, dir) in bases {
@@ -658,7 +658,7 @@ fn read_legacy(path: &Path) -> Result<(ExtractedReceipts, bool)> {
     let mut line = Vec::new();
     let mut mode = None;
     let mut prior = None::<(u64, String, String)>;
-    let parsed_name = parse_evidence_filename(name(path));
+    let parsed_name = parse_evidence_filename(&name(path));
     while reader
         .by_ref()
         .take((MAX_RECORDER_LINE_BYTES + 3) as u64)

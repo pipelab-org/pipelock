@@ -206,6 +206,12 @@ def _v3_open_with_cutover(directory, inventory, key):
     return public.hex()
 
 
+def test_claims_profile_requires_exact_filename_suffix(tmp_path):
+    path = tmp_path / "other.receipt-v3.jsonl\n"
+    path.write_bytes(b"{}\n")
+    assert not claims_v3_input(path)
+
+
 def test_cutover_inventory_reads_are_bounded(monkeypatch):
     from pipelock_aarp_verify.v3 import legacy
 
@@ -232,7 +238,7 @@ def test_cutover_inventory_reads_are_bounded(monkeypatch):
         pytest.param(b'{"chains":[{', 1, id="truncated-row"),
         pytest.param(b'{"chains":[{"chain":}],"v":1}', 1, id="malformed-row"),
         pytest.param(b'{"chains":[ROW,ROW],"v":1}', 2, id="duplicate-row"),
-        pytest.param(b'{"chains":[ROW,],"v":1}', 2, id="trailing-comma"),
+        pytest.param(b'{"chains":[ROW,],"v":1}', 1, id="trailing-comma"),
         pytest.param(b'{"chains":[ROW],"v":1} ', 1, id="trailing-data"),
     ],
 )

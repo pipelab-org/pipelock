@@ -42,7 +42,7 @@ from .wire import (
     validate_key,
 )
 
-_PROFILE_NAME = re.compile(r"\.receipt-v([0-9]+)\.jsonl$")
+_PROFILE_NAME = re.compile(r"\.receipt-v([0-9]+)\.jsonl\Z")
 _STREAM_NAME = re.compile(r"([0-9a-f]{32})-([0-9]{16})\.receipt-v3\.jsonl")
 _INVENTORY_NAME = re.compile(r"receipt-v3-cutover-([0-9a-f]{64})\.json")
 _PREFIX = "VALID PREFIX, END UNPROVEN"

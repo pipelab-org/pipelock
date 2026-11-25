@@ -11,6 +11,7 @@ mod store;
 mod wire;
 
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, BTreeSet},
     fs,
     io::{self, BufReader, Read, Write},
@@ -207,9 +208,11 @@ fn open(path: &Path) -> Result<fs::File> {
     open_verifier_file(path)
 }
 
-fn name(path: &Path) -> &str {
+// A basename that is not valid UTF-8 keeps its ASCII profile suffix; the
+// replacement character only changes the stem, which no layout accepts.
+fn name(path: &Path) -> Cow<'_, str> {
     path.file_name()
-        .and_then(|name| name.to_str())
+        .map(|name| name.to_string_lossy())
         .unwrap_or_default()
 }
 
@@ -225,7 +228,7 @@ fn has_profile(path: &Path) -> Result<bool> {
 
 /// Tests whether a filename or evidence prefix claims the v3 or later profile.
 pub fn claims_input(path: &Path) -> Result<bool> {
-    if identify(name(path)).is_some() {
+    if identify(&name(path)).is_some() {
         return Ok(true);
     }
     has_profile(path)
@@ -252,9 +255,9 @@ fn discover(paths: &[PathBuf], options: &Options) -> Result<Discovery> {
             let entry = entry.map_err(|e| input_error(format!("read evidence directory: {e}")))?;
             let path = entry.path();
             let name = name(&path);
-            if identify(name).is_some()
-                || legacy::inventory_id(name).is_some()
-                || legacy::candidate(name)
+            if identify(&name).is_some()
+                || legacy::inventory_id(&name).is_some()
+                || legacy::candidate(&name)
             {
                 let kind = entry
                     .file_type()
@@ -278,9 +281,9 @@ fn discover(paths: &[PathBuf], options: &Options) -> Result<Discovery> {
         paths.iter().cloned().collect()
     };
     for path in paths {
-        if let Some(id) = legacy::inventory_id(name(&path)) {
+        if let Some(id) = legacy::inventory_id(&name(&path)) {
             found.inventories.entry(id).or_default().push(path);
-        } else if let Some(file) = identify(name(&path)) {
+        } else if let Some(file) = identify(&name(&path)) {
             found.files.push(InputFile { path, ..file });
         } else if options.explicit_v3 {
             found.files.push(InputFile {

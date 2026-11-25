@@ -652,3 +652,53 @@ fn claims_accepts_double_dash_separator() {
         assert!(output.stdout.is_empty(), "{args:?}");
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn non_utf8_profile_names_keep_their_claim() {
+    use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+
+    for (suffix, code) in [
+        (".receipt-v4.jsonl", "UNKNOWN_PROFILE"),
+        (".receipt-v3.jsonl", "FILE_LAYOUT"),
+    ] {
+        let dir = TestDirectory::new();
+        let mut name = vec![0xff];
+        name.extend_from_slice(suffix.as_bytes());
+        let path = dir.0.join(OsString::from_vec(name));
+        fs::write(
+            &path, b"{}
+",
+        )
+        .unwrap();
+        assert!(claims_input(&path).unwrap(), "{suffix}");
+        let options: Options =
+            serde_json::from_value(serde_json::json!({"directory": true})).unwrap();
+        let result = verify_paths(&[dir.0.clone()], &options).unwrap();
+        let document: Value = serde_json::from_slice(result.json()).unwrap();
+        assert!(
+            document["findings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|finding| finding["code"] == code),
+            "{suffix}: {document}"
+        );
+        assert_eq!(document["ignored_files"], 0, "{suffix}");
+    }
+}
+
+#[test]
+fn profile_claims_need_the_exact_filename_suffix() {
+    let dir = TestDirectory::new();
+    let path = dir.0.join(
+        "other.receipt-v3.jsonl
+",
+    );
+    fs::write(
+        &path, b"{}
+",
+    )
+    .unwrap();
+    assert!(!claims_input(&path).unwrap());
+}
