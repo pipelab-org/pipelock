@@ -5,6 +5,8 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -43,6 +45,9 @@ func TestLoadExpectedReceiptFormat(t *testing.T) {
 	}
 	dir := t.TempDir()
 	_, pub := testreceipt.V3(t, dir, false, blockedLoadAction())
+	if _, err := readLoadV3(t.Context(), legacyDir, pub, new(v3LoadCounts)); err == nil || !strings.Contains(err.Error(), "--receipt-format v3") {
+		t.Fatalf("legacy fallback was accepted: %v", err)
+	}
 	if err := checkReceiptFormat(dir, config.ReceiptFormatLegacy); err == nil || !strings.Contains(err.Error(), "--receipt-format legacy") {
 		t.Fatalf("v3 evidence was accepted for legacy: %v", err)
 	}
@@ -50,6 +55,13 @@ func TestLoadExpectedReceiptFormat(t *testing.T) {
 	res, err := readLoadV3(t.Context(), dir, pub, &counts)
 	if err != nil || res.Verdict != "VALID" || counts.actions != 1 || counts.blockDecisions != 1 {
 		t.Fatalf("v3 verification: %+v, counts %+v: %v", res, counts, err)
+	}
+	visitErr := errors.New("action consumer stopped")
+	_, err = v3.VerifyPathsWithActions(t.Context(), []string{dir}, v3.Options{Directory: true, Keys: []ed25519.PublicKey{pub}}, func(v3.Action) error {
+		return visitErr
+	})
+	if !errors.Is(err, visitErr) {
+		t.Fatalf("verifier discarded action visitor error: %v", err)
 	}
 	if _, err := readLoadV3(t.Context(), dir, nil, new(v3LoadCounts)); err == nil {
 		t.Fatal("unusable pin accepted")
@@ -152,10 +164,30 @@ func TestV3LoadCountsAndRestartTip(t *testing.T) {
 		}
 	}
 
-	tip := v3.Position{Record: "record", Seq: 13}
-	streams := []v3.StreamResult{{Last: &tip}, {Last: &v3.Position{Record: "next", Seq: 14}}}
-	if v3LoadContinues(nil, &tip) || v3LoadContinues(streams[:1], &tip) || v3LoadContinues(streams, nil) ||
-		v3LoadContinues(streams, &v3.Position{Record: "different", Seq: 13}) || !v3LoadContinues(streams, &tip) {
+	before := v3.StreamResult{Stream: "stream-z", Last: &v3.Position{Record: "record", Seq: 13}}
+	after := v3.StreamResult{Stream: "stream-a", Previous: before.Stream, Last: &v3.Position{Record: "next", Seq: 14}}
+	streams := []v3.StreamResult{after, before}
+	if tip := v3LoadTip(streams); tip == nil || tip.Stream != after.Stream {
+		t.Fatalf("expected successor as history tip, got %+v", tip)
+	}
+	if v3LoadTip(nil) != nil || v3LoadContinues(nil, &before) || v3LoadContinues(streams[:1], &before) ||
+		v3LoadContinues(streams[1:], &before) || v3LoadContinues(streams, nil) || !v3LoadContinues(streams, &before) {
 		t.Fatal("restart tip was accepted without a verified successor, or was lost")
+	}
+	before.Last = &v3.Position{Record: "different", Seq: 13}
+	if v3LoadContinues(streams, &before) {
+		t.Fatal("changed pre-restart tip accepted")
+	}
+}
+
+func TestLoadV3RequiresSingleHistory(t *testing.T) {
+	dir := t.TempDir()
+	_, pub := testreceipt.V3(t, dir, false)
+	file, _ := testreceipt.V3(t, t.TempDir(), false)
+	if err := os.Rename(file, filepath.Join(dir, filepath.Base(file))); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readLoadV3(t.Context(), dir, pub, new(v3LoadCounts)); err == nil || !strings.Contains(err.Error(), "one verified history") {
+		t.Fatalf("unrelated histories were accepted: %v", err)
 	}
 }

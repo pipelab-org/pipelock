@@ -224,13 +224,6 @@ func runShadow(cmd *cobra.Command, flags shadowFlags) error {
 		receiptsEmitted, err = emitShadowReceipts(flags, env.Body, report, now)
 		return err
 	}
-	if flags.recorderDir != "" && len(report.Batches) != 0 {
-		dir, err := checkedWriteDir(flags.recorderDir)
-		if err != nil {
-			return err
-		}
-		flags.recorderDir = dir
-	}
 	if filepath.IsAbs(flags.recorderDir) {
 		if err := withLegacyReceiptDirectory(command, flags.recorderDir, write); err != nil {
 			return err

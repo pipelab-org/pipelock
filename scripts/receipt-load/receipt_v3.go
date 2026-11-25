@@ -81,8 +81,7 @@ func readLoadV3(ctx context.Context, dir string, key ed25519.PublicKey, counts *
 	if len(result.Legacy) != 0 {
 		return result, fmt.Errorf("recorder evidence contains legacy receipts in a v3 run")
 	}
-	if len(result.Histories) != 1 || len(result.Histories[0].Streams) == 0 ||
-		result.Histories[0].Streams[len(result.Histories[0].Streams)-1].Last == nil {
+	if len(result.Histories) != 1 || v3LoadTip(result.Histories[0].Streams) == nil {
 		return result, errors.New("v3 load run requires one verified history with a recorded tip")
 	}
 	return result, nil
@@ -149,16 +148,31 @@ func finishV3Integrity(ctx context.Context, opt options, dirs runDirs, plan work
 	return rep
 }
 
-func v3LoadContinues(streams []v3.StreamResult, tip *v3.Position) bool {
-	if len(streams) < 2 || tip == nil {
-		return false
+// The verification document orders streams by ID. Use its authenticated
+// predecessor links to find the tip, independently of presentation order.
+func v3LoadTip(streams []v3.StreamResult) *v3.StreamResult {
+	predecessors := make(map[string]bool, len(streams))
+	for _, stream := range streams {
+		predecessors[stream.Previous] = true
 	}
-	for _, stream := range streams[:len(streams)-1] {
-		if stream.Last != nil && *stream.Last == *tip {
-			return true
+	for i := range streams {
+		if !predecessors[streams[i].Stream] && streams[i].Last != nil {
+			return &streams[i]
 		}
 	}
-	return false
+	return nil
+}
+
+func v3LoadContinues(streams []v3.StreamResult, tip *v3.StreamResult) bool {
+	if tip == nil || tip.Last == nil {
+		return false
+	}
+	var retained, extended bool
+	for _, stream := range streams {
+		retained = retained || stream.Stream == tip.Stream && stream.Last != nil && *stream.Last == *tip.Last
+		extended = extended || stream.Previous == tip.Stream
+	}
+	return retained && extended
 }
 
 func verifyLoadV3(ctx context.Context, dirs runDirs, counts *v3LoadCounts) (verifyReport, v3.Result) {

@@ -56,7 +56,7 @@ type options struct {
 	verifyTimeout   time.Duration
 	restartAfter    int
 	restartBefore   *recorderObservation
-	restartV3       *v3.Position
+	restartV3       *v3.StreamResult
 }
 
 // runMode runs one recorder mode end to end and always writes result.json once
@@ -258,8 +258,7 @@ func execute(ctx context.Context, opt options, mode string, dirs runDirs, plan w
 				rep.Verify, result = verifyLoadV3(verifyCtx, dirs, new(v3LoadCounts))
 				cancel()
 				if rep.Verify.Exit == 0 {
-					streams := result.Histories[0].Streams
-					opt.restartV3 = streams[len(streams)-1].Last
+					opt.restartV3 = v3LoadTip(result.Histories[0].Streams)
 				}
 			} else {
 				if err := checkReceiptFormat(dirs.recorder, config.ReceiptFormatLegacy); err != nil {
