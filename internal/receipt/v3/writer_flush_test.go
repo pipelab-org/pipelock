@@ -832,6 +832,33 @@ func TestSharedFlushRefuseOutcomeReplayPreservesParent(t *testing.T) {
 	}
 }
 
+func TestOptionalAdmissionClassifiesRolloverPublicationFailure(t *testing.T) {
+	opts := writerTestOptions(t.TempDir())
+	opts.Coverage.ReceiptsRequired = false
+	w := requireWriter(t, opts, localWriterStorage())
+	gate := NewEffectGate(w)
+	fault := errors.New("injected rollover publication failure")
+	w.gate <- struct{}{}
+	link := w.storage.link
+	w.storage.link = func(string, string) error { return fault }
+	w.release()
+	if err := w.Rollover(t.Context()); !errors.Is(err, fault) || errors.Is(err, errWriterNeedsRestart) {
+		t.Fatalf("rollover before link: %v", err)
+	}
+	if token, err := gate.Admit(t.Context(), writerTestIntent("before-link"), PolicySnapshot{}); token != nil || err != nil {
+		t.Fatalf("optional admission before link: token=%v err=%v", token, err)
+	}
+
+	w.gate <- struct{}{}
+	w.storage.link = link
+	w.storage.syncDir = func(string) error { return fault }
+	w.release()
+	if token, err := gate.Admit(t.Context(), writerTestIntent("after-link"), PolicySnapshot{}); token != nil ||
+		!errors.Is(err, ErrWriterUnavailable) || !errors.Is(err, errWriterNeedsRestart) || !errors.Is(err, fault) {
+		t.Fatalf("first optional admission after link: token=%v err=%v", token, err)
+	}
+}
+
 func TestOptionalAdmissionWithholdsAfterFatalRecoveryAndClose(t *testing.T) {
 	opts := writerTestOptions(t.TempDir())
 	opts.Coverage.ReceiptsRequired = false

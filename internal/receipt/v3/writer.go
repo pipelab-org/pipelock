@@ -451,14 +451,24 @@ var ErrWriterUnavailable = errors.New("receipt writer is unavailable")
 
 var errWriterNeedsRestart = errors.New("receipt writer needs a verified restart")
 
+func (w *StreamWriter) restartError() error {
+	if w.fatal == nil {
+		return nil
+	}
+	return errors.Join(ErrWriterUnavailable, errWriterNeedsRestart, w.fatal)
+}
+
 func (w *StreamWriter) ensureStream(ctx context.Context) error {
-	if w.fatal != nil {
-		return errors.Join(ErrWriterUnavailable, errWriterNeedsRestart, w.fatal)
+	if err := w.restartError(); err != nil {
+		return err
 	}
 	if w.active.file == nil {
 		err := w.publishOpen(ctx)
-		if err != nil && w.fatal != nil && !w.failed() {
-			w.reportFatal(err)
+		if w.fatal != nil {
+			if !w.failed() {
+				w.reportFatal(err)
+			}
+			return w.restartError()
 		}
 		return err
 	}
@@ -645,9 +655,9 @@ func (w *StreamWriter) drainForEnd(ctx context.Context, outcomes bool) error {
 		return err
 	}
 	if before != w.durability.FsyncErrorsGated {
-		return errors.Join(w.lastWriteErr, w.fatal)
+		return errors.Join(w.lastWriteErr, w.restartError())
 	}
-	return w.fatal
+	return w.restartError()
 }
 
 func (w *StreamWriter) writeClose(ctx context.Context, reason string, operational *Recorder) error {

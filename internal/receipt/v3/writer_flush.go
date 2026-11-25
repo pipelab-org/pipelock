@@ -220,7 +220,7 @@ func (w *StreamWriter) releaseReady() {
 			}
 		}
 		if ticket.err != nil && w.fatal != nil {
-			ticket.err = errors.Join(ticket.err, w.fatal)
+			ticket.err = errors.Join(ticket.err, w.restartError())
 		}
 		w.ready[0] = nil
 		w.ready = w.ready[1:]
