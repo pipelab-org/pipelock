@@ -179,7 +179,7 @@ func TestDoctorFlightRecorderV3RuntimePreconditions(t *testing.T) {
 	t.Run("read-only v3 directory fails", func(t *testing.T) {
 		dir := t.TempDir()
 		_, pub := testreceipt.V3(t, dir, false)
-		if err := os.Chmod(dir, 0o500); err != nil {
+		if err := os.Chmod(dir, 0o500); err != nil { // #nosec G302 -- read-only directory fixture for permission test.
 			t.Fatal(err)
 		}
 		t.Cleanup(func() {
