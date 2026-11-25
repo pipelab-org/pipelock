@@ -1211,13 +1211,13 @@ func newReceiptProxyHelperWithRedactor(t *testing.T, m *metrics.Metrics, redacto
 	}
 }
 
-// findReceipts closes the recorder, reads all receipt entries, and returns
-// parsed receipt objects. Must be called exactly once per test.
+// findReceipts stops registered receipt producers, closes the recorder, reads
+// all receipt entries, and returns parsed receipt objects. Must be called
+// exactly once per test. Producers finish the terminal outcome after the
+// response is flushed; closing first drops that append.
 func (rph *receiptProxyHelper) findReceipts(t *testing.T) []receipt.Receipt {
 	t.Helper()
-	if err := rph.rec.Close(); err != nil {
-		t.Fatalf("recorder.Close: %v", err)
-	}
+	closeTestReceiptRecorder(t, rph.rec)
 	return extractReceiptsFromDir(t, rph.dir)
 }
 
@@ -1616,34 +1616,13 @@ func setupForwardProxyWithReceipts(t *testing.T, rph *receiptProxyHelper, cfgMod
 		t.Fatalf("listen: %v", err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-
-	go func() {
-		mux := http.NewServeMux()
-		mux.HandleFunc("/fetch", p.handleFetch)
-		mux.HandleFunc("/health", p.handleHealth)
-
-		handler := p.buildHandler(mux)
-		srv := &http.Server{
-			Handler:           handler,
-			ReadHeaderTimeout: 5 * time.Second,
-			BaseContext: func(_ net.Listener) context.Context {
-				return ctx
-			},
-		}
-
-		go func() {
-			<-ctx.Done()
-			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 2*time.Second)
-			defer shutdownCancel()
-			_ = srv.Shutdown(shutdownCtx)
-		}()
-
-		_ = srv.Serve(ln)
-	}()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fetch", p.handleFetch)
+	mux.HandleFunc("/health", p.handleHealth)
+	stop := startTestProxyServer(t, ln, p.buildHandler(mux))
 
 	return ln.Addr().String(), func() {
-		cancel()
+		stop()
 		_ = ln.Close()
 		p.Close()
 	}

@@ -363,6 +363,12 @@ func localMCPReceiptFixture(t *testing.T, row v3MCPMatrixRow, surface string) (M
 
 func localMCPReceiptActions(t *testing.T, writer *v3.StreamWriter, dir string, deliveries ...mcpReceiptDelivery) []v3.Action {
 	t.Helper()
+	// Handlers append the terminal outcome after the client has the response.
+	// Stop them before Close, or that append hits a closed writer and the
+	// intent is left without an outcome. Close still replays repairs for
+	// failures that only settle then; this wait does not require a complete
+	// history and does not fail on its own.
+	drainMCPReceiptProducers(t)
 	if err := writer.Close(t.Context(), nil); err != nil {
 		t.Fatal(err)
 	}
@@ -694,7 +700,6 @@ func TestMCPV3ListenerObservesPOSTResponse(t *testing.T) {
 			if tc.clientStatus == http.StatusTooManyRequests && string(body) != upstreamBody {
 				t.Fatalf("relayed 429 body = %q", body)
 			}
-			waitForMCPV3DeliveryOutcome(t, observer.dir)
 			actions := localMCPReceiptActions(t, writer, observer.dir)
 			completed := map[string]bool{}
 			for _, action := range actions {
@@ -758,9 +763,6 @@ func TestMCPV3ListenerLegacyMethodReceipts(t *testing.T) {
 				defer func() { _ = resp.Body.Close() }()
 				if _, err := io.Copy(io.Discard, resp.Body); err != nil {
 					t.Fatal(err)
-				}
-				if scenario == "success" {
-					waitForMCPV3DeliveryOutcome(t, client.dir)
 				}
 				actions := localMCPReceiptActions(t, writer, client.dir)
 				if scenario == "intent write fail" {
@@ -877,7 +879,6 @@ func TestMCPV3ListenerReplyAdmissionFailure(t *testing.T) {
 				strings.Contains(string(body), "withheld reply") {
 				t.Fatalf("unrecorded reply escaped: status=%d headers=%v body=%q", resp.StatusCode, resp.Header, body)
 			}
-			waitForMCPV3DeliveryOutcome(t, client.dir)
 			for _, action := range localMCPReceiptActions(t, writer, client.dir) {
 				if action.EffectBoundary == mcpDownstreamDeliveryBoundary && action.OutcomeClass == "completed" && action.Target != "mcp://receipt-admission" {
 					t.Fatalf("withheld reply recorded as completed: %+v", action)
@@ -1158,7 +1159,6 @@ func TestMCPV3ListenerSSEDelivery(t *testing.T) {
 			if tc.event != "" {
 				sent = []byte("data: " + tc.event + "\n\n")
 			}
-			waitForMCPV3DeliveryOutcome(t, client.dir)
 			actions := localMCPReceiptActions(t, writer, client.dir, mcpReceiptDelivery{status: resp.StatusCode, sent: sent, received: got, expectedCompletions: 1})
 			if tc.method == http.MethodGet {
 				if len(actions) != 4 {
@@ -1290,7 +1290,6 @@ func TestMCPV3ListenerPOSTKillSwitchEvidence(t *testing.T) {
 	}))
 	defer upstream.Close()
 	body, status := driveA2AHTTPDepth(t, upstream.URL, jsonToolsCallEcho, opts, "listener")
-	waitForMCPV3DeliveryOutcome(t, client.dir)
 	actions := localMCPReceiptActions(t, writer, client.dir, mcpReceiptDelivery{
 		status: status, received: body, denialDelivered: true,
 	})
@@ -1345,7 +1344,6 @@ func TestMCPV3ListenerLocalReplyKeepsNativeLease(t *testing.T) {
 	}))
 	defer upstream.Close()
 	body, status := driveA2AHTTPDepth(t, upstream.URL, jsonToolsCallEcho, opts.WithV3ReceiptWriter(writer), "listener")
-	waitForMCPV3DeliveryOutcome(t, writerOpts.Dir)
 	localMCPReceiptActions(t, writer, writerOpts.Dir, mcpReceiptDelivery{
 		status: status, received: body, denialDelivered: true,
 	})
@@ -1983,21 +1981,6 @@ func TestMCPV3EarlyResponseDropRecordsRefusal(t *testing.T) {
 	if err != nil || bytes.Contains(body, []byte(event)) {
 		t.Fatalf("dropped notification reached the client: status=%d body=%q error=%v", resp.StatusCode, body, err)
 	}
-	// The client can reach end of body before the listener handler's deferred
-	// exchange finish appends the GET send outcome. Closing the writer first
-	// would strand that intent, so wait for a complete history on disk.
-	testwait.For(t, 5*time.Second, func() bool {
-		actions, err := decodeMCPMatrixReceiptFiles(client.dir, true)
-		if err != nil || checkMCPReceiptHistory(actions) != nil {
-			return false
-		}
-		for _, action := range actions {
-			if action.EffectBoundary == mcpDownstreamDeliveryBoundary && action.Method == secondSSEMethod {
-				return true
-			}
-		}
-		return false
-	}, "complete early drop receipt history")
 	var downstream []v3.Action
 	for _, action := range localMCPReceiptActions(t, writer, client.dir) {
 		if action.EffectBoundary == mcpDownstreamDeliveryBoundary && action.Method == secondSSEMethod {

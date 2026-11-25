@@ -120,13 +120,6 @@ func TestMCPV3ClientReplyLeavesRequestIDAvailable(t *testing.T) {
 							t.Fatalf("POST status=%d error=%v", resp.StatusCode, readErr)
 						}
 					}
-					// The 202 can reach the client before the listener handler's
-					// deferred exchange finish appends the delivery outcome.
-					// Closing the writer first would strand that intent.
-					testwait.For(t, 5*time.Second, func() bool {
-						actions, err := decodeMCPMatrixReceiptFiles(observer.dir, true)
-						return err == nil && checkMCPReceiptHistory(actions) == nil
-					}, "complete listener receipt history")
 				default:
 					if err := RunHTTPProxy(ctx, strings.NewReader(input), io.Discard, io.Discard, server.URL, nil, opts); err != nil {
 						t.Fatal(err)

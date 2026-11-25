@@ -530,13 +530,12 @@ func startListenerProxyWithStore(
 		})
 	}()
 
+	// Register the drain before readiness can fail, or a health timeout leaves
+	// the listener running with nobody waiting for it.
+	listenProxyDrain(t, cancel, done)
+
 	baseURL := "http://" + addr
 	waitForHTTPHealth(t, baseURL)
-
-	t.Cleanup(func() {
-		cancel()
-		waitForListenerProxyStop(t, done)
-	})
 
 	return baseURL, cancel, &logBuf
 }
