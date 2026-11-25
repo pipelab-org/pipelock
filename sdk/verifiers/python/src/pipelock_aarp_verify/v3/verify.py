@@ -406,7 +406,7 @@ class Verification:
     def _local_order(
         record: Record, stream: str, seq: int, last: Record | None, broken: bool
     ) -> str:
-        if not broken and (record.stream != stream or record.seq != seq):
+        if record.stream != stream or not broken and record.seq != seq:
             return "STREAM_ORDER"
         if last and last.kind == "stream_close":
             return "DATA_AFTER_CLOSE"

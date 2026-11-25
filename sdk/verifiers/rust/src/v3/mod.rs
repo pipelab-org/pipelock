@@ -474,8 +474,8 @@ impl Verifier<'_> {
                 state.start = i128::from(record.seq) - offset;
             }
         }
-        if !state.broken
-            && (record.stream != state.stream || i128::from(record.seq) != state.start + offset)
+        if record.stream != state.stream
+            || (!state.broken && i128::from(record.seq) != state.start + offset)
         {
             self.doc.add_record("STREAM_ORDER", &record);
             return Ok(false);

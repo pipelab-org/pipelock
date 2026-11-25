@@ -300,9 +300,8 @@ func (v *verification) stageLine(line []byte, state *fileState, offset int64, wr
 		if state.start < 0 {
 			state.stream, state.start = record.Stream, record.Seq-offset
 		}
-		state.complete = true
 	}
-	if v.skip != codeStreamOrder && !state.broken && (record.Stream != state.stream || record.Seq != state.start+offset) {
+	if v.skip != codeStreamOrder && (record.Stream != state.stream || !state.broken && record.Seq != state.start+offset) {
 		v.add(item.finding(codeStreamOrder))
 		return false
 	}
@@ -315,6 +314,7 @@ func (v *verification) stageLine(line []byte, state *fileState, offset int64, wr
 		return false
 	}
 	unknown, code := checkBody(record, v.skip)
+	state.complete = true
 	state.last = item
 	v.addStream(state.stream)
 	item.unknown, item.bodyCode, item.afterDamage = unknown, code, state.afterDamage

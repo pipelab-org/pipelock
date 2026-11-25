@@ -446,6 +446,10 @@ func v3StreamRecipes(t *testing.T) []v3Recipe {
 	recipes = append(recipes, v3Recipe{group: 4, name: "torn-tail", code: "TORN_TAIL", verdict: "VALID PREFIX, END UNPROVEN", files: []v3File{torn}})
 	unnamed := v3File{"receipts.jsonl", slices.Concat([]byte("broken\nbroken\n"), torn.bytes)}
 	recipes = append(recipes, v3Recipe{group: 4, name: "unnamed-damaged-torn-tail", code: "LINE_LAYOUT", verdict: "INVALID", request: v3Request{Format: "v3"}, files: []v3File{unnamed}})
+	other := &v3Stream{id: secondStream, lineage: s.lineage, key: s.key}
+	other.add(t, "stream_open", v3DefaultOpen(other.key, other.lineage), nil)
+	spliced := v3File{torn.name, slices.Concat(s.records[0].line, []byte("broken\n"), other.records[0].line, []byte("{"))}
+	recipes = append(recipes, v3Recipe{group: 4, name: "spliced-stream-after-damage", code: "STREAM_ORDER", extraInvalid: []string{"LINE_LAYOUT"}, verdict: "INVALID", files: []v3File{spliced}})
 	file := s.finish(t)
 	duplicate := v3File{"copy/" + file.name, file.bytes}
 	recipes = append(recipes, v3Recipe{group: 4, name: "copied-records", verdict: "VALID", files: []v3File{file, duplicate}})

@@ -175,9 +175,8 @@ class Verifier implements Verification {
         state.stream = record.stream;
         state.start = record.seq - offset;
       }
-      state.complete = true;
     }
-    if (!state.broken && (record.stream !== state.stream || record.seq !== state.start + offset)) {
+    if (record.stream !== state.stream || (!state.broken && record.seq !== state.start + offset)) {
       this.add("STREAM_ORDER", record);
       return false;
     }
@@ -195,6 +194,7 @@ class Verifier implements Verification {
       return false;
     }
     const { message: _message, signature: _signature, ...fields } = record;
+    state.complete = true;
     state.last = { ...fields, ...checkBody(record), afterDamage: state.afterDamage };
     this.addStream(state.stream);
     this.store.add(state.last);
