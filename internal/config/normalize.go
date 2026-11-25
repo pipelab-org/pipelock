@@ -291,6 +291,9 @@ func reconcileNewToolAdmissionAlias(rawYAML []byte, cfg *Config) error {
 
 // ApplyDefaults fills in zero-value fields with sensible defaults.
 func (c *Config) ApplyDefaults() {
+	if c.DLP.CardBareAction == "" {
+		c.DLP.CardBareAction = ActionBlock
+	}
 	normalizeLearn(&c.Learn)
 	normalizeConductor(&c.Conductor)
 	if c.Version == 0 {

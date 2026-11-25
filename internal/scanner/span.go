@@ -497,7 +497,7 @@ func (p *compiledPattern) firstAcceptedSpan(text string, joined func(int, int) b
 func (p *compiledPattern) firstAcceptedPositionedSpan(text string, joined func(int, int) bool, view *matchingView) (int, int, bool) {
 	if p.cardPrefixRetry {
 		var start, end int
-		found := carddlp.Visit(text, p.cardURL, func(c carddlp.Candidate) bool {
+		accept := func(c carddlp.Candidate) bool {
 			if c.PublicExample && p.skipSpan == nil {
 				return false
 			}
@@ -506,7 +506,19 @@ func (p *compiledPattern) firstAcceptedPositionedSpan(text string, joined func(i
 				return true
 			}
 			return false
-		})
+		}
+		// Receipt checks keep the traffic grammar for this view and add the
+		// strict floor. Reconstructed URL punctuation is not a strict extra,
+		// so a receipt URL still uses Visit's all-groups pass.
+		var found bool
+		switch {
+		case p.cardReceipt && p.cardURL:
+			found = carddlp.Visit(text, true, accept) || carddlp.VisitStrict(text, accept)
+		case p.cardReceipt:
+			found = carddlp.VisitStrict(text, accept)
+		default:
+			found = carddlp.Visit(text, p.cardURL, accept)
+		}
 		return start, end, found
 	}
 

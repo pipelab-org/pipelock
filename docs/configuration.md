@@ -1029,6 +1029,7 @@ Scans URLs for secrets and sensitive data using regex patterns. Built-in pattern
 ```yaml
 dlp:
   scan_env: true
+  card_bare_action: block
   secrets_file: ""              # path to known-secrets file
   min_env_secret_length: 16
   include_defaults: true        # merge user patterns with built-in patterns
@@ -1045,6 +1046,7 @@ dlp:
 
 | Field | Default | Description |
 |-------|---------|-------------|
+| `card_bare_action` | `block` | `block` or `warn`. Only `warn` permits uncorroborated, bare contiguous card numbers in non-URL text. Omitted, null, and blank values use `block`. |
 | `scan_env` | `true` | Scan environment variables for leaked values |
 | `secrets_file` | `""` | Path to file with known secrets (one per line) |
 | `min_env_secret_length` | `16` | Min env var value length to consider |
@@ -1062,6 +1064,14 @@ There is no top-level `dlp.action` setting. DLP enforcement is transport-specifi
 - HTTP request body/header scanning uses `request_body_scanning.action`.
 - MCP input scanning uses `mcp_input_scanning.action`.
 - `response_scanning.action: strip` is for inbound prompt-injection response rewriting, not DLP.
+
+### Card confidence and bare-number policy
+
+All presets use `dlp.card_bare_action: block`. Set it to `warn` only if you accept warning-only handling of uncorroborated bare card numbers in non-URL text. URL/DNS, decoded or obfuscated numbers, grouped cards (including non-canonical space/dash groups), and reconstructed string cards keep blocking. Other DLP rules and known-secret checks still apply.
+
+Payment keywords within 100 runes on either side, nearby `MM/YY` or `MM/YYYY` expiry dates, and payment-related JSON keys promote a candidate to blocking. This includes decimal and tab/line-separated forms that pass without payment context. The payment vocabulary is based on the [Microsoft Purview credit card sensitive information type](https://learn.microsoft.com/en-us/purview/sit-defn-credit-card-number); Pipelock uses its own 100-rune window and only promotes severity.
+
+Signed receipt content uses a stricter policy independent of `card_bare_action`: real card numbers are rejected or redacted in plaintext and decoded views, including separator and field splits. Exact published test card numbers remain allowed unless another known-secret rule matches. Redaction retains its existing coverage and also covers newly corroborated candidates. A reload from `block` to `warn` reports a security downgrade; strict reload policy can refuse it.
 
 ### Validated Patterns
 

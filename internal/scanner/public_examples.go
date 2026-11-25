@@ -5,9 +5,19 @@ package scanner
 
 import (
 	"crypto/sha256"
+	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/carddlp"
 )
+
+func (p *compiledPattern) forReceipt() *compiledPattern {
+	if !p.genericCard {
+		return p
+	}
+	copyPattern := *p
+	copyPattern.cardReceipt = true
+	return &copyPattern
+}
 
 // withPublicExamples records exact matches and lets the matcher keep looking
 // for enforcing matches in the same view.
@@ -34,6 +44,9 @@ func (p *compiledPattern) withPublicExamples(text string, example *textByteSpan)
 
 func (p *compiledPattern) isPublicExample(text string, start, end int) bool {
 	value := text[start:end]
+	if p.cardReceipt {
+		value = strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(value, "\t", ""), "\r", ""), "\n", "")
+	}
 	switch {
 	case p.genericCard:
 		return carddlp.IsPublicTestPAN(value)
@@ -43,8 +56,15 @@ func (p *compiledPattern) isPublicExample(text string, start, end int) bool {
 }
 
 func (p *compiledPattern) textDLPFinding(text, encoding string, start, end int, informational bool) TextDLPMatch {
+	confidence := ""
+	if p.cardPrefixRetry {
+		confidence = "high"
+		if p.isPublicExample(text, start, end) {
+			confidence = "public_example"
+		}
+	}
 	return TextDLPMatch{
-		keywordGated:                        p.keywords != nil,
+		CardConfidence: confidence, keywordGated: p.keywords != nil,
 		genericCard:                         p.genericCard,
 		cardPrefixRetry:                     p.cardPrefixRetry,
 		PatternName:                         p.name,

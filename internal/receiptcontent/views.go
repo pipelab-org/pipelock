@@ -151,7 +151,7 @@ func Scan(ctx context.Context, det Detector, p *Projection) (Report, error) {
 
 	originalDetector := det
 	det = func(ctx context.Context, text string) scanner.TextDLPResult {
-		result := originalDetector(ctx, text)
+		result := scanner.ApplyReceiptCardPolicy(text, originalDetector(ctx, text))
 		rep.InformationalMatches = append(rep.InformationalMatches, result.InformationalMatches...)
 		return result
 	}

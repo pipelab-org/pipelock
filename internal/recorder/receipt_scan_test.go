@@ -431,3 +431,49 @@ func TestReceiptScanInvalidAttestationCannotWrite(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 }
+
+func TestReceiptScanIdentifierDoesNotLoseReceipt(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	dir := t.TempDir()
+	rec, err := recorder.NewWithScanner(recorder.Config{Enabled: true, Dir: dir, Redact: true}, sc, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = rec.Close() })
+	// Identity fields cannot be redacted, so a false card refusal loses the
+	// signed receipt. The unmutated UUID's last two groups form a dash-grouped
+	// traffic card and must still be refused. One changed digit is not.
+	refused := map[string]string{"request_id": "97304a31-7c5d-4f4e-2560-" + "783810564780"}
+	if _, err := rec.PreflightSignedReceiptDetail(refused); err == nil || !strings.Contains(err.Error(), "sensitive data") {
+		t.Fatalf("traffic card inside UUID: %v", err)
+	}
+	detail := map[string]string{"request_id": "97304a31-7c5d-4f4e-2560-" + "783810564781"}
+	if _, err := rec.PreflightSignedReceiptDetail(detail); err != nil {
+		t.Fatalf("identifier refused before signing: %v", err)
+	}
+	if err := rec.Record(receiptScanEntry(detail)); err != nil {
+		t.Fatalf("receipt lost: %v", err)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := recorder.ReadEntries(filepath.Join(dir, "evidence-receipt-scan-0.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, entry := range entries {
+		if entry.Type == "action_receipt" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("stored action receipts=%d", count)
+	}
+	if err := recorder.VerifyChain(entries); err != nil {
+		t.Fatalf("stored receipt chain: %v", err)
+	}
+}

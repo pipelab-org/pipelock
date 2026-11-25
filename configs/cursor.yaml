@@ -114,6 +114,7 @@ websocket_proxy:
   content_entropy_exclusions: []
 
 dlp:
+  card_bare_action: block
   scan_env: true
   include_defaults: true  # Inherit current built-in protections alongside preset patterns
   patterns:

@@ -197,7 +197,7 @@ func actionReceiptFields() map[string]receiptcontent.Class {
 		"recent_taint_sources[].timestamp":    cContent,
 		"recent_taint_sources[].receipt_id":   cIdentity,
 		"recent_taint_sources[].match_reason": cContent,
-		"session_task_id":                     cIdentity,
+		"session_task_id":                     receiptcontent.ProvenTaskID,
 		"session_task_label":                  cContent,
 		"authority_kind":                      cEnum,
 		"taint_decision":                      cEnum,

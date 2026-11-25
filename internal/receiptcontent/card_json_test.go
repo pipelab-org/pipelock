@@ -16,6 +16,10 @@ func TestCardJSONStructuredReceiptCorpus(t *testing.T) {
 			// Isolate the structured projection. Receipt reconstruction remains an
 			// independent artifact policy and can reject fragments that traffic warns on.
 			wantClean := tt.Clean || tt.Warn
+			switch tt.Name {
+			case "tab separated columns", "newline separated columns", "array number run", "two number pieces", "fractional groups", "decimal cell string", "trailing digit string cannot promote number run", "trailing digit number keeps number run informational", "context string outside numeric hit":
+				wantClean = false
+			}
 			// This detector's literal structured view retains ordinary text
 			// matching, including a card in a single decimal's fraction.
 			if tt.Name == "single decimal telemetry" {
@@ -36,7 +40,7 @@ func TestCardJSONReceiptFragmentsRetainPolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 	rep, err := Scan(t.Context(), det, p)
-	if err != nil || rep.Clean() || rep.Findings[0].View != ViewFragments {
+	if err != nil || rep.Clean() || rep.Findings[0].View != ViewStructured {
 		t.Fatalf("fragment policy changed: %+v %v", rep, err)
 	}
 }
