@@ -334,3 +334,13 @@ test("v3 rejects missing or directory inputs even when filename claims v3", (t) 
     assert.match(command.stderr, /^[^\n]+\n$/u, JSON.stringify(args));
   }
 });
+
+test("v3 canonical results omit undefined optional members", async () => {
+  const { path, keys } = fixture("g05-completed");
+  const { result } = await verifyV3Paths([path], { keys });
+  const expected = canonicalV3(result);
+  const stream = result.histories[0].streams[0];
+  assert.equal(stream.previous, undefined);
+  stream.previous = undefined;
+  assert.equal(canonicalV3(result), expected);
+});

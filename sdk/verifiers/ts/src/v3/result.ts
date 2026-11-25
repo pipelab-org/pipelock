@@ -103,6 +103,7 @@ export function canonicalJSON(value: unknown): string {
     return (
       "{" +
       Object.keys(object)
+        .filter((key) => object[key] !== undefined)
         .sort()
         .map((key) => JSON.stringify(key) + ":" + canonicalJSON(object[key]))
         .join(",") +
