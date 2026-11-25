@@ -80,6 +80,8 @@ def duplicate_signed_ael_run_error(run: str) -> GroupVerificationError:
 
 
 def _exists_nofollow(path: Path) -> bool:
+    if path.name in _recorder_file_exclusions.get():
+        return False
     try:
         path.lstat()
     except FileNotFoundError:

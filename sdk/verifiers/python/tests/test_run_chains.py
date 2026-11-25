@@ -316,3 +316,21 @@ def test_invalid_recovery_timestamp_is_a_finding(tmp_path):
     keys = tuple((fixture / "signer.pub").read_text().split())
     result = verify_base(tmp_path, "proxy", keys)
     assert "invalid_recovery_seal" in {row["kind"] for row in result["findings"]}
+
+
+def test_excluded_optional_group_close_is_absent(tmp_path):
+    from pipelock_aarp_verify.group import (
+        GROUP_INCOMPLETE,
+        _recorder_file_exclusions,
+        verify_receipt_group,
+    )
+    from test_receipt_group import GROUP_ID, TRUSTED_KEYS, _extract_fixture
+
+    root = _extract_fixture("group-valid", tmp_path)
+    close = f"receipt-group-{GROUP_ID}-close.json"
+    marker = _recorder_file_exclusions.set(frozenset({close}))
+    try:
+        result = verify_receipt_group(root, GROUP_ID, TRUSTED_KEYS)
+    finally:
+        _recorder_file_exclusions.reset(marker)
+    assert result["verdict"] == GROUP_INCOMPLETE
