@@ -102,8 +102,9 @@ func v3GroupRecipes(t *testing.T) []v3Recipe {
 	excludedClose.name, excludedClose.verdict, excludedClose.code = "group-recovery-excluded-predecessor-close", "INVALID", "V3_CONTENT_UNCLAIMED"
 	excludedClose.files = slices.Clone(recovery.files)
 	for _, file := range recovery.files {
-		id, found := strings.CutPrefix(file.name, "receipt-group-")
-		if id, found = strings.CutSuffix(id, "-open.json"); !found {
+		id, _ := strings.CutPrefix(file.name, "receipt-group-")
+		id, found := strings.CutSuffix(id, "-open.json")
+		if !found {
 			continue
 		}
 		closeName := "receipt-group-" + id + "-close.json"

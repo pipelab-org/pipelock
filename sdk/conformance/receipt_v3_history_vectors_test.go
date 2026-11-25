@@ -341,10 +341,10 @@ func v3LegacyForkRecipes(t *testing.T) []v3Recipe {
 	t.Helper()
 	key := v3Key("legacy fork")
 	signer := hex.EncodeToString(v3Public(key))
-	sign := func(action string, seq uint64, prev string) (actionreceipt.Receipt, string, string) {
+	sign := func(action string, second int, seq uint64, prev string) (actionreceipt.Receipt, string, string) {
 		record := actionreceipt.ActionRecord{
 			Version: actionreceipt.ActionRecordVersion, ActionID: action, ActionType: actionreceipt.ActionRead,
-			Timestamp: time.Date(2026, 1, 1, 0, 0, int(seq), 0, time.UTC),
+			Timestamp: time.Date(2026, 1, 1, 0, 0, second, 0, time.UTC),
 			Target:    "api.vendor.example", Transport: "fetch", Verdict: "allow",
 			ChainPrevHash: prev, ChainSeq: seq,
 		}
@@ -362,11 +362,11 @@ func v3LegacyForkRecipes(t *testing.T) []v3Recipe {
 		}
 		return signed, "sha256:" + head, link
 	}
-	genesis, first, link := sign("example-fork-0", 0, actionreceipt.GenesisHash)
+	genesis, first, link := sign("example-fork-0", 0, 0, actionreceipt.GenesisHash)
 	var files [2][]byte
 	var heads [2]string
 	for i, action := range []string{"example-fork-a", "example-fork-b"} {
-		second, head, _ := sign(action, 1, link)
+		second, head, _ := sign(action, 1, 1, link)
 		for _, receipt := range []actionreceipt.Receipt{genesis, second} {
 			line, err := actionreceipt.Marshal(receipt)
 			if err != nil {
