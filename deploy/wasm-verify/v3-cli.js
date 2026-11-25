@@ -44,6 +44,9 @@ async function main() {
     throw new Error("--claims requires one file and no other options");
   }
   if (values.format !== undefined && values.format !== "v3") throw new Error("format must be v3");
+  if (values.format === "v3" && positionals.length !== 1) {
+    throw new Error("explicit v3 format requires exactly one file");
+  }
 
   const files = Object.create(null);
   const directory = !values.claims && positionals.length === 1 && statSync(positionals[0]).isDirectory();

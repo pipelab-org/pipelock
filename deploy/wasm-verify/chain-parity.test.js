@@ -956,6 +956,22 @@ with zipfile.ZipFile(sys.argv[1], "w", zipfile.ZIP_DEFLATED) as archive:
     }
   });
 
+  test("receipt v3 CLI rejects duplicate paths under --format v3", () => {
+    const vector = path.join(testdata, "v3", "g01-explicit-v3");
+    const request = JSON.parse(readFileSync(path.join(vector, "request.json"), "utf8"));
+    const input = path.join(vector, request.inputs[0]);
+    const keys = request.keys.flatMap((key) => ["--key", key]);
+    const cli = path.join(__dirname, "v3-cli.js");
+    const run = spawnSync(
+      process.execPath,
+      [cli, outDir, "v3", ...keys, "--format", "v3", "--", input, input],
+      { encoding: "utf8" },
+    );
+    assert.equal(run.status, 2, `stdout=${run.stdout} stderr=${run.stderr}`);
+    assert.equal(run.stdout, "");
+    assert.match(run.stderr, /explicit v3 format requires exactly one file/);
+  });
+
   test("receipt v3 named files reject bad arguments and unsafe mounts", async () => {
     const bytes = new Uint8Array();
     for (const [entries, options, output, reason] of [
