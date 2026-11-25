@@ -66,9 +66,9 @@ type BaseVerifyOptions struct {
 	ExcludedNames map[string]bool
 }
 
-func (opts BaseVerifyOptions) recorderIndex(dir string) (evidenceIndex, error) {
+func (opts BaseVerifyOptions) recorderIndex(dir string, groupSessions map[string]bool) (evidenceIndex, error) {
 	if opts.ExcludeReceiptGroupSessions {
-		return indexRecorderFilesExcludingGroupsSpill(dir, opts.ExcludedNames)
+		return indexRecorderFilesExcludingGroupsSpill(dir, opts.ExcludedNames, groupSessions)
 	}
 	return indexRecorderFilesScoped(dir, opts.ExcludedNames)
 }
@@ -183,7 +183,7 @@ func ResolveBaseSessionsExcludingReceiptGroups(dir, base string) ([]string, erro
 // ResolveLegacyBaseSessions lists ordinary sessions with the same exclusions
 // used by mixed-profile verification.
 func ResolveLegacyBaseSessions(dir, base string, excluded map[string]bool) ([]string, error) {
-	ix, err := indexRecorderFilesExcludingGroupsSpill(dir, excluded)
+	ix, err := indexRecorderFilesExcludingGroupsSpill(dir, excluded, nil)
 	if err != nil {
 		return nil, fmt.Errorf("listing sessions: %w", err)
 	}
@@ -461,7 +461,8 @@ func readClaimFile(path string) ([]byte, os.FileInfo, error) {
 // successor listed in Unlinked, which is not a finding (see Unlinked).
 func VerifyBase(dir, base string, opts BaseVerifyOptions) (report BaseReport, retErr error) {
 	report = BaseReport{Base: base}
-	ix, err := opts.recorderIndex(dir)
+	groupSessions := map[string]bool{}
+	ix, err := opts.recorderIndex(dir, groupSessions)
 	if err != nil {
 		return report, fmt.Errorf("listing sessions: %w", err)
 	}
@@ -476,10 +477,11 @@ func VerifyBase(dir, base string, opts BaseVerifyOptions) (report BaseReport, re
 			return report, err
 		}
 		defer func() {
-			final, scanErr := opts.recorderIndex(dir)
+			finalGroups := map[string]bool{}
+			final, scanErr := opts.recorderIndex(dir, finalGroups)
 			after, checkErr := fingerprintBaseShards(final, baseSessions(final, base))
 			endRoot, rootErr := os.Lstat(dir)
-			if scanErr != nil || checkErr != nil || after != before || rootErr != nil || !os.SameFile(root, endRoot) {
+			if scanErr != nil || checkErr != nil || after != before || !maps.Equal(groupSessions, finalGroups) || rootErr != nil || !os.SameFile(root, endRoot) {
 				detail := "evidence changed during verification; no verdict reached"
 				// Conclusions drawn from the changed inventory are void, but a
 				// per-read change finding already names what changed, and a
@@ -522,6 +524,10 @@ func VerifyBase(dir, base string, opts BaseVerifyOptions) (report BaseReport, re
 	scoped := make([]chainLinkRecord, 0, len(links))
 	need := make(map[string]bool)
 	for _, lf := range links {
+		if lf.seal != nil && lf.namePred == lf.seal.PredecessorSession &&
+			groupSessions[lf.seal.PredecessorSession] && groupSessions[lf.seal.SuccessorSession] {
+			continue
+		}
 		if lf.link != nil {
 			need[lf.link.PredecessorSession] = true
 			need[lf.link.SuccessorSession] = true
@@ -984,7 +990,7 @@ var errEvidenceChangedDuring = errors.New("evidence changed during verification"
 // while it is verified. A same-size in-place rewrite of a shard by a process
 // with write access to dir can still go unseen.
 func checkShardSetUnchanged(dir, base string, ix evidenceIndex, sessions []string, links []chainLinkRecord, data map[string]*baseChainData, add func(kind, session, detail string), opts BaseVerifyOptions) error {
-	final, err := opts.recorderIndex(dir)
+	final, err := opts.recorderIndex(dir, nil)
 	if err != nil {
 		return fmt.Errorf("re-listing sessions after verification: %w", err)
 	}

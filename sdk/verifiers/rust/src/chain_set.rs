@@ -322,6 +322,7 @@ mod filename_vector_tests {
 struct EvidenceIndex {
     files: BTreeMap<String, Vec<PathBuf>>,
     symlinks: BTreeMap<String, Vec<String>>,
+    groups: BTreeSet<String>,
 }
 
 fn index_recorder_files(dir: &Path) -> Result<EvidenceIndex, String> {
@@ -359,7 +360,11 @@ fn index_recorder_files(dir: &Path) -> Result<EvidenceIndex, String> {
             (session, list.into_iter().map(|(_, _, path)| path).collect())
         })
         .collect();
-    Ok(EvidenceIndex { files, symlinks })
+    Ok(EvidenceIndex {
+        files,
+        symlinks,
+        groups: BTreeSet::new(),
+    })
 }
 
 /// Ordered files for every session, including the duplicate-start and symlink
@@ -793,8 +798,8 @@ pub fn resolve_base_sessions_excluding_receipt_groups(
 
 fn index_ordinary_recorder_files(dir: &Path) -> Result<EvidenceIndex, String> {
     let mut index = index_recorder_files(dir)?;
-    index.files.retain(|_, paths| {
-        paths
+    index.files.retain(|session, paths| {
+        let grouped = paths
             .iter()
             .find(|path| {
                 path.file_name()
@@ -802,7 +807,13 @@ fn index_ordinary_recorder_files(dir: &Path) -> Result<EvidenceIndex, String> {
                     .and_then(parse_evidence_filename)
                     .is_some_and(|(_, start)| start == 0)
             })
-            .is_none_or(|path| !matches!(crate::receipt_group::first_group_gate(path), Ok(Some(_))))
+            .is_some_and(|path| {
+                matches!(crate::receipt_group::first_group_gate(path), Ok(Some(_)))
+            });
+        if grouped {
+            index.groups.insert(session.clone());
+        }
+        !grouped
     });
     Ok(index)
 }
@@ -1757,6 +1768,14 @@ fn verify_base_inner(
     let scoped: Vec<&ChainLinkRecord> = links
         .iter()
         .filter(|lf| {
+            if let ChainClaim::RecoverySeal(seal) = &lf.claim {
+                if seal.predecessor_session == lf.name_pred
+                    && ix.groups.contains(&seal.predecessor_session)
+                    && ix.groups.contains(&seal.successor_session)
+                {
+                    return false;
+                }
+            }
             is_base_chain(&lf.name_pred, base)
                 || match &lf.claim {
                     ChainClaim::Link(link) => {

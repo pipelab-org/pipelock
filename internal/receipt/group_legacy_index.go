@@ -18,7 +18,7 @@ import (
 // indexRecorderFilesExcludingGroupsSpill orders filenames on disk before
 // classifying each session. A directory read has no ordering guarantee, and
 // os.ReadDir retains every historical group filename in memory.
-func indexRecorderFilesExcludingGroupsSpill(dir string, excluded map[string]bool) (evidenceIndex, error) {
+func indexRecorderFilesExcludingGroupsSpill(dir string, excluded, groupSessions map[string]bool) (evidenceIndex, error) {
 	tmp, err := os.MkdirTemp("", "pipelock-legacy-index-")
 	if err != nil {
 		return nil, err
@@ -72,7 +72,11 @@ func indexRecorderFilesExcludingGroupsSpill(dir string, excluded map[string]bool
 	current := ""
 	var shards []indexedRecorderShard
 	flush := func() {
-		if current != "" && len(shards) > 0 && !isGroupSessionShards(shards) {
+		if current != "" && len(shards) > 0 && isGroupSessionShards(shards) {
+			if groupSessions != nil {
+				groupSessions[current] = true
+			}
+		} else if current != "" && len(shards) > 0 {
 			files := make([]string, 0, len(shards))
 			for _, shard := range shards {
 				files = append(files, shard.path)

@@ -1,0 +1,1 @@
+{"ael_format":1,"coverage":"mediated-only","custody":"same-process","recorders":[{"file":"recorders/pipelock.jsonl","id":"pipelock","key":"8c4648672aac5d3715cc880954298a1ea78b68bbd8806f739d3bb01b8b81fdc8","run":"d0bc14e09c7a1ee011a601698c22340e"}],"runs":["d0bc14e09c7a1ee011a601698c22340e"]}

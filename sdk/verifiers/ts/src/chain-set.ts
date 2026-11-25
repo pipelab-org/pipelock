@@ -217,6 +217,7 @@ export function parseEvidenceFilename(
 interface EvidenceIndex {
   files: Map<string, string[]>;
   symlinks: Map<string, string[]>;
+  groups: Set<string>;
 }
 
 // refuseSymlinkInEvidenceRootPath applies Go's no-symlink evidence-root rule
@@ -412,7 +413,7 @@ function indexRecorderFiles(dir: string, excludeGroups = false): EvidenceIndex {
     list.push({ file: path.join(dir, de.name), name: de.name, seq: parsed.seqStart });
     shards.set(parsed.session, list);
   }
-  const ix: EvidenceIndex = { files: new Map(), symlinks };
+  const ix: EvidenceIndex = { files: new Map(), symlinks, groups: new Set() };
   for (const [session, list] of shards) {
     list.sort((a, b) =>
       a.seq !== b.seq ? (a.seq < b.seq ? -1 : 1) : a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
@@ -428,6 +429,7 @@ function indexRecorderFiles(dir: string, excludeGroups = false): EvidenceIndex {
           (!firstLink || compareStrings(first.name, firstLink) < 0) &&
           firstRecorderGroupGate(first.file)))
     ) {
+      ix.groups.add(session);
       ix.symlinks.delete(session);
       continue;
     }
@@ -1215,15 +1217,16 @@ export async function withBaseHistorySnapshot<T>(
 }
 
 function baseInventory(dir: string, base: string, baseMode = true, excludeGroups = false): string {
-  const ordinary = excludeGroups ? indexRecorderFiles(dir, true).files : undefined;
+  const ordinary = excludeGroups ? indexRecorderFiles(dir, true) : undefined;
   const root = statSync(dir, { bigint: true });
   const items: unknown[] = [[root.dev.toString(), root.ino.toString()]];
+  if (ordinary) items.push([...ordinary.groups].sort(compareStrings));
   for (const name of readdirSync(dir).sort()) {
     const parsed = parseEvidenceFilename(name);
     if (
       !(
         parsed !== undefined &&
-        (!ordinary || ordinary.has(parsed.session)) &&
+        (!ordinary || ordinary.files.has(parsed.session)) &&
         (baseMode ? isBaseChain(parsed.session, base) : parsed.session === base)
       ) &&
       !(baseMode && chainLinkFilePredecessor(name) !== undefined)
@@ -1250,16 +1253,25 @@ async function verifyBaseInner(
     report.findings.push({ kind, session, detail });
   };
 
-  const scoped = links.filter(
-    (lf) =>
+  const scoped = links.filter((lf) => {
+    const seal = lf.recoverySeal;
+    if (
+      seal &&
+      seal.predecessor_session === lf.namePred &&
+      ix.groups.has(seal.predecessor_session) &&
+      ix.groups.has(seal.successor_session)
+    )
+      return false;
+    return (
       isBaseChain(lf.namePred, base) ||
       (lf.link !== undefined &&
         (isBaseChain(lf.link.predecessor_session, base) ||
           isBaseChain(lf.link.successor_session, base))) ||
       (lf.recoverySeal !== undefined &&
         (isBaseChain(lf.recoverySeal.predecessor_session, base) ||
-          isBaseChain(lf.recoverySeal.successor_session, base))),
-  );
+          isBaseChain(lf.recoverySeal.successor_session, base)))
+    );
+  });
 
   const data = new Map<string, BaseChainData>();
   for (const s of sessions) {

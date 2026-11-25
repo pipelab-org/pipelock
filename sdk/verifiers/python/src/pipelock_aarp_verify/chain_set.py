@@ -389,10 +389,13 @@ def _recovery(
 
 def _snapshot(
     directory: Path, base: str, exclude: bool
-) -> tuple[Index, list[Path], tuple]:
+) -> tuple[Index, list[Path], tuple, set[str]]:
+    groups: set[str] = set()
     index = {
         s: shards
-        for s, shards in recorder_index(directory, exclude_groups=exclude).items()
+        for s, shards in recorder_index(
+            directory, exclude_groups=exclude, group_sessions=groups
+        ).items()
         if _in_base(s, base)
     }
     links = sorted(p for p in directory.iterdir() if _LINK_FILE.fullmatch(p.name))
@@ -414,7 +417,7 @@ def _snapshot(
                 info.st_ctime_ns,
             )
         )
-    return index, links, tuple(stamps)
+    return index, links, (tuple(stamps), frozenset(groups)), groups
 
 
 def verify_base(
@@ -438,7 +441,7 @@ def verify_base(
         raise ValueError("rotation endorsements require a pinned root key")
     for endorsement in endorsements:
         _verify_artifact(endorsement, rotation=True)
-    index, links, stamps = _snapshot(root, base, exclude_groups)
+    index, links, stamps, groups = _snapshot(root, base, exclude_groups)
     findings: list[Document] = []
 
     def add(kind: str, session: str, detail: str = "") -> None:
@@ -487,6 +490,8 @@ def verify_base(
         if not any(_in_base(s, base) for s in (succ, pred, named)):
             continue
         if recovery:
+            if named == pred and pred in groups and succ in groups:
+                continue
             recoveries.append((named, value))
             continue
         if named != pred:

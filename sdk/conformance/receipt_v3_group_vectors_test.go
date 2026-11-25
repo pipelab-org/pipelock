@@ -38,6 +38,8 @@ func v3GroupRecipes(t *testing.T) []v3Recipe {
 
 	complete := v3GroupRecipe(t, "group-with-ordinary", valid, validKeys, ordinary, false)
 	restart := v3GroupRecipe(t, "group-shards-excluded-from-restart", successor, successorKeys, ordinary, true)
+	recovered, recoveredKeys := v3ReadGroupFiles(t, archive, "group-recovery-successor")
+	recovery := v3GroupRecipe(t, "group-recovery-excluded-from-restart", recovered, recoveredKeys, ordinary, true)
 
 	claimed := complete
 	claimed.name, claimed.verdict, claimed.code = "group-with-malformed-v3-claim", "INVALID", "FILE_LAYOUT"
@@ -94,7 +96,7 @@ func v3GroupRecipes(t *testing.T) []v3Recipe {
 		[]v3.InventoryChain{ordinary.row}, append(slices.Clone(validKeys), ordinary.key))
 	orphan.verdict, orphan.code = "INVALID", groupInvalid
 	orphan.extraInvalid = []string{"LEGACY_CHAIN_UNLISTED"}
-	return []v3Recipe{complete, claimed, unclaimed, tampered, orphan, restart}
+	return []v3Recipe{complete, claimed, unclaimed, tampered, orphan, restart, recovery}
 }
 
 func v3ReadGroupFiles(t *testing.T, archive *zip.ReadCloser, scenario string) ([]v3File, []string) {
@@ -273,13 +275,17 @@ func v3GroupRecipe(t *testing.T, name string, groupFiles []v3File, groupKeys []s
 		}
 	}
 	rows := []v3.InventoryChain{ordinary.row}
+	incomplete := false
 	_, err := actionreceipt.VerifyReceiptGroups(dir, keys, func(result actionreceipt.ReceiptGroupResult) error {
-		if result.Verdict != actionreceipt.GroupValid {
+		digest := result.CloseManifestSHA
+		if name == "group-recovery-excluded-from-restart" && result.Verdict == actionreceipt.GroupIncomplete {
+			incomplete, digest = true, result.OpenManifestSHA
+		} else if result.Verdict != actionreceipt.GroupValid {
 			t.Fatalf("invalid frozen group fixture: %+v", result)
 		}
 		rows = append(rows, v3.InventoryChain{
 			Format: "receipt_group", Chain: result.GroupID,
-			Record: "sha256:" + result.CloseManifestSHA, Seq: int64(result.ShardCount),
+			Record: "sha256:" + digest, Seq: int64(result.ShardCount),
 		})
 		return nil
 	})
@@ -287,7 +293,11 @@ func v3GroupRecipe(t *testing.T, name string, groupFiles []v3File, groupKeys []s
 		t.Fatalf("verify frozen group fixture: %v", err)
 	}
 	slices.SortFunc(rows[1:], func(a, b v3.InventoryChain) int { return strings.Compare(a.Chain, b.Chain) })
-	return v3GroupCutover(t, name, files, rows, keys)
+	recipe := v3GroupCutover(t, name, files, rows, keys)
+	if incomplete {
+		recipe.verdict, recipe.code = "INCOMPLETE", "LEGACY_GROUP_INCOMPLETE"
+	}
+	return recipe
 }
 
 func v3GroupCutover(t *testing.T, name string, files []v3File, rows []v3.InventoryChain, keys []string) v3Recipe {

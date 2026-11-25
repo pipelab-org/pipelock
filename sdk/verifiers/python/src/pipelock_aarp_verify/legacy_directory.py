@@ -87,7 +87,12 @@ def _first_entry(path: Path) -> Document | None:
     return None
 
 
-def recorder_index(directory: Path, *, exclude_groups: bool = False) -> Index:
+def recorder_index(
+    directory: Path,
+    *,
+    exclude_groups: bool = False,
+    group_sessions: set[str] | None = None,
+) -> Index:
     index: Index = defaultdict(list)
     for path in sorted(directory.iterdir()):
         parsed = _parse_evidence_filename(path.name)
@@ -104,6 +109,8 @@ def recorder_index(directory: Path, *, exclude_groups: bool = False) -> Index:
                     genesis is not None
                     and (_first_entry(genesis) or {}).get("type") == _GATE_ENTRY_TYPE
                 ):
+                    if group_sessions is not None:
+                        group_sessions.add(session)
                     continue
             except (GroupVerificationError, OSError):
                 # Retain the shard for the ordinary verifier to diagnose.
