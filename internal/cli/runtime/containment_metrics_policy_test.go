@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -194,6 +195,11 @@ containment:
 				returned = true
 				return true
 			default:
+			}
+			// Bind is exclusive, so this line proves the port is this
+			// server's and not another process that took it after release.
+			if !strings.Contains(stderr.String(), "pipelock: metrics listening on "+metricsAddr) {
+				return false
 			}
 			request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+metricsAddr+"/metrics", nil)
 			if err != nil {
