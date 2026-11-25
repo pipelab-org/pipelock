@@ -38,7 +38,7 @@ from .appraise import (
 from .chain import verify_chain
 from .envelope import GENESIS_PRIOR_HASH, parse_seq_value, unmarshal
 from .group import GROUP_VALID, verify_receipt_group
-from .input_file import read_verifier_file
+from .input_file import MAX_VERIFIER_INPUT_BYTES, read_verifier_file
 from .line_space import trim_go_space_bytes
 from .provenance_proof import MAX_FIXTURE_BYTES, compact_fixture_json
 from .receipt import (
@@ -179,11 +179,7 @@ def _run_chain(
         verify_chain(envs)
         linked = True
         first = envs[0].chain
-        if (
-            first is None
-            or first.seq != "0"
-            or first.prior_hash != GENESIS_PRIOR_HASH
-        ):
+        if first is None or first.seq != "0" or first.prior_hash != GENESIS_PRIOR_HASH:
             raise ValueError("chain does not start at the genesis link")
         # Each envelope must have at least one valid signature from the supplied
         # trust. verify() intentionally allows a bad parallel signature beside a
@@ -193,7 +189,8 @@ def _run_chain(
         )
         if not signatures_verified:
             raise ValueError(
-                "no signature verified against pinned trust; pass --trust with the signer key"
+                "no signature verified against pinned trust; "
+                "pass --trust with the signer key"
             )
     except Exception as exc:  # noqa: BLE001 - linkage, genesis, or trust failure
         failure = str(exc)
@@ -296,8 +293,14 @@ def _run_aarp(
 
     if chain_mode:
         return _run_chain(
-            stdout, stderr, data, json_mode, verify_opts, allow_prefix,
-            expect_head, expect_seq,
+            stdout,
+            stderr,
+            data,
+            json_mode,
+            verify_opts,
+            allow_prefix,
+            expect_head,
+            expect_seq,
         )
 
     try:
@@ -462,6 +465,8 @@ def _run_receipt(
         )
     else:
         report = verify_receipt_file(target, key_hex, allow_unpinned)
+        if report.get("error") == f"input exceeds {MAX_VERIFIER_INPUT_BYTES} bytes":
+            report["error"] = f"read receipt: {report['error']}"
     if json_mode:
         stdout.write(json.dumps(report, separators=(",", ":"), ensure_ascii=False))
         stdout.write("\n")
@@ -513,7 +518,10 @@ def _close_ends_chain(receipts: list[dict]) -> bool:
             return False
         base, sep, suffix = session.partition(".run.")
         return (
-            bool(base) and bool(sep) and "/" not in base and "\\" not in base
+            bool(base)
+            and bool(sep)
+            and "/" not in base
+            and "\\" not in base
             and re.fullmatch(r"[0-9a-f]{32}", suffix) is not None
         )
     return False
@@ -541,6 +549,10 @@ def main(argv: list[str] | None = None) -> int:
     """CLI entry point. Returns the process exit code."""
     if argv is None:
         argv = sys.argv[1:]
+    if argv[:1] == ["v3"]:
+        from .v3.cli import run
+
+        return run(argv[1:])
 
     parser = argparse.ArgumentParser(
         prog="pipelock_aarp_verify",
@@ -548,6 +560,7 @@ def main(argv: list[str] | None = None) -> int:
         add_help=True,
     )
     sub = parser.add_subparsers(dest="command")
+    sub.add_parser("v3", help="verify receipt v3 evidence")
     aarp_p = sub.add_parser("aarp", help="appraise an AARP v0.1 assurance envelope")
     aarp_p.add_argument("path", help="path to a JSON envelope (or JSONL with --chain)")
     aarp_p.add_argument("--trust", default="", help="path to the pinned trust JSON")

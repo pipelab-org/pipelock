@@ -1,0 +1,1042 @@
+{
+  "conditions": {
+    "ActionPolicy": [
+      {
+        "field": "source",
+        "require": [
+          "hash"
+        ],
+        "value": "request_snapshot"
+      },
+      {
+        "field": "source",
+        "forbid": [
+          "hash"
+        ],
+        "value": "unavailable"
+      }
+    ],
+    "Ask": [
+      {
+        "equals": {
+          "observed": true
+        },
+        "field": "channel",
+        "value": "approval_api"
+      },
+      {
+        "equals": {
+          "observed": false
+        },
+        "field": "channel",
+        "value": "host_prompt"
+      }
+    ],
+    "Caller": [
+      {
+        "field": "authn",
+        "require": [
+          "client_id",
+          "issuer",
+          "resource",
+          "subject"
+        ],
+        "value": "mcp_door_verified"
+      },
+      {
+        "field": "authn",
+        "forbid": [
+          "client_id",
+          "issuer",
+          "resource",
+          "subject"
+        ],
+        "value": "none"
+      }
+    ],
+    "Checker": [
+      {
+        "equals": {
+          "disposition": "not_run"
+        },
+        "field": "selection",
+        "forbid": [
+          "config_hash"
+        ],
+        "value": "unavailable"
+      },
+      {
+        "field": "selection",
+        "require": [
+          "config_hash"
+        ],
+        "value": "configured"
+      },
+      {
+        "field": "selection",
+        "require": [
+          "config_hash"
+        ],
+        "value": "fallback"
+      }
+    ]
+  },
+  "enums": {
+    "action_policy_source": [
+      "request_snapshot",
+      "unavailable"
+    ],
+    "action_type": [
+      "actuate",
+      "authorize",
+      "commit",
+      "delegate",
+      "derive",
+      "read",
+      "spend",
+      "unclassified",
+      "write"
+    ],
+    "algorithm": [
+      "ed25519"
+    ],
+    "ask_channel": [
+      "approval_api",
+      "host_prompt"
+    ],
+    "authn": [
+      "mcp_door_verified",
+      "none"
+    ],
+    "boundary": [
+      "approval_prompt",
+      "downstream_delivery",
+      "hook_execution",
+      "none",
+      "redirect_dispatch",
+      "tunnel_open",
+      "upstream_send"
+    ],
+    "checker_disposition": [
+      "error",
+      "flagged",
+      "not_run",
+      "passed"
+    ],
+    "checker_mode": [
+      "block",
+      "off",
+      "warn"
+    ],
+    "checker_selection": [
+      "configured",
+      "fallback",
+      "unavailable"
+    ],
+    "checker_surface": [
+      "browser_shield",
+      "hook_tool_input",
+      "hook_tool_result",
+      "http_request_body",
+      "http_response",
+      "mcp_tool_description",
+      "mcp_tool_input",
+      "mcp_tool_result",
+      "scan_api"
+    ],
+    "close_reason": [
+      "rollover",
+      "shutdown"
+    ],
+    "ended": [
+      "closed",
+      "unsealed",
+      "write_error"
+    ],
+    "outcome": [
+      "attempt_unknown",
+      "completed",
+      "failed_after_attempt",
+      "failed_before_attempt",
+      "not_released"
+    ],
+    "phase": [
+      "decision",
+      "hold",
+      "intent",
+      "outcome",
+      "resolution"
+    ],
+    "relation": [
+      "after",
+      "before",
+      "not_applicable",
+      "not_attempted",
+      "unknown"
+    ],
+    "stream_policy_source": [
+      "writer_config"
+    ],
+    "verdict": [
+      "allow",
+      "ask",
+      "block",
+      "defer",
+      "forward",
+      "redirect",
+      "strip",
+      "warn"
+    ]
+  },
+  "findings": {
+    "ACTION_UNINTERPRETED": "incomplete",
+    "BODY_SCHEMA": "invalid",
+    "CLOCK_REGRESSION": "warning",
+    "COMMON_SCHEMA": "invalid",
+    "CUTOVER_INVENTORY_MISMATCH": "invalid",
+    "CUTOVER_INVENTORY_NOT_PRESENTED": "incomplete",
+    "DATA_AFTER_CLOSE": "invalid",
+    "DECISIONS_NOT_APPRAISED": "incomplete",
+    "DECISION_INCONSISTENT": "invalid",
+    "DECISION_INDEX_FULL": "incomplete",
+    "END_UNPROVEN": "end_unproven",
+    "EVENT_UNINTERPRETED": "info",
+    "EXPECTATION_NOT_MET": "invalid",
+    "FILE_LAYOUT": "invalid",
+    "FORK": "invalid",
+    "HEARTBEAT_GAP": "warning",
+    "HISTORY_DISCONNECTED": "incomplete",
+    "LEGACY_CHAIN_HEAD_MISMATCH": "invalid",
+    "LEGACY_CHAIN_NOT_PRESENTED": "incomplete",
+    "LEGACY_CHAIN_TRUNCATED": "invalid",
+    "LEGACY_CHAIN_UNLISTED": "invalid",
+    "LEGACY_END_UNPROVEN": "end_unproven",
+    "LEGACY_EXTENDED_AFTER_CUTOVER": "invalid",
+    "LEGACY_GROUP_INCOMPLETE": "incomplete",
+    "LEGACY_INVALID": "invalid",
+    "LEGACY_MEMBERSHIP_UNKNOWN": "incomplete",
+    "LINEAGE_MISMATCH": "invalid",
+    "LINE_LAYOUT": "invalid",
+    "LINE_SIZE": "invalid",
+    "NORMALIZATION_UNKNOWN": "warning",
+    "NO_EVIDENCE": "incomplete",
+    "PAYLOAD_LAYOUT": "invalid",
+    "PIN_MISMATCH": "invalid",
+    "PREDECESSOR_NOT_PRESENTED": "incomplete",
+    "PREDECESSOR_TRUNCATED": "invalid",
+    "ROOT_FORK": "invalid",
+    "SIGNATURE_EQUATION": "invalid",
+    "SIGNATURE_KEY": "invalid",
+    "SIGNATURE_POINT": "invalid",
+    "SIGNATURE_SCALAR": "invalid",
+    "SIGNER_MISSING": "invalid",
+    "STREAM_ORDER": "invalid",
+    "SUCCESSION_FORK": "invalid",
+    "TAIL_AFTER_SUCCESSION": "invalid",
+    "TORN_TAIL": "info",
+    "TRUST": "invalid",
+    "UNCONFIRMED": "info",
+    "UNKNOWN_CONTROL": "unsupported",
+    "UNKNOWN_CRIT": "unsupported",
+    "UNKNOWN_PROFILE": "unsupported",
+    "UNRECOGNIZED_FILE": "invalid",
+    "USE_HOST_VERIFIER": "unsupported",
+    "V3_CONTENT_UNCLAIMED": "invalid"
+  },
+  "kinds": {
+    "action": {
+      "body": "Action",
+      "body_v": 1,
+      "class": "event"
+    },
+    "heartbeat": {
+      "body": "Heartbeat",
+      "body_v": 1,
+      "class": "event"
+    },
+    "stream_close": {
+      "body": "StreamClose",
+      "body_v": 1,
+      "class": "control"
+    },
+    "stream_open": {
+      "body": "StreamOpen",
+      "body_v": 1,
+      "class": "control"
+    }
+  },
+  "layout": {
+    "entry_prefix": "{\"keyid\":\"",
+    "entry_separator": ",",
+    "entry_suffix": "\"}",
+    "file_suffix": ".receipt-v3.jsonl",
+    "genesis_domain": "pipelock-receipt-v3-genesis",
+    "payload_prefix": "],\"payload\":",
+    "prefix": "{\"payloadType\":\"application/vnd.pipelock.receipt.v3+json\",\"signatures\":[",
+    "public_key_bytes": 32,
+    "signature_bytes": 64,
+    "signature_prefix": "\",\"sig\":\"",
+    "start_digits": 16,
+    "suffix": "}\n"
+  },
+  "limits": {
+    "browser_archive_bytes": 8388608,
+    "browser_archive_files": 4096,
+    "browser_entry_bytes": 33554432,
+    "browser_total_bytes": 33554432,
+    "decisions": 10000000,
+    "depth": 16,
+    "integer": 9007199254740991,
+    "line_bytes": 1048576,
+    "member_bytes": 64,
+    "signatures": 4,
+    "target_bytes": 2048,
+    "writer_instance_bytes": 128
+  },
+  "normalization_profiles": {},
+  "objects": {
+    "Action": {
+      "action_id": [
+        "action_id",
+        true
+      ],
+      "action_type": [
+        "@action_type",
+        true
+      ],
+      "actor": [
+        "string",
+        true
+      ],
+      "ask": [
+        "Ask",
+        false
+      ],
+      "attempt": [
+        "positive",
+        false
+      ],
+      "caller": [
+        "Caller",
+        true
+      ],
+      "checker": [
+        "Checker",
+        false
+      ],
+      "contestation_window": [
+        "string",
+        false
+      ],
+      "contract": [
+        "Contract",
+        false
+      ],
+      "data": [
+        "Data",
+        true
+      ],
+      "delegation_chain": [
+        "[]string",
+        false
+      ],
+      "effect_boundary": [
+        "@boundary",
+        true
+      ],
+      "effect_relation": [
+        "@relation",
+        true
+      ],
+      "hold": [
+        "Hold",
+        false
+      ],
+      "intent": [
+        "string",
+        false
+      ],
+      "jurisdiction": [
+        "string",
+        false
+      ],
+      "layer": [
+        "string",
+        false
+      ],
+      "method": [
+        "string",
+        false
+      ],
+      "normalization": [
+        "Normalization",
+        false
+      ],
+      "outcome_class": [
+        "@outcome",
+        false
+      ],
+      "parent_action_id": [
+        "action_id",
+        false
+      ],
+      "pattern": [
+        "string",
+        false
+      ],
+      "phase": [
+        "@phase",
+        true
+      ],
+      "policy": [
+        "ActionPolicy",
+        true
+      ],
+      "precedent_refs": [
+        "[]string",
+        false
+      ],
+      "principal": [
+        "string",
+        true
+      ],
+      "redaction": [
+        "Redaction",
+        false
+      ],
+      "remedy_class": [
+        "string",
+        false
+      ],
+      "request_id": [
+        "string",
+        false
+      ],
+      "rulebook_id": [
+        "string",
+        false
+      ],
+      "session": [
+        "Session",
+        false
+      ],
+      "severity": [
+        "string",
+        false
+      ],
+      "shield": [
+        "Shield",
+        false
+      ],
+      "taint": [
+        "Taint",
+        false
+      ],
+      "target": [
+        "target",
+        true
+      ],
+      "transport": [
+        "string",
+        true
+      ],
+      "venue": [
+        "string",
+        false
+      ],
+      "verdict": [
+        "@verdict",
+        true
+      ]
+    },
+    "ActionPolicy": {
+      "hash": [
+        "digest",
+        false
+      ],
+      "source": [
+        "@action_policy_source",
+        true
+      ]
+    },
+    "Ask": {
+      "channel": [
+        "@ask_channel",
+        true
+      ],
+      "observed": [
+        "bool",
+        true
+      ]
+    },
+    "Caller": {
+      "authn": [
+        "@authn",
+        true
+      ],
+      "client_id": [
+        "string",
+        false
+      ],
+      "issuer": [
+        "string",
+        false
+      ],
+      "resource": [
+        "string",
+        false
+      ],
+      "subject": [
+        "string",
+        false
+      ]
+    },
+    "Checker": {
+      "config_hash": [
+        "digest",
+        false
+      ],
+      "disposition": [
+        "@checker_disposition",
+        true
+      ],
+      "mode": [
+        "@checker_mode",
+        true
+      ],
+      "selection": [
+        "@checker_selection",
+        true
+      ],
+      "surface": [
+        "@checker_surface",
+        true
+      ]
+    },
+    "Common": {
+      "body": [
+        "object",
+        true
+      ],
+      "body_v": [
+        "positive",
+        true
+      ],
+      "crit": [
+        "[]name",
+        false
+      ],
+      "ext": [
+        "object",
+        false
+      ],
+      "kind": [
+        "name",
+        true
+      ],
+      "prev": [
+        "digest",
+        true
+      ],
+      "seq": [
+        "uint",
+        true
+      ],
+      "signer": [
+        "digest",
+        true
+      ],
+      "stream": [
+        "id128",
+        true
+      ],
+      "ts": [
+        "time",
+        true
+      ],
+      "v": [
+        "version",
+        true
+      ]
+    },
+    "Contract": {
+      "generation": [
+        "uint",
+        false
+      ],
+      "hash": [
+        "string",
+        false
+      ],
+      "live_verdict": [
+        "string",
+        false
+      ],
+      "manifest_hash": [
+        "string",
+        false
+      ],
+      "policy_sources": [
+        "[]string",
+        false
+      ],
+      "rule_id": [
+        "string",
+        false
+      ],
+      "selector_id": [
+        "string",
+        false
+      ],
+      "winning_source": [
+        "string",
+        false
+      ]
+    },
+    "Coverage": {
+      "content_scan": [
+        "bool",
+        true
+      ],
+      "receipts_required": [
+        "bool",
+        true
+      ],
+      "redaction_ruleset": [
+        "Ruleset",
+        true
+      ],
+      "surfaces": [
+        "[]string",
+        true
+      ]
+    },
+    "Cutover": {
+      "chains": [
+        "uint",
+        true
+      ],
+      "inventory": [
+        "digest",
+        true
+      ]
+    },
+    "Data": {
+      "classes_in": [
+        "[]string",
+        false
+      ],
+      "classes_out": [
+        "[]string",
+        false
+      ],
+      "reversibility": [
+        "string",
+        true
+      ],
+      "side_effect_class": [
+        "string",
+        true
+      ]
+    },
+    "Durability": {
+      "durability_blocks": [
+        "uint",
+        true
+      ],
+      "fsync_errors_gated": [
+        "uint",
+        true
+      ]
+    },
+    "Heartbeat": {
+      "beat": [
+        "positive",
+        true
+      ],
+      "durability_blocks": [
+        "uint",
+        true
+      ],
+      "fsync_errors_gated": [
+        "uint",
+        true
+      ]
+    },
+    "Hold": {
+      "correction": [
+        "bool",
+        false
+      ],
+      "id": [
+        "string",
+        true
+      ],
+      "parent": [
+        "string",
+        false
+      ],
+      "policy": [
+        "string",
+        false
+      ],
+      "resolution_policy": [
+        "string",
+        false
+      ],
+      "resolution_source": [
+        "string",
+        false
+      ]
+    },
+    "Normalization": {
+      "digest": [
+        "digest",
+        true
+      ],
+      "id": [
+        "string",
+        true
+      ]
+    },
+    "Posture": {
+      "capsule_sha256": [
+        "digest",
+        true
+      ],
+      "contained_uid": [
+        "string",
+        true
+      ],
+      "containment_nonce": [
+        "string",
+        true
+      ],
+      "signer_key_id": [
+        "string",
+        true
+      ]
+    },
+    "Previous": {
+      "ended": [
+        "@ended",
+        true
+      ],
+      "record": [
+        "digest",
+        true
+      ],
+      "seq": [
+        "uint",
+        true
+      ],
+      "stream": [
+        "id128",
+        true
+      ]
+    },
+    "Recorder": {
+      "entries": [
+        "uint",
+        true
+      ],
+      "session": [
+        "string",
+        true
+      ],
+      "transcript_root": [
+        "digest",
+        true
+      ]
+    },
+    "Redaction": {
+      "cache_boundary_kept": [
+        "bool",
+        false
+      ],
+      "classes": [
+        "[]RedactionClass",
+        false
+      ],
+      "parser": [
+        "string",
+        false
+      ],
+      "profile": [
+        "string",
+        false
+      ],
+      "provider": [
+        "string",
+        false
+      ],
+      "total_redactions": [
+        "uint",
+        false
+      ]
+    },
+    "RedactionClass": {
+      "class": [
+        "string",
+        true
+      ],
+      "count": [
+        "uint",
+        true
+      ]
+    },
+    "Ruleset": {
+      "hash": [
+        "string",
+        true
+      ],
+      "id": [
+        "string",
+        true
+      ],
+      "version": [
+        "string",
+        true
+      ]
+    },
+    "Session": {
+      "contaminated": [
+        "bool",
+        false
+      ],
+      "id": [
+        "string",
+        false
+      ],
+      "original_id": [
+        "string",
+        false
+      ],
+      "taint_level": [
+        "string",
+        false
+      ],
+      "taint_sources": [
+        "[]TaintSource",
+        false
+      ],
+      "task_id": [
+        "string",
+        false
+      ],
+      "task_label": [
+        "string",
+        false
+      ]
+    },
+    "Shield": {
+      "adaptive_signal_max_per_body": [
+        "uint",
+        false
+      ],
+      "adaptive_signals_recorded": [
+        "uint",
+        false
+      ],
+      "agent_traps": [
+        "uint",
+        false
+      ],
+      "body_bytes": [
+        "uint",
+        false
+      ],
+      "extension_probes": [
+        "uint",
+        false
+      ],
+      "fingerprint_shim_injected": [
+        "bool",
+        false
+      ],
+      "partial": [
+        "bool",
+        false
+      ],
+      "pipeline": [
+        "string",
+        false
+      ],
+      "scanned_bytes": [
+        "uint",
+        false
+      ],
+      "svg_animation_injections": [
+        "uint",
+        false
+      ],
+      "svg_event_handlers": [
+        "uint",
+        false
+      ],
+      "svg_external_references": [
+        "uint",
+        false
+      ],
+      "svg_foreign_objects": [
+        "uint",
+        false
+      ],
+      "svg_hidden_text": [
+        "uint",
+        false
+      ],
+      "total_rewrites": [
+        "uint",
+        false
+      ],
+      "tracking_beacons": [
+        "uint",
+        false
+      ]
+    },
+    "SignerKey": {
+      "alg": [
+        "@algorithm",
+        true
+      ],
+      "public": [
+        "key",
+        true
+      ]
+    },
+    "StreamClose": {
+      "durability": [
+        "Durability",
+        true
+      ],
+      "reason": [
+        "@close_reason",
+        true
+      ],
+      "recorder": [
+        "Recorder",
+        false
+      ],
+      "records": [
+        "positive",
+        true
+      ]
+    },
+    "StreamOpen": {
+      "coverage": [
+        "Coverage",
+        true
+      ],
+      "heartbeat_seconds": [
+        "uint",
+        false
+      ],
+      "legacy_cutover": [
+        "Cutover",
+        false
+      ],
+      "lineage": [
+        "id128",
+        true
+      ],
+      "policy": [
+        "StreamPolicy",
+        true
+      ],
+      "posture": [
+        "Posture",
+        false
+      ],
+      "previous": [
+        "Previous",
+        false
+      ],
+      "recorder_session": [
+        "string",
+        false
+      ],
+      "signer_key": [
+        "SignerKey",
+        true
+      ],
+      "writer": [
+        "Writer",
+        true
+      ]
+    },
+    "StreamPolicy": {
+      "hash": [
+        "digest",
+        true
+      ],
+      "source": [
+        "@stream_policy_source",
+        true
+      ]
+    },
+    "Taint": {
+      "authority_kind": [
+        "string",
+        false
+      ],
+      "decision": [
+        "string",
+        false
+      ],
+      "reason": [
+        "string",
+        false
+      ],
+      "task_override_applied": [
+        "bool",
+        false
+      ]
+    },
+    "TaintSource": {
+      "kind": [
+        "string",
+        true
+      ],
+      "level": [
+        "uint",
+        true
+      ],
+      "match_reason": [
+        "string",
+        false
+      ],
+      "receipt_id": [
+        "string",
+        false
+      ],
+      "timestamp": [
+        "string",
+        true
+      ],
+      "url": [
+        "string",
+        true
+      ]
+    },
+    "Writer": {
+      "binary_digest": [
+        "digest",
+        false
+      ],
+      "instance": [
+        "instance",
+        true
+      ],
+      "product": [
+        "string",
+        true
+      ],
+      "version": [
+        "string",
+        true
+      ]
+    }
+  },
+  "profile": "application/vnd.pipelock.receipt.v3+json"
+}

@@ -474,9 +474,9 @@ def verify_receipt_file(
             report["signer_key"] = key_hex
             report["policy_hash"] = receipt.get("policy_hash")
             report["chain_seq"] = receipt.get("chain_seq")
-            if receipt.get("payload_kind") == "proxy_decision_with_spans" and isinstance(
-                payload, dict
-            ):
+            if receipt.get(
+                "payload_kind"
+            ) == "proxy_decision_with_spans" and isinstance(payload, dict):
                 spans = payload.get("source_spans")
                 if isinstance(spans, list):
                     report["source_span_count"] = len(spans)
@@ -669,7 +669,11 @@ def _verify_v2_chain(
 
 
 def _verify_action_chain(
-    receipts: list[dict[str, Any]], key_hex: str, allow_unpinned: bool
+    receipts: list[dict[str, Any]],
+    key_hex: str,
+    allow_unpinned: bool,
+    *,
+    endorsed_transitions: dict[int, str] | None = None,
 ) -> dict[str, Any]:
     trusted_keys = _parse_trusted_keys(key_hex)
     first_key = _require_string(receipts[0].get("signer_key"), "signer_key").lower()
@@ -712,7 +716,14 @@ def _verify_action_chain(
             state["segment_base_seq"] = seq
         elif action_record.get("key_transition") is not None:
             result = _start_rotated_segment(
-                receipt, action_record, seq, index, state, trusted_keys, allow_unpinned
+                receipt,
+                action_record,
+                seq,
+                index,
+                state,
+                trusted_keys,
+                allow_unpinned,
+                (endorsed_transitions or {}).get(index),
             )
             if result is not None:
                 return result
@@ -836,6 +847,7 @@ def _start_rotated_segment(
     state: dict[str, Any],
     trusted_keys: set[str],
     allow_unpinned: bool,
+    endorsed_key: str | None = None,
 ) -> dict[str, Any] | None:
     marker = _require_object(action_record.get("key_transition"), "key_transition")
     if seq != 0:
@@ -872,7 +884,7 @@ def _start_rotated_segment(
             "segment final seq",
         )
     if trusted_keys:
-        if signer_key not in trusted_keys:
+        if signer_key not in trusted_keys and signer_key != endorsed_key:
             return _broken_chain(
                 seq, f"seq {seq}: signer key {signer_key} is not in the trusted set"
             )

@@ -21,6 +21,7 @@ from .appraise import (
     verify,
 )
 from .chain import comparable_chain, is_chain_linked, verify_chain
+from .chain_set import verify_base
 from .envelope import Envelope, unmarshal
 from .group import (
     GROUP_INCOMPLETE,
@@ -28,6 +29,11 @@ from .group import (
     GROUP_VALID,
     verify_receipt_group,
 )
+from .legacy_directory import verify_receipt_groups
+from .v3 import Options as V3Options
+from .v3 import canonical as canonical_v3
+from .v3 import claims_input as claims_v3_input
+from .v3 import verify_paths as verify_v3
 
 __version__ = "0.2.1"
 
@@ -40,12 +46,18 @@ __all__ = [
     "SignatureResult",
     "TrustEntry",
     "VerifyOptions",
+    "V3Options",
+    "canonical_v3",
+    "claims_v3_input",
     "comparable_appraisal",
     "comparable_chain",
     "is_chain_linked",
     "unmarshal",
     "verify",
+    "verify_base",
     "verify_chain",
     "verify_receipt_group",
+    "verify_receipt_groups",
+    "verify_v3",
     "__version__",
 ]
