@@ -77,26 +77,21 @@ func RefusePayload(payload []byte, command, reader string) error {
 	return nil
 }
 
-// RefuseLocation rejects v3 claims at dir or at the single legacy location
-// ResolveEvidenceLocation would select under dir.
+// RefuseLocation rejects v3 claims at dir or in any non-symlink descendant
+// directory under dir, preserving the claimed filename when recorder discovery
+// identifies one.
 func RefuseLocation(dir, command, reader string) error {
 	if err := Refuse(dir, command, reader); err != nil {
 		return err
 	}
-	loc, err := recorder.ResolveEvidenceLocation(dir, "")
-	if errors.Is(err, recorder.ErrLegacyEvidenceFormat) {
+	if _, err := recorder.DiscoverEvidenceLocations(dir); errors.Is(err, recorder.ErrLegacyEvidenceFormat) {
 		var claimed *fs.PathError
 		if errors.As(err, &claimed) {
 			return fmt.Errorf("%w (found %q)", unsupported(command, reader, true), claimed.Path)
 		}
 		return unsupported(command, reader, true)
 	}
-	if err == nil && loc.Dir != "" && filepath.Clean(loc.Dir) != filepath.Clean(dir) {
-		if err := Refuse(loc.Dir, command, reader); err != nil {
-			return err
-		}
-	}
-	return nil
+	return RefuseTree(dir, command, reader)
 }
 
 // RefuseTree rejects a directory when it or any non-symlink descendant

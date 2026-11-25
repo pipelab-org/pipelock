@@ -99,3 +99,36 @@ func TestDashboardAgentsHandlersAndSingleDashEvidenceRefuseReceiptV3(t *testing.
 	_, _, inspectErr := InspectReadModelIndex(indexOut, singleDashDir)
 	testreceipt.RequiresV3Refusal(t, inspectErr, "dashboard", "the dashboard read model")
 }
+
+func TestDashboardRefusesRenamedV3InMultiLocationSubdir(t *testing.T) {
+	v3File, _ := testreceipt.V3(t, t.TempDir(), false)
+	v3Data, err := os.ReadFile(filepath.Clean(v3File))
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "evidence-proxy-0.jsonl"), []byte("{\"v\":1,\"seq\":0}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	child := filepath.Join(root, "child")
+	if err := os.Mkdir(child, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(child, "evidence-proxy-0.jsonl"), append([]byte("\n  "), v3Data...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m := NewReadModel(Options{ReceiptDir: root})
+	_, sessionsErr := m.Sessions()
+	_, sessionErr := m.Session("proxy")
+	_, trustErr := m.TrustKeys()
+	for _, err := range []error{sessionsErr, sessionErr, trustErr} {
+		testreceipt.RequiresV3Refusal(t, err, "dashboard", "the dashboard")
+	}
+	handler := &dashboardHandler{model: m}
+	resp := httptest.NewRecorder()
+	handler.handleIndex(resp, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/evidence", nil))
+	if resp.Code != http.StatusConflict {
+		t.Fatalf("HTTP status: %d, want %d; body=%q", resp.Code, http.StatusConflict, resp.Body.String())
+	}
+	testreceipt.RequiresV3Refusal(t, errors.New(resp.Body.String()), "dashboard", "the dashboard")
+}

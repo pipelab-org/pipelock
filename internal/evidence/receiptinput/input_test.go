@@ -79,3 +79,46 @@ func TestReceiptInputRefuseTreeAndLocation(t *testing.T) {
 	}
 	testreceipt.RequiresV3Refusal(t, receiptinput.RefuseLocation(root, command, reader), command, reader)
 }
+
+func TestReceiptInputRefuseLocationMultiLocationRenamedV3(t *testing.T) {
+	const command, reader = "example", "the example reader"
+	v3File, _ := testreceipt.V3(t, t.TempDir(), false)
+	v3Data, err := os.ReadFile(filepath.Clean(v3File))
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := []byte("{\"record_type\":\"action_receipt\"}\n")
+
+	t.Run("root legacy plus child renamed v3", func(t *testing.T) {
+		root := t.TempDir()
+		if err := os.WriteFile(filepath.Join(root, "evidence-proxy-0.jsonl"), legacy, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		child := filepath.Join(root, "child")
+		if err := os.Mkdir(child, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(child, "evidence-proxy-0.jsonl"), append([]byte("\n  "), v3Data...), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		testreceipt.RequiresV3Refusal(t, receiptinput.RefuseLocation(root, command, reader), command, reader)
+	})
+
+	t.Run("two sibling locations one with renamed v3", func(t *testing.T) {
+		root := t.TempDir()
+		dirA := filepath.Join(root, "a")
+		dirB := filepath.Join(root, "b")
+		for _, dir := range []string{dirA, dirB} {
+			if err := os.Mkdir(dir, 0o750); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := os.WriteFile(filepath.Join(dirA, "evidence-proxy-0.jsonl"), legacy, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dirB, "evidence-proxy-0.jsonl"), v3Data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		testreceipt.RequiresV3Refusal(t, receiptinput.RefuseLocation(root, command, reader), command, reader)
+	})
+}
