@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import base64
+import io
 import json
 import shutil
 from pathlib import Path
@@ -198,6 +199,67 @@ def _v3_open_with_cutover(directory, inventory, key):
     )
     (directory / path.name).write_bytes(envelope)
     return public.hex()
+
+
+def test_cutover_inventory_reads_are_bounded(monkeypatch):
+    from pipelock_aarp_verify.v3 import legacy
+
+    vector = VECTORS / "g09-inventory-over-1024-chains"
+    inventory = next(vector.glob("receipt-v3-cutover-*.json"))
+    raw = inventory.read_bytes()
+
+    class BoundedInput(io.BytesIO):
+        def read(self, size=-1):
+            assert 0 < size <= 256
+            return super().read(size)
+
+    monkeypatch.setattr(legacy, "_open_regular_input", lambda _: BoundedInput(raw))
+    rows = legacy._read_inventory(inventory, digest(raw), 1025)
+    assert rows is not None and len(rows) == 1025
+
+
+@pytest.mark.parametrize(
+    ("layout", "count"),
+    [
+        pytest.param(b'{"v":1,"chains":[]}', 0, id="wrong-prefix"),
+        pytest.param(b'{"chains":[ROW],"v":1}', 0, id="too-many-rows"),
+        pytest.param(b'{"chains":[ROW],"v":1}', 2, id="not-enough-rows"),
+        pytest.param(b'{"chains":[{', 1, id="truncated-row"),
+        pytest.param(b'{"chains":[{"chain":}],"v":1}', 1, id="malformed-row"),
+        pytest.param(b'{"chains":[ROW,ROW],"v":1}', 2, id="duplicate-row"),
+        pytest.param(b'{"chains":[ROW,],"v":1}', 2, id="trailing-comma"),
+        pytest.param(b'{"chains":[ROW],"v":1} ', 1, id="trailing-data"),
+    ],
+)
+def test_cutover_inventory_rejects_invalid_layout(tmp_path, layout, count):
+    from pipelock_aarp_verify.v3.legacy import _read_inventory
+
+    row = canonical_v3(
+        {"chain": "0" * 32, "format": "action_v1", "record": digest(b""), "seq": 0}
+    )
+    raw = layout.replace(b"ROW", row)
+    inventory = tmp_path / "inventory.json"
+    inventory.write_bytes(raw)
+    assert _read_inventory(inventory, digest(raw), count) is None
+
+
+def test_oversized_cutover_inventory_row(tmp_path, capsys):
+    inventory = {
+        "chains": [
+            {
+                "chain": "0" * (1 << 20),
+                "format": "action_v1",
+                "record": digest(b""),
+                "seq": 0,
+            }
+        ],
+        "v": 1,
+    }
+    key = _v3_open_with_cutover(tmp_path, inventory, Ed25519PrivateKey.generate())
+    assert main(["v3", "--key", key, "--output", "projection", str(tmp_path)]) == 1
+    result = json.loads(capsys.readouterr().out)
+    assert result["verdict"] == "INVALID"
+    assert result["finding_codes"] == ["CUTOVER_INVENTORY_MISMATCH"]
 
 
 def test_mixed_group_directory(tmp_path):

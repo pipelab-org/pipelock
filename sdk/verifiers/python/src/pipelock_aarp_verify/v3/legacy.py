@@ -6,11 +6,12 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from collections import defaultdict
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, BinaryIO
 
 from ..chain_set import verify_base
 from ..cli import _close_ends_chain
@@ -57,6 +58,9 @@ _EVIDENCE = "evidence_v2"
 _GROUP = "receipt_group"
 _PREFIX = "VALID PREFIX, END UNPROVEN"
 _EMPTY = digest(b'{"chains":[],"v":1}')
+# Even a row with two digests and the largest wire integer fits in this bound.
+_INVENTORY_ITEM_LIMIT = 256
+_INVENTORY_TAIL = re.compile(rb'(?:,"journal":"sha256:[0-9a-f]{64}")?,"v":1}')
 _ERRORS = (OSError, ValueError, ReceiptError, SecretEgressError, RecursionError)
 
 Identity = tuple[str, str]
@@ -329,38 +333,55 @@ def _valid_row(row: Document) -> bool:
     )
 
 
-def _read_inventory(path: Path, pin: str, chains: int) -> list[Document] | None:
-    with _open_regular_input(path) as source:
-        if "sha256:" + hashlib.file_digest(source, "sha256").hexdigest() != pin:
+def _read_inventory_row(source: BinaryIO) -> bytes | None:
+    raw = bytearray(b"{")
+    for _ in range(_INVENTORY_ITEM_LIMIT - 1):
+        token = source.read(1)
+        if not token:
             return None
-        source.seek(0)
-        raw = source.read()
-    if digest(raw) != pin:
-        return None
-    try:
-        document = parse_payload(raw)
-    except WireError:
-        return None
-    if (
-        document.keys() - {"chains", "journal", "v"}
-        or type(document.get("v")) is not int
-        or document["v"] != 1
-        or "journal" in document
-        and (
-            not isinstance(document["journal"], str)
-            or not DIGEST.fullmatch(document["journal"])
-        )
-    ):
-        return None
-    rows = document.get("chains")
-    if (
-        not isinstance(rows, list)
-        or (chains >= 0 and len(rows) != chains)
-        or not all(_valid_row(row) for row in rows)
-    ):
-        return None
-    identities = [_identity(row) for row in rows]
-    return rows if identities == sorted(set(identities)) else None
+        raw.extend(token)
+        if token == b"}":
+            return bytes(raw)
+    return None
+
+
+def _read_inventory(path: Path, pin: str, chains: int) -> list[Document] | None:
+    prefix = b'{"chains":['
+    with _open_regular_input(path) as source:
+        if source.read(len(prefix)) != prefix:
+            return None
+        hashed = hashlib.sha256(prefix)
+        rows: list[Document] = []
+        token = source.read(1)
+        while token == b"{":
+            if 0 <= chains <= len(rows):
+                return None
+            raw = _read_inventory_row(source)
+            if raw is None:
+                return None
+            try:
+                row = parse_payload(raw)
+            except WireError:
+                return None
+            if not _valid_row(row) or (rows and _identity(rows[-1]) >= _identity(row)):
+                return None
+            rows.append(row)
+            hashed.update(raw)
+            token = source.read(1)
+            if token != b",":
+                break
+            hashed.update(token)
+            token = source.read(1)
+            if token != b"{":
+                return None
+        if token != b"]" or (chains >= 0 and len(rows) != chains):
+            return None
+        tail = source.read(_INVENTORY_ITEM_LIMIT)
+        if not _INVENTORY_TAIL.fullmatch(tail) or source.read(1):
+            return None
+        hashed.update(token)
+        hashed.update(tail)
+    return rows if "sha256:" + hashed.hexdigest() == pin else None
 
 
 def _membership_known(v: Verification) -> bool:
