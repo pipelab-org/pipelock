@@ -194,8 +194,8 @@ func TestExecuteRedirect_ManifestInjected(t *testing.T) {
 
 func TestArgsDigest(t *testing.T) {
 	d := argsDigest(`{"command":"curl https://example.com"}`)
-	if !strings.HasPrefix(d, "sha256:") {
-		t.Errorf("expected sha256: prefix, got %q", d)
+	if !strings.HasPrefix(d, "hmac-sha256:") {
+		t.Errorf("expected hmac-sha256: prefix, got %q", d)
 	}
 	if !strings.Contains(d, "len=") {
 		t.Errorf("expected len= in digest, got %q", d)

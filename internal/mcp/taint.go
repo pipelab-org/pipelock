@@ -5,7 +5,6 @@ package mcp
 
 import (
 	"bytes"
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -198,12 +197,12 @@ func mcpTaskAction(opts MCPProxyOpts, frame MCPFrame) session.TaskAction {
 			return session.TaskAction{}
 		}
 	}
-	digest := sha256.Sum256(payload.Bytes())
+	digest := fingerprint("task-action", payload.Bytes())
 	return session.TaskAction{
 		Method:      frame.Method,
 		Destination: destination,
 		Tool:        frame.ToolCallName,
-		Digest:      hex.EncodeToString(digest[:]),
+		Digest:      hex.EncodeToString(digest),
 	}
 }
 
@@ -211,9 +210,9 @@ func resolveMCPTaskApproval(opts MCPProxyOpts, decision *taintDecision, name str
 	outcome := hitl.OutcomeUnavailable
 	if opts.Approver != nil && decision.taskAction.Digest != "" {
 		req := buildHITLRequestForTaint(name, taintApprovalReason(*decision),
-			fmt.Sprintf("%s %s (SHA-256 %s)", decision.ActionRef, decision.taskAction.Destination, decision.taskAction.Digest))
+			fmt.Sprintf("%s %s (HMAC-SHA-256 %s)", decision.ActionRef, decision.taskAction.Destination, decision.taskAction.Digest))
 		req.Confirmation = session.TaskApprovalConfirmation()
-		req.Reason += " (SHA-256 " + decision.taskAction.Digest + ")"
+		req.Reason += " (HMAC-SHA-256 " + decision.taskAction.Digest + ")"
 		outcome = opts.Approver.AskOutcome(req)
 	}
 	if outcome == hitl.OutcomeAllow {

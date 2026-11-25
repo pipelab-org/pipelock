@@ -6,6 +6,7 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -32,6 +33,26 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/session"
 	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
+
+func TestMCPTaskActionUsesKeyedDigest(t *testing.T) {
+	opts := MCPProxyOpts{ServerBinding: "test-server"}
+	const params = `{"name":"write","arguments":{"value":"example"}}`
+	frame := ParseMCPFrame([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":` + params + `}`))
+	action := mcpTaskAction(opts, frame)
+	if !action.Valid() {
+		t.Fatal("task action is invalid")
+	}
+	plain := sha256.Sum256([]byte(params))
+	if action.Digest == fmt.Sprintf("%x", plain) {
+		t.Fatal("task digest is an unkeyed hash of params")
+	}
+	if action.Digest != mcpTaskAction(opts, frame).Digest {
+		t.Fatal("same action produced a different digest")
+	}
+	if strings.Contains(argsDigest(params), action.Digest[:16]) {
+		t.Fatal("redirect summary shares the task digest prefix")
+	}
+}
 
 type taskApprovalOutput struct {
 	input        *io.PipeWriter

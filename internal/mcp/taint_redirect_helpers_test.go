@@ -70,7 +70,7 @@ func TestArgsDigestDoesNotEchoRawArgs(t *testing.T) {
 
 	secret := "AKIA" + "IOSFODNN7" + "EXAMPLE"
 	got := argsDigest(`{"token":"` + secret + `"}`)
-	if !strings.HasPrefix(got, "sha256:") || !strings.Contains(got, "len=") {
+	if !strings.HasPrefix(got, "hmac-sha256:") || !strings.Contains(got, "len=") {
 		t.Fatalf("digest shape = %q", got)
 	}
 	if strings.Contains(got, secret) {
