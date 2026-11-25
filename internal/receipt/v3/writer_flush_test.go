@@ -495,7 +495,9 @@ func TestSharedFlushCloseReplaysObservedOutcomeBeforeUnlock(t *testing.T) {
 	longDelay := time.Hour
 	opts.idleFlushDelay = &longDelay
 	w := requireWriter(t, opts, localWriterStorage())
-	token, err := NewEffectGate(w).Admit(t.Context(), writerTestIntent("observed-before-close"), PolicySnapshot{})
+	intent := writerTestIntent("observed-before-close")
+	intent.ParentActionID = "parent"
+	token, err := NewEffectGate(w).Admit(t.Context(), intent, PolicySnapshot{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -508,6 +510,10 @@ func TestSharedFlushCloseReplaysObservedOutcomeBeforeUnlock(t *testing.T) {
 	}
 	if err := w.Close(t.Context(), nil); !errors.Is(err, fault) {
 		t.Fatalf("close error = %v, want %v", err, fault)
+	}
+	actions := readRecoveryActions(t, opts.Dir, w.active.id)
+	if len(actions) != 1 || actions[0].ParentActionID != intent.ParentActionID {
+		t.Fatalf("replayed outcome lost parent attribution: %+v", actions)
 	}
 	verified := verifyWritten(t, opts.Dir, opts.SigningKey.Public().(ed25519.PublicKey))
 	if got := writerTestCount(t, verified, "completed"); got != 1 {

@@ -80,6 +80,9 @@ type mcpMatrixFile struct {
 	scenario              string
 	cancel                context.CancelFunc
 	beforeSync            func(int)
+	matchActionSync       func(v3.Action) bool
+	beforeActionSync      func()
+	actionSyncArmed       atomic.Bool
 }
 
 func (f *mcpMatrixFile) Write(p []byte) (int, error) {
@@ -87,12 +90,38 @@ func (f *mcpMatrixFile) Write(p []byte) (int, error) {
 	if f.scenario == "second SSE intent write fail" && bytes.Contains(p, []byte(secondSSEMethod)) && bytes.Contains(p, []byte(`"phase":"intent"`)) {
 		return 0, errors.New("second SSE intent fixture append failure")
 	}
+	replyFault := f.scenario == "reply intent write fail" || f.scenario == "reply intent sync fail"
+	replyIntent := replyFault && mcpMatrixWriteMatches(p, func(a v3.Action) bool {
+		return a.Phase == "intent" && a.EffectBoundary == mcpDownstreamDeliveryBoundary
+	})
 	if (f.writeCount == 2 && f.scenario == "intent write fail") ||
-		(f.writeCount == 4 && f.scenario == "reply intent write fail") ||
+		(replyIntent && f.scenario == "reply intent write fail") ||
 		(f.writeCount == 3 && (f.scenario == "local denial intent write fail" || f.scenario == "preadmitted reply intent write fail")) {
 		return 0, errors.New("fixture append failure")
 	}
-	return f.File.Write(p)
+	n, err := f.File.Write(p)
+	if err == nil && (replyIntent || f.matchActionSync != nil && mcpMatrixWriteMatches(p, f.matchActionSync)) {
+		f.actionSyncArmed.Store(true)
+	}
+	return n, err
+}
+
+func mcpMatrixWriteMatches(data []byte, match func(v3.Action) bool) bool {
+	for line := range bytes.SplitAfterSeq(data, []byte{'\n'}) {
+		if len(line) == 0 {
+			continue
+		}
+		envelope, code := v3.ExportDSSE(line)
+		if code != "" {
+			continue
+		}
+		var decoded struct{ Payload []byte }
+		var record struct{ Body v3.Action }
+		if json.Unmarshal(envelope, &decoded) == nil && json.Unmarshal(decoded.Payload, &record) == nil && match(record.Body) {
+			return true
+		}
+	}
+	return false
 }
 
 func (f *mcpMatrixFile) Sync() error {
@@ -100,8 +129,13 @@ func (f *mcpMatrixFile) Sync() error {
 	if f.beforeSync != nil {
 		f.beforeSync(f.syncCount)
 	}
-	if f.syncCount == 4 && f.scenario == "reply intent sync fail" {
-		return errors.New("fixture reply sync failure")
+	if f.actionSyncArmed.Swap(false) {
+		if f.beforeActionSync != nil {
+			f.beforeActionSync()
+		}
+		if f.scenario == "reply intent sync fail" {
+			return errors.New("fixture reply sync failure")
+		}
 	}
 	if f.syncCount == 2 {
 		if f.scenario == "intent sync fail" {
@@ -184,6 +218,7 @@ func decodeMCPMatrixReceiptFiles(dir string, live bool) ([]v3.Action, error) {
 	}
 	var records []record
 	previous := make(map[string]string)
+	writeErrorPins := make(map[string]int64)
 	for _, path := range paths {
 		data, err := os.ReadFile(filepath.Clean(path))
 		if err != nil {
@@ -218,6 +253,9 @@ func decodeMCPMatrixReceiptFiles(dir string, live bool) ([]v3.Action, error) {
 				}
 				if opened.Previous != nil {
 					previous[payload.Stream] = opened.Previous.Stream
+					if opened.Previous.Ended == "write_error" {
+						writeErrorPins[opened.Previous.Stream] = opened.Previous.Seq
+					}
 				}
 			case "action":
 				entry := record{Stream: payload.Stream, Seq: payload.Seq}
@@ -249,6 +287,11 @@ func decodeMCPMatrixReceiptFiles(dir string, live bool) ([]v3.Action, error) {
 	})
 	actions := make([]v3.Action, 0, len(records))
 	for _, r := range records {
+		// A repair may duplicate landed bytes beyond a failed stream's pin.
+		// Receipt appraisal uses only the predecessor's confirmed prefix.
+		if pin, failed := writeErrorPins[r.Stream]; failed && r.Seq > pin {
+			continue
+		}
 		actions = append(actions, r.Body)
 	}
 	return actions, nil
@@ -906,6 +949,19 @@ func runMCPMatrixWS(t *testing.T, ctx context.Context, in io.Reader, out io.Writ
 	return RunWSProxy(ctx, rd, out, io.Discard, wsURL(srv), opts)
 }
 
+type mcpMatrixReplySignal struct {
+	lockedHTTPBuffer
+	signal func()
+}
+
+func (w *mcpMatrixReplySignal) Write(p []byte) (int, error) {
+	n, err := w.lockedHTTPBuffer.Write(p)
+	if err == nil && w.contains(heldNativeReply) {
+		w.signal()
+	}
+	return n, err
+}
+
 func TestMCPV3IntentPrecedesWebSocketWriteLock(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(5*time.Second))
 	defer cancel()
@@ -913,18 +969,24 @@ func TestMCPV3IntentPrecedesWebSocketWriteLock(t *testing.T) {
 	intent := make(chan struct{})
 	pong := make(chan struct{})
 	row := v3MCPMatrixRow{required: true}
-	writerOpts := mcpMatrixWriterOptions(t, row, deferred.SurfaceMCPWS, cancel, func(count int) {
-		switch count {
-		case 5: // Header and the first exchange.
-			close(firstSettled)
-		case 6: // Second send intent.
-			close(intent)
-			select {
-			case <-pong:
-			case <-ctx.Done():
+	writerOpts := mcpMatrixWriterOptions(t, row, deferred.SurfaceMCPWS, cancel, nil)
+	create := writerOpts.CreateTempFile
+	writerOpts.CreateTempFile = func(dir, pattern string) (v3.StreamFile, error) {
+		file, err := create(dir, pattern)
+		if fixture, ok := file.(*mcpMatrixFile); ok {
+			fixture.matchActionSync = func(a v3.Action) bool {
+				return a.Phase == "intent" && a.EffectBoundary == mcpUpstreamSendBoundary && a.RequestID == "2"
+			}
+			fixture.beforeActionSync = func() {
+				close(intent)
+				select {
+				case <-pong:
+				case <-ctx.Done():
+				}
 			}
 		}
-	})
+		return file, err
+	}
 	writer, err := v3.OpenStreamWriter(ctx, writerOpts)
 	if err != nil {
 		t.Fatal(err)
@@ -959,16 +1021,13 @@ func TestMCPV3IntentPrecedesWebSocketWriteLock(t *testing.T) {
 	defer srv.Close()
 	in, input := io.Pipe()
 	defer func() { _ = input.Close() }()
-	var out lockedHTTPBuffer
+	out := mcpMatrixReplySignal{signal: sync.OnceFunc(func() { close(firstSettled) })}
 	done := make(chan error, 1)
 	opts := MCPProxyOpts{Scanner: testScannerForWS(t)}.WithV3ReceiptWriter(writer)
 	go func() { done <- RunWSProxy(ctx, in, &out, io.Discard, wsURL(srv), opts) }()
 	_, _ = io.WriteString(input, jsonToolsCallEcho+"\n")
 	select {
 	case <-firstSettled:
-		if !out.contains(heldNativeReply) {
-			t.Fatal("first WebSocket reply was not delivered")
-		}
 	case <-ctx.Done():
 		t.Fatal("first WebSocket exchange did not settle")
 	}
