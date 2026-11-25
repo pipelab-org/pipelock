@@ -100,6 +100,67 @@ func TestTwo(t *testing.T) {}
                 head = repo.commit({"main_test.go": 'package fixture\nimport "testing"\nvar _ testing.M\n' + hook + "\n"})
                 self.assertEqual(self.select(repo, base, head, support=True), {"TestOne", "TestTwo"})
 
+    def test_reordered_inits_select_the_whole_package(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = FixtureRepo(Path(directory))
+            original = '''package fixture
+import "testing"
+func init() { _ = "a" }
+func init() { _ = "b" }
+func TestOne(t *testing.T) {}
+func TestTwo(t *testing.T) {}
+'''
+            base = repo.commit({"a_test.go": original})
+            head = repo.commit({"a_test.go": original.replace("func init() { _ = \"a\" }\nfunc init() { _ = \"b\" }",
+                                                             "func init() { _ = \"b\" }\nfunc init() { _ = \"a\" }")})
+            self.assertEqual(self.select(repo, base, head, support=False), set())
+            self.assertEqual(self.select(repo, base, head, support=True), {"TestOne", "TestTwo"})
+
+    def test_hook_reaching_a_changed_helper_selects_the_whole_package(self):
+        hooks = (
+            "func init() { leaf() }\n",
+            "func TestMain(m *testing.M) { leaf(); m.Run() }\n",
+        )
+        for hook in hooks:
+            with self.subTest(hook=hook.split("(")[0]), tempfile.TemporaryDirectory() as directory:
+                repo = FixtureRepo(Path(directory))
+                base = repo.commit({
+                    "h_test.go": 'package fixture\nimport "testing"\nfunc leaf() int { return 1 }\n' + hook,
+                    "a_test.go": 'package fixture\nimport "testing"\nfunc TestUnrelated(t *testing.T) {}\n',
+                })
+                head = repo.commit({
+                    "h_test.go": 'package fixture\nimport "testing"\nfunc leaf() int { return 2 }\n' + hook,
+                })
+                self.assertEqual(self.select(repo, base, head, support=True), {"TestUnrelated"})
+
+    def test_unchanged_init_does_not_select_tests(self):
+        # The helper change selects TestOne. The unchanged init must not pull
+        # in a test that does not reach the helper.
+        with tempfile.TemporaryDirectory() as directory:
+            repo = FixtureRepo(Path(directory))
+            original = '''package fixture
+import "testing"
+func init() { _ = "a" }
+func helper() int { return 1 }
+func TestOne(t *testing.T) { _ = helper() }
+func TestOther(t *testing.T) {}
+'''
+            base = repo.commit({"a_test.go": original})
+            head = repo.commit({"a_test.go": original.replace("return 1", "return 2")})
+            self.assertEqual(self.select(repo, base, head, support=True), {"TestOne"})
+
+    def test_blank_import_change_selects_the_whole_package(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = FixtureRepo(Path(directory))
+            base = repo.commit({
+                "a_test.go": 'package fixture\nimport ("testing"; _ "errors")\nfunc TestOne(t *testing.T) {}\n',
+            })
+            head = repo.commit({
+                "a_test.go": 'package fixture\nimport ("testing"; _ "fmt")\nfunc TestOne(t *testing.T) {}\n',
+            })
+            self.assertEqual(self.select(repo, base, head, support=False), set())
+            self.assertEqual(self.select(repo, base, head, support=True), {"TestOne"})
+
     def test_new_declaration_does_not_select_unchanged_tests(self):
         # PR #2298 added a Done method on a new test type; matching by name
         # selected every test that called ctx.Done().
@@ -235,6 +296,7 @@ func TestFlaky(t *testing.T) {
             head = repo.commit({"stable_test.go": self.STABLE})
             status, output = self.gate(repo, base, head)
             self.assertEqual(status, 0, output)
+            self.assertIn("-parallel=2", output)
             self.assertIn(f"passed {planner.REPEAT_MAX_RUNS} race runs each", output)
 
     def test_no_changed_tests_is_a_successful_no_op(self):

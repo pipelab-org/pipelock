@@ -10,9 +10,12 @@
 // With --include-support, a changed declaration that is not itself a test (a
 // helper, type, variable, constant or init function in a test file) also
 // selects every test of its package that refers to it, directly or through
-// other test-file declarations. A changed TestMain selects the whole package.
-// The repeat gate uses this so an edit to a shared helper reruns the tests
-// that depend on it; the race measurement keeps its own narrower selection.
+// other test-file declarations. TestMain and init run for every test, so a
+// change to either hook, including init order, or a hook that reaches a
+// changed declaration, selects the whole package. A blank import does too:
+// nothing else names it. The repeat gate uses this so an edit to a shared
+// helper reruns the tests that depend on it; the race measurement keeps its
+// own narrower selection.
 package main
 
 import (
@@ -30,6 +33,7 @@ import (
 	"os/exec"
 	"path"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -155,10 +159,11 @@ func formatted(fset *token.FileSet, node any) (string, error) {
 	return out.String(), nil
 }
 
-// supportDecls lists a file's non-test declarations keyed by package. Imports
-// are left out: an import alone changes nothing a test can observe, and an
-// import whose use changed is visible in the declaration that uses it.
-func supportDecls(fset *token.FileSet, file string, parsed *ast.File, into map[packageKey]map[string]support) error {
+// supportDecls lists a file's non-test declarations keyed by package. Named
+// imports are left out: an import whose use changed is visible in the
+// declaration that uses it. Blank imports are not; inits records init
+// function bodies in file order, which is the order the go command runs them.
+func supportDecls(fset *token.FileSet, file string, parsed *ast.File, into map[packageKey]map[string]support, inits map[packageKey][]string, blanks map[packageKey][]string) error {
 	key := packageKey{path.Dir(file), parsed.Name.Name}
 	decls := into[key]
 	if decls == nil {
@@ -192,16 +197,35 @@ func supportDecls(fset *token.FileSet, file string, parsed *ast.File, into map[p
 			if isTest(d) && runnableName(d.Name.Name) {
 				continue
 			}
-			kind, key, name := "func", d.Name.Name, d.Name.Name
+			if d.Recv == nil && d.Name.Name == "init" {
+				source, err := formatted(fset, d)
+				if err != nil {
+					return err
+				}
+				// Lexical file order, then source order: the go command's init order.
+				inits[key] = append(inits[key], source)
+			}
+			kind, declKey, name := "func", d.Name.Name, d.Name.Name
 			if d.Recv != nil && len(d.Recv.List) == 1 {
 				name = receiverType(d)
-				kind, key = "method", name+"."+d.Name.Name
+				kind, declKey = "method", name+"."+d.Name.Name
 			}
-			if err := add(kind, key, name, d, d); err != nil {
+			if err := add(kind, declKey, name, d, d); err != nil {
 				return err
 			}
 		case *ast.GenDecl:
 			if d.Tok == token.IMPORT {
+				for _, spec := range d.Specs {
+					sp, ok := spec.(*ast.ImportSpec)
+					if !ok || sp.Name == nil || sp.Name.Name != "_" || sp.Path == nil {
+						continue
+					}
+					importPath, err := strconv.Unquote(sp.Path.Value)
+					if err != nil {
+						return err
+					}
+					blanks[key] = append(blanks[key], importPath)
+				}
 				continue
 			}
 			for _, spec := range d.Specs {
@@ -234,28 +258,30 @@ func runnableName(name string) bool {
 	return tail == "" || !unicode.IsLower(first)
 }
 
-func inventory(ref string, files []string) (map[string]test, map[packageKey]map[string]support, error) {
+func inventory(ref string, files []string) (map[string]test, map[packageKey]map[string]support, map[packageKey][]string, map[packageKey][]string, error) {
 	tests := make(map[string]test)
 	supports := make(map[packageKey]map[string]support)
+	inits := make(map[packageKey][]string)
+	blanks := make(map[packageKey][]string)
 	for _, file := range files {
 		source, err := git("show", ref+":"+file)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, nil, err
 		}
 		// A file this variant doesn't build declares nothing for it, at the base
 		// as at the head, so a name only another platform declared stays new.
 		if ok, err := builds(file, source); err != nil {
-			return nil, nil, fmt.Errorf("build constraints %s:%s: %w", ref, file, err)
+			return nil, nil, nil, nil, fmt.Errorf("build constraints %s:%s: %w", ref, file, err)
 		} else if !ok {
 			continue
 		}
 		fset := token.NewFileSet()
 		parsed, err := parser.ParseFile(fset, file, source, 0)
 		if err != nil {
-			return nil, nil, fmt.Errorf("parse %s:%s: %w", ref, file, err)
+			return nil, nil, nil, nil, fmt.Errorf("parse %s:%s: %w", ref, file, err)
 		}
-		if err := supportDecls(fset, file, parsed, supports); err != nil {
-			return nil, nil, err
+		if err := supportDecls(fset, file, parsed, supports, inits, blanks); err != nil {
+			return nil, nil, nil, nil, err
 		}
 		for _, decl := range parsed.Decls {
 			fn, ok := decl.(*ast.FuncDecl)
@@ -264,7 +290,7 @@ func inventory(ref string, files []string) (map[string]test, map[packageKey]map[
 			}
 			source, err := formatted(fset, fn)
 			if err != nil {
-				return nil, nil, err
+				return nil, nil, nil, nil, err
 			}
 			item := test{
 				File: file, Package: "./" + path.Dir(file), Name: fn.Name.Name, Source: source,
@@ -278,25 +304,25 @@ func inventory(ref string, files []string) (map[string]test, map[packageKey]map[
 			tests[key] = item
 		}
 	}
-	return tests, supports, nil
+	return tests, supports, inits, blanks, nil
 }
 
 // affectedNames returns the support names a test can reach through a changed
-// declaration, and whether a package-wide hook (TestMain or init) changed.
+// declaration, and whether every test in the package is affected.
 //
 // Only a declaration present at both revisions with different source counts
 // as changed. An unchanged test cannot name a declaration that did not exist
 // at the base, or it would not have compiled there, and a test that names a
-// deleted one must itself have changed and is selected on its own. A package
-// hook is the exception: adding, changing or removing one changes every test
-// in the package.
-func affectedNames(base, head map[string]support) (map[string]bool, bool) {
+// deleted one must itself have changed and is selected on its own. TestMain
+// and init are the exception, as is a blank import: each runs for every test,
+// whether or not the test names it. Init order is the sequence of bodies,
+// not a sorted merge, because the go command runs them in that order.
+func affectedNames(base, head map[string]support, baseInits, headInits, baseBlanks, headBlanks []string) (map[string]bool, bool) {
 	affected := make(map[string]bool)
-	whole := false
-	hook := func(id string) bool { return id == "func/TestMain" || id == "func/init" }
+	whole := !sameSequence(baseInits, headInits) || !sameSet(baseBlanks, headBlanks)
 	for id, item := range head {
 		old, ok := base[id]
-		if hook(id) && (!ok || old.source != item.source) {
+		if id == "func/TestMain" && (!ok || old.source != item.source) {
 			whole = true
 		}
 		if ok && old.source != item.source {
@@ -304,12 +330,14 @@ func affectedNames(base, head map[string]support) (map[string]bool, bool) {
 		}
 	}
 	for id := range base {
-		if _, ok := head[id]; !ok && hook(id) {
+		if _, ok := head[id]; !ok && id == "func/TestMain" {
 			whole = true
 		}
 	}
 	// Propagate through helpers that call changed helpers until nothing new
-	// is reached. Each pass adds at least one name or stops.
+	// is reached. Each pass adds at least one name or stops. A hook that
+	// reaches a changed name affects every test, not only tests that spell
+	// the hook's name.
 	for {
 		grew := false
 		for _, item := range head {
@@ -325,9 +353,35 @@ func affectedNames(base, head map[string]support) (map[string]bool, bool) {
 			}
 		}
 		if !grew {
+			if affected["init"] || affected["TestMain"] {
+				whole = true
+			}
 			return affected, whole
 		}
 	}
+}
+
+func sameSequence(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func sameSet(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	sortedLeft := append([]string(nil), left...)
+	sortedRight := append([]string(nil), right...)
+	sort.Strings(sortedLeft)
+	sort.Strings(sortedRight)
+	return sameSequence(sortedLeft, sortedRight)
 }
 
 // cmd/go ignores dot/underscore directories and testdata during ./... walks.
@@ -358,6 +412,8 @@ func selectTests(base, head string, includeSupport bool) ([]test, error) {
 	}
 	inventories := make([]map[string]test, 0, 2)
 	supportInventories := make([]map[packageKey]map[string]support, 0, 2)
+	initInventories := make([]map[packageKey][]string, 0, 2)
+	blankInventories := make([]map[packageKey][]string, 0, 2)
 	for _, ref := range []string{base, head} {
 		files := []string{}
 		if len(dirs) > 0 {
@@ -371,12 +427,14 @@ func selectTests(base, head string, includeSupport bool) ([]test, error) {
 				}
 			}
 		}
-		tests, supports, err := inventory(ref, files)
+		tests, supports, inits, blanks, err := inventory(ref, files)
 		if err != nil {
 			return nil, err
 		}
 		inventories = append(inventories, tests)
 		supportInventories = append(supportInventories, supports)
+		initInventories = append(initInventories, inits)
+		blankInventories = append(blankInventories, blanks)
 	}
 	declared := make(map[string]bool, len(inventories[0]))
 	for _, item := range inventories[0] {
@@ -389,14 +447,27 @@ func selectTests(base, head string, includeSupport bool) ([]test, error) {
 	impacts := make(map[packageKey]packageImpact)
 	if includeSupport {
 		keys := make(map[packageKey]bool)
-		for key := range supportInventories[0] {
-			keys[key] = true
+		for _, inv := range supportInventories {
+			for key := range inv {
+				keys[key] = true
+			}
 		}
-		for key := range supportInventories[1] {
-			keys[key] = true
+		for _, inv := range initInventories {
+			for key := range inv {
+				keys[key] = true
+			}
+		}
+		for _, inv := range blankInventories {
+			for key := range inv {
+				keys[key] = true
+			}
 		}
 		for key := range keys {
-			names, whole := affectedNames(supportInventories[0][key], supportInventories[1][key])
+			names, whole := affectedNames(
+				supportInventories[0][key], supportInventories[1][key],
+				initInventories[0][key], initInventories[1][key],
+				blankInventories[0][key], blankInventories[1][key],
+			)
 			impacts[key] = packageImpact{names: names, whole: whole}
 		}
 	}

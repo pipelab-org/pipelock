@@ -1332,7 +1332,11 @@ def repeat_changed_tests(
         """Race-run one package's selection; return problems, empty when every run passed."""
         if remaining() <= 0:
             raise ValueError(f"repeat deadline reached before {package}")
-        command = ["go", "test", "-race", f"-count={count}", f"-timeout={REPEAT_PACKAGE_TIMEOUT_SECONDS}s", "-json"]
+        # Match the race lane's -parallel=2. Go's default is GOMAXPROCS, and
+        # these runners have 4 vCPU; the race lane pins 2 so a repeated run
+        # does not fail a test the lane would pass.
+        command = ["go", "test", "-race", "-parallel=2", f"-count={count}",
+                   f"-timeout={REPEAT_PACKAGE_TIMEOUT_SECONDS}s", "-json"]
         if tags:
             command.extend(["-tags", tags])
         command.extend(["-run=" + exact_names_regex(selected[package]), package])
