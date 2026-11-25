@@ -798,3 +798,32 @@ func TestSharedFlushSerializesResolutionBehindPendingAction(t *testing.T) {
 		})
 	}
 }
+
+func TestSharedFlushRefuseOutcomeReplayPreservesParent(t *testing.T) {
+	opts := writerTestOptions(t.TempDir())
+	w := requireWriter(t, opts, localWriterStorage())
+	intent := writerTestIntent("refused-child")
+	intent.ParentActionID = "parent"
+	token, err := NewEffectGate(w).Admit(t.Context(), intent, PolicySnapshot{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fault := errors.New("injected refusal sync failure")
+	w.gate <- struct{}{}
+	w.active.file = errorWriterFile{StreamFile: w.active.file, syncErr: fault}
+	w.release()
+	if err := token.Refuse(t.Context()); !errors.Is(err, fault) || !errors.Is(err, ErrEffectNotReleased) {
+		t.Fatalf("refuse error = %v, want %v and %v", err, fault, ErrEffectNotReleased)
+	}
+	actions := readRecoveryActions(t, opts.Dir, w.active.id)
+	if len(actions) != 1 || actions[0].OutcomeClass != outcomeNotReleased || actions[0].ParentActionID != intent.ParentActionID {
+		t.Fatalf("replayed refusal outcome lost parent attribution: %+v", actions)
+	}
+	if err := w.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	verified := verifyWritten(t, opts.Dir, opts.SigningKey.Public().(ed25519.PublicKey))
+	if got := writerTestCount(t, verified, "not_released"); got != 1 {
+		t.Fatalf("verified not_released outcomes = %d, want 1", got)
+	}
+}

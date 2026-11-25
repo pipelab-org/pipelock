@@ -289,7 +289,7 @@ func minimalRepairAction(action Action) Action {
 	if action.Attempt != nil {
 		repair.Method = action.Method
 	}
-	if action.Phase == phaseOutcome && action.OutcomeClass != outcomeNotReleased {
+	if action.Phase == phaseOutcome {
 		repair.ParentActionID = action.ParentActionID
 	}
 	return repair
