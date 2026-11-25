@@ -435,8 +435,11 @@ func (c *CertCache) Matches(ca *x509.Certificate, ttl time.Duration, maxSize int
 	return bytes.Equal(c.ca.Raw, ca.Raw) && c.ttl == ttl && c.maxSize == maxSize
 }
 
-// CanSignCRL reports whether the issuer permits certificate revocation lists.
-func (c *CertCache) CanSignCRL() bool { return c.ca.KeyUsage&x509.KeyUsageCRLSign != 0 }
+// CanSignCRL reports whether the issuer permits certificate revocation lists
+// and carries the subject key identifier x509.CreateRevocationList requires.
+func (c *CertCache) CanSignCRL() bool {
+	return c.ca.KeyUsage&x509.KeyUsageCRLSign != 0 && len(c.ca.SubjectKeyId) > 0
+}
 
 // SetCRLDistributionPoints changes leaf CDPs and invalidates previously minted leaves.
 // Issuers without CRL signing usage retain the previous no-CDP behavior.

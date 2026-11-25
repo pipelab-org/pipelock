@@ -213,3 +213,35 @@ func BenchmarkCertCacheCRLLeafHit(b *testing.B) {
 		})
 	}
 }
+
+func TestCRLRequiresIssuerSubjectKeyID(t *testing.T) {
+	generated, key, _, err := GenerateCA("Test", 48*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(generated.SubjectKeyId) == 0 || !mustNewCertCache(t, generated, key, time.Hour, 10).CanSignCRL() {
+		t.Fatal("generated CA must keep CRL support")
+	}
+	// An imported CA may carry CRLSign without a subject key identifier.
+	imported := *generated
+	imported.SubjectKeyId = nil
+	cache := mustNewCertCache(t, &imported, key, time.Hour, 10)
+	if cache.CanSignCRL() {
+		t.Fatal("CA without a subject key identifier cannot sign a CRL")
+	}
+	if _, err := GenerateCRL(&imported, key, big.NewInt(1), time.Now()); err == nil {
+		t.Fatal("x509 accepted a CRL issuer without a subject key identifier")
+	}
+	cache.SetCRLDistributionPoints([]string{testCRLURL})
+	leaf, err := cache.Get("no-ski.vendor.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, err := x509.ParseCertificate(leaf.Certificate[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cert.CRLDistributionPoints) != 0 {
+		t.Fatal("CA without a subject key identifier advertised a CDP")
+	}
+}
