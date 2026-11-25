@@ -331,9 +331,12 @@ class _LegacyVerifier:
         # A wrapper shard stays excluded only while it is the file that was
         # read; a replacement under the same name is a change, not a pass.
         try:
-            healthy = settled() and verify_base(
-                root, base, tuple(sorted(self.keys)), exclude_groups=grouped
-            )["healthy"]
+            healthy = (
+                settled()
+                and verify_base(
+                    root, base, tuple(sorted(self.keys)), exclude_groups=grouped
+                )["healthy"]
+            )
             if healthy and settled():
                 return
             label = (

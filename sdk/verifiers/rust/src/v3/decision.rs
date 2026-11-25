@@ -7,7 +7,9 @@ use serde_json::{json, Value};
 
 use crate::util::Result;
 
-use super::{history::Segment, registry, result::Document, store::Store, wire::Record, Verifier};
+use super::{
+    digest, history::Segment, registry, result::Document, store::Store, wire::Record, Verifier,
+};
 
 const MAX_DECISIONS: usize = 10_000_000;
 const INCONSISTENT: &str = "DECISION_INCONSISTENT";
@@ -325,6 +327,22 @@ impl Inspection {
         }
     }
 
+    /// Records which decision owns a hold and reports a conflicting owner. The
+    /// index keeps a fixed-size digest of each hold ID and shares the decision
+    /// index budget: past it the history is reported as incomplete.
+    fn claim_hold(&mut self, hold: &str, action: &str, max: usize) -> bool {
+        let key = digest(hold.as_bytes());
+        if let Some(owner) = self.hold_owners.get(&key) {
+            return owner != action;
+        }
+        if self.hold_owners.len() < max {
+            self.hold_owners.insert(key, action.into());
+        } else {
+            self.full = true;
+        }
+        false
+    }
+
     fn action(
         &mut self,
         doc: &mut Document,
@@ -350,11 +368,7 @@ impl Inspection {
             .hold
             .filter(|_| matches!(action.phase, "hold" | "resolution"))
         {
-            let owner = self
-                .hold_owners
-                .entry(hold.into())
-                .or_insert_with(|| action.id.into());
-            if owner != action.id {
+            if self.claim_hold(hold, action.id, MAX_DECISIONS) {
                 doc.add_record(INCONSISTENT, record);
             }
         }
@@ -541,6 +555,24 @@ mod tests {
 
         body["attempt"] = json!(1);
         assert!(!Action::new(&body).valid(true));
+    }
+
+    #[test]
+    fn hold_index_shares_the_decision_index_budget() {
+        let mut inspection = Inspection::default();
+        let long = "h".repeat(1 << 16);
+        assert!(!inspection.claim_hold(&long, "first", 1));
+        assert!(inspection.claim_hold(&long, "second", 1), "owner conflict");
+        assert!(!inspection.full);
+        assert!(inspection.hold_owners.keys().all(|key| key.len() < 100));
+
+        assert!(!inspection.claim_hold("other", "first", 1));
+        assert!(inspection.full, "a second hold exceeds the budget of one");
+        assert_eq!(inspection.hold_owners.len(), 1);
+        assert!(
+            !inspection.claim_hold(&long, "first", 1),
+            "known hold, same owner"
+        );
     }
 
     #[test]

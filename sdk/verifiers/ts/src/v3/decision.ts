@@ -3,7 +3,7 @@
 
 import { segments, type Segment } from "./history.js";
 import type { Verification } from "./verify.js";
-import { limits, normalizationProfiles } from "./wire.js";
+import { digest, limits, normalizationProfiles } from "./wire.js";
 
 interface Action {
   action_id: string;
@@ -269,6 +269,22 @@ export function appraiseDecisions(v: Verification): void {
   }
 }
 
+// The index keeps a fixed-size digest of each hold ID and shares the decision
+// index budget: past it the history is reported as incomplete.
+export function claimHold(
+  holds: Map<string, string>,
+  hold: string,
+  action: string,
+  max: number,
+): "conflict" | "full" | undefined {
+  const key = digest(Buffer.from(hold));
+  const owner = holds.get(key);
+  if (owner !== undefined) return owner === action ? undefined : "conflict";
+  if (holds.size >= max) return "full";
+  holds.set(key, action);
+  return undefined;
+}
+
 function appraiseHistory(
   v: Verification,
   pieces: Segment[],
@@ -308,9 +324,9 @@ function appraiseHistory(
         else full = true;
 
         if (a.hold && (a.phase === "hold" || a.phase === "resolution")) {
-          const owner = holds.get(a.hold.id);
-          if (owner === undefined) holds.set(a.hold.id, id);
-          else if (owner !== id) v.add("DECISION_INCONSISTENT", record);
+          const claim = claimHold(holds, a.hold.id, id, limits.decisions);
+          if (claim === "conflict") v.add("DECISION_INCONSISTENT", record);
+          else if (claim === "full") full = true;
         }
         if (record.unknown) {
           increment(uninterpreted, "action");

@@ -22,6 +22,7 @@ import { canonicalV3, claimsV3Input, verifyV3Paths } from "../src/index.js";
 import { findPackageRoot } from "./paths.js";
 import { readV3Fixture, resignV3Fixture } from "./v3-fixtures.js";
 import { limits } from "../src/v3/wire.js";
+import { claimHold } from "../src/v3/decision.js";
 import { verifyLegacy } from "../src/v3/legacy.js";
 import { finding, newResult } from "../src/v3/result.js";
 import { Stage } from "../src/v3/store.js";
@@ -480,4 +481,15 @@ test("v3 does not exclude a replaced bare wrapper from restart continuity", asyn
     syncBuiltinESMExports();
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("v3 hold ownership shares the decision index budget", () => {
+  const holds = new Map<string, string>();
+  const long = "h".repeat(1 << 16);
+  assert.equal(claimHold(holds, long, "first", 1), undefined);
+  assert.equal(claimHold(holds, long, "second", 1), "conflict");
+  assert.equal(claimHold(holds, long, "first", 1), undefined);
+  assert.equal(claimHold(holds, "other", "first", 1), "full");
+  assert.equal(holds.size, 1);
+  assert.ok([...holds.keys()].every((key) => key.length < 100));
 });
