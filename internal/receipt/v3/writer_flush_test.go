@@ -770,19 +770,41 @@ func TestSharedFlushSerializesResolutionBehindPendingAction(t *testing.T) {
 			first := asyncWriterResult(func() error { return w.WriteAction(t.Context(), blockRes, PolicySnapshot{}) })
 			awaitFlushEvent(t, f.writes)
 			firstSync := awaitFlushEvent(t, f.syncs)
-			if acrossSegment {
-				w.gate <- struct{}{}
-				w.fileBytes = w.active.bytes + maxLineBytes
-				w.release()
+			allowCtx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			waiting := make(chan bool, 1)
+			markWaiting := sync.OnceFunc(func() {
+				waiting <- w.transitionDone() == nil
+			})
+			w.gate <- struct{}{}
+			w.onWaitState = func(ctx context.Context) {
+				if ctx == allowCtx {
+					markWaiting()
+				}
 			}
+			if acrossSegment {
+				w.fileBytes = w.active.bytes + maxLineBytes
+			}
+			w.release()
 			allowRes := Action{
 				ActionID: hold.ActionID, ActionType: hold.ActionType, Actor: hold.Actor, Principal: hold.Principal,
 				Caller: hold.Caller, Data: hold.Data, Transport: hold.Transport, Method: hold.Method, Target: hold.Target,
 				Phase: phaseResolution, Verdict: verdictAllow, EffectBoundary: approvalBoundary, EffectRelation: relationAfter,
 				Hold: &Hold{ID: hold.Hold.ID, ResolutionPolicy: hold.Hold.Policy, ResolutionSource: "operator"},
 			}
-			second := asyncWriterResult(func() error { return w.WriteAction(t.Context(), allowRes, PolicySnapshot{}) })
-			requirePending(t, second)
+			second := asyncWriterResult(func() error { return w.WriteAction(allowCtx, allowRes, PolicySnapshot{}) })
+			select {
+			case waitingForBlock := <-waiting:
+				if !waitingForBlock {
+					t.Fatal("allow waited for a segment drain before the pending block")
+				}
+			case <-f.writes:
+				t.Fatal("allow appended before the pending block was confirmed")
+			case err := <-second:
+				t.Fatalf("allow returned before the pending block was confirmed: %v", err)
+			case <-time.After(testwait.Deadline(5 * time.Second)):
+				t.Fatal("allow did not reach the pending block wait")
+			}
 			firstSync <- nil
 			if err := awaitFlushEvent(t, first); err != nil {
 				t.Fatalf("first block resolution failed: %v", err)
