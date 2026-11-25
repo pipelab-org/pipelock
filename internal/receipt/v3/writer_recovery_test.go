@@ -189,11 +189,12 @@ func TestStreamWriterRetriesRecoveryAfterWriteError(t *testing.T) {
 
 			// Re-flush the predecessor, publish the startup stream, then
 			// fail the recovery append before it writes any bytes.
-			fault := writerReplayFault{step: writerReplayStep{FaultAt: 7}}
+			const faultAt = 7
+			fault := writerReplayFault{step: writerReplayStep{FaultAt: faultAt}}
 			storage := fault.storage(opts.Dir)
 			link := storage.link
 			storage.link = func(oldPath, newPath string) error {
-				if tc.failSuccessor && len(fault.calls) > fault.step.FaultAt {
+				if tc.failSuccessor && len(fault.operations()) > faultAt {
 					return errWriterReplay
 				}
 				return link(oldPath, newPath)

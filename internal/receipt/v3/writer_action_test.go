@@ -139,14 +139,14 @@ func TestStreamWriterSettlesOutcomeAfterWriteErrors(t *testing.T) {
 			}
 			outcome := intent
 			outcome.Phase, outcome.EffectRelation, outcome.OutcomeClass = phaseOutcome, relationAfter, "completed"
-			fault = writerReplayFault{step: writerReplayStep{FaultAt: 1, ExtraFaultAt: tc.secondFault}, additionalFaultAt: tc.thirdFault}
+			fault.reset(writerReplayStep{FaultAt: 1, ExtraFaultAt: tc.secondFault}, tc.thirdFault)
 			if err := w.WriteAction(t.Context(), outcome, policy); !errors.Is(err, errWriterReplay) {
 				t.Fatalf("outcome write error = %v, want %v", err, errWriterReplay)
 			}
 			if tc.failSuccessor {
-				fault = writerReplayFault{}
-				if err := w.WriteAction(t.Context(), writerTestIntent("later"), policy); err == nil || len(fault.calls) != 0 {
-					t.Fatalf("writer resumed admission: error = %v, storage calls = %v", err, fault.calls)
+				fault.reset(writerReplayStep{}, 0)
+				if err := w.WriteAction(t.Context(), writerTestIntent("later"), policy); err == nil || len(fault.operations()) != 0 {
+					t.Fatalf("writer resumed admission: error = %v, storage calls = %v", err, fault.operations())
 				}
 			}
 			if err := abandonWriterReplay(w); err != nil {
@@ -253,7 +253,7 @@ func TestStreamWriterSettlesCancelledActionAfterWriteError(t *testing.T) {
 	w.active.file = syncCallbackFile{StreamFile: w.active.file, syncCallback: cancel}
 	// The intent flush succeeds. The following refusal append writes no bytes.
 	initialStream := w.active.id
-	fault = writerReplayFault{step: writerReplayStep{FaultAt: 3}}
+	fault.reset(writerReplayStep{FaultAt: 3}, 0)
 	if err := w.WriteAction(ctx, writerTestIntent("cancelled"), PolicySnapshot{}); !errors.Is(err, context.Canceled) || !errors.Is(err, ErrEffectNotReleased) {
 		t.Fatalf("wanted cancellation after intent flush, got %v", err)
 	}
@@ -739,10 +739,10 @@ func TestStreamWriterDoesNotReportUnconfirmedRefusal(t *testing.T) {
 	defer cancel()
 	w.active.file = syncCallbackFile{StreamFile: w.active.file, syncCallback: cancel}
 	// Confirm the intent, then fail the refusal write and its retry.
-	fault = writerReplayFault{step: writerReplayStep{FaultAt: 3, ExtraFaultAt: 8}}
+	fault.reset(writerReplayStep{FaultAt: 3, ExtraFaultAt: 8}, 0)
 	err := w.WriteAction(ctx, writerTestIntent("cancelled"), PolicySnapshot{})
 	if !errors.Is(err, context.Canceled) || !errors.Is(err, errWriterReplay) || errors.Is(err, ErrEffectNotReleased) {
-		t.Fatalf("unconfirmed refusal reported as durable: %v (calls %v)", err, fault.calls)
+		t.Fatalf("unconfirmed refusal reported as durable: %v (calls %v)", err, fault.operations())
 	}
 	result := verifyWritten(t, opts.Dir, opts.SigningKey.Public().(ed25519.PublicKey))
 	if writerTestCount(t, result, outcomeNotReleased) != 0 || writerTestCount(t, result, "outcome_unknown") != 1 {
@@ -800,7 +800,7 @@ func TestStreamWriterUnsealedClosePinsFailedReplay(t *testing.T) {
 	outcome.Policy = policy.ActionPolicy()
 	w.gate <- struct{}{}
 	w.queueActionRepair(outcome, false)
-	fault = writerReplayFault{step: writerReplayStep{FaultAt: 1, Landing: "full"}}
+	fault.reset(writerReplayStep{FaultAt: 1, Landing: "full"}, 0)
 	err = w.replayActionRepairs(t.Context(), false)
 	failedStream := w.previous.Stream
 	w.release()
