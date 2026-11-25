@@ -94,7 +94,7 @@ fn shared_v3_corpus() {
          {reordered} reversed file orders, {identical} full documents identical"
     );
     assert!(failures.is_empty(), "{}", failures.join("\n"));
-    assert_eq!((projected, legacy), (386, 5));
+    assert_eq!((projected, legacy), (387, 5));
 }
 
 struct TestDirectory(PathBuf);

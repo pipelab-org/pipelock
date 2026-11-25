@@ -388,8 +388,9 @@ func v3RotatedCutoverRecipes(t *testing.T) []v3Recipe {
 	}{
 		{"rotation-match", len(heads) - 1, legacy.Bytes(), "VALID PREFIX, END UNPROVEN", "LEGACY_END_UNPROVEN"},
 		{"rotation-extension", priorCount - 1, legacy.Bytes(), "INVALID", "LEGACY_EXTENDED_AFTER_CUTOVER"},
-		{"rotation-truncation", len(heads) - 1, legacy.Bytes()[:prefixBytes], "INVALID", "LEGACY_CHAIN_TRUNCATED"},
-		{"rotation-boundary-truncation", priorCount, legacy.Bytes()[:rotationBytes], "INVALID", "LEGACY_CHAIN_TRUNCATED"},
+		{"rotation-truncation", len(heads) - 1, legacy.Bytes()[:prefixBytes], "INVALID", "LEGACY_CHAIN_HEAD_MISMATCH"},
+		{"rotation-boundary-truncation", priorCount, legacy.Bytes()[:rotationBytes], "INVALID", "LEGACY_CHAIN_HEAD_MISMATCH"},
+		{"rotation-later-pin-absent", len(heads) - 1, legacy.Bytes()[:rotationBytes], "INVALID", "LEGACY_CHAIN_HEAD_MISMATCH"},
 	} {
 		s := v3New(t)
 		s.records = nil

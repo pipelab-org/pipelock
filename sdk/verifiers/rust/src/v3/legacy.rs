@@ -111,9 +111,9 @@ impl Presented {
             {
                 return Ordering::Greater;
             }
-            // An absent sequence-zero pin can start a later signing epoch.
-            if row.format == ACTION && row.seq == 0 && self.seq > 0 {
-                return Ordering::Less;
+            // Signed action sequences reset at key rotation.
+            if row.format == ACTION {
+                return Ordering::Equal;
             }
         }
         self.seq.cmp(&row.seq)

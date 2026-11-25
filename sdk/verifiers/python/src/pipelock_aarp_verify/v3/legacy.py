@@ -97,9 +97,9 @@ class _Legacy:
             for position, record in (self.seen or {}).items():
                 if 0 <= position < self.position and record == row["record"]:
                     return 1
-            # An absent sequence-zero pin can start a later signing epoch.
-            if row["format"] == _ACTION and row["seq"] == 0 and self.seq > 0:
-                return -1
+            # Signed action sequences reset at key rotation.
+            if row["format"] == _ACTION:
+                return 0
         return self.seq - row["seq"]
 
 

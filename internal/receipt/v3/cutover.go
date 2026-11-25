@@ -71,11 +71,10 @@ func (p legacyPresentation) compareCutoverPosition(row InventoryChain) int {
 				return 1
 			}
 		}
-		// An action chain can reset its signed sequence at rotation. An
-		// absent sequence-zero pin can be the first record of a later epoch,
-		// even when the current epoch's last sequence is higher.
-		if p.Format == legacyAction && row.Seq == 0 && p.Seq > 0 {
-			return -1
+		// A missing action digest cannot be ordered by signed sequence:
+		// key rotation resets the sequence within the same chain.
+		if p.Format == legacyAction {
+			return 0
 		}
 	}
 	return cmp.Compare(p.Seq, row.Seq)

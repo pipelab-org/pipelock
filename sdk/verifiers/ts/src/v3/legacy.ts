@@ -60,8 +60,8 @@ export function compareCutoverPosition(actual: LegacyPresentation, row: LegacyRo
     for (const [position, record] of actual.positions ?? []) {
       if (position >= 0 && position < actual.position && record === row.record) return 1;
     }
-    // An absent sequence-zero pin can start a later signing epoch.
-    if (actual.format === actionFormat && row.seq === 0 && actual.seq > 0) return -1;
+    // Signed action sequences reset at key rotation.
+    if (actual.format === actionFormat) return 0;
   }
   return Math.sign(actual.seq - row.seq);
 }

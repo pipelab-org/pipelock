@@ -511,7 +511,7 @@ func TestLegacyPresentationCutoverPosition(t *testing.T) {
 		{"current action tail", legacyAction, "sha256:tail", 0, false, 0},
 		{"unknown action record at same sequence", legacyAction, "sha256:other", 2, false, 0},
 		{"fork without an earlier record", legacyAction, "sha256:middle", 2, true, 0},
-		{"missing rotation boundary", legacyAction, "sha256:other", 0, false, -1},
+		{"missing rotation boundary", legacyAction, "sha256:other", 0, false, 0},
 		{"earlier evidence record", legacyEvidence, "sha256:middle", 1, false, 1},
 		{"missing evidence genesis digest", legacyEvidence, "sha256:other", 0, false, 1},
 		{"later evidence sequence", legacyEvidence, "sha256:other", 3, false, -1},
