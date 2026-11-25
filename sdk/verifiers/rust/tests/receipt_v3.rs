@@ -602,3 +602,44 @@ fn filename_claimed_missing_or_directory_inputs_are_input_errors() {
         );
     }
 }
+
+#[test]
+fn claims_accepts_double_dash_separator() {
+    use std::process::Command;
+
+    let cli = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_pipelock-verifier-rs"))
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let dir = TestDirectory::new();
+    let v3_file = dir.0.join("-dash.receipt-v3.jsonl");
+    let plain = dir.0.join("plain.jsonl");
+    fs::write(&v3_file, b"{}\n").unwrap();
+    fs::write(&plain, b"{}\n").unwrap();
+    let v3_s = v3_file.to_str().unwrap();
+    let plain_s = plain.to_str().unwrap();
+
+    for (args, want) in [
+        (vec!["v3", "--claims", "--", v3_s], b"true\n".as_slice()),
+        (vec!["v3", "--claims", "--", plain_s], b"false\n".as_slice()),
+    ] {
+        let output = cli(&args);
+        assert_eq!(output.status.code(), Some(0), "{args:?}");
+        assert_eq!(output.stdout, want, "{args:?}");
+        assert!(output.stderr.is_empty(), "{args:?}");
+    }
+
+    for args in [
+        vec!["v3", "--claims", "--"],
+        vec!["v3", "--claims", "--", v3_s, plain_s],
+        vec!["v3", "--claims", "--claims", v3_s],
+        vec!["v3", "--claims", "--allow-prefix", v3_s],
+        vec!["v3", "--claims=true", v3_s],
+    ] {
+        let output = cli(&args);
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+        assert!(output.stdout.is_empty(), "{args:?}");
+    }
+}

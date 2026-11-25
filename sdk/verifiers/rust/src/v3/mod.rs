@@ -512,17 +512,8 @@ pub(crate) fn run(args: &[String]) -> Result<i32> {
 }
 
 fn run_cli(args: &[String]) -> Result<i32> {
-    if let [flag, path] = args {
-        if flag == "--claims" {
-            if path.starts_with("--") {
-                return Err(input_error("v3 --claims requires one path"));
-            }
-            let _ = open(Path::new(path))?;
-            println!("{}", claims_input(Path::new(path))?);
-            return Ok(0);
-        }
-    }
     let (mut options, mut paths, mut projection) = (Options::default(), Vec::new(), false);
+    let (mut claims, mut flags) = (false, 0usize);
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         if arg == "--" {
@@ -545,7 +536,9 @@ fn run_cli(args: &[String]) -> Result<i32> {
                 })
                 .ok_or_else(|| input_error(format!("{flag} requires a value")))
         };
+        flags += 1;
         match flag {
+            "--claims" if inline.is_none() => claims = true,
             "--allow-unpinned" if inline.is_none() => options.allow_unpinned = true,
             "--allow-prefix" if inline.is_none() => options.allow_prefix = true,
             "--accept-discontinuity" => options.accept_discontinuities.push(value()?.into()),
@@ -572,6 +565,16 @@ fn run_cli(args: &[String]) -> Result<i32> {
             }
             _ => return Err(input_error(format!("unknown v3 option {flag}"))),
         }
+    }
+    if claims {
+        if flags != 1 || paths.len() != 1 {
+            return Err(input_error(
+                "v3 --claims requires one path and no other options",
+            ));
+        }
+        let _ = open(&paths[0])?;
+        println!("{}", claims_input(&paths[0])?);
+        return Ok(0);
     }
     // A zero-file evidence set is supported by the library and the corpus CLI.
     options.directory = paths.len() == 1 && paths[0].is_dir();
