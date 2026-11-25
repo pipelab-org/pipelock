@@ -5,6 +5,7 @@ package signing
 
 import (
 	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"io/fs"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
+	"github.com/luckyPipewrench/pipelock/internal/testreceipt"
 )
 
 func TestVerifyReceiptCmd_RelativeMixedDirectory(t *testing.T) {
@@ -111,5 +113,23 @@ func TestVerifyReceiptCmd_LegacyDirWithLeftoverCutoverInventory(t *testing.T) {
 	cmd.SetErr(&out)
 	if err := cmd.ExecuteContext(t.Context()); err != nil {
 		t.Fatalf("legacy chain with leftover cutover inventory should verify on legacy path, got %v\n%s", err, out.String())
+	}
+}
+
+func TestVerifyReceiptCmd_NestedV3ChainGuidance(t *testing.T) {
+	root := t.TempDir()
+	child := filepath.Join(root, "child")
+	if err := os.Mkdir(child, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	_, pub := testreceipt.V3(t, child, false)
+	cmd := VerifyReceiptCmd()
+	cmd.SetArgs([]string{"--chain", root, "--key", hex.EncodeToString(pub)})
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	err := cmd.ExecuteContext(t.Context())
+	if err == nil || !strings.Contains(err.Error(), "pipelock verify-receipt --chain "+child) {
+		t.Fatalf("nested chain diagnostic = %v, want verifier guidance naming %s", err, child)
 	}
 }

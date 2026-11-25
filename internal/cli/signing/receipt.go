@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"maps"
 	"os"
 	"path/filepath"
@@ -214,6 +215,11 @@ Examples:
 			if chainDir != "" && !fleetReport {
 				location, locationErr := recorder.ResolveEvidenceLocation(chainDir, locationID)
 				if locationErr != nil {
+					var claimed *fs.PathError
+					if errors.Is(locationErr, recorder.ErrLegacyEvidenceFormat) && errors.As(locationErr, &claimed) {
+						dir := filepath.Join(chainDir, filepath.Dir(claimed.Path))
+						return evidenceReadError(fmt.Errorf("%w at %q; run 'pipelock verify-receipt --chain %s' with the trusted signer key", recorder.ErrLegacyEvidenceFormat, dir, dir))
+					}
 					return evidenceReadError(fmt.Errorf("extracting session receipts: resolve evidence location: %w", locationErr))
 				}
 				resolvedLocation = &location
