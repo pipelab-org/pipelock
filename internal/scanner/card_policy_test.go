@@ -6,6 +6,9 @@ package scanner
 import (
 	"context"
 	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -149,5 +152,105 @@ func TestCardPolicyManyUnicodeWarningsRetainHigh(t *testing.T) {
 	}
 	if sc.ScanTextForDLPQuiet(t.Context(), text+pan[:4]+"\u200b"+pan[4:]).Clean {
 		t.Fatal("earlier warnings hid obfuscated candidate")
+	}
+}
+
+func TestCardPolicyPunctuationLabels(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.DLP.CardBareAction = config.ActionWarn
+	sc := MustNew(cfg)
+	defer sc.Close()
+	pan := cardtest.Issuer("4019", 16)
+	for _, label := range []string{"card:", "card#", "cc#", "card: "} {
+		if sc.ScanTextForDLPQuiet(t.Context(), label+pan).Clean {
+			t.Errorf("label %q did not block", label)
+		}
+	}
+	if !sc.ScanTextForDLPQuiet(t.Context(), "cardinal "+pan).Clean {
+		t.Fatal("cardinal corroborated")
+	}
+}
+
+func TestCardReceiptEmptyPatternsDecode(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.DLP.Patterns = nil
+	cfg.DLP.ScanEnv = false
+	disabled := false
+	cfg.SeedPhraseDetection.Enabled = &disabled
+	sc := MustNew(cfg)
+	defer sc.Close()
+	pan := cardtest.Issuer("4019", 16)
+	for _, value := range []string{base64.StdEncoding.EncodeToString([]byte(pan)), hex.EncodeToString([]byte(pan)), url.QueryEscape(cardtest.Grouped(pan, "\t"))} {
+		if sc.ScanTextForReceiptDLP(t.Context(), value).Clean {
+			t.Errorf("encoded receipt passed: %q", value)
+		}
+	}
+}
+
+func TestCardPolicyTypedDerivedParity(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.DLP.CardBareAction = config.ActionWarn
+	sc := MustNew(cfg)
+	defer sc.Close()
+	pan := cardtest.Issuer("4019", 16)
+	for _, suffix := range []string{".0", "e0", ".00e0"} {
+		for _, body := range []string{
+			`{"value":` + pan + suffix + `}`,
+			`{"value":` + pan + suffix + `,"other":"tail"}`,
+			`[` + pan + suffix + `,null]`,
+		} {
+			atoms := extract.AllStringsFromJSONResult(json.RawMessage(body)).Atoms
+			var parts []string
+			for _, a := range atoms {
+				parts = append(parts, a.Text)
+			}
+			raw := sc.ScanTextForDLPQuiet(t.Context(), body)
+			typed := sc.ScanRequestBodyTextPartsWithCardAtoms(t.Context(), parts, atoms, extract.BodyDLPJoinSeparator)
+			if raw.Clean || typed.Clean {
+				t.Errorf("%s raw clean=%v typed clean=%v", body, raw.Clean, typed.Clean)
+			}
+		}
+	}
+	body := `{"value":"` + pan + `,"}`
+	atoms := extract.AllStringsFromJSONResult(json.RawMessage(body)).Atoms
+	if !sc.ScanRequestBodyTextPartsWithCardAtoms(t.Context(), []string{pan + ","}, atoms, ".").Clean {
+		t.Fatal("string comma gained numeric provenance")
+	}
+}
+
+func TestCardPolicyWarnRulePartition(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	for i := range cfg.DLP.Patterns {
+		if cfg.DLP.Patterns[i].Validator == "luhn" {
+			cfg.DLP.Patterns[i].Action = config.ActionWarn
+		}
+	}
+	sc := MustNew(cfg)
+	defer sc.Close()
+	pan := cardtest.Issuer("4019", 16)
+	atoms := []extract.DLPAtom{{Text: pan, Card: pan, ContextKey: "card"}}
+	res := sc.ScanRequestBodyTextPartsWithCardAtoms(t.Context(), []string{pan}, atoms, ".")
+	if !res.Clean || len(res.Matches) != 0 || len(res.InformationalMatches) == 0 {
+		t.Fatalf("warn partition: %+v", res)
+	}
+}
+
+func TestCardReceiptURLMemoPolicy(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	sc := MustNew(cfg)
+	defer sc.Close()
+	memo := textDecodingMemo(nil, false, nil, false)
+	defer memo.releaseTextDecodingMemo()
+	memo.cardSource = true
+	memo.receiptCards = true
+	text := "https://api.vendor.example/?value=" + url.QueryEscape(cardtest.Grouped(strings.Repeat("4242", 4), "\t"))
+	_ = sc.textURLCardMatches(t.Context(), text, memo)
+	if memo.urlCardDecodes == nil || !memo.urlCardDecodes.receiptCards {
+		t.Fatal("receipt policy lost by deferred URL memo")
 	}
 }

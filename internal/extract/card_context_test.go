@@ -53,3 +53,18 @@ func TestKeyedCardRunBoundaries(t *testing.T) {
 		t.Fatal("empty atoms produced a run")
 	}
 }
+
+func TestKeyedCardRunIsolation(t *testing.T) {
+	pan := cardtest.Issuer("453912341234123", 16)
+	for _, body := range []string{`{"card":["` + pan[:8] + `"],"other":["` + pan[8:] + `"]}`, `{"card":["` + pan[:8] + `",null,"` + pan[8:] + `"]}`} {
+		atoms := AllStringsFromJSONResult(json.RawMessage(body)).Atoms
+		if VisitKeyedCardRuns(atoms, func(_ string, run jsonnumber.CardRun) bool { return run.Digits == pan }) {
+			t.Fatalf("crossed context/barrier: %s", body)
+		}
+	}
+	atoms := AllStringsFromJSONResult(json.RawMessage(`{"card":["` + pan[:8] + `","` + pan[8:] + `"],"pan":["` + pan[:8] + `","` + pan[8:] + `"]}`)).Atoms
+	calls := 0
+	if !VisitKeyedCardRuns(atoms, func(_ string, _ jsonnumber.CardRun) bool { calls++; return true }) || calls != 1 {
+		t.Fatalf("early stop callbacks=%d", calls)
+	}
+}

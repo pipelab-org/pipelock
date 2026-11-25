@@ -284,7 +284,7 @@ func BoundaryCardRuns(view string) []CardRun {
 	var pieces []cardPiece
 	var windows []cardPiece
 	flush := func() {
-		if len(pieces) > 1 {
+		if len(pieces) > 1 || len(pieces) == 1 && pieces[0].derived {
 			runs = appendCardSubruns(runs, pieces)
 		}
 		pieces = nil
@@ -300,11 +300,12 @@ func BoundaryCardRuns(view string) []CardRun {
 		untrusted := i > 0 && boundaries[i-1][1] == "u" || i < len(boundaries) && boundaries[i][1] == "u"
 		// Only numeric atoms carry IntegralView's trailing comma mask. A string
 		// prefix, suffix, sign or comma must not be cropped into a new piece.
+		derived := number && !untrusted && strings.HasSuffix(part, ",")
 		if number || untrusted {
 			part = strings.TrimRight(part, ",")
 		}
-		windows = append(windows, cardPiece{spelling: part, number: number && !untrusted})
-		piece := cardPiece{digits: part}
+		windows = append(windows, cardPiece{spelling: part, number: number && !untrusted, derived: derived})
+		piece := cardPiece{digits: part, derived: derived}
 		if number && !untrusted {
 			if !allDigits(part) {
 				flush()

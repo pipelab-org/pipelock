@@ -4,6 +4,12 @@
 package carddlp
 
 import (
+	"crypto/sha512"
+	"encoding/base32"
+	"encoding/base64"
+	"encoding/binary"
+	"encoding/hex"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -123,6 +129,92 @@ func TestCardCorroboratedKeyNames(t *testing.T) {
 	for _, key := range []string{"", "note", "id", "cards", "panel", "x\":\"note"} {
 		if CorroboratedKey(key) {
 			t.Fatalf("non-payment key %q recognized", key)
+		}
+	}
+}
+
+// Each family has 200,000 deterministic samples. The bytes are synthetic,
+// never credentials; keeping the seed fixed makes any false hit reproducible.
+func TestCardReceiptStrictIdentifiers(t *testing.T) {
+	const seed = uint64(1973)
+	hits := make(map[string]int)
+	for sample := range uint64(200_000) {
+		var input [16]byte
+		binary.BigEndian.PutUint64(input[:8], seed)
+		binary.BigEndian.PutUint64(input[8:], sample)
+		raw := sha512.Sum512(input[:])
+		uuid := func(version byte) string {
+			b := [16]byte(raw[:16])
+			b[6] = b[6]&15 | version<<4
+			b[8] = b[8]&63 | 128
+			h := hex.EncodeToString(b[:])
+			return h[:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:]
+		}
+		const alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+		var ulid [26]byte
+		for i := range ulid {
+			ulid[i] = alphabet[raw[i]&31]
+		}
+		ulid[0] = alphabet[raw[0]&7]
+		values := map[string]string{
+			"uuid4": uuid(4), "uuid7": uuid(7),
+			"request": fmt.Sprintf("s1-r%x-m000000", raw[:16]),
+			"sha256":  hex.EncodeToString(raw[:32]), "sha512": hex.EncodeToString(raw[:]),
+			"base64":    base64.StdEncoding.EncodeToString(raw[:32]),
+			"base64url": base64.RawURLEncoding.EncodeToString(raw[:64]),
+			"base32":    base32.StdEncoding.EncodeToString(raw[:32]),
+			"ulid":      string(ulid[:]),
+		}
+		for kind, value := range values {
+			if VisitStrict(value, func(Candidate) bool { return true }) {
+				hits[kind]++
+			}
+		}
+	}
+	for kind, count := range hits {
+		t.Errorf("%s: %d identifier false hits", kind, count)
+	}
+}
+
+func TestCardReceiptStrictIdentifierBoundaries(t *testing.T) {
+	pan := cardtest.Issuer("4019", 16)
+	id := "97304a31-7c5d-4f4e-2560-" + "783810564780"
+	for _, text := range []string{id, "11111111-1111-4111-8111-111111111111", "req-" + id, "s1-r6da769a44d020c06aa83633d966c593c-m000000"} {
+		if VisitStrict(text, func(Candidate) bool { return true }) {
+			t.Fatalf("identifier rejected: %q", text)
+		}
+		for _, sep := range []string{" ", "\t", "\r", "\n", ":", ",", "/"} {
+			for _, content := range []string{text + sep + pan, pan + sep + text} {
+				if !VisitStrict(content, func(c Candidate) bool { return c.Digits == pan }) {
+					t.Fatalf("identifier hid separate card: %q", content)
+				}
+			}
+		}
+	}
+}
+
+func TestCardReceiptStrictPaymentTokens(t *testing.T) {
+	pan := cardtest.Issuer("4019", 16)
+	for _, prefix := range []string{"card-", "visa-", "credit-card-", "card_number_", "pan"} {
+		if !VisitStrict(prefix+cardtest.Grouped(pan, "-"), func(c Candidate) bool { return c.Digits == pan }) {
+			t.Errorf("payment token missed: %s", prefix)
+		}
+	}
+}
+
+func TestCardReceiptUUIDShape(t *testing.T) {
+	for _, tc := range []struct {
+		token string
+		want  bool
+	}{
+		{"", false},
+		{"111111111111411181111111111111111111", false},
+		{"g1111111-1111-4111-8111-111111111111", false},
+		{"ABCDEF01-2345-4678-8123-0123456789AB", true},
+		{"11111111-1111-4111-8111-111111111111", true},
+	} {
+		if got := canonicalUUID(tc.token); got != tc.want {
+			t.Errorf("UUID %q=%v want=%v", tc.token, got, tc.want)
 		}
 	}
 }

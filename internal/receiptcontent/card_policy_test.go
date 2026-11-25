@@ -104,3 +104,56 @@ func TestCardReceiptFixtureDoesNotHideEncodedCard(t *testing.T) {
 		t.Fatalf("fixture hid encoded real card: %+v %v", rep, err)
 	}
 }
+
+func TestCardReceiptTrafficDetectorFloor(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.DLP.CardBareAction = config.ActionWarn
+	sc := scanner.MustNew(cfg)
+	defer sc.Close()
+	for _, value := range []string{cardtest.Issuer("4019", 16), strings.Repeat("4242", 4)} {
+		if !sc.ScanTextForDLPQuiet(t.Context(), value).Clean {
+			t.Fatal("traffic control did not pass")
+		}
+		rep, err := scanDetail(t, sc.ScanTextForDLPQuiet, mustJSON(t, map[string]string{"note": value}))
+		wantClean := value == strings.Repeat("4242", 4)
+		if err != nil || rep.Clean() != wantClean {
+			t.Fatalf("receipt floor clean=%v want=%v err=%v", rep.Clean(), wantClean, err)
+		}
+	}
+}
+
+func TestCardReceiptIdentifierProjection(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	sc := scanner.MustNew(cfg)
+	defer sc.Close()
+	id := "97304a31-7c5d-4f4e-2560-" + "783810564780"
+	raw := mustJSON(t, map[string]string{"id": id, "target": "https://api.vendor.example:8443/" + id, "verdict": "allow"})
+	proj, err := testProducer.Project(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rep, err := Scan(t.Context(), sc.ScanTextForReceiptDLP, proj)
+	if err != nil || !rep.Clean() {
+		t.Fatalf("identity/URL projection refused: %+v %v", rep, err)
+	}
+}
+
+func TestCardReceiptURLContent(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	sc := scanner.MustNew(cfg)
+	defer sc.Close()
+	pan := cardtest.Issuer("4019", 16)
+	for _, value := range []string{
+		"https://api.vendor.example:8443/folder/" + pan,
+		"https://api.vendor.example:8443/folder/" + cardtest.Grouped(pan, "/"),
+		"https://api.vendor.example:8443/folder/?card=" + pan,
+	} {
+		rep, err := scanDetail(t, sc.ScanTextForReceiptDLP, mustJSON(t, map[string]string{"target": value}))
+		if err != nil || rep.Clean() {
+			t.Errorf("URL card passed: %s (%v)", value, err)
+		}
+	}
+}

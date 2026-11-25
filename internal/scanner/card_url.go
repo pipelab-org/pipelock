@@ -62,6 +62,7 @@ func (s *Scanner) textURLCardMatches(ctx context.Context, text string, decodes *
 			urlDecodes.reassemblyPatterns = textDLPCardPatterns
 			urlDecodes.reassemblyPatternSelected = true
 			urlDecodes.cardText = true
+			urlDecodes.receiptCards = decodes.receiptCards
 			urlDecodes.minimumDecodedBytes = carddlp.MinDigits
 			decodes.urlCardDecodes = urlDecodes
 		}

@@ -4,6 +4,7 @@
 package carddlp
 
 import (
+	"encoding/base64"
 	"regexp"
 	"strings"
 	"unicode"
@@ -17,7 +18,7 @@ import (
 // This subset excludes ambiguous standalone words such as account and credit.
 // The symmetric 100-rune window is Pipelock policy, not Purview's 300 characters.
 var (
-	paymentContext = regexp.MustCompile(`(?i)(?:^|[^a-z0-9])(?:card[ _-]*[:#]|credit[ _-]*card|debit[ _-]*card|payment[ _-]*card|bank[ _-]*card|charge[ _-]*card|card[ _-]*(?:number|num|no|#|holder)|cc[ _-]*(?:number|num|#)|ccn|pan|primary[ _-]*account[ _-]*number|payment[ _-]*account[ _-]*number|visa|master[ _-]*card|amex|american[ _-]*express|diners[ _-]*club|unionpay|discover[ _-]*card|jcb[ _-]*card|cvv2?|cvc2?|security[ _-]*code|verification[ _-]*code|exp[ _-]*(?:date|month|year)|expiration|expiry|valid[ _-]*thru|good[ _-]*thru)(?:$|[^a-z0-9])`)
+	paymentContext = regexp.MustCompile(`(?i)(?:^|[^a-z0-9])(?:credit[ _-]*card|debit[ _-]*card|payment[ _-]*card|bank[ _-]*card|charge[ _-]*card|card[ _-]*(?:number|num|no|#|holder)|cc[ _-]*(?:number|num)|ccn|pan|primary[ _-]*account[ _-]*number|payment[ _-]*account[ _-]*number|visa|master[ _-]*card|amex|american[ _-]*express|diners[ _-]*club|unionpay|discover[ _-]*card|jcb[ _-]*card|cvv2?|cvc2?|security[ _-]*code|verification[ _-]*code|exp[ _-]*(?:date|month|year)|expiration|expiry|valid[ _-]*thru|good[ _-]*thru)(?:$|[^a-z0-9])|(?:^|[^a-z0-9])(?:card[ _-]*[:#]|cc[ _-]*#)`)
 	paymentKeyName = regexp.MustCompile(`(?i)^(?:card|cc|card[ _-]*(?:no|number)|pan)$`)
 	paymentKey     = regexp.MustCompile(`(?i)"(?:card|cc|card[ _-]*(?:no|number)|pan)"\s*:\s*"?[^"{}]*$`)
 	expiryContext  = regexp.MustCompile(`\b(?:0[1-9]|1[0-2])\s*/\s*(?:[0-9]{4}|[0-9]{2})\b`)
@@ -75,7 +76,8 @@ func VisitCorroborated(text string, yield func(Candidate) bool) bool {
 
 // VisitStrict scans receipt content, including every bounded digit window in a
 // separator-joined run. Neighbour digits and public fixtures cannot hide a real
-// card. Letters remain barriers; this does not strip arbitrary receipt text.
+// card. Identifier tokens are barriers: their numeric substrings are not
+// standalone card presentations. This does not strip arbitrary receipt text.
 // Returned offsets refer to the ForCardText-normalized view.
 func VisitStrict(text string, yield func(Candidate) bool) bool {
 	text = normalize.ForCardText(text)
@@ -110,7 +112,17 @@ func VisitStrict(text string, yield func(Candidate) bool) bool {
 		offsets = offsets[:0]
 		return false
 	}
+	barriers := strictIdentifierSpans(text)
+	nextBarrier := 0
 	for i := 0; i < len(text); {
+		if nextBarrier < len(barriers) && i == barriers[nextBarrier].start {
+			if flush() {
+				return true
+			}
+			i = barriers[nextBarrier].end
+			nextBarrier++
+			continue
+		}
 		size := 1
 		switch {
 		case digit(text[i]):
@@ -140,4 +152,100 @@ func VisitStrict(text string, yield func(Candidate) bool) bool {
 // MINUS SIGN is a math symbol and is listed explicitly.
 func strictUnicodeSeparator(r rune) bool {
 	return r == '\u2212' || unicode.Is(unicode.Pd, r) || unicode.Is(unicode.Zs, r)
+}
+
+// identifierByte includes UUID/request-ID separators and both base64
+// alphabets. Padding terminates the token.
+// Punctuation outside this alphabet and whitespace terminate the token. A
+// digit-only token is still scanned, however long or oddly grouped it is.
+func identifierByte(b byte) bool {
+	return word(b) || b == '-' || b == '/' || b == '+'
+}
+
+func asciiLetter(b byte) bool { return b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' }
+
+// canonicalUUID recognizes the complete hexadecimal 8-4-4-4-12 wire shape,
+// including the rare UUID whose hex groups happen to contain only digits.
+func canonicalUUID(token string) bool {
+	if len(token) != 36 {
+		return false
+	}
+	for i := range len(token) {
+		if i == 8 || i == 13 || i == 18 || i == 23 {
+			if token[i] != '-' {
+				return false
+			}
+			continue
+		}
+		b := token[i]
+		isHex := digit(b) || b >= 'a' && b <= 'f' || b >= 'A' && b <= 'F'
+		if !isHex {
+			return false
+		}
+	}
+	return true
+}
+
+// A payment label attached to a digit presentation is positive context, not
+// an opaque identifier (for example card-4019-...). Do not exempt its digits.
+func paymentToken(token string) bool {
+	first := strings.IndexFunc(token, func(r rune) bool { return r >= '0' && r <= '9' })
+	if first <= 0 || !CorroboratedKey(strings.TrimRight(token[:first], "-_/")) {
+		return false
+	}
+	for i := first; i < len(token); i++ {
+		if asciiLetter(token[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+type identifierSpan struct{ start, end int }
+
+// Slashes separate path components and card groups. Only a canonical binary
+// digest may claim its full slash-bearing token as base64; other tokens are
+// classified component by component so folder/PAN and UUID/PAN keep scanning.
+func strictIdentifierSpans(text string) []identifierSpan {
+	var spans []identifierSpan
+	opaque := func(token string) bool {
+		letters := strings.IndexFunc(token, func(r rune) bool { return r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' }) >= 0
+		return letters && !paymentToken(token) || canonicalUUID(token)
+	}
+	for start := 0; start < len(text); {
+		if !identifierByte(text[start]) {
+			start++
+			continue
+		}
+		end := start + 1
+		for end < len(text) && identifierByte(text[end]) {
+			end++
+		}
+		token := text[start:end]
+		if !strings.Contains(token, "/") || encodedDigestToken(token) {
+			if opaque(token) {
+				spans = append(spans, identifierSpan{start, end})
+			}
+		} else {
+			offset := start
+			for _, part := range strings.Split(token, "/") {
+				if opaque(part) {
+					spans = append(spans, identifierSpan{offset, offset + len(part)})
+				}
+				offset += len(part) + 1
+			}
+		}
+		start = end
+	}
+	return spans
+}
+
+func encodedDigestToken(token string) bool {
+	// Padding ends the lexical token. Raw decoding accepts either padded
+	// digest's body or a deliberately unpadded SHA-256/SHA-512 representation.
+	if len(token) != 43 && len(token) != 86 {
+		return false
+	}
+	decoded, err := base64.RawStdEncoding.Strict().DecodeString(token)
+	return err == nil && (len(decoded) == 32 || len(decoded) == 64)
 }

@@ -111,10 +111,16 @@ func RewriteJSON(body []byte, m *Matcher, r *Redactor, lim Limits) ([]byte, *Rep
 		}
 	}
 
-	if cardEnabled && extract.VisitKeyedCardRuns(extract.AllStringsFromJSONResult(json.RawMessage(body)).Atoms, func(key string, run jsonnumber.CardRun) bool {
-		return carddlp.CorroboratedKey(key) && !carddlp.IsPublicTestPAN(run.Digits)
-	}) {
-		return nil, nil, newBlock(ReasonSecretInNumericScalar, r.Total(), "card pattern matched payment-context JSON scalar values")
+	if cardEnabled {
+		keyed := extract.AllStringsFromJSONResult(json.RawMessage(body))
+		if keyed.Truncated {
+			return nil, nil, newBlock(ReasonDepthExceeded, r.Total(), "keyed card extraction exceeds inspection depth")
+		}
+		if extract.VisitKeyedCardRuns(keyed.Atoms, func(key string, run jsonnumber.CardRun) bool {
+			return carddlp.CorroboratedKey(key) && !carddlp.IsPublicTestPAN(run.Digits)
+		}) {
+			return nil, nil, newBlock(ReasonSecretInNumericScalar, r.Total(), "card pattern matched payment-context JSON scalar values")
+		}
 	}
 
 	var root interface{}

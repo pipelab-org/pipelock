@@ -608,6 +608,17 @@ func (s *Scanner) ScanRequestBodyTextPartsWithCardAtoms(ctx context.Context, par
 		if atom.Key {
 			continue
 		}
+		// A singleton has no typed join marker. Scan its original numeric
+		// spelling so omitted fraction/exponent syntax retains strict policy.
+		if atom.Number && strings.ContainsAny(atom.Text, ".eE") {
+			for _, match := range s.ScanJSONCardRuns(ctx, atom.Text) {
+				if match.IsInformational() {
+					result.InformationalMatches = append(result.InformationalMatches, match)
+				} else {
+					result.Matches = append(result.Matches, match)
+				}
+			}
+		}
 		key := atom.ContextKey
 		// Preserve compatibility for callers supplying explicit key atoms.
 		if key == "" && i > 0 && scrubbedCards[i-1].Key {
@@ -620,7 +631,13 @@ func (s *Scanner) ScanRequestBodyTextPartsWithCardAtoms(ctx context.Context, par
 		if atom.Number {
 			source = atom.Text
 		}
-		result.Matches = append(result.Matches, s.scanCorroboratedCardView(source, key)...)
+		for _, match := range s.scanCorroboratedCardView(source, key) {
+			if match.IsInformational() {
+				result.InformationalMatches = append(result.InformationalMatches, match)
+			} else {
+				result.Matches = append(result.Matches, match)
+			}
+		}
 	}
 	if HasEnforcingMatch(result.Matches) {
 		result.Clean = false
@@ -867,8 +884,14 @@ func (s *Scanner) scanTextDLPViews(ctx context.Context, text, cardView string, o
 		original.Matches = append(original.Matches, cards.Matches...)
 		original.InformationalMatches = append(original.InformationalMatches, cards.InformationalMatches...)
 	}
-	if text != cardView || json.Valid([]byte(text)) {
-		original.Matches = append(original.Matches, s.corroboratedCardMatches(text)...)
+	if !opts.receiptCards && (text != cardView || json.Valid([]byte(text))) {
+		for _, match := range s.corroboratedCardMatches(text) {
+			if match.IsInformational() {
+				original.InformationalMatches = append(original.InformationalMatches, match)
+			} else {
+				original.Matches = append(original.Matches, match)
+			}
+		}
 		if HasEnforcingMatch(original.Matches) {
 			original.Clean = false
 		}
@@ -1106,7 +1129,7 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 	if !opts.skipURLUserinfo {
 		userinfoMatches = s.textURLUserinfoMatches(ctx, text, decodes, opts)
 	}
-	if len(s.dlpPatterns) == 0 &&
+	if !opts.receiptCards && len(s.dlpPatterns) == 0 &&
 		len(s.canaryTokens) == 0 &&
 		len(s.envSecrets) == 0 &&
 		len(s.fileSecrets) == 0 &&
@@ -1592,6 +1615,11 @@ func (s *Scanner) matchDLPPatternsLoweredWithDecodes(text, encoding, proseSource
 			}
 		}
 		if p.cardPrefixRetry && !p.cardURL {
+			if p.cardReceipt {
+				// The strict receipt floor above owns generic card admission.
+				// Ordinary enumeration would re-admit numeric identifier tails.
+				continue
+			}
 			var proof *cardLiteralProof
 			seenInfo := make(map[string]bool)
 			carddlp.VisitCorroborated(matchText, func(c carddlp.Candidate) bool {

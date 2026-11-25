@@ -629,7 +629,7 @@ func completeCardField(field string) bool {
 // AllowedBareWarning independently limits the opt-in differential to literal
 // contiguous digit fields. Encodings, URLs, grouped candidates and corroborated
 // inputs are never authorized by this oracle. Unknown syntax fails closed.
-var warningPromotion = regexp.MustCompile(`(?i)(?:\b(?:card|cc|ccn|pan|visa|mastercard|amex|unionpay|cvv2?|cvc2?|expiry|expiration)\b|\b(?:0[1-9]|1[0-2])/[0-9]{2,4}\b)`)
+var warningPromotion = regexp.MustCompile(`(?i)(?:\b(?:card(?:[ _-]*(?:number|num|no))?|cc|ccn|pan|visa|mastercard|amex|unionpay|cvv2?|cvc2?|expiry|expiration)\b|\b(?:0[1-9]|1[0-2])/[0-9]{2,4}\b)`)
 
 var warningEncodedTokens = regexp.MustCompile(`[A-Za-z0-9+/=]{20,}`)
 
@@ -660,6 +660,9 @@ func AllowedBareWarning(surface, input string) bool {
 		var err error
 		views, err = lossJSONInputs(dec)
 		if err != nil {
+			return false
+		}
+		if _, err := dec.Token(); err != io.EOF {
 			return false
 		}
 	}

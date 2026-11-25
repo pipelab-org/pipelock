@@ -154,3 +154,15 @@ func TestAllowedBareWarningRejectsMixedEncoding(t *testing.T) {
 		t.Fatal("literal candidate authorized an encoded sibling")
 	}
 }
+
+func TestAllowedBareWarningRejectsCorroboratedKeysAndTrailing(t *testing.T) {
+	pan := number("4019", 16, 0)
+	for _, key := range []string{"card_number", "card-no", "cardnumber"} {
+		if AllowedBareWarning("json-body", `{"`+key+`":"`+pan+`"}`) {
+			t.Errorf("corroborated key allowed: %s", key)
+		}
+	}
+	if AllowedBareWarning("json-body", `{"value":"`+pan+`"} `+pan[:4]+" "+pan[4:8]+" "+pan[8:12]+" "+pan[12:]) {
+		t.Fatal("trailing grouped card ignored")
+	}
+}

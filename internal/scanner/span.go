@@ -497,7 +497,11 @@ func (p *compiledPattern) firstAcceptedSpan(text string, joined func(int, int) b
 func (p *compiledPattern) firstAcceptedPositionedSpan(text string, joined func(int, int) bool, view *matchingView) (int, int, bool) {
 	if p.cardPrefixRetry {
 		var start, end int
-		found := carddlp.Visit(text, p.cardURL, func(c carddlp.Candidate) bool {
+		visit := func(yield func(carddlp.Candidate) bool) bool { return carddlp.Visit(text, p.cardURL, yield) }
+		if p.cardReceipt {
+			visit = func(yield func(carddlp.Candidate) bool) bool { return carddlp.VisitStrict(text, yield) }
+		}
+		found := visit(func(c carddlp.Candidate) bool {
 			if c.PublicExample && p.skipSpan == nil {
 				return false
 			}

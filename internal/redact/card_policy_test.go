@@ -38,3 +38,11 @@ func TestCardKeyNumericRunRefused(t *testing.T) {
 		t.Fatal("payment-context numeric run was forwarded")
 	}
 }
+
+func TestCardKeyExtractionDepthRefused(t *testing.T) {
+	pan := cardtest.Issuer("453912341234123", 16)
+	body := []byte(`{"card":` + strings.Repeat("[", 70) + pan[:4] + `,` + pan[4:8] + `,` + pan[8:12] + `,` + pan[12:] + strings.Repeat("]", 70) + `}`)
+	if _, _, err := RewriteJSON(body, NewDefaultMatcher(), NewRedactor(), Limits{MaxDepth: 128}); err == nil {
+		t.Fatal("truncated keyed extraction passed")
+	}
+}

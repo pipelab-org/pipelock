@@ -312,7 +312,7 @@ func TestCardBarePolicyWebSocketRequests(t *testing.T) {
 func barePolicyTransportCases(action string) []cardtest.JSONCase {
 	pan := cardtest.Issuer("4019", 16)
 	return []cardtest.JSONCase{
-		{Name: "bare", Body: `{"value":"` + pan + `"}`, Clean: action == config.ActionWarn},
+		{Name: "bare", Body: `{"value":"` + pan + `"}`, Warn: action == config.ActionWarn},
 		{Name: "derived number", Body: `{"value":` + pan + `e0}`},
 		{Name: "key", Body: `{"card":"` + pan + `"}`},
 		{Name: "key tab", Body: `{"card":"` + pan[:4] + `\t` + pan[4:] + `"}`},
