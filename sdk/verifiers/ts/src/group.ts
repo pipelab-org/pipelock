@@ -718,6 +718,7 @@ async function verifyGroupAt(
   afterInventory?: () => void,
   beforeInventory?: () => void,
   directoryReport = false,
+  afterClosedLocation?: () => void,
 ): Promise<ReceiptGroupResult> {
   const result: ReceiptGroupResult = {
     group_id: groupID,
@@ -789,6 +790,7 @@ async function verifyGroupAt(
     if (directoryReport) {
       result.close_manifest_sha256 = sha(closeBytes);
       verifyClosedGroupLocation();
+      afterClosedLocation?.();
     }
     for (let i = 0; i < close.shards.length; i++) {
       const claimed = close.shards[i] as GroupHead,
@@ -809,6 +811,7 @@ async function verifyGroupAt(
       open.previous_group_id &&
       !existsNoFollow(`receipt-group-${open.previous_group_id}-close.json`);
     checkDirectoryIdentity(physicalRoot, rootStart, aelStart, before, inventory);
+    if (directoryReport) verifyClosedGroupLocation();
     result.close_manifest_sha256 = sha(closeBytes);
     result.verdict = openAELTail === "own" ? "GROUP_INCOMPLETE" : "GROUP_VALID";
     if (openAELTail)
@@ -858,10 +861,18 @@ export async function verifyReceiptGroupAfterInventoryForTest(
   trustedKeys: readonly string[],
   afterInventory: () => void,
   beforeInventory?: () => void,
+  afterClosedLocation?: () => void,
 ): Promise<ReceiptGroupResult> {
   try {
     return await withPinnedEvidenceDirectory(dir, () =>
-      verifyGroupAt(groupID, trustedKeys, afterInventory, beforeInventory),
+      verifyGroupAt(
+        groupID,
+        trustedKeys,
+        afterInventory,
+        beforeInventory,
+        afterClosedLocation !== undefined,
+        afterClosedLocation,
+      ),
     );
   } catch (err) {
     return {

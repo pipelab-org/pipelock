@@ -286,6 +286,11 @@ func verifyReceiptGroupScoped(dir, groupID string, trusted []string, scope group
 		result.Error = "receipt group directory identity changed during verification"
 		return result
 	}
+	// Recorder location discovery walks beyond the group inventory's AEL paths.
+	if _, err := recorder.ResolveEvidenceLocation(dir, ""); err != nil {
+		result.setReadError(err)
+		return result
+	}
 	if errors.Is(aelErr, errGroupAELOpenTail) {
 		result.Verdict = GroupIncomplete
 		result.setReadError(aelErr)

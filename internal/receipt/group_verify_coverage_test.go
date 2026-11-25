@@ -184,3 +184,18 @@ func TestReceiptGroupInventoryRejectsOrphanGateBeforeReportingSuccess(t *testing
 		t.Fatalf("orphan gate summary=%+v err=%v", summary, err)
 	}
 }
+
+func TestClosedGroupRechecksEvidenceLocation(t *testing.T) {
+	dir, open := newCoverageGroup(t, true)
+	nested := filepath.Join(dir, "archive", "nested")
+	if err := os.MkdirAll(nested, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	index := coverageGroupIndex{check: func(_ ReceiptGroupOpen, _ bool) error {
+		return os.WriteFile(filepath.Join(nested, "evidence-example-0.jsonl"), []byte("{}\n"), 0o600)
+	}}
+	got := verifyReceiptGroupWithIndex(dir, open.GroupID, []string{open.SignerKey}, index)
+	if got.Verdict != GroupInvalid || !strings.Contains(got.Error, "multiple evidence locations") {
+		t.Fatalf("closed group inventory missed a location created during verification: %s, %s", got.Verdict, got.Error)
+	}
+}

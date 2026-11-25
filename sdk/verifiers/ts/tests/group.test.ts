@@ -1225,3 +1225,22 @@ test("directory group discovery surfaces an unreadable genesis", async (t) => {
   assert.equal(report.unavailable, true);
   assert.match(report.error ?? "", /EACCES/u);
 });
+
+test("closed group detects a second evidence location created during verification", async (t) => {
+  const source = join(fixtures, "group-valid");
+  const dir = mkdtempSync(join(tmpdir(), "ts-group-location-"));
+  t.after(() => rmSync(dir, { recursive: true }));
+  cpSync(source, dir, { recursive: true });
+  const archive = join(dir, "archive", "nested");
+  mkdirSync(archive, { recursive: true });
+  const result = await verifyReceiptGroupAfterInventoryForTest(
+    dir,
+    groupID(source),
+    keys(source),
+    () => {},
+    undefined,
+    () => writeFileSync(join(archive, "evidence-example-0.jsonl"), "{}\n"),
+  );
+  assert.equal(result.verdict, "GROUP_INVALID");
+  assert.match(result.error ?? "", /multiple evidence locations/u);
+});
