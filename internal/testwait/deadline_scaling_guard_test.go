@@ -193,6 +193,9 @@ func newDeadlineScalingGuardFixture(t *testing.T, source string) string {
 	if err := os.WriteFile(filepath.Join(root, "scripts", "check-test-deadline-scaling.sh"), script, 0o600); err != nil {
 		t.Fatalf("write deadline scaling guard: %v", err)
 	}
+	// The pass case builds scripts/deadlinescaling. The regex failures return
+	// before that build, but the analyzer has to be on disk either way.
+	copyDeadlineAnalyzer(t, root, filepath.Dir(thisFile))
 	if source != "" {
 		if err := os.WriteFile(filepath.Join(root, "internal", "fixture", "fixture_test.go"), []byte(source), 0o600); err != nil {
 			t.Fatalf("write fixture: %v", err)
@@ -210,4 +213,41 @@ func newDeadlineScalingGuardFixture(t *testing.T, source string) string {
 		t.Fatalf("track fixture files: %v\n%s", err, output)
 	}
 	return root
+}
+
+// copyDeadlineAnalyzer stages the failing-wait analyzer and a module file so
+// the copied guard can build it. The regex cases return before that build.
+func copyDeadlineAnalyzer(t *testing.T, root, testDir string) {
+	t.Helper()
+	src := filepath.Join(testDir, "..", "..", "scripts", "deadlinescaling")
+	dst := filepath.Join(root, "scripts", "deadlinescaling")
+	if err := os.Mkdir(dst, 0o750); err != nil {
+		t.Fatalf("mkdir analyzer: %v", err)
+	}
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		t.Fatalf("read analyzer sources: %v", err)
+	}
+	copied := 0
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		body, err := os.ReadFile(filepath.Join(src, name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		if err := os.WriteFile(filepath.Join(dst, name), body, 0o600); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+		copied++
+	}
+	if copied == 0 {
+		t.Fatal("deadline analyzer sources were not copied")
+	}
+	mod := "module example.com/deadline-guard\n\ngo 1.26.0\n"
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte(mod), 0o600); err != nil {
+		t.Fatalf("write fixture go.mod: %v", err)
+	}
 }
