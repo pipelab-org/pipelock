@@ -399,6 +399,11 @@ jobs:
           "$python" -m pip install --no-deps --require-hashes -r "$RUNNER_TEMP/receipt-v3-wheel.txt"
           "$python" -m pip check
 
+      - name: Check packaged receipt v3 registries
+        run: |
+          "$RUNNER_TEMP/receipt-v3-venv/bin/python" sdk/conformance/check_receipt_v3_registries.py \
+            "$RUNNER_TEMP/receipt-v3-npm/node_modules/@pipelock/verifier-ts/dist/src/v3/registry.json"
+
       - name: Test receipt v3 gate mechanics
         run: python3 -m unittest discover -s sdk/conformance -p 'test_receipt_v3_gate.py'
 
