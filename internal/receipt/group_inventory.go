@@ -293,10 +293,6 @@ func verifyGroupTransitionInventoryWithContext(dir, openHash, closeHash string, 
 	return verifyGroupTransitionInventoryLinksWithContext(dir, openHash, closeHash, trusted, true, ceremony)
 }
 
-func verifyGroupTransitionInventoryLinks(dir, openHash, closeHash string, trusted []string, verifyLink bool) error {
-	return verifyGroupTransitionInventoryLinksWithContext(dir, openHash, closeHash, trusted, verifyLink, nil)
-}
-
 func verifyGroupTransitionInventoryLinksWithContext(dir, openHash, closeHash string, trusted []string, verifyLink bool, ceremony *startupGroupVerification) error {
 	return verifyGroupTransitionInventoryLinksScoped(dir, openHash, closeHash, trusted, verifyLink, groupVerifyScope{ceremony: ceremony})
 }
