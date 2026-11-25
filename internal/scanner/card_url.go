@@ -62,6 +62,7 @@ func (s *Scanner) textURLCardMatches(ctx context.Context, text string, decodes *
 			urlDecodes.reassemblyPatterns = textDLPCardPatterns
 			urlDecodes.reassemblyPatternSelected = true
 			urlDecodes.cardText = true
+			urlDecodes.receiptCards = decodes.receiptCards
 			urlDecodes.minimumDecodedBytes = carddlp.MinDigits
 			decodes.urlCardDecodes = urlDecodes
 		}
@@ -99,6 +100,7 @@ func (s *Scanner) textURLCardMatches(ctx context.Context, text string, decodes *
 			for _, id := range s.dlpCardPatternIndices {
 				p := *s.dlpPatterns[id]
 				p.cardURL = true
+				p.cardReceipt = decodes != nil && decodes.receiptCards
 				var example textByteSpan
 				pattern := p.withPublicExamples(view, &example)
 				start, end, found := pattern.matchSpanWithDecodes(view, target.text, decodes)

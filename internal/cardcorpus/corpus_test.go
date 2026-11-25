@@ -4,6 +4,7 @@
 package cardcorpus
 
 import (
+	"encoding/base64"
 	"strings"
 	"testing"
 )
@@ -121,5 +122,62 @@ func TestAllowedLossSurfaceInputs(t *testing.T) {
 		if got := AllowedLoss(tc.surface, tc.input); got != tc.want {
 			t.Errorf("surface=%s input=%q got=%q want=%q", tc.surface, tc.input, got, tc.want)
 		}
+	}
+}
+
+func TestAllowedBareWarningBoundaries(t *testing.T) {
+	pan := number("4019", 16, 1)
+	for _, tc := range []struct {
+		input string
+		want  bool
+	}{
+		{pan, true},
+		{`{"value":"` + pan + `"}`, true},
+		{`["` + pan + `"]`, true},
+		{"visa " + pan, false},
+		{`{"card":"` + pan + `"}`, false},
+		{pan + " 12/28", false},
+		{"https://api.vendor.example/" + pan, false},
+		{pan[:8] + " " + pan[8:], false},
+		{`["` + pan[:8] + `","` + pan[8:] + `"]`, false},
+	} {
+		if got := AllowedBareWarning("text", tc.input); got != tc.want {
+			t.Fatalf("%q got=%v want=%v", tc.input, got, tc.want)
+		}
+	}
+}
+
+func TestAllowedBareWarningRejectsMixedEncoding(t *testing.T) {
+	pan := number("4019", 16, 1)
+	input := `{"value":"` + pan + `","encoded":"` + base64.StdEncoding.EncodeToString([]byte(pan)) + `"}`
+	if AllowedBareWarning("text", input) {
+		t.Fatal("literal candidate authorized an encoded sibling")
+	}
+}
+
+func TestAllowedBareWarningRejectsCorroboratedKeysAndTrailing(t *testing.T) {
+	pan := number("4019", 16, 0)
+	for _, key := range []string{"card_number", "card-no", "cardnumber", "cardholder", "card_holder"} {
+		if AllowedBareWarning("json-body", `{"`+key+`":"`+pan+`"}`) {
+			t.Errorf("corroborated key allowed: %s", key)
+		}
+	}
+	if AllowedBareWarning("json-body", `{"value":"`+pan+`"} `+pan[:4]+" "+pan[4:8]+" "+pan[8:12]+" "+pan[12:]) {
+		t.Fatal("trailing grouped card ignored")
+	}
+	if AllowedBareWarning("json-body", ` {"value":"`+pan+`"} {}`) {
+		t.Fatal("leading whitespace skipped the trailing-content check")
+	}
+	if AllowedBareWarning("json-body", `{"value":"`+pan+`","parts":["`+pan[:8]+`","`+pan[8:]+`"]}`) {
+		t.Fatal("card split across array members allowed beside a bare card")
+	}
+	if !AllowedBareWarning("json-body", `{"value":["`+pan+`"]}`) {
+		t.Fatal("single-member array card no longer eligible")
+	}
+	if !AllowedBareWarning("json-body", `{"value":["`+pan+`","note"]}`) {
+		t.Fatal("card wholly inside one array member treated as reconstructed")
+	}
+	if AllowedBareWarning("json-body", `{"value":"`+pan+` 12\/28"}`) {
+		t.Fatal("escaped expiry in a decoded JSON value ignored")
 	}
 }

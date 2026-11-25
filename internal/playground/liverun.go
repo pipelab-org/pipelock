@@ -479,7 +479,7 @@ func StartLiveRun(ctx context.Context, opts LiveRunOpts) (*LiveRun, error) {
 		Dir:                lr.evidenceDir,
 		CheckpointInterval: 1000,
 		Redact:             true,
-	}, lr.sc.ScanTextForDLP, lr.pipelockPriv)
+	}, lr.sc.ScanTextForReceiptDLP, lr.pipelockPriv)
 	if err != nil {
 		return nil, fmt.Errorf("recorder: %w", err)
 	}

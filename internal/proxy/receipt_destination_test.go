@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -93,7 +95,13 @@ func testReceiptDestinationContent(t *testing.T, preset string) {
 				Recorder: rec, Signer: signer, Principal: "local", Actor: "pipelock",
 				Sanitize: proxydecision.SanitizeFromRedactor(rec.ReceiptRedactor()),
 			})
-			p, err := New(cfg, audit.NewNop(), sc, metrics.New(),
+			auditPath := filepath.Join(dir, "audit.log")
+			logger, err := audit.New("json", "file", auditPath, true, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(logger.Close)
+			p, err := New(cfg, logger, sc, metrics.New(),
 				WithRecorder(rec), WithReceiptEmitter(v1), WithV2ReceiptEmitter(v2))
 			if err != nil {
 				t.Fatal(err)
@@ -166,7 +174,8 @@ func testReceiptDestinationContent(t *testing.T, preset string) {
 				actions = append(actions, r)
 			}
 			if len(actions) < 6 {
-				t.Fatalf("missing v1 receipts: %d", len(actions))
+				auditLog, readErr := os.ReadFile(filepath.Clean(auditPath))
+				t.Fatalf("missing v1 receipts: %d; audit error=%v log=%s", len(actions), readErr, auditLog)
 			}
 			pin := hex.EncodeToString(pub)
 			if result := receipt.VerifyChain(actions, pin); !result.Valid {

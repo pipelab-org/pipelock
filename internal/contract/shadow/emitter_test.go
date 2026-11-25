@@ -16,9 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
-
 	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/receiptcontent"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
 
@@ -396,7 +395,7 @@ func TestEmitter_ErrorSeams(t *testing.T) {
 	resetSeams := func() {
 		jsonMarshal = json.Marshal
 		receiptHash = contractreceipt.ReceiptHash
-		newUUIDV7 = uuid.NewV7
+		newGeneratedID = receiptcontent.NewGeneratedID
 	}
 	t.Cleanup(resetSeams)
 
@@ -415,9 +414,9 @@ func TestEmitter_ErrorSeams(t *testing.T) {
 	}
 	resetSeams()
 
-	newUUIDV7 = func() (uuid.UUID, error) { return uuid.Nil, boom }
-	if id, err := newEventID(); !errors.Is(err, boom) || id != "" {
-		t.Fatalf("newEventID error = id %q err %v, want boom", id, err)
+	newGeneratedID = func() receiptcontent.GeneratedID { return receiptcontent.GeneratedID{} }
+	if id, err := newEventID(); err == nil || id != "" {
+		t.Fatalf("newEventID error = id %q err %v, want generation failure", id, err)
 	}
 }
 

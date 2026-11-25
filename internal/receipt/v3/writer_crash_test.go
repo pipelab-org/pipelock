@@ -15,17 +15,19 @@ import (
 	"path/filepath"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 const (
-	crashModeKey      = "PIPELOCK_RECEIPT_CRASH_MODE"
-	crashDirKey       = "PIPELOCK_RECEIPT_CRASH_DIR"
-	crashEndpointKey  = "PIPELOCK_RECEIPT_CRASH_ENDPOINT"
-	crashProcessExit  = 71
-	crashBeforeEffect = "confirmed-intent"
-	crashBeforeRepair = "failed-intent"
-	crashBeforeName   = "unflushed-name"
-	crashControl      = "control"
+	crashModeKey            = "PIPELOCK_RECEIPT_CRASH_MODE"
+	crashDirKey             = "PIPELOCK_RECEIPT_CRASH_DIR"
+	crashEndpointKey        = "PIPELOCK_RECEIPT_CRASH_ENDPOINT"
+	crashProcessExit        = 71
+	crashBeforeEffect       = "confirmed-intent"
+	crashBeforeRepair       = "failed-intent"
+	crashBeforeOutcomeFlush = "observed-unconfirmed-outcome"
+	crashBeforeName         = "unflushed-name"
+	crashControl            = "control"
 )
 
 func TestReceiptWriterCrashChild(t *testing.T) {
@@ -39,6 +41,10 @@ func TestReceiptWriterCrashChild(t *testing.T) {
 	}
 	opts := writerTestOptions(dir)
 	opts.Heartbeat = 0
+	if mode == crashBeforeOutcomeFlush {
+		long := time.Hour
+		opts.idleFlushDelay = &long
+	}
 	storage := localWriterStorage()
 	if mode == crashBeforeName {
 		realSync := storage.syncDir
@@ -87,7 +93,7 @@ func TestReceiptWriterCrashChild(t *testing.T) {
 		}
 		os.Exit(crashProcessExit)
 	}
-	if mode != crashControl {
+	if mode != crashControl && mode != crashBeforeOutcomeFlush {
 		t.Fatalf("unexpected crash checkpoint %q", mode)
 	}
 	endpoint, err := netip.ParseAddrPort(os.Getenv(crashEndpointKey))
@@ -110,6 +116,19 @@ func TestReceiptWriterCrashChild(t *testing.T) {
 	}
 	if res.StatusCode != http.StatusNoContent {
 		t.Fatalf("unexpected crash-test response status %d", res.StatusCode)
+	}
+	if mode == crashBeforeOutcomeFlush {
+		token := &EffectToken{gate: NewEffectGate(w), actions: []Action{intent}, policy: policy}
+		if err := token.ConfirmDelivery(t.Context(), func() (bool, error) { return true, nil }); err != nil {
+			t.Fatal(err)
+		}
+		w.gate <- struct{}{}
+		queued := w.active.appended.Seq == 2 && w.active.confirmed.Seq == 1
+		w.release()
+		if !queued {
+			t.Fatal("observed outcome was not acknowledged as an unconfirmed append")
+		}
+		os.Exit(crashProcessExit)
 	}
 	outcome := intent
 	outcome.Phase, outcome.EffectRelation, outcome.OutcomeClass = phaseOutcome, relationAfter, "completed"
@@ -148,6 +167,8 @@ func TestStreamWriterCrashAndPowerLoss(t *testing.T) {
 		hits                       int64
 	}{
 		{"control", crashControl, keep, "completed", 1},
+		{"observed outcome survives", crashBeforeOutcomeFlush, keep, "completed", 1},
+		{"observed outcome lost", crashBeforeOutcomeFlush, lose, "outcome_unknown", 1},
 		{"kill between flush and effect", crashBeforeEffect, keep, "outcome_unknown", 0},
 		{"kill after failed flush, keep bytes", crashBeforeRepair, keep, "outcome_unknown", 0},
 		{"kill after failed flush, lose bytes", crashBeforeRepair, lose, "", 0},
@@ -264,6 +285,13 @@ func simulateWriterPowerLoss(t *testing.T, dir, mode string) {
 	at := bytes.IndexByte(data, '\n')
 	if at < 0 {
 		t.Fatal("no complete opening record")
+	}
+	if mode == crashBeforeOutcomeFlush {
+		next := bytes.IndexByte(data[at+1:], '\n')
+		if next < 0 {
+			t.Fatal("no complete intent record")
+		}
+		at += next + 1
 	}
 	if err := os.Truncate(files[0], int64(at+1)); err != nil {
 		t.Fatal(err)

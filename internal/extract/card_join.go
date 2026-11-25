@@ -17,10 +17,11 @@ const BodyDLPJoinSeparator = "."
 // DLPAtom keeps card spelling, number type and key provenance alongside text.
 // Integers retain their original spelling but still have Number set.
 type DLPAtom struct {
-	Text   string
-	Card   string
-	Number bool
-	Key    bool // object member name: scanned ordinarily, omitted from card joins
+	ContextKey string // owning object member; arrays retain their enclosing member
+	Text       string
+	Card       string
+	Number     bool
+	Key        bool // object member name: scanned ordinarily, omitted from card joins
 }
 
 // JSONNumberStreamViews returns the number-only views of one complete JSON
@@ -68,4 +69,39 @@ func JoinCardAtoms(atoms []DLPAtom, _ string) string {
 		}
 	}
 	return b.String()
+}
+
+// VisitKeyedCardRuns retains owning-key evidence across typed scalar runs.
+// Each group uses the existing boundary-aware card reconstruction; unrelated
+// field names and literal scalar barriers keep their existing meaning.
+func VisitKeyedCardRuns(atoms []DLPAtom, yield func(string, jsonnumber.CardRun) bool) bool {
+	var group []DLPAtom
+	key := ""
+	flush := func() bool {
+		if len(group) == 0 {
+			return false
+		}
+		for _, run := range jsonnumber.BoundaryCardRuns(JoinCardAtoms(group, "")) {
+			if yield(key, run) {
+				return true
+			}
+		}
+		group = group[:0]
+		return false
+	}
+	for _, atom := range atoms {
+		if atom.Key {
+			continue
+		}
+		if atom.ContextKey != key {
+			if flush() {
+				return true
+			}
+			key = atom.ContextKey
+		}
+		if key != "" {
+			group = append(group, atom)
+		}
+	}
+	return flush()
 }

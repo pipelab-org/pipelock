@@ -364,6 +364,9 @@ func AllowedLoss(surface, input string) string {
 type lossInput struct {
 	text        string
 	url, joined bool
+	// bounds holds the offsets in a joined view where one array member ends
+	// and the next begins.
+	bounds []int
 }
 
 func lossInputs(input string) []lossInput {
@@ -468,12 +471,16 @@ func lossJSONInputs(dec *json.Decoder) ([]lossInput, error) {
 		}
 		if v == '[' {
 			var joined strings.Builder
+			var bounds []int
 			for _, field := range out {
 				if !field.joined {
+					if joined.Len() > 0 {
+						bounds = append(bounds, joined.Len())
+					}
 					joined.WriteString(field.text)
 				}
 			}
-			out = append(out, lossInput{text: joined.String(), joined: true})
+			out = append(out, lossInput{text: joined.String(), joined: true, bounds: bounds})
 		}
 		return out, nil
 	}
@@ -624,4 +631,135 @@ func completeCardField(field string) bool {
 		sum += d
 	}
 	return sum%10 == 0
+}
+
+// AllowedBareWarning independently limits the opt-in differential to literal
+// contiguous digit fields. Encodings, URLs, grouped candidates and corroborated
+// inputs are never authorized by this oracle. Unknown syntax fails closed.
+var warningPromotion = regexp.MustCompile(`(?i)(?:\b(?:card(?:[ _-]*(?:number|num|no|holder))?|cc|ccn|pan|visa|mastercard|amex|unionpay|cvv2?|cvc2?|expiry|expiration)\b|\b(?:0[1-9]|1[0-2])/[0-9]{2,4}\b)`)
+
+var warningEncodedTokens = regexp.MustCompile(`[A-Za-z0-9+/=]{20,}`)
+
+func AllowedBareWarning(surface, input string) bool {
+	for _, token := range warningEncodedTokens.FindAllString(input, -1) {
+		decoded, err := base64.StdEncoding.DecodeString(token)
+		if err == nil && numericPresentation(string(decoded)) != "" {
+			return false
+		}
+		decoded, err = hex.DecodeString(token)
+		if err == nil && numericPresentation(string(decoded)) != "" {
+			return false
+		}
+	}
+	if warningPromotion.MatchString(input) {
+		return false
+	}
+	if surface != "text" && surface != "json-body" {
+		return false
+	}
+	if strings.Contains(input, "://") || strings.Contains(input, "%") || strings.Contains(input, `\u`) {
+		return false
+	}
+	views := []lossInput{{text: input}}
+	if trimmed := strings.TrimLeft(input, " \t\r\n"); strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") || strings.HasPrefix(trimmed, "\"") {
+		dec := json.NewDecoder(strings.NewReader(input))
+		dec.UseNumber()
+		var err error
+		views, err = lossJSONInputs(dec)
+		if err != nil {
+			return false
+		}
+		if _, err := dec.Token(); err != io.EOF {
+			return false
+		}
+	}
+	found := false
+	for _, view := range views {
+		// A card reconstructed from several array members is not a bare
+		// presentation, even when a sibling value is.
+		if view.joined && joinedCard(view.text, view.bounds) {
+			return false
+		}
+		if view.url || view.joined {
+			continue
+		}
+		// JSON escapes such as \/ can hide payment context from the raw check.
+		if warningPromotion.MatchString(view.text) {
+			return false
+		}
+		text := view.text
+		groups := lossDigits.FindAllStringIndex(text, -1)
+		for i := range groups {
+			digits := ""
+			for j := i; j < len(groups); j++ {
+				if j > i {
+					sep := text[groups[j-1][1]:groups[j][0]]
+					if strings.Trim(sep, " .-/_,\t\r\n") != "" {
+						break
+					}
+				}
+				digits += text[groups[j][0]:groups[j][1]]
+				if len(digits) > 19 {
+					break
+				}
+				if !completeCardField(digits) {
+					continue
+				}
+				if j == i {
+					found = true
+					continue
+				}
+				legacy, canonicalSep, dotted := true, true, true
+				dots := 0
+				var lengths []int
+				for k := i; k <= j; k++ {
+					lengths = append(lengths, groups[k][1]-groups[k][0])
+					if k == i {
+						continue
+					}
+					sep := text[groups[k-1][1]:groups[k][0]]
+					legacy = legacy && strings.Trim(sep, " -") == ""
+					canonicalSep = canonicalSep && len(sep) <= 2 && strings.Trim(sep, " -./_") == ""
+					dotted = dotted && strings.Trim(sep, " -.") == ""
+					dots += strings.Count(sep, ".")
+				}
+				canonical := len(lengths) == 3 && lengths[0] == 4 && lengths[1] == 6 && (lengths[2] == 4 || lengths[2] == 5)
+				if len(lengths) == 4 {
+					canonical = lengths[0] == 4 && lengths[1] == 4 && lengths[2] == 4 && lengths[3] >= 2 && lengths[3] <= 4
+				}
+				if len(lengths) == 5 {
+					canonical = lengths[0] == 4 && lengths[1] == 4 && lengths[2] == 4 && lengths[3] == 4 && lengths[4] >= 1 && lengths[4] <= 3
+				}
+				if legacy || canonicalSep && canonical || dotted && dots > 0 && (j-i != 1 || groups[j][1]-groups[i][0] != len(digits)+1) {
+					return false
+				}
+			}
+		}
+	}
+	return found
+}
+
+// joinedCard reports whether a joined array view reconstructs a complete card
+// field that spans a member boundary. A card wholly inside one member is that
+// member's own presentation and is judged there.
+func joinedCard(text string, bounds []int) bool {
+	for _, group := range lossDigits.FindAllStringIndex(text, -1) {
+		for start := group[0]; start < group[1]; start++ {
+			for end := start + 14; end <= group[1] && end-start <= 19; end++ {
+				if spansBound(start, end, bounds) && completeCardField(text[start:end]) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func spansBound(start, end int, bounds []int) bool {
+	for _, b := range bounds {
+		if start < b && b < end {
+			return true
+		}
+	}
+	return false
 }

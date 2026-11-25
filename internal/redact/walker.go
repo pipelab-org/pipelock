@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 
 	"github.com/luckyPipewrench/pipelock/internal/carddlp"
+	"github.com/luckyPipewrench/pipelock/internal/extract"
 	"github.com/luckyPipewrench/pipelock/internal/jsonnumber"
 )
 
@@ -110,6 +111,18 @@ func RewriteJSON(body []byte, m *Matcher, r *Redactor, lim Limits) ([]byte, *Rep
 		}
 	}
 
+	if cardEnabled {
+		keyed := extract.AllStringsFromJSONResult(json.RawMessage(body))
+		if keyed.Truncated {
+			return nil, nil, newBlock(ReasonDepthExceeded, r.Total(), "keyed card extraction exceeds inspection depth")
+		}
+		if extract.VisitKeyedCardRuns(keyed.Atoms, func(key string, run jsonnumber.CardRun) bool {
+			return carddlp.CorroboratedKey(key) && !carddlp.IsPublicTestPAN(run.Digits)
+		}) {
+			return nil, nil, newBlock(ReasonSecretInNumericScalar, r.Total(), "card pattern matched payment-context JSON scalar values")
+		}
+	}
+
 	var root interface{}
 	dec := json.NewDecoder(bytes.NewReader(body))
 	// UseNumber to preserve numeric fidelity on re-encode.
@@ -157,12 +170,16 @@ type walker struct {
 }
 
 func (w *walker) walk(node interface{}, depth int) (interface{}, error) {
+	return w.walkWithKey(node, depth, "")
+}
+
+func (w *walker) walkWithKey(node interface{}, depth int, key string) (interface{}, error) {
 	if depth > w.limits.MaxDepth {
 		return nil, newBlock(ReasonDepthExceeded, w.redactor.Total(), "")
 	}
 	switch v := node.(type) {
 	case string:
-		return w.rewriteScalar(v)
+		return w.rewriteScalarWithKey(v, key)
 	case map[string]interface{}:
 		out := make(map[string]interface{}, len(v))
 		for k, child := range v {
@@ -172,7 +189,7 @@ func (w *walker) walk(node interface{}, depth int) (interface{}, error) {
 			if err != nil {
 				return nil, err
 			}
-			rewritten, err := w.walk(child, depth+1)
+			rewritten, err := w.walkWithKey(child, depth+1, k)
 			if err != nil {
 				return nil, err
 			}
@@ -189,7 +206,7 @@ func (w *walker) walk(node interface{}, depth int) (interface{}, error) {
 	case []interface{}:
 		out := make([]interface{}, len(v))
 		for i, child := range v {
-			rewritten, err := w.walk(child, depth+1)
+			rewritten, err := w.walkWithKey(child, depth+1, key)
 			if err != nil {
 				return nil, err
 			}
@@ -205,7 +222,7 @@ func (w *walker) walk(node interface{}, depth int) (interface{}, error) {
 		// string placeholder would change the JSON type and almost always
 		// break the upstream API. Bodies that legitimately carry secrets
 		// as bare numbers should use string encoding instead.
-		if matches := w.matcher.scanViews(string(v), jsonnumber.IntegralView(v)); len(matches) > 0 {
+		if matches := w.matcher.scanViewsWithKey(string(v), jsonnumber.IntegralView(v), key); len(matches) > 0 {
 			return nil, newBlock(ReasonSecretInNumericScalar, w.redactor.Total(),
 				"secret pattern matched a numeric JSON scalar; encode sensitive values as strings")
 		}
@@ -220,8 +237,10 @@ func (w *walker) walk(node interface{}, depth int) (interface{}, error) {
 	}
 }
 
-func (w *walker) rewriteScalar(s string) (string, error) {
-	matches := w.matcher.Scan(s)
+func (w *walker) rewriteScalar(s string) (string, error) { return w.rewriteScalarWithKey(s, "") }
+
+func (w *walker) rewriteScalarWithKey(s, key string) (string, error) {
+	matches := w.matcher.scanViewsWithKey(s, s, key)
 	if len(matches) == 0 {
 		return s, nil
 	}

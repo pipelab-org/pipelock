@@ -78,6 +78,9 @@ const (
 	// A secret split between it and another field is still found when the
 	// two are neighbors in projection order.
 	Standalone
+	// ProvenTaskID excludes a task-prefixed ID only with this process's origin proof.
+	// Caller-chosen task IDs remain scanned identities.
+	ProvenTaskID
 )
 
 // Limits bound projection work before any expanded allocation. MaxDetailBytes
@@ -146,7 +149,7 @@ func Register(s Schema) *Producer {
 	}
 	p := &Producer{schema: &Schema{Kind: s.Kind, Outer: s.Outer, Fields: map[string]Class{}}, enums: map[string]map[string]struct{}{}}
 	for path, class := range s.Fields {
-		if class < Content || class > Standalone {
+		if class < Content || class > ProvenTaskID {
 			panic(fmt.Sprintf("receiptcontent: %s: invalid class for %q", s.Kind, path))
 		}
 		p.schema.Fields[path] = class
@@ -496,7 +499,14 @@ func (w *walker) leaf(v any, text, schemaPath, path string, class Class, classif
 			if _, ok := w.p.enums[schemaPath][text]; ok {
 				return nil, false, nil
 			}
-		case ProvenID, ProvenRequestID:
+		case ProvenID, ProvenRequestID, ProvenTaskID:
+			if class == ProvenTaskID {
+				if id, ok := strings.CutPrefix(text, TaskIDPrefix); ok && VerifyGeneratedID(id) {
+					return nil, false, nil
+				}
+				identity = true
+				break
+			}
 			if class == ProvenRequestID {
 				if digest, ok := strings.CutPrefix(text, "guard-exec:"); ok && digestorigin.Computed(digest) {
 					return nil, false, nil

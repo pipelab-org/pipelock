@@ -16,9 +16,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
-
 	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/receiptcontent"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
 
@@ -35,9 +34,9 @@ const (
 )
 
 var (
-	jsonMarshal = json.Marshal
-	receiptHash = contractreceipt.ReceiptHash
-	newUUIDV7   = uuid.NewV7
+	jsonMarshal    = json.Marshal
+	receiptHash    = contractreceipt.ReceiptHash
+	newGeneratedID = receiptcontent.NewGeneratedID
 )
 
 // evidenceStamper is this package's capability to record the v2 receipts it
@@ -390,9 +389,9 @@ func validateBatch(batch Batch) error {
 }
 
 func newEventID() (string, error) {
-	id, err := newUUIDV7()
-	if err != nil {
-		return "", fmt.Errorf("uuid v7: %w", err)
+	id := newGeneratedID().String()
+	if id == "" {
+		return "", errors.New("generate shadow event id")
 	}
-	return id.String(), nil
+	return id, nil
 }

@@ -5,6 +5,7 @@ package proxy
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -15,6 +16,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -221,6 +223,38 @@ func TestV3ReverseUpgradeRefusal(t *testing.T) {
 	}
 }
 
+type v3FrameBatchFaultFile struct {
+	*os.File
+	batchWritten atomic.Bool
+}
+
+func (f *v3FrameBatchFaultFile) Write(data []byte) (int, error) {
+	n, err := f.File.Write(data)
+	if err == nil && bytes.Count(data, []byte{'\n'}) > 1 {
+		f.batchWritten.Store(true)
+	}
+	return n, err
+}
+
+func (f *v3FrameBatchFaultFile) Sync() error {
+	if f.batchWritten.Swap(false) {
+		return errors.New("frame batch flush failed")
+	}
+	return f.File.Sync()
+}
+
+func v3FrameBatchFault() func(string, string) (v3.StreamFile, error) {
+	first := true
+	return func(dir, pattern string) (v3.StreamFile, error) {
+		file, err := os.CreateTemp(dir, pattern)
+		if err != nil || !first {
+			return file, err
+		}
+		first = false
+		return &v3FrameBatchFaultFile{File: file}, nil
+	}
+}
+
 func TestV3WebSocketCredentialEffects(t *testing.T) {
 	for _, required := range []bool{false, true} {
 		for _, tc := range []struct {
@@ -242,9 +276,9 @@ func TestV3WebSocketCredentialEffects(t *testing.T) {
 				const host = "127.0.0.1"
 				var faults func(string, string) (v3.StreamFile, error)
 				if tc.withholdFrame {
-					// Opening record, handshake send intent, client upgrade
-					// intent/outcome, handshake send outcome, frame batch.
-					faults = v3AppendFault(6, false)
+					// The frame intent and its supporting action are
+					// appended together, regardless of handshake flushes.
+					faults = v3FrameBatchFault()
 				}
 				p, writer, dir, keys := newTestV3HTTPProxy(t, TransportWS, required, faults, func(cfg *config.Config) {
 					cfg.DLP.Patterns = append(cfg.DLP.Patterns, audienceReceiptTestPattern(host))
