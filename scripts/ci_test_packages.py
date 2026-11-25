@@ -797,12 +797,12 @@ def check_budget(
     return 0
 
 
-def changed_tests(base: str, head: str, tags: str = "") -> list[dict[str, str]]:
+def changed_tests(base: str, head: str, tags: str = "", include_support: bool = False) -> list[dict[str, str]]:
     """Compare parsed declarations at Git refs, independent of the working tree."""
-    result = subprocess.run(
-        ["go", "run", str(ROOT / "scripts/ci_changed_tests.go"), "--base", base, "--head", head, "--tags", tags],
-        check=True, capture_output=True, text=True, cwd=ROOT,
-    )
+    command = ["go", "run", str(ROOT / "scripts/ci_changed_tests.go"), "--base", base, "--head", head, "--tags", tags]
+    if include_support:
+        command.append("--include-support")
+    result = subprocess.run(command, check=True, capture_output=True, text=True, cwd=ROOT)
     return json.loads(result.stdout)
 
 
@@ -1228,6 +1228,166 @@ def measure_changed_tests(
         )
 
 
+# Repeat gate for pull requests. Main's race lane runs every test once, so a
+# test that fails one run in a hundred passes a single pull-request race run
+# and then reds main. Repeating the changed tests catches it before merge.
+#
+# The repeat count comes from these two numbers. A failure rate of p survives N
+# runs with probability (1-p)**N: at 500 runs a 1-in-120 failure is caught 98%
+# of the time and a 1-in-16 failure is certain. Tests are short, so most
+# selections reach the cap well inside the time budget. A slow selection gets
+# fewer repeats, never fewer than REPEAT_MIN_RUNS, and the job prints what it
+# actually ran and the detection that buys.
+REPEAT_BUDGET_SECONDS = 6 * 60
+REPEAT_MAX_RUNS = 500
+REPEAT_MIN_RUNS = 2
+# Outer bound on the whole gate, compilation included, inside the job's ceiling.
+REPEAT_DEADLINE_SECONDS = 40 * 60
+REPEAT_PACKAGE_TIMEOUT_SECONDS = 30 * 60
+
+
+def repeat_runs(selected_seconds: float, budget: float = REPEAT_BUDGET_SECONDS,
+                most: int = REPEAT_MAX_RUNS, least: int = REPEAT_MIN_RUNS) -> int:
+    """Total runs per selected test, the calibration run included."""
+    if not math.isfinite(selected_seconds) or selected_seconds < 0:
+        raise ValueError(f"unusable calibration time: {selected_seconds}")
+    # A test faster than the clock's resolution still costs something; never
+    # divide by zero into an unbounded count.
+    affordable = int(budget // max(selected_seconds, 0.001))
+    return max(least, min(most, affordable))
+
+
+def detection(runs: int, one_in: int) -> float:
+    """Chance that `runs` runs catch a test that fails one run in `one_in`."""
+    return 1 - (1 - 1 / one_in) ** runs
+
+
+def repeat_results(path: Path, selected: dict[str, list[str]]) -> tuple[dict[tuple[str, str], int], dict[tuple[str, str], int], float]:
+    """Count passes and failures per selected top-level test in a go test -json stream.
+
+    Returns (passes, failures, summed elapsed seconds of selected passes). A
+    selected test that never reached a terminal result is a failure: a killed
+    or crashed binary must not read as a pass.
+    """
+    passes: dict[tuple[str, str], int] = {}
+    failures: dict[tuple[str, str], int] = {}
+    seconds = 0.0
+    package_failed: set[str] = set()
+    for line in path.read_text(encoding="utf-8").splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            # go test -json can interleave non-JSON build output on failure.
+            continue
+        if not isinstance(event, dict):
+            continue
+        package, name, action = event.get("Package"), event.get("Test"), event.get("Action")
+        if package not in selected:
+            continue
+        if name is None:
+            if action == "fail":
+                package_failed.add(package)
+            continue
+        if not isinstance(name, str) or name not in selected[package]:
+            continue
+        key = (package, name)
+        if action == "pass":
+            elapsed = event.get("Elapsed")
+            if isinstance(elapsed, bool) or not isinstance(elapsed, (int, float)) or not math.isfinite(elapsed) or elapsed < 0:
+                raise ValueError(f"unusable elapsed time: {event}")
+            passes[key] = passes.get(key, 0) + 1
+            seconds += elapsed
+        elif action == "skip":
+            # An environment-gated test skips every run; that is a result.
+            passes[key] = passes.get(key, 0) + 1
+        elif action == "fail":
+            failures[key] = failures.get(key, 0) + 1
+    for package in package_failed:
+        if not any(pkg == package for pkg, _ in failures):
+            # A package failure with no test failure is a crash, timeout or
+            # TestMain failure; attribute it to every selected test.
+            for name in selected[package]:
+                failures[(package, name)] = failures.get((package, name), 0) + 1
+    return passes, failures, seconds
+
+
+def repeat_changed_tests(
+    tests: list[dict[str, str]], tags: str, json_out: Path,
+    deadline_seconds: float = REPEAT_DEADLINE_SECONDS, clock=time.monotonic,
+    budget: float = REPEAT_BUDGET_SECONDS,
+) -> int:
+    for test in tests:
+        if not isinstance(test, dict) or not all(isinstance(test.get(key), str) and test[key]
+                                                for key in ("package", "file", "name")) or type(test.get("new")) is not bool:
+            raise ValueError(f"unknown changed-test classification: {test}")
+    selected = runnable_changed_tests(tests, tags) if tests else {}
+    if not selected:
+        print(f"No added or changed runnable tests (tags={tags or 'none'}); nothing to repeat")
+        return 0
+    started = clock()
+    remaining = lambda: deadline_seconds - (clock() - started)  # noqa: E731
+    json_out.parent.mkdir(parents=True, exist_ok=True)
+
+    def run(package: str, count: int, stream_path: Path) -> list[str]:
+        """Race-run one package's selection; return problems, empty when every run passed."""
+        if remaining() <= 0:
+            raise ValueError(f"repeat deadline reached before {package}")
+        command = ["go", "test", "-race", f"-count={count}", f"-timeout={REPEAT_PACKAGE_TIMEOUT_SECONDS}s", "-json"]
+        if tags:
+            command.extend(["-tags", tags])
+        command.extend(["-run=" + exact_names_regex(selected[package]), package])
+        print(f"Running: {shlex.join(command)}", flush=True)
+        with stream_path.open("w", encoding="utf-8") as stream:
+            status = run_measurement(command, stream, ROOT, remaining())
+        passes, failures, seconds = repeat_results(stream_path, {package: selected[package]})
+        calibration[package] = seconds
+        problems = []
+        for name in selected[package]:
+            key = (package, name)
+            failed = failures.get(key, 0)
+            done = passes.get(key, 0) + failed
+            if failed:
+                problems.append(f"{package} {name} failed {failed} of {count} race runs")
+            elif done < count:
+                problems.append(f"{package} {name} finished {done} of {count} race runs")
+        # A clean-looking stream from a failing process is still a failure.
+        if status and not problems:
+            problems.append(f"{package}: go test exited {status} with every selected test passing; inspect {stream_path}")
+        return problems
+
+    problems: list[str] = []
+    calibration: dict[str, float] = {}
+    for index, package in enumerate(sorted(selected)):
+        problems.extend(run(package, 1, json_out.with_suffix(f".calibrate.{index}.json")))
+    if problems:
+        return report_repeat_failures(problems)
+    total = sum(calibration.values())
+    runs = repeat_runs(total, budget)
+    print(f"Selected tests took {total:.1f}s per run; repeating {runs} runs in total "
+          f"(catches a 1-in-100 failure {detection(runs, 100):.0%} of the time, "
+          f"1-in-1000 {detection(runs, 1000):.0%})", flush=True)
+    for index, package in enumerate(sorted(selected)):
+        if runs > 1:
+            problems.extend(run(package, runs - 1, json_out.with_suffix(f".repeat.{index}.json")))
+    if problems:
+        return report_repeat_failures(problems)
+    names = sum(len(names) for names in selected.values())
+    print(f"{names} changed tests passed {runs} race runs each")
+    return 0
+
+
+def report_repeat_failures(problems: list[str]) -> int:
+    for problem in problems:
+        print(f"::error title=Changed test failed a repeated race run::{escape_annotation(problem)}. "
+              "A test that fails only some runs is flaky; it would red main's single race run. "
+              "Reproduce with go test -race -count=N -run on that test.")
+    return 1
+
+
+def escape_annotation(text: str) -> str:
+    return text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Select CI package shard")
     parser.add_argument("--shard", choices=SHARDS, help="shard to print")
@@ -1274,17 +1434,24 @@ def main() -> int:
     parser.add_argument("--changed-tests-head", default="HEAD", help="head revision for AST test selection")
     parser.add_argument("--measure-changed-tests", action="store_true", help="race-test the changed selection and check budget")
     parser.add_argument("--json-out", type=Path, default=Path("changed-tests.json"), help="changed-test race JSON output")
+    parser.add_argument("--repeat-changed-tests", action="store_true",
+                        help="race-run the changed selection, including tests reaching changed helpers, many times")
     args = parser.parse_args()
 
     try:
+        if args.measure_changed_tests and args.repeat_changed_tests:
+            parser.error("--measure-changed-tests and --repeat-changed-tests are separate jobs")
         if args.changed_tests_base:
-            tests = changed_tests(args.changed_tests_base, args.changed_tests_head, args.tags)
+            tests = changed_tests(args.changed_tests_base, args.changed_tests_head, args.tags,
+                                  include_support=args.repeat_changed_tests)
+            if args.repeat_changed_tests:
+                return repeat_changed_tests(tests, args.tags, args.json_out)
             if args.measure_changed_tests:
                 return measure_changed_tests(tests, args.tags, args.json_out, args.changed_tests_base)
             print(json.dumps(tests, indent=2))
             return 0
-        if args.measure_changed_tests:
-            parser.error("--measure-changed-tests needs --changed-tests-base")
+        if args.measure_changed_tests or args.repeat_changed_tests:
+            parser.error("--measure-changed-tests and --repeat-changed-tests need --changed-tests-base")
         if args.list_unit_shards:
             print(json.dumps(list(unit_shard_names())))
             return 0

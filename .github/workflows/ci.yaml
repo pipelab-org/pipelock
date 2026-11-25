@@ -1181,8 +1181,94 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
+  # Main's race lane runs each test once. A changed test that fails one run in
+  # a hundred passes that run and the pull request's single measurement run,
+  # then reds main later. This job race-runs the changed tests, and the tests
+  # that reach a changed test helper, many times before merge. The count and
+  # its detection odds are set and printed by scripts/ci_test_packages.py.
+  # Non-test code changes are main's race lane's to catch, as above.
+  test-changed-repeat-go126:
+    needs: [security-scan]
+    runs-on: ubuntu-latest
+    name: changed-test repeat (1.26, ${{ matrix.variant }})
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [oss, enterprise]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Detect test source changes
+        id: sources
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = push ]; then
+            echo "Main's complete race lane runs every test; nothing to repeat"
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+          else
+            case "$EVENT_NAME" in
+              pull_request|merge_group) ;;
+              *) echo "Unknown changed-test event: $EVENT_NAME" >&2; exit 1 ;;
+            esac
+            # Resolve before the no-change path; a failed diff is not an empty one.
+            base=$(git merge-base "$BASE_SHA" "$HEAD_SHA")
+            status=0
+            git diff --quiet "$base" "$HEAD_SHA" -- '*_test.go' || status=$?
+            case "$status" in
+              0) echo "No test source changes; nothing to repeat"
+                 echo 'changed=false' >> "$GITHUB_OUTPUT" ;;
+              1) echo 'changed=true' >> "$GITHUB_OUTPUT" ;;
+              *) exit "$status" ;;
+            esac
+          fi
+
+      - name: Set up Go
+        if: steps.sources.outputs.changed == 'true'
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: '1.26'
+
+      - name: Download dependencies
+        if: steps.sources.outputs.changed == 'true'
+        run: bash scripts/ci-retry.sh go mod download
+
+      - name: Repeat changed tests under the race detector
+        if: steps.sources.outputs.changed == 'true'
+        env:
+          GOTOOLCHAIN: local
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HEAD_SHA: ${{ github.sha }}
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          set -euo pipefail
+          base=$(git merge-base "$BASE_SHA" "$HEAD_SHA")
+          tags=()
+          if [ "$VARIANT" = enterprise ]; then
+            tags=(--tags enterprise)
+          fi
+          python3 scripts/ci_test_packages.py "${tags[@]}" \
+            --changed-tests-base "$base" --changed-tests-head "$HEAD_SHA" \
+            --repeat-changed-tests --json-out "repeat/changed-tests-${VARIANT}.json"
+
+      - name: Upload repeated race runs
+        if: ${{ failure() && steps.sources.outputs.changed == 'true' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: changed-test-repeat-json-${{ matrix.variant }}-go126
+          path: repeat/
+          retention-days: 7
+          if-no-files-found: ignore
+
   test-go126:
-    needs: [security-scan, changed-files, test-changed-race-go126, test-unit-go126, test-subprocess-coverage, guard-conformance, test-replay-go126]
+    needs: [security-scan, changed-files, test-changed-race-go126, test-changed-repeat-go126, test-unit-go126, test-subprocess-coverage, guard-conformance, test-replay-go126]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     name: test (1.26)
@@ -1203,6 +1289,7 @@ jobs:
             test "${{ needs.changed-files.result }}" = "success"
           fi
           test "${{ needs.test-changed-race-go126.result }}" = "success"
+          test "${{ needs.test-changed-repeat-go126.result }}" = "success"
           echo "test-unit-go126 result: ${{ needs.test-unit-go126.result }}"
           if ! test "${{ needs.test-unit-go126.result }}" = "success"; then
             if [ "$EVENT_NAME" = "push" ] || [ "${{ needs.test-unit-go126.result }}" != "skipped" ]; then

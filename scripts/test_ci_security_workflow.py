@@ -76,10 +76,16 @@ class CISecurityWorkflowTest(unittest.TestCase):
         self.build = job_block(self.workflow, "build")
 
     def test_changed_test_classifier_fails_closed(self) -> None:
-        script = step_script(job_block(self.workflow, "test-changed-race-go126"), "Detect test source changes")
+        # The repeat gate shares the measurement job's classifier contract.
+        for job in ("test-changed-race-go126", "test-changed-repeat-go126"):
+            with self.subTest(job=job):
+                self.assert_changed_test_classifier(step_script(job_block(self.workflow, job), "Detect test source changes"))
+
+    def assert_changed_test_classifier(self, script: str) -> None:
         for event, merge_status, diff_status, want, output in (
             ("pull_request", 0, 0, 0, "changed=false"),
             ("merge_group", 0, 1, 0, "changed=true"),
+            ("push", 1, 128, 0, "changed=false"),
             ("pull_request", 1, 0, 1, ""),
             ("pull_request", 0, 128, 128, ""),
             ("unknown", 0, 0, 1, ""),

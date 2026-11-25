@@ -537,7 +537,7 @@ def topology_errors(jobs: dict) -> list[str]:
             # Pull requests wait on the no-race lane; the race producers prove
             # the same tests on main and roll up into race (1.26) instead.
             expected = {
-                "security-scan", "changed-files", "test-changed-race-go126", UNIT_PRODUCER,
+                "security-scan", "changed-files", "test-changed-race-go126", "test-changed-repeat-go126", UNIT_PRODUCER,
                 "test-subprocess-coverage", "guard-conformance", replay,
             }
         else:
@@ -833,6 +833,28 @@ test "${{ needs.test-replay-go127.result }}" = "success"
         upload = next(step for step in job["steps"] if step.get("name") == "Upload changed-test race timing")
         self.assertIn(".base.json", upload["with"]["path"])
         self.assertIn(".base.selection.json", upload["with"]["path"])
+
+    def test_changed_test_repeat_gate_feeds_required_check_on_every_event(self):
+        job = self.jobs["test-changed-repeat-go126"]
+        self.assertNotIn("if", job, "non-Go PRs still need a successful check")
+        self.assertEqual(job["needs"], ["security-scan"])
+        self.assertEqual(job["strategy"]["matrix"], {"variant": ["oss", "enterprise"]})
+        self.assertIn("test-changed-repeat-go126", self.jobs["test-go126"]["needs"])
+        gate = "\n".join(step.get("run", "") for step in self.jobs["test-go126"]["steps"])
+        # Strict: no documentation or queue-reuse carve-out accepts a skip.
+        self.assertIn('test "${{ needs.test-changed-repeat-go126.result }}" = "success"', gate)
+        self.assertNotIn("test-changed-repeat-go126", DOCS_CARVEOUT_PRODUCERS)
+        run = "\n".join(step.get("run", "") for step in job["steps"])
+        self.assertIn("--repeat-changed-tests", run)
+        self.assertNotIn("--measure-changed-tests", run, "repeats must not distort shard timing")
+        self.assertIn("--changed-tests-base", run)
+        self.assertIn("git merge-base", run)
+        self.assertIn("--tags enterprise", run)
+        self.assertEqual(job["timeout-minutes"], 45)
+        setup = next(step for step in job["steps"] if step.get("name") == "Set up Go")
+        self.assertEqual(setup["with"]["go-version"], "1.26")
+        repeat = next(step for step in job["steps"] if step.get("name") == "Repeat changed tests under the race detector")
+        self.assertEqual(repeat["env"]["GOTOOLCHAIN"], "local")
 
     def test_race_lane_on_pull_requests_fails_the_contract(self):
         self.assertEqual(race_lane_errors(self.jobs), [])

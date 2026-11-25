@@ -6,6 +6,13 @@
 // Select added or changed top-level tests from two Git revisions. This uses
 // go/parser rather than diff hunks so body-only edits and multiline declarations
 // have the same meaning. Build constraints are resolved by go list in the runner.
+//
+// With --include-support, a changed declaration that is not itself a test (a
+// helper, type, variable, constant or init function in a test file) also
+// selects every test of its package that refers to it, directly or through
+// other test-file declarations. A changed TestMain selects the whole package.
+// The repeat gate uses this so an edit to a shared helper reruns the tests
+// that depend on it; the race measurement keeps its own narrower selection.
 package main
 
 import (
@@ -38,7 +45,48 @@ type test struct {
 	New    bool   `json:"new"`
 	Source string `json:"-"`
 	ident  string
+	// refs holds every identifier the test's declaration mentions; support
+	// selection matches it against changed support declarations by name.
+	refs map[string]bool
+	pkg  packageKey
 }
+
+// support is a non-test top-level declaration in a test file. name is the
+// identifier a test reaches it by: a function, type, variable or constant's
+// own name, and for a method its receiver type's name, because a test reaches
+// a method through a value of that type, and method names such as Done are
+// shared with unrelated types. A shared name selects too much, never too
+// little.
+type support struct {
+	name   string
+	source string
+	refs   map[string]bool
+}
+
+// receiverType returns the base type name of a method receiver.
+func receiverType(fn *ast.FuncDecl) string {
+	expr := fn.Recv.List[0].Type
+	for {
+		switch t := expr.(type) {
+		case *ast.StarExpr:
+			expr = t.X
+		case *ast.IndexExpr:
+			expr = t.X
+		case *ast.IndexListExpr:
+			expr = t.X
+		case *ast.ParenExpr:
+			expr = t.X
+		case *ast.Ident:
+			return t.Name
+		default:
+			return fn.Name.Name
+		}
+	}
+}
+
+// packageKey groups declarations the compiler links together: one directory's
+// test files with the same package clause (internal or external test package).
+type packageKey struct{ dir, name string }
 
 func git(args ...string) ([]byte, error) {
 	cmd := exec.Command("git", args...)
@@ -88,43 +136,141 @@ func isTest(fn *ast.FuncDecl) bool {
 	return false
 }
 
-func inventory(ref string, files []string) (map[string]test, error) {
+func identifiers(node ast.Node) map[string]bool {
+	refs := make(map[string]bool)
+	ast.Inspect(node, func(n ast.Node) bool {
+		if id, ok := n.(*ast.Ident); ok {
+			refs[id.Name] = true
+		}
+		return true
+	})
+	return refs
+}
+
+func formatted(fset *token.FileSet, node any) (string, error) {
+	var out bytes.Buffer
+	if err := format.Node(&out, fset, node); err != nil {
+		return "", err
+	}
+	return out.String(), nil
+}
+
+// supportDecls lists a file's non-test declarations keyed by package. Imports
+// are left out: an import alone changes nothing a test can observe, and an
+// import whose use changed is visible in the declaration that uses it.
+func supportDecls(fset *token.FileSet, file string, parsed *ast.File, into map[packageKey]map[string]support) error {
+	key := packageKey{path.Dir(file), parsed.Name.Name}
+	decls := into[key]
+	if decls == nil {
+		decls = make(map[string]support)
+		into[key] = decls
+	}
+	add := func(kind, key, name string, node any, refsNode ast.Node) error {
+		source, err := formatted(fset, node)
+		if err != nil {
+			return err
+		}
+		// Key by declaration, not file, so moving a helper between files is
+		// not a change. Mutually exclusive build-tagged files that declare the
+		// same helper differently are combined in a stable order.
+		id := kind + "/" + key
+		item := support{name: name, source: source, refs: identifiers(refsNode)}
+		if prior, ok := decls[id]; ok {
+			sources := []string{prior.source, source}
+			sort.Strings(sources)
+			item.source = strings.Join(sources, "\x00")
+			for ref := range prior.refs {
+				item.refs[ref] = true
+			}
+		}
+		decls[id] = item
+		return nil
+	}
+	for _, decl := range parsed.Decls {
+		switch d := decl.(type) {
+		case *ast.FuncDecl:
+			if isTest(d) && runnableName(d.Name.Name) {
+				continue
+			}
+			kind, key, name := "func", d.Name.Name, d.Name.Name
+			if d.Recv != nil && len(d.Recv.List) == 1 {
+				name = receiverType(d)
+				kind, key = "method", name+"."+d.Name.Name
+			}
+			if err := add(kind, key, name, d, d); err != nil {
+				return err
+			}
+		case *ast.GenDecl:
+			if d.Tok == token.IMPORT {
+				continue
+			}
+			for _, spec := range d.Specs {
+				switch sp := spec.(type) {
+				case *ast.TypeSpec:
+					if err := add("type", sp.Name.Name, sp.Name.Name, sp, sp); err != nil {
+						return err
+					}
+				case *ast.ValueSpec:
+					for _, name := range sp.Names {
+						if name.Name == "_" {
+							continue
+						}
+						if err := add(d.Tok.String(), name.Name, name.Name, sp, sp); err != nil {
+							return err
+						}
+					}
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// runnableName applies cmd/go's test-name rule: Test followed by a
+// non-lowercase rune.
+func runnableName(name string) bool {
+	tail := strings.TrimPrefix(name, "Test")
+	first, _ := utf8.DecodeRuneInString(tail)
+	return tail == "" || !unicode.IsLower(first)
+}
+
+func inventory(ref string, files []string) (map[string]test, map[packageKey]map[string]support, error) {
 	tests := make(map[string]test)
+	supports := make(map[packageKey]map[string]support)
 	for _, file := range files {
 		source, err := git("show", ref+":"+file)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		// A file this variant doesn't build declares nothing for it, at the base
 		// as at the head, so a name only another platform declared stays new.
 		if ok, err := builds(file, source); err != nil {
-			return nil, fmt.Errorf("build constraints %s:%s: %w", ref, file, err)
+			return nil, nil, fmt.Errorf("build constraints %s:%s: %w", ref, file, err)
 		} else if !ok {
 			continue
 		}
 		fset := token.NewFileSet()
 		parsed, err := parser.ParseFile(fset, file, source, 0)
 		if err != nil {
-			return nil, fmt.Errorf("parse %s:%s: %w", ref, file, err)
+			return nil, nil, fmt.Errorf("parse %s:%s: %w", ref, file, err)
+		}
+		if err := supportDecls(fset, file, parsed, supports); err != nil {
+			return nil, nil, err
 		}
 		for _, decl := range parsed.Decls {
 			fn, ok := decl.(*ast.FuncDecl)
-			if !ok || !isTest(fn) {
+			if !ok || !isTest(fn) || !runnableName(fn.Name.Name) {
 				continue
 			}
-			tail := strings.TrimPrefix(fn.Name.Name, "Test")
-			first, _ := utf8.DecodeRuneInString(tail)
-			// cmd/go's test-name rule: Test followed by a non-lowercase rune.
-			if tail != "" && unicode.IsLower(first) {
-				continue
-			}
-			var formatted bytes.Buffer
-			if err := format.Node(&formatted, fset, fn); err != nil {
-				return nil, err
+			source, err := formatted(fset, fn)
+			if err != nil {
+				return nil, nil, err
 			}
 			item := test{
-				File: file, Package: "./" + path.Dir(file), Name: fn.Name.Name, Source: formatted.String(),
+				File: file, Package: "./" + path.Dir(file), Name: fn.Name.Name, Source: source,
 				ident: path.Dir(file) + "/" + parsed.Name.Name + "/" + fn.Name.Name,
+				refs:  identifiers(fn),
+				pkg:   packageKey{path.Dir(file), parsed.Name.Name},
 			}
 			// Include the file: mutually exclusive build-tagged files may declare
 			// the same test name with different bodies.
@@ -132,7 +278,56 @@ func inventory(ref string, files []string) (map[string]test, error) {
 			tests[key] = item
 		}
 	}
-	return tests, nil
+	return tests, supports, nil
+}
+
+// affectedNames returns the support names a test can reach through a changed
+// declaration, and whether a package-wide hook (TestMain or init) changed.
+//
+// Only a declaration present at both revisions with different source counts
+// as changed. An unchanged test cannot name a declaration that did not exist
+// at the base, or it would not have compiled there, and a test that names a
+// deleted one must itself have changed and is selected on its own. A package
+// hook is the exception: adding, changing or removing one changes every test
+// in the package.
+func affectedNames(base, head map[string]support) (map[string]bool, bool) {
+	affected := make(map[string]bool)
+	whole := false
+	hook := func(id string) bool { return id == "func/TestMain" || id == "func/init" }
+	for id, item := range head {
+		old, ok := base[id]
+		if hook(id) && (!ok || old.source != item.source) {
+			whole = true
+		}
+		if ok && old.source != item.source {
+			affected[item.name] = true
+		}
+	}
+	for id := range base {
+		if _, ok := head[id]; !ok && hook(id) {
+			whole = true
+		}
+	}
+	// Propagate through helpers that call changed helpers until nothing new
+	// is reached. Each pass adds at least one name or stops.
+	for {
+		grew := false
+		for _, item := range head {
+			if affected[item.name] {
+				continue
+			}
+			for name := range affected {
+				if item.refs[name] {
+					affected[item.name] = true
+					grew = true
+					break
+				}
+			}
+		}
+		if !grew {
+			return affected, whole
+		}
+	}
 }
 
 // cmd/go ignores dot/underscore directories and testdata during ./... walks.
@@ -148,7 +343,7 @@ func testSource(file string) bool {
 	return true
 }
 
-func selectTests(base, head string) ([]test, error) {
+func selectTests(base, head string, includeSupport bool) ([]test, error) {
 	// Parse every test file in directories touched by a test-source change. This
 	// keeps moves/deletions correct without parsing the entire repository twice.
 	diff, err := git("diff", "--name-only", "--no-renames", "-z", base, head, "--", "*_test.go")
@@ -162,6 +357,7 @@ func selectTests(base, head string) ([]test, error) {
 		}
 	}
 	inventories := make([]map[string]test, 0, 2)
+	supportInventories := make([]map[packageKey]map[string]support, 0, 2)
 	for _, ref := range []string{base, head} {
 		files := []string{}
 		if len(dirs) > 0 {
@@ -175,20 +371,54 @@ func selectTests(base, head string) ([]test, error) {
 				}
 			}
 		}
-		tests, err := inventory(ref, files)
+		tests, supports, err := inventory(ref, files)
 		if err != nil {
 			return nil, err
 		}
 		inventories = append(inventories, tests)
+		supportInventories = append(supportInventories, supports)
 	}
 	declared := make(map[string]bool, len(inventories[0]))
 	for _, item := range inventories[0] {
 		declared[item.ident] = true
 	}
+	type packageImpact struct {
+		names map[string]bool
+		whole bool
+	}
+	impacts := make(map[packageKey]packageImpact)
+	if includeSupport {
+		keys := make(map[packageKey]bool)
+		for key := range supportInventories[0] {
+			keys[key] = true
+		}
+		for key := range supportInventories[1] {
+			keys[key] = true
+		}
+		for key := range keys {
+			names, whole := affectedNames(supportInventories[0][key], supportInventories[1][key])
+			impacts[key] = packageImpact{names: names, whole: whole}
+		}
+	}
+	reaches := func(item test) bool {
+		impact, ok := impacts[item.pkg]
+		if !ok {
+			return false
+		}
+		if impact.whole {
+			return true
+		}
+		for name := range impact.names {
+			if item.refs[name] {
+				return true
+			}
+		}
+		return false
+	}
 	changed := []test{}
 	for key, item := range inventories[1] {
 		old, exists := inventories[0][key]
-		if !exists || old.Source != item.Source {
+		if !exists || old.Source != item.Source || includeSupport && reaches(item) {
 			item.New = !declared[item.ident]
 			changed = append(changed, item)
 		}
@@ -206,6 +436,7 @@ func main() {
 	base := flag.String("base", "", "base Git revision (normally the merge base)")
 	head := flag.String("head", "HEAD", "head Git revision")
 	tags := flag.String("tags", "", "comma-separated build tags of the measured variant")
+	includeSupport := flag.Bool("include-support", false, "also select tests that reach a changed non-test declaration")
 	flag.Parse()
 	buildCtx.BuildTags = []string{"race"}
 	for _, tag := range strings.Split(*tags, ",") {
@@ -217,7 +448,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "--base is required")
 		os.Exit(2)
 	}
-	tests, err := selectTests(*base, *head)
+	tests, err := selectTests(*base, *head, *includeSupport)
 	if err == nil {
 		err = json.NewEncoder(os.Stdout).Encode(tests)
 	}
