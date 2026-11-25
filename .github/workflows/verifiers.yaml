@@ -567,13 +567,12 @@ jobs:
         run: |
           set -euo pipefail
           if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
-            parents="$(git rev-list --parents -n 1 HEAD)"
-            set -- $parents
-            if [ "$#" -lt 3 ]; then
+            read -r -a parents <<< "$(git rev-list --parents -n 1 HEAD)"
+            if [ "${#parents[@]}" -lt 3 ]; then
               echo "pull request checkout is not a merge commit" >&2
               exit 1
             fi
-            base="$2"
+            base="${parents[1]}"
           else
             if ! [[ "${DRIFT_BEFORE:-}" =~ ^[0-9a-f]{40}$ ]]; then
               echo "push base is not a commit id" >&2
