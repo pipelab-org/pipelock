@@ -127,7 +127,7 @@ func TestCheckDoctorMCPIdentities(t *testing.T) {
 
 func TestBuildDoctorReport_IncludesMCPIdentitiesCheck(t *testing.T) {
 	t.Parallel()
-	report := buildDoctorReport(t.Context(), doctorIdentityConfig(), "test")
+	report := buildDoctorReport(doctorIdentityConfig(), "test")
 	var found *doctorReportCheck
 	for i := range report.Checks {
 		if report.Checks[i].Name == doctorCheckMCPIdentities {

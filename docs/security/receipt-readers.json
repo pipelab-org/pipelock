@@ -91,9 +91,9 @@
   },
   {
     "package": "internal/cli/diag",
-    "role": "v3-verifier",
-    "reason": "Doctor verifies v3 flight-recorder evidence and logs refuse receipt-profile input.",
-    "test": "TestDoctorFlightRecorderVerifiesV3"
+    "role": "refuses-v3",
+    "reason": "Doctor checks v3 configuration and refers evidence verification to verify-receipt. Logs refuse receipt-profile input.",
+    "test": "TestDoctorFlightRecorderDelegatesV3Verification"
   },
   {
     "package": "internal/cli/evidence",

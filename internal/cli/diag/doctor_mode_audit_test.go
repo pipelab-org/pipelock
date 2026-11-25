@@ -26,7 +26,7 @@ func TestDoctorModeAuditEnforcedNotice(t *testing.T) {
 			cfg.Internal = nil
 			cfg.Mode = config.ModeAudit
 			cfg.Enforce = tc.enforce
-			report := buildDoctorReport(t.Context(), cfg, "test.yaml")
+			report := buildDoctorReport(cfg, "test.yaml")
 			found := false
 			for _, check := range report.Checks {
 				if check.Name != "mode_audit_enforced" {
@@ -48,7 +48,7 @@ func TestDoctorModeAuditEnforcedProfileNotice(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.Agents = map[string]config.AgentProfile{"review-agent": {Mode: config.ModeAudit}}
-	report := buildDoctorReport(t.Context(), cfg, "test.yaml")
+	report := buildDoctorReport(cfg, "test.yaml")
 	for _, check := range report.Checks {
 		if check.Name == "agents.review-agent.mode_audit_enforced" {
 			if check.Status != doctorStatusInfo {

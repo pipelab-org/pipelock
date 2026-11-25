@@ -53,7 +53,7 @@ func TestDoctorMCPCompatibilityWarnings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	report := buildDoctorReport(t.Context(), cfg, "test")
+	report := buildDoctorReport(cfg, "test")
 	for _, warning := range cfg.MCPCompatibilityWarnings() {
 		found := false
 		for _, check := range report.Checks {

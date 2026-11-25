@@ -78,7 +78,7 @@ func TestBuildDoctorReportFlagsMissingMCPManifest(t *testing.T) {
 	cfg.MCPBinaryIntegrity.Enabled = true
 	cfg.MCPBinaryIntegrity.ManifestPath = filepath.Join(t.TempDir(), "missing.json")
 
-	report := buildDoctorReport(t.Context(), cfg, configLabelDefaults)
+	report := buildDoctorReport(cfg, configLabelDefaults)
 	if !doctorReportHasCheck(report, "mcp_binary_integrity", doctorStatusFail) {
 		t.Fatalf("expected mcp_binary_integrity failure: %+v", report.Checks)
 	}
@@ -94,7 +94,7 @@ func TestBuildDoctorReportAcceptsReadableMCPManifestButStillWarns(t *testing.T) 
 	cfg.MCPBinaryIntegrity.Enabled = true
 	cfg.MCPBinaryIntegrity.ManifestPath = manifestPath
 
-	report := buildDoctorReport(t.Context(), cfg, configLabelDefaults)
+	report := buildDoctorReport(cfg, configLabelDefaults)
 	var got doctorReportCheck
 	for _, check := range report.Checks {
 		if check.Name == "mcp_binary_integrity" {
@@ -115,7 +115,7 @@ func TestBuildDoctorReportRejectsDirectoryMCPManifest(t *testing.T) {
 	cfg.MCPBinaryIntegrity.Enabled = true
 	cfg.MCPBinaryIntegrity.ManifestPath = t.TempDir()
 
-	report := buildDoctorReport(t.Context(), cfg, configLabelDefaults)
+	report := buildDoctorReport(cfg, configLabelDefaults)
 	if !doctorReportHasCheck(report, "mcp_binary_integrity", doctorStatusFail) {
 		t.Fatalf("expected directory mcp_binary_integrity failure: %+v", report.Checks)
 	}
@@ -134,7 +134,7 @@ func TestBuildDoctorReportRejectsStatOnlyMCPManifest(t *testing.T) {
 	cfg.MCPBinaryIntegrity.Enabled = true
 	cfg.MCPBinaryIntegrity.ManifestPath = manifestPath
 
-	report := buildDoctorReport(t.Context(), cfg, configLabelDefaults)
+	report := buildDoctorReport(cfg, configLabelDefaults)
 	if !doctorReportHasCheck(report, "mcp_binary_integrity", doctorStatusFail) {
 		t.Fatalf("expected unreadable mcp_binary_integrity failure: %+v", report.Checks)
 	}
@@ -274,7 +274,7 @@ func TestCheckDoctorFlightRecorderWarnsForUnverifiedMissingDir(t *testing.T) {
 	cfg.FlightRecorder.Enabled = true
 	cfg.FlightRecorder.Dir = filepath.Join(t.TempDir(), "runtime-created")
 
-	check := checkDoctorFlightRecorder(t.Context(), cfg)
+	check := checkDoctorFlightRecorder(cfg)
 	if check.Status != doctorStatusWarn {
 		t.Fatalf("status = %q, want warn; check=%+v", check.Status, check)
 	}
@@ -337,7 +337,7 @@ func TestCheckDoctorFlightRecorderWarnsBeforeEvidenceFileCap(t *testing.T) {
 			cfg.FlightRecorder.Enabled = true
 			cfg.FlightRecorder.Dir = dir
 
-			check := checkDoctorFlightRecorder(t.Context(), cfg)
+			check := checkDoctorFlightRecorder(cfg)
 			if check.Status != tt.wantStatus {
 				t.Fatalf("status = %q, want %q; check=%+v", check.Status, tt.wantStatus, check)
 			}
@@ -380,7 +380,7 @@ func TestBuildDoctorReportWarnsWhenGlobalEnforceDisabled(t *testing.T) {
 	cfg.TLSInterception.CAKeyPath = caKey
 	cfg.BrowserShield.Enabled = true
 
-	report := buildDoctorReport(t.Context(), cfg, configLabelDefaults)
+	report := buildDoctorReport(cfg, configLabelDefaults)
 	for _, name := range []string{"http_proxy", "request_body_scanning", "tls_interception", "browser_shield"} {
 		if !doctorReportHasCheck(report, name, doctorStatusWarn) {
 			t.Errorf("expected %s warning when enforce=false: %+v", name, doctorCheckFor(report, name))
@@ -413,7 +413,7 @@ func TestBuildDoctorReportShowsLicenseExpiryWarning(t *testing.T) {
 	cfg.LicenseKey = token
 	cfg.LicensePublicKey = hex.EncodeToString(pub)
 
-	report := buildDoctorReport(t.Context(), cfg, configLabelDefaults)
+	report := buildDoctorReport(cfg, configLabelDefaults)
 	check := doctorCheckFor(report, "license_status")
 	if check.Status != doctorStatusWarn {
 		t.Fatalf("license status = %+v, want warning", check)

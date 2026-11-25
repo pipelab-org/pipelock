@@ -11,7 +11,7 @@ import (
 )
 
 func TestDoctorMCPFindingKinds(t *testing.T) {
-	report := buildDoctorReport(t.Context(), config.Defaults(), "test")
+	report := buildDoctorReport(config.Defaults(), "test")
 	var detail string
 	for _, check := range report.Checks {
 		if check.Name == "taint.mcp_finding_kinds" {

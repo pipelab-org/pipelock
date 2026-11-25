@@ -76,7 +76,7 @@ func TestDoctorTLSInterceptionCoverageAdvisory(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.ForwardProxy.Enabled = true
 
-	report := buildDoctorReport(t.Context(), cfg, configLabelDefaults)
+	report := buildDoctorReport(cfg, configLabelDefaults)
 	check := doctorCheckFor(report, "tls_interception_coverage")
 	if check.Status != doctorStatusWarn {
 		t.Fatalf("doctor tls_interception_coverage status = %q, want %q; check=%+v", check.Status, doctorStatusWarn, check)
@@ -88,7 +88,7 @@ func TestDoctorTLSInterceptionCoverageAdvisory(t *testing.T) {
 	}
 
 	cfg.TLSInterception.Enabled = true
-	report = buildDoctorReport(t.Context(), cfg, configLabelDefaults)
+	report = buildDoctorReport(cfg, configLabelDefaults)
 	check = doctorCheckFor(report, "tls_interception_coverage")
 	if check.Status != doctorStatusOK {
 		t.Fatalf("doctor tls_interception_coverage status with interception = %q, want %q; check=%+v", check.Status, doctorStatusOK, check)

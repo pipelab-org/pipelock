@@ -19,7 +19,7 @@ func TestDoctorResponseHostCapExpiry(t *testing.T) {
 		Added: now.Add(-2 * time.Hour).Format(time.RFC3339Nano), Expires: now.Add(-time.Hour).Format(time.RFC3339Nano),
 	}}
 	before := c.CanonicalPolicyHash()
-	report := buildDoctorReport(t.Context(), c, "/config/pipelock.yaml")
+	report := buildDoctorReport(c, "/config/pipelock.yaml")
 	found := false
 	for _, check := range report.Checks {
 		if strings.Contains(check.Name, "size_exempt_scan_limits") {

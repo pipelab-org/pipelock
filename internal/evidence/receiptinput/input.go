@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 
 	"github.com/luckyPipewrench/pipelock/internal/evidencename"
 	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
@@ -95,8 +96,9 @@ func RefuseLocation(dir, command, reader string) error {
 }
 
 // RefuseTree rejects a directory when it or any non-symlink descendant
-// directory holds v3 evidence.
-func RefuseTree(dir, command, reader string) error {
+// directory holds v3 evidence. A reader can supply additional filenames it
+// treats as evidence even when the standard directory probe does not.
+func RefuseTree(dir, command, reader string, extraCandidates ...func(string) bool) error {
 	claimed, directory, err := inspect(dir)
 	if err != nil {
 		return err
@@ -115,7 +117,15 @@ func RefuseTree(dir, command, reader string) error {
 		if walkErr != nil {
 			return walkErr
 		}
-		if !entry.IsDir() || path == root {
+		if !entry.IsDir() {
+			name := entry.Name()
+			if entry.Type().IsRegular() && !evidencename.IsLegacyReceiptCandidate(name) &&
+				slices.ContainsFunc(extraCandidates, func(matches func(string) bool) bool { return matches(name) }) {
+				return Refuse(path, command, reader)
+			}
+			return nil
+		}
+		if path == root {
 			return nil
 		}
 		claimed, checkErr := v3.ClaimsInput(path, true)

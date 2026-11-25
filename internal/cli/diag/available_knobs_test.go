@@ -216,7 +216,7 @@ func TestAvailableUnconfiguredKnobsKeepsRedirectProfilesWhenPolicyDisabled(t *te
 func TestDoctorReportsAvailableUnconfiguredKnobsAsInfo(t *testing.T) {
 	t.Parallel()
 
-	report := buildDoctorReport(t.Context(), config.Defaults(), configLabelDefaults)
+	report := buildDoctorReport(config.Defaults(), configLabelDefaults)
 	check := doctorCheckFor(report, doctorCheckAvailableKnobs)
 	if check.Status != doctorStatusInfo {
 		t.Fatalf("available knob check = %+v, want info", check)

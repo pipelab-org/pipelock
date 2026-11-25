@@ -549,7 +549,7 @@ func TestDoctorCmd_FlightRecorderInert(t *testing.T) {
 	cfg.FlightRecorder.Enabled = true
 	cfg.FlightRecorder.Dir = ""
 
-	report := buildDoctorReport(t.Context(), cfg, "test")
+	report := buildDoctorReport(cfg, "test")
 	var found bool
 	for _, check := range report.Checks {
 		if check.Name == "flight_recorder" && check.Status == doctorStatusWarn {
@@ -595,7 +595,7 @@ func TestCheckDoctorFlightRecorder_AllBranches(t *testing.T) {
 			cfg := config.Defaults()
 			cfg.FlightRecorder.Enabled = tc.enabled
 			cfg.FlightRecorder.Dir = tc.dir
-			got := checkDoctorFlightRecorder(t.Context(), cfg)
+			got := checkDoctorFlightRecorder(cfg)
 			if got.Name != "flight_recorder" {
 				t.Errorf("Name = %q, want flight_recorder", got.Name)
 			}
