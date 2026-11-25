@@ -82,6 +82,7 @@ func (v *verification) checkPin(parent, child *verifiedStream) error {
 		return nil
 	}
 	parent.limit = pin.Seq
+	parent.confirmedWriteError = true
 	if parent.last.Seq > pin.Seq {
 		if err := v.store.walk(v.ctx, pin.Stream, parent.last.Seq, func(record stagedRecord) error {
 			if record.Seq > pin.Seq {
@@ -120,7 +121,7 @@ func (s *verifiedStream) setSummary() {
 		case pin.Ended == "unsealed" && s.last.id == pin.Record && s.last.Seq == pin.Seq &&
 			s.last.Kind != kindStreamClose && s.body.Lineage == child.body.Lineage:
 			s.summary.End = "superseded_unsealed"
-		case pin.Ended == "write_error" && s.limit == pin.Seq:
+		case pin.Ended == "write_error" && s.confirmedWriteError:
 			s.summary.End = "superseded_write_error"
 			s.summary.Tip = &Position{pin.Record, pin.Seq}
 			s.summary.Records = pin.Seq + 1

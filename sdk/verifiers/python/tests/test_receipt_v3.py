@@ -62,6 +62,11 @@ def test_v3_corpus(request_path, tmp_path):
         second = verify_v3(inputs[::-1], options)[0] if len(inputs) > 1 else first
     assert canonical_v3(projection) == expected
     assert canonical_v3(first) == canonical_v3(second)
+    if request_path.parent.name == "g04-absent-max-write-error-pin":
+        parent = first["histories"][0]["streams"][0]
+        assert parent["end"] == "closed"
+        assert parent["tip"] == parent["last"]
+        assert "unconfirmed_from" not in parent
 
 
 def test_installed_registry_matches_spec():

@@ -29,6 +29,7 @@ export interface VerifiedStream {
   last?: Staged;
   body?: OpenBody;
   limit: number;
+  confirmedWriteError?: boolean;
   contenders: Staged[];
   successors: VerifiedStream[];
   missing?: boolean;
@@ -84,6 +85,7 @@ function checkPin(v: Verification, parent: VerifiedStream, child: VerifiedStream
     if ((parent.last?.seq ?? 0) > pin.seq) v.add("TAIL_AFTER_SUCCESSION", child.open!);
   } else if (parent.successors.length === 1 && sameLineage && !parent.contenders.length) {
     parent.limit = pin.seq;
+    parent.confirmedWriteError = true;
     for (const item of v.store.walk(pin.stream, parent.last?.seq ?? 0)) {
       if (item.seq > pin.seq) v.add("UNCONFIRMED", item);
     }
@@ -109,7 +111,7 @@ function setSummary(stream: VerifiedStream): void {
       body?.lineage === child.body!.lineage
     )
       summary.end = "superseded_unsealed";
-    else if (pin.ended === "write_error" && stream.limit === pin.seq) {
+    else if (pin.ended === "write_error" && stream.confirmedWriteError) {
       summary.end = "superseded_write_error";
       summary.tip = { record: pin.record, seq: pin.seq };
       summary.records = pin.seq + 1;

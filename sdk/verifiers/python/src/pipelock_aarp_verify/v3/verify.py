@@ -191,6 +191,7 @@ class _Stream:
     body: Document = field(default_factory=dict)
     last: Record | None = None
     limit: int = MAX_INTEGER
+    confirmed_write_error: bool = False
     fork: list[Record] = field(default_factory=list)
     children: list[_Stream] = field(default_factory=list)
     missing: bool = False
@@ -224,7 +225,7 @@ class _Stream:
                 and self.body.get("lineage") == child.body["lineage"]
             ):
                 row["end"] = "superseded_unsealed"
-            elif pin["ended"] == "write_error" and self.limit == pin["seq"]:
+            elif pin["ended"] == "write_error" and self.confirmed_write_error:
                 row.update(
                     end="superseded_write_error",
                     tip={"record": pin["record"], "seq": pin["seq"]},
@@ -549,6 +550,7 @@ class Verification:
                 self.add("TAIL_AFTER_SUCCESSION", record=child.opening)
         elif len(parent.children) == 1 and same_lineage and not parent.fork:
             parent.limit = pin["seq"]
+            parent.confirmed_write_error = True
             if parent.last and parent.last.seq > parent.limit:
                 for record in self.walk(pin["stream"], parent.last.seq):
                     if record.seq > parent.limit:

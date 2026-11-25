@@ -32,16 +32,17 @@ type verification struct {
 }
 
 type verifiedStream struct {
-	open       stagedRecord
-	body       StreamOpen
-	last       stagedRecord
-	limit      int64
-	contenders []stagedRecord
-	successors []*verifiedStream
-	missing    bool
-	segment    int
-	broken     bool
-	summary    StreamResult
+	open                stagedRecord
+	body                StreamOpen
+	last                stagedRecord
+	limit               int64
+	confirmedWriteError bool
+	contenders          []stagedRecord
+	successors          []*verifiedStream
+	missing             bool
+	segment             int
+	broken              bool
+	summary             StreamResult
 }
 
 type tornFile struct {

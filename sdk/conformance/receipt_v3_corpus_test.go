@@ -301,6 +301,12 @@ func v3RunRecipe(t *testing.T, recipe v3Recipe) {
 			t.Fatalf("unexpected invalid finding %s for target %s", f.Code, recipe.code)
 		}
 	}
+	if recipe.name == "absent-max-write-error-pin" {
+		parent := result.Histories[0].Streams[0]
+		if parent.End != "closed" || parent.Tip == nil || parent.Tip.Seq != 1 || parent.UnconfirmedFrom != nil {
+			t.Fatal("an absent write-error pin changed the verified parent endpoint")
+		}
+	}
 	full, err := result.JSON()
 	if err != nil {
 		t.Fatal(err)

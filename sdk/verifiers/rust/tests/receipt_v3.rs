@@ -74,6 +74,13 @@ fn shared_v3_corpus() {
         }
 
         let full = result.json();
+        if name == "g04-absent-max-write-error-pin" {
+            let document: Value = serde_json::from_slice(full).unwrap();
+            let parent = &document["histories"][0]["streams"][0];
+            assert_eq!(parent["end"], "closed");
+            assert_eq!(parent["tip"], parent["last"]);
+            assert!(parent.get("unconfirmed_from").is_none());
+        }
         let expected = read("expect.json");
         identical += usize::from(full == expected.strip_suffix(b"\n").unwrap_or(&expected));
         if paths.len() > 1 {
@@ -87,7 +94,7 @@ fn shared_v3_corpus() {
          {reordered} reversed file orders, {identical} full documents identical"
     );
     assert!(failures.is_empty(), "{}", failures.join("\n"));
-    assert_eq!((projected, legacy), (381, 5));
+    assert_eq!((projected, legacy), (382, 5));
 }
 
 struct TestDirectory(PathBuf);

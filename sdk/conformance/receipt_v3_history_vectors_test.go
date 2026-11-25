@@ -77,6 +77,11 @@ func v3HistoryRecipes(t *testing.T) []v3Recipe {
 		{group: 4, name: "wrong-write-error-pin", verdict: "INVALID", code: "PIN_MISMATCH", files: []v3File{
 			rootFile, edited("write_error", 0, func(body v3Common) { body["previous"].(v3Common)["record"] = v3.Digest(nil) }),
 		}},
+		{group: 4, name: "absent-max-write-error-pin", verdict: "INVALID", code: "PREDECESSOR_TRUNCATED", files: []v3File{
+			rootFile, edited("write_error", 0, func(body v3Common) {
+				body["previous"].(v3Common)["seq"] = int64(1<<53 - 1)
+			}),
+		}},
 		{group: 4, name: "tail-after-pin", verdict: "INVALID", code: "TAIL_AFTER_SUCCESSION", files: []v3File{rootFile, edited("unsealed", 0, nil)}},
 		{group: 4, name: "disconnected", verdict: "INCOMPLETE", code: "HISTORY_DISCONNECTED", files: []v3File{secondFile, thirdFile}},
 		{group: 4, name: "unconfirmed-tail", verdict: "VALID PREFIX, END UNPROVEN", code: "UNCONFIRMED", files: []v3File{rootFile, edited("write_error", 0, nil)}},

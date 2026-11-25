@@ -924,6 +924,12 @@ with zipfile.ZipFile(sys.argv[1], "w", zipfile.ZIP_DEFLATED) as archive:
         assert.equal(await verifyV3(entries, request, "projection"), expected);
         projections++;
         const full = await verifyV3(entries, request, "result");
+        if (name === "g04-absent-max-write-error-pin") {
+          const parent = JSON.parse(full).histories[0].streams[0];
+          assert.equal(parent.end, "closed");
+          assert.deepEqual(parent.tip, parent.last);
+          assert.equal(parent.unconfirmed_from, undefined);
+        }
         const go = readFileSync(path.join(base, "expect.json"), "utf8");
         if (full === go) equal++;
         if (!request.directory && entries.length >= 2) {

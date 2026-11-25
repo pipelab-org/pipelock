@@ -78,6 +78,12 @@ test("shared v3 projections, legacy detection, and full-document order determini
         }
       };
       const { result, projection } = await compare(paths);
+      if (vector === "g04-absent-max-write-error-pin") {
+        const parent = result.histories[0].streams[0];
+        assert.equal(parent.end, "closed");
+        assert.deepEqual(parent.tip, parent.last);
+        assert.equal(parent.unconfirmed_from, undefined);
+      }
       if (paths.length > 1) {
         const reverse = await compare([...paths].reverse(), true);
         assert.equal(canonicalV3(reverse.result), canonicalV3(result));

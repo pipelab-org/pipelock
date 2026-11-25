@@ -120,7 +120,7 @@ impl Verifier<'_> {
 
         for id in ids {
             let parent = &self.streams[&id];
-            let mut limit = parent.limit;
+            let mut confirmed_write_error = None;
             for child in &parent.successors {
                 let child = &self.streams[child];
                 let opening = child.open.as_ref().unwrap();
@@ -129,7 +129,7 @@ impl Verifier<'_> {
                 }
                 if parent.open.is_some() {
                     if let Some(seq) = check_pin(&self.store, &mut self.doc, parent, child)? {
-                        limit = Some(seq);
+                        confirmed_write_error = Some(seq);
                     }
                 }
             }
@@ -138,9 +138,9 @@ impl Verifier<'_> {
             } else {
                 None
             };
-            let summary = summarize(parent, successor, limit);
+            let summary = summarize(parent, successor, confirmed_write_error);
             let parent = self.streams.get_mut(&id).unwrap();
-            parent.limit = limit;
+            parent.limit = confirmed_write_error.or(parent.limit);
             parent.summary = summary;
         }
         Ok(())
@@ -527,7 +527,11 @@ fn check_pin(
     Ok(Some(pin.seq))
 }
 
-fn summarize(stream: &Stream, successor: Option<&OpenBody>, limit: Option<u64>) -> Summary {
+fn summarize(
+    stream: &Stream,
+    successor: Option<&OpenBody>,
+    confirmed_write_error: Option<u64>,
+) -> Summary {
     let mut summary = stream.summary.clone();
     if let Some(open) = &stream.open {
         summary.stream.clone_from(&open.stream);
@@ -560,7 +564,7 @@ fn summarize(stream: &Stream, successor: Option<&OpenBody>, limit: Option<u64>) 
                 .is_some_and(|own| own.lineage == body.lineage)
         {
             summary.end = "superseded_unsealed";
-        } else if pin.ended == "write_error" && limit == Some(pin.seq) {
+        } else if pin.ended == "write_error" && confirmed_write_error == Some(pin.seq) {
             summary.end = "superseded_write_error";
             summary.tip = Some(Position {
                 record: pin.record.clone(),
