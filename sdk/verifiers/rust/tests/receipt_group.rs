@@ -1122,3 +1122,23 @@ fn v3_directory_binds_a_published_group() {
         .iter()
         .any(|f| f["code"] == "LEGACY_GROUP_INCOMPLETE"));
 }
+
+#[cfg(unix)]
+#[test]
+fn ordinary_index_retains_unreadable_genesis() {
+    use pipelock_verifier_rs::chain_set::{
+        verify_base_excluding_receipt_groups, BaseVerifyOptions,
+    };
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = fixture("group-valid");
+    let shard = root.join("evidence-example-0.jsonl");
+    fs::write(&shard, "{}\n").unwrap();
+    fs::set_permissions(&shard, fs::Permissions::from_mode(0o000)).unwrap();
+    if fs::File::open(&shard).is_ok() {
+        return;
+    }
+    let result =
+        verify_base_excluding_receipt_groups(&root, "example", &BaseVerifyOptions::default());
+    assert!(result.is_err() || result.is_ok_and(|report| !report.healthy()));
+}

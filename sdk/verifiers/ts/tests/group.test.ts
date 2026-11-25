@@ -1214,3 +1214,15 @@ test("shared group fixtures are byte-identical across language directories", () 
     }
   }
 });
+
+test("directory group discovery surfaces an unreadable genesis", async (t) => {
+  if (process.platform === "win32" || process.getuid?.() === 0) return t.skip();
+  const dir = mkdtempSync(join(tmpdir(), "ts-group-unreadable-"));
+  t.after(() => rmSync(dir, { recursive: true }));
+  const shard = join(dir, "evidence-proxy-0.jsonl");
+  writeFileSync(shard, "{}\n");
+  chmodSync(shard, 0);
+  const report = await verifyReceiptGroups(dir, []);
+  assert.equal(report.unavailable, true);
+  assert.match(report.error ?? "", /EACCES/u);
+});

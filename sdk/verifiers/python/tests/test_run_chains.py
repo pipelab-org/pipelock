@@ -380,3 +380,20 @@ def test_direct_rotation_endorsement_requires_supported_version(tmp_path):
     verify_base(tmp_path, "example", (key,), endorsements=(endorsement(1),))
     with pytest.raises(ValueError, match="version"):
         verify_base(tmp_path, "example", (key,), endorsements=(endorsement(2),))
+
+def test_group_inventory_propagates_unreadable_genesis(tmp_path, monkeypatch):
+    from pipelock_aarp_verify import legacy_directory
+    from pipelock_aarp_verify.group import GroupVerificationError
+
+    shard = tmp_path / "evidence-proxy-0.jsonl"
+    shard.write_text("{}\n")
+
+    def unreadable(path):
+        assert path == shard
+        raise GroupVerificationError(
+            "read receipt session evidence"
+        ) from PermissionError("access denied")
+
+    monkeypatch.setattr(legacy_directory, "_open_evidence_file", unreadable)
+    with pytest.raises(PermissionError, match="access denied"):
+        verify_receipt_groups(tmp_path, [])

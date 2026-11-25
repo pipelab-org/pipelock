@@ -1818,7 +1818,11 @@ export async function verifyReceiptGroup(
 }
 
 /** Probe the first complete parsed entry, including when the shard ends torn. */
-export function firstRecorderGroupGate(file: string): { detail: unknown } | undefined {
+export function firstRecorderGroupGate(
+  file: string,
+  requireReadable = false,
+): { detail: unknown } | undefined {
+  if (isExcludedLegacyFile(file)) return undefined;
   try {
     if (!lstatSync(file).isFile()) return undefined;
     let first: RecorderEntry | undefined;
@@ -1838,7 +1842,8 @@ export function firstRecorderGroupGate(file: string): { detail: unknown } | unde
       if (error !== done) throw error;
     }
     if (first?.type === "receipt_group_v1") return { detail: first.detail };
-  } catch {
+  } catch (error) {
+    if (requireReadable && typeof (error as NodeJS.ErrnoException).code === "string") throw error;
     // Stable malformed legacy entries are classified by the ordinary verifier.
   }
   return undefined;
@@ -1916,7 +1921,7 @@ export async function verifyReceiptGroupsInProcess(
         for (const name of names) {
           const parsed = parseEvidenceFilename(name);
           if (!parsed || parsed.seqStart !== 0n) continue;
-          const gate = firstRecorderGroupGate(name);
+          const gate = firstRecorderGroupGate(name, true);
           if (!gate) continue;
           let id = "";
           try {
@@ -1957,7 +1962,7 @@ function directoryHasGroups(): boolean {
   return readdirSync(".").some(
     (name) =>
       (!isExcludedLegacyFile(name) && name.startsWith("receipt-group-")) ||
-      (parseEvidenceFilename(name)?.seqStart === 0n && firstRecorderGroupGate(name)),
+      (parseEvidenceFilename(name)?.seqStart === 0n && firstRecorderGroupGate(name, true)),
   );
 }
 

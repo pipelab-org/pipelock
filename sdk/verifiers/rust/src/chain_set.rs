@@ -802,7 +802,7 @@ fn index_ordinary_recorder_files(dir: &Path) -> Result<EvidenceIndex, String> {
                     .and_then(parse_evidence_filename)
                     .is_some_and(|(_, start)| start == 0)
             })
-            .is_none_or(|path| matches!(crate::receipt_group::first_group_gate(path), Ok(None)))
+            .is_none_or(|path| !matches!(crate::receipt_group::first_group_gate(path), Ok(Some(_))))
     });
     Ok(index)
 }

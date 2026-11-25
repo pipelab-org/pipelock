@@ -2092,7 +2092,7 @@ func isGroupSessionShards(shards []indexedRecorderShard) bool {
 			continue
 		}
 		first, seen, err := firstGroupEvidenceEntry(shard.path)
-		return err != nil || seen && first.Type == recorder.GroupGateEntryType
+		return err == nil && seen && first.Type == recorder.GroupGateEntryType
 	}
 	return false
 }

@@ -18,6 +18,7 @@ from .group import (
     _GROUP_ARTIFACT,
     _HEX32,
     GROUP_INVALID,
+    GroupVerificationError,
     _check_recorder_entry,
     _inventory,
     _open_evidence_file,
@@ -77,7 +78,11 @@ def _first_entry(path: Path) -> Document | None:
                     ):
                         return entry
                     return None
-    except (ValueError, OSError, ReceiptError, RecursionError):
+    except GroupVerificationError as exc:
+        if isinstance(exc.__cause__, OSError):
+            raise exc.__cause__ from None
+        raise
+    except (ValueError, ReceiptError, RecursionError):
         return None
     return None
 
@@ -94,11 +99,15 @@ def recorder_index(directory: Path, *, exclude_groups: bool = False) -> Index:
         shards.sort()
         if exclude_groups:
             genesis = next((path for seq, path in shards if seq == 0), None)
-            if (
-                genesis is not None
-                and (_first_entry(genesis) or {}).get("type") == _GATE_ENTRY_TYPE
-            ):
-                continue
+            try:
+                if (
+                    genesis is not None
+                    and (_first_entry(genesis) or {}).get("type") == _GATE_ENTRY_TYPE
+                ):
+                    continue
+            except (GroupVerificationError, OSError):
+                # Retain the shard for the ordinary verifier to diagnose.
+                pass
         ordinary[session] = shards
     return ordinary
 

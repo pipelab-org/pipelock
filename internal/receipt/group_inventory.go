@@ -469,6 +469,9 @@ func firstGroupEvidenceEntry(path string) (recorder.Entry, bool, error) {
 		})
 		return first, seen, err
 	}
+	if recorder.IsEvidenceUnavailable(err) || errors.Is(err, os.ErrNotExist) {
+		return first, seen, err
+	}
 	// Other malformed legacy evidence is classified by its normal verifier.
 	return first, seen, nil
 }

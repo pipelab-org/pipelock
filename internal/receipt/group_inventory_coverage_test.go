@@ -132,3 +132,20 @@ func TestGroupDirectoryFingerprintRejectsDamagedRunTree(t *testing.T) {
 		})
 	}
 }
+
+func TestGroupInventoryPropagatesUnreadableGenesis(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "evidence-proxy-0.jsonl")
+	if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0); err != nil {
+		t.Skipf("file permissions unavailable: %v", err)
+	}
+	if _, err := os.ReadFile(filepath.Clean(path)); !errors.Is(err, os.ErrPermission) {
+		t.Skip("filesystem does not enforce read permissions for this user")
+	}
+	if summary, err := VerifyReceiptGroups(dir, nil, nil); !recorder.IsEvidenceUnavailable(err) {
+		t.Fatalf("unreadable group inventory: %+v, %v", summary, err)
+	}
+}
