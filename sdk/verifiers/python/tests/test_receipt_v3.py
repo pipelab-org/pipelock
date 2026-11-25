@@ -567,3 +567,35 @@ def test_filename_claimed_missing_or_directory_inputs_are_input_errors(tmp_path)
         ["v3", str(good), str(dir_v3)],
     ):
         assert main(argv) == 2, argv
+
+
+def test_bare_wrapper_replacement_is_not_excluded_from_restart(
+    tmp_path, monkeypatch, capsys
+):
+    from pipelock_aarp_verify.v3 import legacy
+
+    vector = (
+        Path(__file__).resolve().parents[3]
+        / "conformance/testdata/v3/g09-legacy-bare-evidence-under-run-name"
+    )
+    request = json.loads((vector / "request.json").read_bytes())
+    for name in request["inputs"]:
+        shutil.copyfile(vector / name, tmp_path / name)
+    wrapper = tmp_path / "evidence-example.run.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-0.jsonl"
+    args = ["v3", "--output", "projection", str(tmp_path)]
+    for key in request["keys"]:
+        args[1:1] = ["--key", key]
+
+    def codes():
+        main(args)
+        return set(json.loads(capsys.readouterr().out)["finding_codes"])
+
+    assert codes() == {"LEGACY_CHAIN_UNLISTED"}
+    verify_base = legacy.verify_base
+
+    def replace_then_verify(*arguments, **options):
+        wrapper.write_bytes(b"not a recorder entry")
+        return verify_base(*arguments, **options)
+
+    monkeypatch.setattr(legacy, "verify_base", replace_then_verify)
+    assert "LEGACY_INVALID" in codes()

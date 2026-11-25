@@ -1,6 +1,7 @@
 // Copyright 2026 Pipelock contributors
 // SPDX-License-Identifier: Apache-2.0
 
+import { lstatSync } from "node:fs";
 import { basename, dirname } from "node:path";
 import { canonicalizeActionRecord } from "../canonical.js";
 import { evidenceChainKey, receiptHash, verifyChain } from "../chain.js";
@@ -53,6 +54,7 @@ export interface LegacyPresentation extends LegacyRow {
   verdict: string;
   position: number;
   forked?: boolean;
+  rotated?: boolean;
   positions?: Map<number, string>;
 }
 
@@ -61,8 +63,11 @@ export function compareCutoverPosition(actual: LegacyPresentation, row: LegacyRo
     for (const [position, record] of actual.positions ?? []) {
       if (position >= 0 && position < actual.position && record === row.record) return 1;
     }
-    // Signed action sequences reset at key rotation.
-    if (actual.format === actionFormat) return 0;
+    // A key rotation resets signed action sequences, so only a chain that
+    // crossed one cannot be ordered by them. Without a rotation a pin beyond
+    // the presented tail is truncation; a pin at or before it that the chain
+    // never recorded is a different head.
+    if (actual.format === actionFormat && (actual.rotated || actual.seq >= row.seq)) return 0;
   }
   return Math.sign(actual.seq - row.seq);
 }
@@ -102,6 +107,15 @@ function legacyVerdict(v: Verification, item: LegacyPresentation): V3LegacyResul
     row.verdict = label + " VALID";
   }
   return row;
+}
+
+function fileStamp(path: string): string {
+  try {
+    const info = lstatSync(path, { bigint: true });
+    return [info.dev, info.ino, info.size, info.mtimeNs, info.ctimeNs].join(":");
+  } catch {
+    return "";
+  }
 }
 
 function unavailable(error: unknown): boolean {
@@ -317,6 +331,7 @@ class LegacyVerifier {
         verdict,
         position: action ? chain.length - 1 : seq(last),
         positions,
+        rotated: action && chain.some((item) => item.action_record?.key_transition !== undefined),
       };
       this.save(key, item, valid);
       first = end;
@@ -404,6 +419,7 @@ export async function verifyLegacy(
 
   const ordinary = new Map<string, string[]>();
   const bareSessions = new Set<string>();
+  const bareStamps = new Map<string, string>();
   for (const session of [...sessions.keys()].sort(byteOrder)) {
     const dir = sessions.get(session)!;
     const base = runSessionBase(session);
@@ -415,8 +431,15 @@ export async function verifyLegacy(
     }
     if (base !== undefined) bases.set(base, dir);
     try {
+      // Bind a wrapper's exclusion to the files as they were before the read.
+      const stamps = paths
+        .filter((path) => parseEvidenceFilename(basename(path))?.session === session)
+        .map((path) => [path, fileStamp(path)] as const);
       const batch = readSession(dir, session);
-      if (batch.bare) bareSessions.add(session);
+      if (batch.bare) {
+        bareSessions.add(session);
+        for (const [path, stamp] of stamps) bareStamps.set(path, stamp);
+      }
       if (batch.action.length || batch.evidence.length) await verifier.verifyBatch(batch);
       else v.result.ignored_files++;
     } catch (error) {
@@ -432,15 +455,22 @@ export async function verifyLegacy(
   ];
   for (const base of [...bases.keys()].sort(byteOrder)) {
     const dir = bases.get(base)!;
+    // A wrapper shard stays excluded only while it is the file that was read;
+    // a replacement under the same name is a change, not a pass.
+    const settled = (): boolean =>
+      [...bareStamps].every(([path, stamp]) => fileStamp(path) === stamp);
     try {
-      const restart = await withRecorderFileExclusions(restartExcluded, () =>
-        verifyBase(dir, base, {
-          trustedKeys: [...(v.opts.keys ?? [])],
-          endorsements: [],
-          excludeReceiptGroupSessions: groupDirs.get(dir),
-        }),
-      );
-      if (!baseHealthy(restart)) failure(v, base, actionFormat, "RESTART CONTINUITY FAILED");
+      const restart = settled()
+        ? await withRecorderFileExclusions(restartExcluded, () =>
+            verifyBase(dir, base, {
+              trustedKeys: [...(v.opts.keys ?? [])],
+              endorsements: [],
+              excludeReceiptGroupSessions: groupDirs.get(dir),
+            }),
+          )
+        : undefined;
+      if (!restart || !settled()) failure(v, base, actionFormat, "RESTART CONTINUITY INCOMPLETE");
+      else if (!baseHealthy(restart)) failure(v, base, actionFormat, "RESTART CONTINUITY FAILED");
     } catch {
       failure(v, base, actionFormat, "RESTART CONTINUITY INCOMPLETE");
     }

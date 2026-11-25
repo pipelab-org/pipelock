@@ -60,6 +60,7 @@ type legacyPresentation struct {
 	cliSeq    uint64
 	session   string
 	forked    bool
+	rotated   bool
 	position  int64
 	positions map[int64]string
 }
@@ -71,9 +72,12 @@ func (p legacyPresentation) compareCutoverPosition(row InventoryChain) int {
 				return 1
 			}
 		}
-		// A missing action digest cannot be ordered by signed sequence:
-		// key rotation resets the sequence within the same chain.
-		if p.Format == legacyAction {
+		// A key rotation resets the signed sequence within the same chain, so
+		// once the presented chain crosses one, a missing action digest cannot
+		// be ordered by it. Without a rotation the order is reliable: a pin
+		// beyond the presented tail is truncation, and a pin at or before it
+		// that the chain never recorded is a different head.
+		if p.Format == legacyAction && (p.rotated || p.Seq >= row.Seq) {
 			return 0
 		}
 	}

@@ -29,7 +29,7 @@ use crate::{
     },
     recorder_chain::recorder_entry_hash,
     types::Receipt,
-    util::{parse_json_line, reject_duplicate_keys, Result, VerifierError},
+    util::{metadata_identity, parse_json_line, reject_duplicate_keys, Result, VerifierError},
 };
 
 use super::{
@@ -96,6 +96,7 @@ struct Presented {
     order: u64,
     invalid: bool,
     forked: bool,
+    rotated: bool,
     end_unproven: bool,
     group_verdict: String,
     positions: BTreeMap<u64, String>,
@@ -111,13 +112,48 @@ impl Presented {
             {
                 return Ordering::Greater;
             }
-            // Signed action sequences reset at key rotation.
-            if row.format == ACTION {
+            // A key rotation resets signed action sequences, so only a chain
+            // that crossed one cannot be ordered by them. Without a rotation a
+            // pin beyond the presented tail is truncation; a pin at or before
+            // it that the chain never recorded is a different head.
+            if row.format == ACTION && (self.rotated || self.seq >= row.seq) {
                 return Ordering::Equal;
             }
         }
         self.seq.cmp(&row.seq)
     }
+}
+
+/// Identity of every presented shard of `session`, as it is before the read.
+fn session_stamps(paths: &[PathBuf], session: &str) -> Vec<(PathBuf, String)> {
+    paths
+        .iter()
+        .filter(|path| {
+            parse_evidence_filename(&name(path)).is_some_and(|(found, _)| found == session)
+        })
+        .map(|path| (path.clone(), file_stamp(path)))
+        .collect()
+}
+
+fn file_stamp(path: &Path) -> String {
+    std::fs::symlink_metadata(path).map_or_else(
+        |_| String::new(),
+        |metadata| {
+            format!(
+                "{:?}:{}:{:?}:{:?}",
+                metadata_identity(&metadata),
+                metadata.len(),
+                metadata.modified().ok(),
+                metadata.file_type()
+            )
+        },
+    )
+}
+
+fn stamps_unchanged(stamps: &[(PathBuf, String)]) -> bool {
+    stamps
+        .iter()
+        .all(|(path, stamp)| !stamp.is_empty() && file_stamp(path) == *stamp)
 }
 
 type Legacy = BTreeMap<(&'static str, String), Presented>;
@@ -289,7 +325,7 @@ impl Verifier<'_> {
             };
         }
         let mut ordinary = BTreeMap::new();
-        let mut bare_sessions = BTreeSet::new();
+        let mut bare_stamps: Vec<(PathBuf, String)> = Vec::new();
         let mut bases = BTreeMap::new();
         for (session, dir) in sessions {
             let base = run_session_base(&session).unwrap_or(&session);
@@ -309,9 +345,11 @@ impl Verifier<'_> {
             if run_session_base(&session).is_some() {
                 bases.insert(base.to_owned(), dir);
             }
+            // Bind a wrapper's exclusion to the files as they were before the read.
+            let stamps = session_stamps(paths, &session);
             let batch = read_bare_session(dir, &session).and_then(|bare| {
                 if let Some(batch) = bare {
-                    bare_sessions.insert(session.clone());
+                    bare_stamps.extend(stamps);
                     Ok((None, batch))
                 } else {
                     read_session_evidence(dir, &session)
@@ -334,24 +372,30 @@ impl Verifier<'_> {
             trusted_keys: self.options.keys.clone(),
             endorsements: Vec::new(),
         };
-        let bare_names = paths
+        let bare_names = bare_stamps
             .iter()
-            .filter_map(|path| {
-                let file = name(path);
-                let (session, _) = parse_evidence_filename(&file)?;
-                bare_sessions.contains(&session).then(|| file.into_owned())
-            })
+            .map(|(path, _)| name(path).into_owned())
             .collect::<BTreeSet<_>>();
+        // A wrapper shard stays excluded only while it is the file that was
+        // read; a replacement under the same name is a change, not a pass.
+        let settled = || stamps_unchanged(&bare_stamps);
         for (base, dir) in bases {
             let verify = if dirs[dir] {
                 verify_base_excluding_receipt_groups
             } else {
                 verify_base
             };
-            let checked = with_recorder_file_exclusions(bare_names.clone(), || {
-                verify(dir, &base, &legacy_opts)
+            let checked = settled().then(|| {
+                with_recorder_file_exclusions(bare_names.clone(), || {
+                    verify(dir, &base, &legacy_opts)
+                })
             });
-            if checked.as_ref().is_ok_and(|report| report.healthy()) {
+            let changed = checked.is_none() || !settled();
+            if !changed
+                && checked
+                    .as_ref()
+                    .is_some_and(|result| result.as_ref().is_ok_and(|report| report.healthy()))
+            {
                 continue;
             }
             self.doc.add_code("LEGACY_INVALID", "");
@@ -359,7 +403,7 @@ impl Verifier<'_> {
                 format: ACTION,
                 chain: base,
                 class: "failure",
-                verdict: if checked.is_err() {
+                verdict: if changed || checked.is_some_and(|result| result.is_err()) {
                     "RESTART CONTINUITY INCOMPLETE"
                 } else {
                     "RESTART CONTINUITY FAILED"
@@ -517,6 +561,10 @@ impl Verifier<'_> {
             item.head = last;
             item.seq = seq;
             item.order = order;
+            item.rotated = format == ACTION
+                && chain
+                    .iter()
+                    .any(|receipt| !receipt["action_record"]["key_transition"].is_null());
             item.end_unproven = format == EVIDENCE || !close_ends_chain(chain);
         }
     }
@@ -874,7 +922,7 @@ fn consume(reader: &mut impl Read, literal: &[u8]) -> io::Result<bool> {
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_inventory, digest, EMPTY_INVENTORY};
+    use super::{decode_inventory, digest, session_stamps, stamps_unchanged, EMPTY_INVENTORY};
 
     #[test]
     fn rejects_oversized_unterminated_legacy_line() {
@@ -931,5 +979,31 @@ mod tests {
                 "{text}"
             );
         }
+    }
+
+    #[test]
+    fn bare_wrapper_exclusion_follows_the_file_that_was_read() {
+        let dir = std::env::temp_dir().join(format!("pipelock-bare-stamp-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let session = "example.run.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let path = dir.join(format!("evidence-{session}-0.jsonl"));
+        std::fs::write(&path, b"wrapper\n").unwrap();
+        let paths = [path.clone(), dir.join("unrelated.jsonl")];
+        let stamps = session_stamps(&paths, session);
+        assert_eq!(stamps.len(), 1);
+        assert!(stamps_unchanged(&stamps), "a file nobody touched changed");
+        let replacement = dir.join("replacement");
+        std::fs::write(&replacement, b"ordinary shard\n").unwrap();
+        std::fs::rename(&replacement, &path).unwrap();
+        assert!(
+            !stamps_unchanged(&stamps),
+            "a same-name replacement kept the wrapper's exclusion"
+        );
+        std::fs::remove_file(&path).unwrap();
+        assert!(
+            !stamps_unchanged(&stamps),
+            "a removed wrapper kept its exclusion"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

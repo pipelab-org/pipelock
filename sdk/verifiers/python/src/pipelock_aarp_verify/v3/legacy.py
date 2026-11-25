@@ -8,7 +8,7 @@ from __future__ import annotations
 import hashlib
 import re
 from collections import defaultdict
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO
@@ -91,6 +91,7 @@ class _Legacy:
     verdict: str
     position: int = 0
     forked: bool = False
+    rotated: bool = False
     seen: dict[int, str] | None = None
 
     def compare_cutover_position(self, row: Document) -> int:
@@ -98,8 +99,11 @@ class _Legacy:
             for position, record in (self.seen or {}).items():
                 if 0 <= position < self.position and record == row["record"]:
                     return 1
-            # Signed action sequences reset at key rotation.
-            if row["format"] == _ACTION:
+            # A key rotation resets signed action sequences, so only a chain
+            # that crossed one cannot be ordered by them. Without a rotation a
+            # pin beyond the presented tail is truncation; a pin at or before it
+            # that the chain never recorded is a different head.
+            if row["format"] == _ACTION and (self.rotated or self.seq >= row["seq"]):
                 return 0
         return self.seq - row["seq"]
 
@@ -211,7 +215,12 @@ class _LegacyVerifier:
         previous = self.rows.get(key)
         was_invalid = previous is not None and previous.verdict == "INVALID"
         if previous is None or position > previous.position:
-            previous = _Legacy(final_seq, hashes[-1], verdict, position, seen=seen)
+            rotated = action and any(
+                row["action_record"].get("key_transition") is not None for row in chain
+            )
+            previous = _Legacy(
+                final_seq, hashes[-1], verdict, position, rotated=rotated, seen=seen
+            )
         if not valid:
             self.v.add("LEGACY_INVALID")
         if not valid or was_invalid:
@@ -233,6 +242,8 @@ class _LegacyVerifier:
                 batch, recorder = read_legacy_file(path)
                 if batch.action or batch.evidence:
                     self.add_batch(batch, recorder)
+                elif recorder and self.v.opts.directory:
+                    self.v.result["ignored_files"] += 1
                 else:
                     self.v.add("UNRECOGNIZED_FILE")
             except _ERRORS as exc:
@@ -241,14 +252,17 @@ class _LegacyVerifier:
             grouped = self._groups(root)
             index = recorder_index(root, exclude_groups=grouped)
             bases = set()
-            bare_names: set[str] = set()
+            bare_names: dict[str, tuple[int, ...]] = {}
             for session in sorted(selected & index.keys()):
                 if base := run_base(session):
                     bases.add(base)
                 try:
+                    # Bind a wrapper's exclusion to the files as they were
+                    # before the read, not to their names alone.
+                    stamps = {path.name: _stamp(path) for _, path in index[session]}
                     batch = read_run(session, index[session], allow_bare_wrapper=True)
                     if batch.bare_wrapper:
-                        bare_names.update(path.name for _, path in index[session])
+                        bare_names.update(stamps)
                     if batch.outer_error:
                         raise ReceiptError(batch.outer_error)
                     if batch.action or batch.evidence:
@@ -258,11 +272,18 @@ class _LegacyVerifier:
                 except _ERRORS as exc:
                     self._fail(session, exc)
             marker = _recorder_file_exclusions.set(
-                _recorder_file_exclusions.get() | bare_names
+                _recorder_file_exclusions.get() | bare_names.keys()
             )
+
+            def settled(root: Path = root, stamps: dict = bare_names) -> bool:
+                try:
+                    return all(_stamp(root / name) == v for name, v in stamps.items())
+                except OSError:
+                    return False
+
             try:
                 for base in sorted(bases):
-                    self._continuity(root, base, grouped)
+                    self._continuity(root, base, grouped, settled)
             finally:
                 _recorder_file_exclusions.reset(marker)
         result = self.v.result["legacy"]
@@ -304,17 +325,31 @@ class _LegacyVerifier:
             )
         return bool(reports)
 
-    def _continuity(self, root: Path, base: str, grouped: bool) -> None:
+    def _continuity(
+        self, root: Path, base: str, grouped: bool, settled: Callable[[], bool]
+    ) -> None:
+        # A wrapper shard stays excluded only while it is the file that was
+        # read; a replacement under the same name is a change, not a pass.
         try:
-            if verify_base(
+            healthy = settled() and verify_base(
                 root, base, tuple(sorted(self.keys)), exclude_groups=grouped
-            )["healthy"]:
+            )["healthy"]
+            if healthy and settled():
                 return
-            label = "RESTART CONTINUITY FAILED"
+            label = (
+                "RESTART CONTINUITY FAILED"
+                if settled()
+                else "RESTART CONTINUITY INCOMPLETE"
+            )
         except _ERRORS:
             label = "RESTART CONTINUITY INCOMPLETE"
         self.v.add("LEGACY_INVALID")
         self.v.result["legacy"].append(_legacy_row((_ACTION, base), label, False))
+
+
+def _stamp(path: Path) -> tuple[int, ...]:
+    info = path.lstat()
+    return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
 
 
 def _identity(row: Document) -> Identity:

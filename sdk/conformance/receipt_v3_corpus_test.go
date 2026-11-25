@@ -223,7 +223,7 @@ func TestReceiptV3Corpus(t *testing.T) {
 	recipes = append(recipes, v3DecisionRecipes(t)...)
 	recipes = append(recipes, v3CutoverRecipes(t)...)
 	recipes = append(recipes, v3GroupRecipes(t)...)
-	recipes = append(recipes, v3OperationalOnlyRecipe(t))
+	recipes = append(recipes, v3OperationalOnlyRecipe(t), v3OperationalRecorderFileRecipe(t))
 	for _, recipe := range recipes {
 		t.Run(fmt.Sprintf("g%02d-%s", recipe.group, recipe.name), func(t *testing.T) {
 			v3RunRecipe(t, recipe)

@@ -307,7 +307,7 @@ func TestLegacyEndpointPinsEvidenceChainOfSelectedSession(t *testing.T) {
 
 func TestLegacyContinuityReadFailure(t *testing.T) {
 	v := verification{}
-	v.verifyLegacyContinuity(filepath.Join(t.TempDir(), "missing"), "example", nil, false, nil)
+	v.verifyLegacyContinuity(filepath.Join(t.TempDir(), "missing"), "example", nil, false, nil, func() bool { return true })
 	if !hasFinding(v.result, codeLegacyInvalid) || len(v.result.Legacy) != 1 ||
 		v.result.Legacy[0].Verdict != "RESTART CONTINUITY INCOMPLETE" || v.result.Legacy[0].Class != legacyFailure {
 		t.Fatalf("continuity diagnostic: %+v", v.result)
@@ -521,23 +521,26 @@ func TestLegacyPresentationCutoverPosition(t *testing.T) {
 	for _, tc := range []struct {
 		name, format, digest string
 		seq                  int64
-		forked               bool
+		forked, rotated      bool
 		want                 int
 	}{
-		{"earlier action record after rotation", legacyAction, "sha256:middle", 1, false, 1},
-		{"current action tail", legacyAction, "sha256:tail", 0, false, 0},
-		{"unknown action record at same sequence", legacyAction, "sha256:other", 2, false, 0},
-		{"fork without an earlier record", legacyAction, "sha256:middle", 2, true, 0},
-		{"missing rotation boundary", legacyAction, "sha256:other", 0, false, 0},
-		{"earlier evidence record", legacyEvidence, "sha256:middle", 1, false, 1},
-		{"missing evidence genesis digest", legacyEvidence, "sha256:other", 0, false, 1},
-		{"later evidence sequence", legacyEvidence, "sha256:other", 3, false, -1},
+		{"earlier action record after rotation", legacyAction, "sha256:middle", 1, false, true, 1},
+		{"current action tail", legacyAction, "sha256:tail", 0, false, true, 0},
+		{"unknown action record at same sequence", legacyAction, "sha256:other", 2, false, false, 0},
+		{"fork without an earlier record", legacyAction, "sha256:middle", 2, true, false, 0},
+		{"missing rotation boundary", legacyAction, "sha256:other", 0, false, false, 0},
+		{"unrotated chain pinned beyond its tail", legacyAction, "sha256:other", 3, false, false, -1},
+		{"rotated chain pinned beyond its tail", legacyAction, "sha256:other", 3, false, true, 0},
+		{"rotated chain with a missing earlier digest", legacyAction, "sha256:other", 1, false, true, 0},
+		{"earlier evidence record", legacyEvidence, "sha256:middle", 1, false, false, 1},
+		{"missing evidence genesis digest", legacyEvidence, "sha256:other", 0, false, false, 1},
+		{"later evidence sequence", legacyEvidence, "sha256:other", 3, false, false, -1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p := legacyPresentation{
 				InventoryChain: InventoryChain{Format: tc.format, Record: "sha256:tail", Seq: 2},
 				position:       2, positions: map[int64]string{0: "first", 1: "middle", 2: "tail"},
-				forked: tc.forked,
+				forked: tc.forked, rotated: tc.rotated,
 			}
 			if tc.name == "current action tail" || tc.name == "earlier action record after rotation" {
 				p.Seq = 0
@@ -546,5 +549,34 @@ func TestLegacyPresentationCutoverPosition(t *testing.T) {
 				t.Fatalf("cutover position = %d, want %d", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestBareWrapperExclusionFollowsTheFileThatWasRead(t *testing.T) {
+	const session = "example.run.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	dir := t.TempDir()
+	name := "evidence-" + session + "-0.jsonl"
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte("wrapper\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stamps := sessionStamps([]string{path}, session)
+	if len(stamps) != 1 || !stampsUnchanged(dir, stamps) {
+		t.Fatalf("a file nobody touched changed: %v", stamps)
+	}
+	replacement := filepath.Join(dir, "replacement")
+	if err := os.WriteFile(replacement, []byte("ordinary shard\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(replacement, path); err != nil {
+		t.Fatal(err)
+	}
+	if stampsUnchanged(dir, stamps) {
+		t.Fatal("a same-name replacement kept the wrapper's exclusion")
+	}
+	v := &verification{opts: Options{}, result: newResult(Options{})}
+	v.verifyLegacyContinuity(dir, "example", nil, false, map[string]bool{name: true}, func() bool { return stampsUnchanged(dir, stamps) })
+	if len(v.result.Legacy) != 1 || v.result.Legacy[0].Verdict != "RESTART CONTINUITY INCOMPLETE" || !hasFinding(v.result, codeLegacyInvalid) {
+		t.Fatalf("replaced wrapper was not reported: %+v %+v", v.result.Legacy, v.result.Findings)
 	}
 }

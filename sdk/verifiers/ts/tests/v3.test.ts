@@ -9,10 +9,12 @@ import {
   mkdirSync,
   mkdtempSync,
   readdirSync,
+  renameSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -443,5 +445,39 @@ test("v3 discards provisional groups when the inventory fails", async () => {
     ]);
   } finally {
     store.close();
+  }
+});
+
+test("v3 does not exclude a replaced bare wrapper from restart continuity", async (t) => {
+  const vector = join(corpus, "g09-legacy-bare-evidence-under-run-name");
+  const request: Request = JSON.parse(readFileSync(join(vector, "request.json"), "utf8"));
+  const dir = mkdtempSync(join(tmpdir(), "pipelock-v3-bare-"));
+  const fs = createRequire(import.meta.url)("node:fs") as typeof import("node:fs");
+  const original = fs.readdirSync;
+  try {
+    for (const name of request.inputs) copyFileSync(join(vector, name), join(dir, name));
+    const options = { keys: request.keys, directory: true };
+    const codes = async (): Promise<string[]> =>
+      (await verifyV3Paths([dir], options)).result.findings.map((f) => f.code);
+    assert.deepEqual(await codes(), ["LEGACY_CHAIN_UNLISTED"], "control");
+    const wrapper = join(dir, "evidence-example.run.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-0.jsonl");
+    let replaced = false;
+    t.mock.method(fs, "readdirSync", (...args: unknown[]) => {
+      // The restart check lists the directory under its history snapshot.
+      if (!replaced && new Error().stack?.includes("withBaseHistorySnapshot")) {
+        replaced = true;
+        writeFileSync(wrapper + ".new", "not a recorder entry");
+        renameSync(wrapper + ".new", wrapper);
+      }
+      return Reflect.apply(original, fs, args);
+    });
+    syncBuiltinESMExports();
+    const changed = await codes();
+    assert.ok(replaced, "the continuity check never listed the directory");
+    assert.ok(changed.includes("LEGACY_INVALID"), changed.join());
+  } finally {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+    rmSync(dir, { recursive: true, force: true });
   }
 });

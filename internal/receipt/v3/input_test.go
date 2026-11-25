@@ -79,6 +79,10 @@ func TestInputClaims(t *testing.T) {
 	if err := os.WriteFile(profile, []byte(contract.ProfileEnvelopePrefix), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	contentDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(contentDir, "activation-receipts.jsonl"), []byte(contract.ProfileEnvelopePrefix), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	unknownProfile := filepath.Join(dir, "example.receipt-v4.jsonl")
 	if err := os.WriteFile(unknownProfile, nil, 0o600); err != nil {
 		t.Fatal(err)
@@ -90,6 +94,7 @@ func TestInputClaims(t *testing.T) {
 		{"filename", unknownProfile, false, true, false},
 		{"content", profile, false, true, false},
 		{"directory", dir, true, true, false},
+		{"directory content", contentDir, true, true, false},
 		{"empty directory", t.TempDir(), true, false, false},
 		{"missing directory", filepath.Join(dir, "absent"), true, false, true},
 		{"missing file", filepath.Join(dir, "absent"), false, false, true},
