@@ -52,7 +52,7 @@ func TestProviderKeyGlueBypass(t *testing.T) {
 		{"Hugging Face", "Hugging Face Token", "hf_", "e", 36},
 		{"Databricks", "Databricks Token", "dapi", "a", 32},  // hex charset: use 'a'
 		{"Replicate", "Replicate API Token", "r8_", "b", 40}, // hex charset: use 'b'
-		{"Together AI", "Together AI Key", "tok_", "c", 40},  // lowercase alnum
+		{"Together AI", "Together AI Key", "tgp_v1_", "c", 43},
 		{"Pinecone", "Pinecone API Key", "pcsk_", "d", 40},
 		{"Groq", "Groq API Key", "gsk_", "e", 48},
 		{"xAI", "xAI API Key", "xai-", "f", 80},
