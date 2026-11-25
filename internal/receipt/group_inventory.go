@@ -184,6 +184,10 @@ func fingerprintOpenedDirectory(dir string, f *os.File) ([32]byte, uint64, error
 }
 
 func verifyGroupSessionInventory(dir string, open ReceiptGroupOpen) error {
+	return verifyGroupSessionInventoryScoped(dir, open, nil)
+}
+
+func verifyGroupSessionInventoryScoped(dir string, open ReceiptGroupOpen, excluded map[string]bool) error {
 	f, err := recorder.OpenEvidenceDirectory(dir)
 	if err != nil {
 		return err
@@ -192,6 +196,9 @@ func verifyGroupSessionInventory(dir string, open ReceiptGroupOpen) error {
 	for {
 		names, readErr := f.Readdirnames(128)
 		for _, name := range names {
+			if excluded[name] {
+				continue
+			}
 			if strings.HasPrefix(name, "receipt-group-") {
 				if err := validateGroupArtifactFileName(name); err != nil {
 					return err
@@ -223,7 +230,7 @@ func verifyGroupSessionInventory(dir string, open ReceiptGroupOpen) error {
 			_, err := recorder.WalkEvidenceFile(path, nil, captureFirst)
 			var torn *recorder.TornTailError
 			if errors.As(err, &torn) {
-				files, listErr := recorderFiles(dir, session)
+				files, listErr := recorderFilesScoped(dir, session, excluded)
 				if listErr != nil {
 					return fmt.Errorf("list unlisted receipt run %q: %w", session, listErr)
 				}
@@ -291,9 +298,13 @@ func verifyGroupTransitionInventoryLinks(dir, openHash, closeHash string, truste
 }
 
 func verifyGroupTransitionInventoryLinksWithContext(dir, openHash, closeHash string, trusted []string, verifyLink bool, ceremony *startupGroupVerification) error {
+	return verifyGroupTransitionInventoryLinksScoped(dir, openHash, closeHash, trusted, verifyLink, groupVerifyScope{ceremony: ceremony})
+}
+
+func verifyGroupTransitionInventoryLinksScoped(dir, openHash, closeHash string, trusted []string, verifyLink bool, scope groupVerifyScope) error {
 	count := 0
 	successorID := ""
-	returnErr := walkInventoryNames(dir, func(name string) error {
+	returnErr := walkLegacyInventoryNames(dir, scope.excluded, func(name string) error {
 		if !strings.HasPrefix(name, "receipt-group-") || !strings.HasSuffix(name, "-transition.json") {
 			return nil
 		}
@@ -337,7 +348,7 @@ func verifyGroupTransitionInventoryLinksWithContext(dir, openHash, closeHash str
 		return returnErr
 	}
 	newName, _ := ReceiptGroupFileName(successorID, "open")
-	newRaw, err := readBoundedGroupFile(dir, newName)
+	newRaw, err := scope.read(dir, newName)
 	if err != nil {
 		return fmt.Errorf("receipt group successor opening missing: %w", err)
 	}
@@ -346,7 +357,7 @@ func verifyGroupTransitionInventoryLinksWithContext(dir, openHash, closeHash str
 		return err
 	}
 	newDigest := sha256.Sum256(newRaw)
-	return verifyReceiptGroupTransitionWithContext(dir, newOpen, hex.EncodeToString(newDigest[:]), trusted, ceremony)
+	return verifyReceiptGroupTransitionScoped(dir, newOpen, hex.EncodeToString(newDigest[:]), trusted, scope)
 }
 
 func groupGateFromFirstEntry(entry recorder.Entry) (ReceiptGroupBinding, bool, error) {
@@ -390,9 +401,22 @@ func walkInventoryNames(dir string, visit func(string) error) error {
 // shard look like ordinary single-session evidence. A positive maxEntries
 // applies the same fail-closed directory bound used by read-only views.
 func ReceiptGroupEvidencePresent(dir string, maxEntries int) (bool, error) {
+	return receiptGroupEvidencePresent(dir, maxEntries, nil)
+}
+
+func walkLegacyInventoryNames(dir string, excluded map[string]bool, visit func(string) error) error {
+	return walkInventoryNames(dir, func(name string) error {
+		if excluded[name] {
+			return nil
+		}
+		return visit(name)
+	})
+}
+
+func receiptGroupEvidencePresent(dir string, maxEntries int, excluded map[string]bool) (bool, error) {
 	found := errors.New("receipt group evidence found")
 	count := 0
-	err := walkInventoryNames(dir, func(name string) error {
+	err := walkLegacyInventoryNames(dir, excluded, func(name string) error {
 		count++
 		if maxEntries > 0 && count > maxEntries {
 			return fmt.Errorf("%w: evidence directory exceeds %d entries", recorder.ErrEvidenceReadLimitExceeded, maxEntries)
@@ -459,22 +483,40 @@ type groupBatchTorn struct {
 	err     error
 }
 
+type groupClaimScan struct {
+	onTorn   func(groupBatchTorn)
+	shared   *startupSessionVerification
+	walk     func(func(recorder.Entry) error) error
+	excluded map[string]bool
+}
+
 func indexAELClaimsForSession(dir, session, currentGroupID, predecessorGroupID string, trusted []string, addClaim func(run, session, groupID, signer string, completed bool) error) error {
-	return indexAELClaimsForSessionBatch(dir, session, currentGroupID, predecessorGroupID, trusted, addClaim, nil)
+	return indexAELClaimsForSessionBatch(dir, session, currentGroupID, predecessorGroupID, trusted, addClaim, groupClaimScan{})
 }
 
-func indexAELClaimsForSessionBatch(dir, session, currentGroupID, predecessorGroupID string, trusted []string, addClaim func(run, session, groupID, signer string, completed bool) error, onTorn func(groupBatchTorn)) error {
-	return indexAELClaimsForSessionWithWalk(dir, session, currentGroupID, predecessorGroupID, trusted, addClaim, onTorn, nil, nil)
+func walkLegacySessionHistory(dir, session string, excluded map[string]bool, visit func(recorder.Entry) error) error {
+	if len(excluded) == 0 {
+		return recorder.WalkSessionHistory(dir, session, visit)
+	}
+	location, err := recorder.ResolveEvidenceLocation(dir, "")
+	if err != nil {
+		return fmt.Errorf("resolve evidence location: %w", err)
+	}
+	location.ExcludedNames = excluded
+	return recorder.WalkSessionHistoryResolved(location, session, visit)
 }
 
-func indexAELClaimsForSessionWithWalk(dir, session, currentGroupID, predecessorGroupID string, trusted []string, addClaim func(run, session, groupID, signer string, completed bool) error, onTorn func(groupBatchTorn), shared *startupSessionVerification, walk func(func(recorder.Entry) error) error) error {
+func indexAELClaimsForSessionBatch(dir, session, currentGroupID, predecessorGroupID string, trusted []string, addClaim func(run, session, groupID, signer string, completed bool) error, scan groupClaimScan) error {
+	onTorn, shared, walk := scan.onTorn, scan.shared, scan.walk
 	var whole *WholeRecorderWalker
 	v1 := NewChainWalker(trusted)
 	if shared != nil {
 		v1 = shared.v1
 	}
 	if walk == nil {
-		walk = func(visit func(recorder.Entry) error) error { return recorder.WalkSessionHistory(dir, session, visit) }
+		walk = func(visit func(recorder.Entry) error) error {
+			return walkLegacySessionHistory(dir, session, scan.excluded, visit)
+		}
 	}
 	var run, signer string
 	completed := false
@@ -496,7 +538,7 @@ func indexAELClaimsForSessionWithWalk(dir, session, currentGroupID, predecessorG
 			}
 			if gated {
 				groupID = gate.GroupID
-				if err := verifyInventoryGate(dir, session, gate, trusted); err != nil {
+				if err := verifyInventoryGateScoped(dir, session, gate, trusted, scan.excluded); err != nil {
 					return err
 				}
 				whole = NewGroupRecorderWalker()
@@ -581,11 +623,15 @@ func indexAELClaimsForSessionWithWalk(dir, session, currentGroupID, predecessorG
 }
 
 func verifyInventoryGate(dir, session string, gate ReceiptGroupBinding, trusted []string) error {
+	return verifyInventoryGateScoped(dir, session, gate, trusted, nil)
+}
+
+func verifyInventoryGateScoped(dir, session string, gate ReceiptGroupBinding, trusted []string, excluded map[string]bool) error {
 	name, err := ReceiptGroupFileName(gate.GroupID, "open")
 	if err != nil {
 		return err
 	}
-	raw, err := readBoundedGroupFile(dir, name)
+	raw, err := (groupVerifyScope{excluded: excluded}).read(dir, name)
 	if err != nil {
 		return err
 	}

@@ -127,7 +127,7 @@ func verifyPathsInspect(ctx context.Context, paths []string, opts Options, skip 
 	if err := v.verifySuccession(); err != nil {
 		return Result{}, err
 	}
-	cutoverEnds, err := v.verifyCutover(legacy, inventories, len(files) > 0)
+	cutoverEnds, err := v.verifyCutover(legacy, inventories, files)
 	if err != nil {
 		return Result{}, err
 	}

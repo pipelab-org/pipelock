@@ -48,7 +48,7 @@ func isGroupArtifact(name string) bool {
 	return strings.HasPrefix(name, "receipt-group-") && strings.HasSuffix(name, ".json")
 }
 
-func (v *verification) verifyLegacy(paths []string) (map[legacyIdentity]legacyPresentation, error) {
+func (v *verification) verifyLegacy(paths []string, excluded map[string]bool) (map[legacyIdentity]legacyPresentation, error) {
 	presented := map[legacyIdentity]legacyPresentation{}
 	if len(paths) == 0 {
 		v.checkLegacySelection(presented)
@@ -91,7 +91,7 @@ func (v *verification) verifyLegacy(paths []string) (map[legacyIdentity]legacyPr
 		}
 	}
 	for _, dir := range sortedKeys(groupDirs) {
-		summary, err := legacy.VerifyReceiptGroups(dir, keys, func(group legacy.ReceiptGroupResult) error {
+		summary, err := legacy.VerifyLegacyReceiptGroups(dir, keys, excluded, func(group legacy.ReceiptGroupResult) error {
 			if v.skip == codeLegacyGroupIncomplete && group.Verdict == legacy.GroupIncomplete {
 				group.Verdict = legacy.GroupValid
 			}
@@ -138,7 +138,7 @@ func (v *verification) verifyLegacy(paths []string) (map[legacyIdentity]legacyPr
 			ordinary, cached := ordinarySessions[base]
 			if !cached {
 				var err error
-				ordinary, err = legacy.ResolveBaseSessionsExcludingReceiptGroups(dir, base)
+				ordinary, err = legacy.ResolveLegacyBaseSessions(dir, base, excluded)
 				if err != nil {
 					return nil, fmt.Errorf("list legacy receipt sessions: %w", err)
 				}
@@ -157,7 +157,7 @@ func (v *verification) verifyLegacy(paths []string) (map[legacyIdentity]legacyPr
 		if absErr != nil {
 			return nil, fmt.Errorf("resolve legacy receipt directory: %w", absErr)
 		}
-		location := recorder.EvidenceLocation{Root: root, Dir: root}
+		location := recorder.EvidenceLocation{Root: root, Dir: root, ExcludedNames: excluded}
 		batch := legacyBatch{recorder: true, session: session}
 		err := recorder.WithSessionHistorySnapshot(location, session, func() error {
 			var readErr error
@@ -175,7 +175,7 @@ func (v *verification) verifyLegacy(paths []string) (map[legacyIdentity]legacyPr
 	}
 	for _, base := range sortedKeys(bases) {
 		dir := bases[base]
-		v.verifyLegacyContinuity(dir, base, keys, groupDirs[dir])
+		v.verifyLegacyContinuity(dir, base, keys, groupDirs[dir], excluded)
 	}
 	v.checkLegacySelection(presented)
 	if err := v.verifyLegacyEndpoint(presented); err != nil {
@@ -188,9 +188,9 @@ func (v *verification) verifyLegacy(paths []string) (map[legacyIdentity]legacyPr
 	return presented, nil
 }
 
-func (v *verification) verifyLegacyContinuity(dir, base string, keys []string, grouped bool) {
+func (v *verification) verifyLegacyContinuity(dir, base string, keys []string, grouped bool, excluded map[string]bool) {
 	report, err := legacy.VerifyBase(dir, base, legacy.BaseVerifyOptions{
-		TrustedKeys: keys, ExcludeReceiptGroupSessions: grouped,
+		TrustedKeys: keys, ExcludeReceiptGroupSessions: grouped, ExcludedNames: excluded,
 	})
 	if err == nil && report.Healthy() {
 		return

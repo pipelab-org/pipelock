@@ -25,7 +25,7 @@ type wasmIndexedRecorderFile struct {
 // indexRecorderFilesExcludingGroupsSpill keeps the same session grouping and
 // ordering as the native disk index. In the browser the input archive is
 // already limited to 4096 entries, so sorting this bounded slice is safe.
-func indexRecorderFilesExcludingGroupsSpill(dir string) (evidenceIndex, error) {
+func indexRecorderFilesExcludingGroupsSpill(dir string, excluded map[string]bool) (evidenceIndex, error) {
 	entries, truncated, err := recorder.ReadEvidenceLocationEntriesBounded(
 		recorder.EvidenceLocation{Root: dir, Dir: dir}, maxWASMReceiptInventoryEntries)
 	if err != nil {
@@ -36,6 +36,9 @@ func indexRecorderFilesExcludingGroupsSpill(dir string) (evidenceIndex, error) {
 	}
 	files := make([]wasmIndexedRecorderFile, 0, len(entries))
 	for _, entry := range entries {
+		if excluded[entry.Name()] {
+			continue
+		}
 		session, seq, ok := evidencename.Parse(entry.Name())
 		if !ok {
 			continue

@@ -23,7 +23,7 @@ func TestLegacyExclusionIndexRefusesUnavailableInventoryAndScratch(t *testing.T)
 		t.Fatalf("missing excluded base report=%+v err=%v", report, err)
 	}
 	t.Setenv("TMPDIR", missing)
-	if index, err := indexRecorderFilesExcludingGroupsSpill(dir); index != nil || !errors.Is(err, os.ErrNotExist) {
+	if index, err := indexRecorderFilesExcludingGroupsSpill(dir, nil); index != nil || !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("unavailable scratch index=%v err=%v", index, err)
 	}
 }

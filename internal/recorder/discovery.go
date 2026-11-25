@@ -27,6 +27,9 @@ type EvidenceLocation struct {
 	Root string
 	ID   string
 	Dir  string
+	// ExcludedNames are immediate files claimed by another evidence profile
+	// in this verification. The authoritative history walkers skip them.
+	ExcludedNames map[string]bool
 }
 
 // DiscoverEvidenceLocations finds evidence-file directories under root without

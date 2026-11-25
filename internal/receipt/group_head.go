@@ -26,12 +26,16 @@ func VerifyGroupShardHead(dir string, open ReceiptGroupOpen, openHash string, in
 }
 
 func verifyGroupShardHeadWithSession(dir string, open ReceiptGroupOpen, openHash string, index int, session *startupSessionVerification) (ReceiptGroupShardHead, error) {
+	return verifyGroupShardHeadScoped(dir, open, openHash, index, session, nil)
+}
+
+func verifyGroupShardHeadScoped(dir string, open ReceiptGroupOpen, openHash string, index int, session *startupSessionVerification, excluded map[string]bool) (ReceiptGroupShardHead, error) {
 	v, err := newGroupShardVerifier(open, openHash, index)
 	if err != nil {
 		return ReceiptGroupShardHead{}, err
 	}
 	walk := func(visit func(recorder.Entry) error) error {
-		return recorder.WalkSessionHistory(dir, v.shard.SessionID, visit)
+		return walkLegacySessionHistory(dir, v.shard.SessionID, excluded, visit)
 	}
 	if session != nil {
 		v.startup = session

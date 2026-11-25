@@ -18,7 +18,7 @@ import (
 // indexRecorderFilesExcludingGroupsSpill orders filenames on disk before
 // classifying each session. A directory read has no ordering guarantee, and
 // os.ReadDir retains every historical group filename in memory.
-func indexRecorderFilesExcludingGroupsSpill(dir string) (evidenceIndex, error) {
+func indexRecorderFilesExcludingGroupsSpill(dir string, excluded map[string]bool) (evidenceIndex, error) {
 	tmp, err := os.MkdirTemp("", "pipelock-legacy-index-")
 	if err != nil {
 		return nil, err
@@ -44,6 +44,9 @@ func indexRecorderFilesExcludingGroupsSpill(dir string) (evidenceIndex, error) {
 		return nil, err
 	}
 	err = walkInventoryNames(dir, func(name string) error {
+		if excluded[name] {
+			return nil
+		}
 		session, seq, ok := evidencename.Parse(name)
 		if !ok {
 			return nil

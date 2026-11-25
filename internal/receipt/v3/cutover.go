@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 	"slices"
 	"strings"
 )
@@ -80,8 +81,16 @@ func (p legacyPresentation) compareCutoverPosition(row InventoryChain) int {
 	return cmp.Compare(p.Seq, row.Seq)
 }
 
-func (v *verification) verifyCutover(oldFiles []string, inventories map[string][]string, claimed bool) (map[string]stagedRecord, error) {
-	old, err := v.verifyLegacy(oldFiles)
+func (v *verification) verifyCutover(oldFiles []string, inventories map[string][]string, files []inputFile) (map[string]stagedRecord, error) {
+	claimed := len(files) != 0
+	var excluded map[string]bool
+	if claimed && v.opts.Directory {
+		excluded = make(map[string]bool, len(files))
+		for _, file := range files {
+			excluded[filepath.Base(file.path)] = true
+		}
+	}
+	old, err := v.verifyLegacy(oldFiles, excluded)
 	if err != nil {
 		return nil, err
 	}

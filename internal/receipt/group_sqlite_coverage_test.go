@@ -37,7 +37,7 @@ func TestBatchIndexRejectsClosedDatabaseAndUnrelatedTornGroup(t *testing.T) {
 		t.Fatal(err)
 	}
 	index := &sqliteGroupAELBatchIndex{db: db}
-	if err := index.build(t.TempDir(), nil); err == nil || !strings.Contains(err.Error(), "database is closed") {
+	if err := index.build(t.TempDir(), nil, nil); err == nil || !strings.Contains(err.Error(), "database is closed") {
 		t.Fatalf("closed batch build: %v", err)
 	}
 	open := ReceiptGroupOpen{GroupID: strings.Repeat("a", 32)}

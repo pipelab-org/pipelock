@@ -92,7 +92,46 @@ func verifyReceiptGroupWithIndex(dir, groupID string, trusted []string, index gr
 	return verifyReceiptGroupWithContext(dir, groupID, trusted, index, nil)
 }
 
-func verifyReceiptGroupWithContext(dir, groupID string, trusted []string, index groupAELBatchIndex, ceremony *startupGroupVerification) (result ReceiptGroupResult) {
+func verifyReceiptGroupWithContext(dir, groupID string, trusted []string, index groupAELBatchIndex, ceremony *startupGroupVerification) ReceiptGroupResult {
+	return verifyReceiptGroupScoped(dir, groupID, trusted, groupVerifyScope{index: index, ceremony: ceremony})
+}
+
+type groupVerifyScope struct {
+	index    groupAELBatchIndex
+	ceremony *startupGroupVerification
+	excluded map[string]bool
+}
+
+func (scope groupVerifyScope) read(dir, name string) ([]byte, error) {
+	if scope.excluded[name] {
+		return nil, os.ErrNotExist
+	}
+	return readBoundedGroupFileUsing(dir, name, scope.ceremony)
+}
+
+func (scope groupVerifyScope) head(dir string, open ReceiptGroupOpen, hash string, index int) (ReceiptGroupShardHead, error) {
+	if len(scope.excluded) == 0 {
+		return verifyGroupShardHeadUsing(dir, open, hash, index, scope.ceremony)
+	}
+	return verifyGroupShardHeadScoped(dir, open, hash, index, nil, scope.excluded)
+}
+
+func (scope groupVerifyScope) prefix(dir string, open ReceiptGroupOpen, hash string, index int) (groupPrefixHead, error) {
+	if len(scope.excluded) == 0 {
+		return verifyGroupShardPrefixUsing(dir, open, hash, index, scope.ceremony)
+	}
+	return verifyGroupShardPrefixScoped(dir, open, hash, index, nil, scope.excluded)
+}
+
+func (scope groupVerifyScope) recoveryBinding(dir string, seal RecoverySeal, trusted []string) error {
+	if len(scope.excluded) == 0 {
+		return verifyRecoveryBindingUsing(dir, seal, trusted, scope.ceremony)
+	}
+	return verifyRecoveryBindingScoped(dir, seal, trusted, false, scope.excluded)
+}
+
+func verifyReceiptGroupScoped(dir, groupID string, trusted []string, scope groupVerifyScope) (result ReceiptGroupResult) {
+	index, ceremony := scope.index, scope.ceremony
 	result = ReceiptGroupResult{GroupID: groupID, Verdict: GroupInvalid}
 	if len(trusted) == 0 {
 		result.Error = "receipt group verification requires a trusted signer key"
@@ -125,7 +164,7 @@ func verifyReceiptGroupWithContext(dir, groupID string, trusted []string, index 
 		result.setReadError(err)
 		return result
 	}
-	openBytes, err := readBoundedGroupFileUsing(dir, openName, ceremony)
+	openBytes, err := scope.read(dir, openName)
 	if err != nil {
 		result.setReadError(fmt.Errorf("read receipt group opening: %w", err))
 		return result
@@ -140,17 +179,17 @@ func verifyReceiptGroupWithContext(dir, groupID string, trusted []string, index 
 	result.OpenManifestSHA = hex.EncodeToString(openSum[:])
 	result.ShardCount = len(open.Shards)
 	closeName, _ := ReceiptGroupFileName(groupID, "close")
-	closeBytes, err := readBoundedGroupFileUsing(dir, closeName, ceremony)
+	closeBytes, err := scope.read(dir, closeName)
 	if errors.Is(err, os.ErrNotExist) {
 		// An incomplete predecessor remains incomplete, but any successor
 		// transition already on disk must still validate its frozen heads and
 		// recovery seals. Otherwise a forged or deleted seal could hide behind
 		// this early verdict.
-		if err := verifyGroupSessionInventory(dir, open); err != nil {
+		if err := verifyGroupSessionInventoryScoped(dir, open, scope.excluded); err != nil {
 			result.setReadError(err)
 			return result
 		}
-		if err := verifyGroupTransitionInventoryWithContext(dir, result.OpenManifestSHA, "", trusted, ceremony); err != nil {
+		if err := verifyGroupTransitionInventoryLinksScoped(dir, result.OpenManifestSHA, "", trusted, true, scope); err != nil {
 			result.setReadError(err)
 			return result
 		}
@@ -186,7 +225,7 @@ func verifyReceiptGroupWithContext(dir, groupID string, trusted []string, index 
 	closeSum := sha256.Sum256(closeBytes)
 	result.CloseManifestSHA = hex.EncodeToString(closeSum[:])
 	for i, claimed := range closed.Shards {
-		actual, err := verifyGroupShardHeadUsing(dir, open, result.OpenManifestSHA, i, ceremony)
+		actual, err := scope.head(dir, open, result.OpenManifestSHA, i)
 		if err != nil {
 			result.setReadError(fmt.Errorf("receipt group shard %d: %w", i, err))
 			return result
@@ -199,16 +238,16 @@ func verifyReceiptGroupWithContext(dir, groupID string, trusted []string, index 
 	// A successor is not valid merely because its own shards are closed. Its
 	// signed predecessor binding and transition must also be present.
 	if open.PreviousGroupID != "" {
-		if err := verifyReceiptGroupTransitionWithContext(dir, open, result.OpenManifestSHA, trusted, ceremony); err != nil {
+		if err := verifyReceiptGroupTransitionScoped(dir, open, result.OpenManifestSHA, trusted, scope); err != nil {
 			result.setReadError(err)
 			return result
 		}
 	}
-	if err := verifyGroupSessionInventory(dir, open); err != nil {
+	if err := verifyGroupSessionInventoryScoped(dir, open, scope.excluded); err != nil {
 		result.setReadError(err)
 		return result
 	}
-	if err := verifyGroupTransitionInventoryWithContext(dir, result.OpenManifestSHA, result.CloseManifestSHA, trusted, ceremony); err != nil {
+	if err := verifyGroupTransitionInventoryLinksScoped(dir, result.OpenManifestSHA, result.CloseManifestSHA, trusted, true, scope); err != nil {
 		result.setReadError(err)
 		return result
 	}
@@ -230,7 +269,7 @@ func verifyReceiptGroupWithContext(dir, groupID string, trusted []string, index 
 	predecessorIncomplete := false
 	if open.PreviousGroupID != "" {
 		previousClose, _ := ReceiptGroupFileName(open.PreviousGroupID, "close")
-		if _, err := os.Lstat(filepath.Join(filepath.Clean(dir), previousClose)); errors.Is(err, os.ErrNotExist) {
+		if _, err := os.Lstat(filepath.Join(filepath.Clean(dir), previousClose)); scope.excluded[previousClose] || errors.Is(err, os.ErrNotExist) {
 			predecessorIncomplete = true
 		} else if err != nil {
 			result.Error = fmt.Sprintf("inspect predecessor group close: %v", err)
@@ -277,8 +316,14 @@ type ReceiptGroupInventoryResult struct {
 // directory fail the inventory. Reports are delivered as they are verified;
 // callers must not present an earlier GROUP_VALID as an overall pass if this
 // function returns an error or a non-valid group count.
-func VerifyReceiptGroups(dir string, trusted []string, visit func(ReceiptGroupResult) error) (summary ReceiptGroupInventoryResult, retErr error) {
-	hasGroupEvidence, err := ReceiptGroupEvidencePresent(dir, 0)
+func VerifyReceiptGroups(dir string, trusted []string, visit func(ReceiptGroupResult) error) (ReceiptGroupInventoryResult, error) {
+	return VerifyLegacyReceiptGroups(dir, trusted, nil, visit)
+}
+
+// VerifyLegacyReceiptGroups omits files already claimed by another evidence
+// profile before dispatching legacy group decoders.
+func VerifyLegacyReceiptGroups(dir string, trusted []string, excluded map[string]bool, visit func(ReceiptGroupResult) error) (summary ReceiptGroupInventoryResult, retErr error) {
+	hasGroupEvidence, err := receiptGroupEvidencePresent(dir, 0, excluded)
 	if err != nil {
 		return summary, err
 	}
@@ -297,7 +342,7 @@ func VerifyReceiptGroups(dir string, trusted []string, visit func(ReceiptGroupRe
 	}()
 	// Validate every artifact name and reject close/transition records that
 	// have no opening. Do not accumulate IDs: a second pass verifies openings.
-	err = walkInventoryNames(dir, func(name string) error {
+	err = walkLegacyInventoryNames(dir, excluded, func(name string) error {
 		if !strings.HasPrefix(name, "receipt-group-") {
 			return nil
 		}
@@ -309,7 +354,7 @@ func VerifyReceiptGroups(dir string, trusted []string, visit func(ReceiptGroupRe
 		}
 		id := name[len("receipt-group-") : len("receipt-group-")+32]
 		openName, _ := ReceiptGroupFileName(id, "open")
-		if _, err := os.Lstat(filepath.Join(filepath.Clean(dir), openName)); errors.Is(err, os.ErrNotExist) {
+		if _, err := os.Lstat(filepath.Join(filepath.Clean(dir), openName)); excluded[openName] || errors.Is(err, os.ErrNotExist) {
 			result := ReceiptGroupResult{GroupID: id, Verdict: GroupInvalid, Error: "receipt group artifact has no opening manifest"}
 			if visit != nil {
 				if visitErr := visit(result); visitErr != nil {
@@ -328,7 +373,7 @@ func VerifyReceiptGroups(dir string, trusted []string, visit func(ReceiptGroupRe
 	}
 	// A gated session without any matching opening is still group evidence and
 	// cannot fall back to the legacy single-shard verifier.
-	err = walkInventoryNames(dir, func(name string) error {
+	err = walkLegacyInventoryNames(dir, excluded, func(name string) error {
 		session, start, ok := evidencename.Parse(name)
 		if !ok || start != 0 {
 			return nil
@@ -349,7 +394,11 @@ func VerifyReceiptGroups(dir string, trusted []string, visit func(ReceiptGroupRe
 		}
 		if gateErr == nil {
 			openName, _ := ReceiptGroupFileName(gate.GroupID, "open")
-			_, gateErr = os.Lstat(filepath.Join(filepath.Clean(dir), openName))
+			if excluded[openName] {
+				gateErr = os.ErrNotExist
+			} else {
+				_, gateErr = os.Lstat(filepath.Join(filepath.Clean(dir), openName))
+			}
 		}
 		if gateErr == nil {
 			return nil
@@ -367,17 +416,17 @@ func VerifyReceiptGroups(dir string, trusted []string, visit func(ReceiptGroupRe
 	if err != nil {
 		return summary, err
 	}
-	index, indexErr := newGroupAELBatchIndex(dir, trusted)
+	index, indexErr := newGroupAELBatchIndexScoped(dir, trusted, excluded)
 	if indexErr != nil {
 		index = failedGroupAELBatchIndex{err: indexErr}
 	}
 	defer func() { retErr = errors.Join(retErr, index.Close()) }()
-	err = walkInventoryNames(dir, func(name string) error {
+	err = walkLegacyInventoryNames(dir, excluded, func(name string) error {
 		if !strings.HasPrefix(name, "receipt-group-") || !strings.HasSuffix(name, "-open.json") {
 			return nil
 		}
 		id := name[len("receipt-group-") : len("receipt-group-")+32]
-		result := verifyReceiptGroupWithIndex(dir, id, trusted, index)
+		result := verifyReceiptGroupScoped(dir, id, trusted, groupVerifyScope{index: index, excluded: excluded})
 		if visit != nil {
 			if visitErr := visit(result); visitErr != nil {
 				return visitErr
@@ -427,7 +476,12 @@ func missingGroupTransitionError(groupID string, err error) error {
 	return fmt.Errorf("receipt group transition missing for %s; stop the recorder and run pipelock evidence repair-group-transition --dir <evidence-dir> --group %s --key-file <opening-key>: %w", groupID, groupID, err)
 }
 
-func verifyReceiptGroupTransitionWithContext(dir string, successor ReceiptGroupOpen, newHash string, trusted []string, ceremony *startupGroupVerification) (retErr error) {
+func verifyReceiptGroupTransitionWithContext(dir string, successor ReceiptGroupOpen, newHash string, trusted []string, ceremony *startupGroupVerification) error {
+	return verifyReceiptGroupTransitionScoped(dir, successor, newHash, trusted, groupVerifyScope{ceremony: ceremony})
+}
+
+func verifyReceiptGroupTransitionScoped(dir string, successor ReceiptGroupOpen, newHash string, trusted []string, scope groupVerifyScope) (retErr error) {
+	ceremony := scope.ceremony
 	if ceremony != nil {
 		if err := ceremony.check(); err != nil {
 			return err
@@ -442,7 +496,7 @@ func verifyReceiptGroupTransitionWithContext(dir string, successor ReceiptGroupO
 		}()
 	}
 	oldName, _ := ReceiptGroupFileName(successor.PreviousGroupID, "open")
-	oldBytes, err := readBoundedGroupFileUsing(dir, oldName, ceremony)
+	oldBytes, err := scope.read(dir, oldName)
 	if err != nil {
 		return fmt.Errorf("receipt group predecessor opening missing: %w", err)
 	}
@@ -458,7 +512,7 @@ func verifyReceiptGroupTransitionWithContext(dir string, successor ReceiptGroupO
 	oldCloseName, _ := ReceiptGroupFileName(predecessor.GroupID, "close")
 	oldCloseHash := ""
 	var predecessorClose ReceiptGroupClose
-	if oldCloseBytes, err := readBoundedGroupFileUsing(dir, oldCloseName, ceremony); err == nil {
+	if oldCloseBytes, err := scope.read(dir, oldCloseName); err == nil {
 		predecessorClose, err = UnmarshalReceiptGroupClose(oldCloseBytes, predecessor, oldHash, trusted)
 		if err != nil {
 			return err
@@ -469,7 +523,7 @@ func verifyReceiptGroupTransitionWithContext(dir string, successor ReceiptGroupO
 		return err
 	}
 	transitionName, _ := ReceiptGroupFileName(successor.GroupID, "transition")
-	transitionBytes, err := readBoundedGroupFileUsing(dir, transitionName, ceremony)
+	transitionBytes, err := scope.read(dir, transitionName)
 	if errors.Is(err, os.ErrNotExist) {
 		return missingGroupTransitionError(successor.GroupID, err)
 	}
@@ -480,7 +534,7 @@ func verifyReceiptGroupTransitionWithContext(dir string, successor ReceiptGroupO
 	if err != nil {
 		return err
 	}
-	if err := verifyGroupTransitionInventoryLinks(dir, oldHash, oldCloseHash, trusted, false); err != nil {
+	if err := verifyGroupTransitionInventoryLinksScoped(dir, oldHash, oldCloseHash, trusted, false, scope); err != nil {
 		return err
 	}
 	for i, claim := range transition.Predecessors {
@@ -489,13 +543,13 @@ func verifyReceiptGroupTransitionWithContext(dir string, successor ReceiptGroupO
 			if claim.ShardIndex != signed.ShardIndex || claim.SessionID != signed.SessionID || claim.FinalChainSeq != signed.FinalChainSeq || claim.FinalChainHash != signed.FinalChainHash {
 				return fmt.Errorf("receipt group predecessor shard %d differs from signed close", i)
 			}
-			head, err := verifyGroupShardHeadUsing(dir, predecessor, oldHash, i, ceremony)
+			head, err := scope.head(dir, predecessor, oldHash, i)
 			if err != nil || claim.ShardIndex != i || claim.SessionID != head.SessionID || claim.FinalChainSeq != head.FinalChainSeq || claim.FinalChainHash != head.FinalChainHash || claim.RecoverySealSHA256 != "" {
 				return fmt.Errorf("receipt group predecessor shard %d differs from transition", i)
 			}
 			continue
 		}
-		head, err := verifyGroupShardPrefixUsing(dir, predecessor, oldHash, i, ceremony)
+		head, err := scope.prefix(dir, predecessor, oldHash, i)
 		if err != nil {
 			return fmt.Errorf("verify receipt group incomplete predecessor shard %d: %w", i, err)
 		}
@@ -526,7 +580,7 @@ func verifyReceiptGroupTransitionWithContext(dir string, successor ReceiptGroupO
 		if seal.PredecessorSession != claim.SessionID || seal.SuccessorSession != successor.Shards[i%len(successor.Shards)].SessionID {
 			return fmt.Errorf("receipt group predecessor shard %d recovery seal binding differs", i)
 		}
-		if err := verifyRecoveryBindingUsing(dir, seal, trusted, ceremony); err != nil {
+		if err := scope.recoveryBinding(dir, seal, trusted); err != nil {
 			return fmt.Errorf("receipt group predecessor shard %d recovery seal invalid: %w", i, err)
 		}
 	}

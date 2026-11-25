@@ -39,6 +39,28 @@ func v3GroupRecipes(t *testing.T) []v3Recipe {
 	complete := v3GroupRecipe(t, "group-with-ordinary", valid, validKeys, ordinary, false)
 	restart := v3GroupRecipe(t, "group-shards-excluded-from-restart", successor, successorKeys, ordinary, true)
 
+	claimed := complete
+	claimed.name, claimed.verdict, claimed.code = "group-with-malformed-v3-claim", "INVALID", "FILE_LAYOUT"
+	// This name also parses as the first shard of a legacy recorder session.
+	claimed.files = slices.Clone(complete.files)
+	for _, name := range []string{
+		"evidence-proxy.run.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-0.receipt-v3.jsonl",
+		"evidence-proxy.run.1806d08396effa4a8f31e45aa8165c84-0.receipt-v3.jsonl",
+	} {
+		claimed.files = append(claimed.files, v3File{name, []byte("malformed\n")})
+	}
+
+	unclaimed := complete
+	unclaimed.name, unclaimed.verdict, unclaimed.code = "group-with-unclaimed-v3-content", "INVALID", "V3_CONTENT_UNCLAIMED"
+	unclaimed.files = slices.Clone(complete.files)
+	const unclaimedContent = `{"payloadType":"application/vnd.pipelock.receipt.v3+json"}` + "\n"
+	for _, name := range []string{
+		"evidence-proxy.run.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-content.jsonl",
+		"receipt-group-unclaimed.json",
+	} {
+		unclaimed.files = append(unclaimed.files, v3File{name, []byte(unclaimedContent)})
+	}
+
 	tampered := complete
 	tampered.name, tampered.verdict, tampered.code = "group-with-tampered-shard", "INVALID", groupInvalid
 	tampered.files = slices.Clone(complete.files)
@@ -72,7 +94,7 @@ func v3GroupRecipes(t *testing.T) []v3Recipe {
 		[]v3.InventoryChain{ordinary.row}, append(slices.Clone(validKeys), ordinary.key))
 	orphan.verdict, orphan.code = "INVALID", groupInvalid
 	orphan.extraInvalid = []string{"LEGACY_CHAIN_UNLISTED"}
-	return []v3Recipe{complete, tampered, orphan, restart}
+	return []v3Recipe{complete, claimed, unclaimed, tampered, orphan, restart}
 }
 
 func v3ReadGroupFiles(t *testing.T, archive *zip.ReadCloser, scenario string) ([]v3File, []string) {

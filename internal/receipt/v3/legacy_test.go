@@ -289,7 +289,7 @@ func TestLegacyEndpointPinsEvidenceChainOfSelectedSession(t *testing.T) {
 
 func TestLegacyContinuityReadFailure(t *testing.T) {
 	v := verification{}
-	v.verifyLegacyContinuity(filepath.Join(t.TempDir(), "missing"), "example", nil, false)
+	v.verifyLegacyContinuity(filepath.Join(t.TempDir(), "missing"), "example", nil, false, nil)
 	if !hasFinding(v.result, codeLegacyInvalid) || len(v.result.Legacy) != 1 ||
 		v.result.Legacy[0].Verdict != "RESTART CONTINUITY INCOMPLETE" || v.result.Legacy[0].Class != legacyFailure {
 		t.Fatalf("continuity diagnostic: %+v", v.result)

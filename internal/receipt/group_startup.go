@@ -312,14 +312,14 @@ func (c *startupGroupVerification) indexSession(open ReceiptGroupOpen, incomplet
 	if incomplete {
 		current = open.GroupID
 	}
-	return indexAELClaimsForSessionWithWalk(c.dir, session, current, open.PreviousGroupID, c.trusted, add, nil, nil, func(visit func(recorder.Entry) error) error {
+	return indexAELClaimsForSessionBatch(c.dir, session, current, open.PreviousGroupID, c.trusted, add, groupClaimScan{walk: func(visit func(recorder.Entry) error) error {
 		return recorder.WalkSessionHistoryWithOptions(c.dir, session, c.walkOptions(), func(e recorder.Entry) error {
 			if err := visit(e); err != nil {
 				return err
 			}
 			return c.walkOptions().Report(verification.Progress{Kind: "recorder_record", Session: session, Records: 1})
 		})
-	})
+	}})
 }
 
 func (c *startupGroupVerification) verifyAEL(run, signer string, completed bool) (ael.VerifiedHead, error) {

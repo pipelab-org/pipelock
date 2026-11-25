@@ -27,10 +27,18 @@ type sqliteGroupAELBatchIndex struct {
 }
 
 func newGroupAELBatchIndex(dir string, trusted []string) (groupAELBatchIndex, error) {
-	return newGroupAELBatchIndexWithConfigure(dir, trusted, configureScratchSQLite)
+	return newGroupAELBatchIndexScoped(dir, trusted, nil)
+}
+
+func newGroupAELBatchIndexScoped(dir string, trusted []string, excluded map[string]bool) (groupAELBatchIndex, error) {
+	return buildGroupAELBatchIndex(dir, trusted, configureScratchSQLite, excluded)
 }
 
 func newGroupAELBatchIndexWithConfigure(dir string, trusted []string, configure func(context.Context, *sql.DB) error) (groupAELBatchIndex, error) {
+	return buildGroupAELBatchIndex(dir, trusted, configure, nil)
+}
+
+func buildGroupAELBatchIndex(dir string, trusted []string, configure func(context.Context, *sql.DB) error, excluded map[string]bool) (groupAELBatchIndex, error) {
 	tmp, err := os.MkdirTemp("", "pipelock-group-inventory-")
 	if err != nil {
 		return nil, err
@@ -47,7 +55,7 @@ func newGroupAELBatchIndexWithConfigure(dir string, trusted []string, configure 
 		return nil, err
 	}
 	index := &sqliteGroupAELBatchIndex{db: db, tmp: tmp, openTailCounts: make(map[string]int)}
-	if err := index.build(dir, trusted); err != nil {
+	if err := index.build(dir, trusted, excluded); err != nil {
 		_ = index.Close()
 		return nil, err
 	}
@@ -58,7 +66,7 @@ func (index *sqliteGroupAELBatchIndex) Close() error {
 	return errors.Join(index.db.Close(), os.RemoveAll(index.tmp))
 }
 
-func (index *sqliteGroupAELBatchIndex) build(dir string, trusted []string) error {
+func (index *sqliteGroupAELBatchIndex) build(dir string, trusted []string, excluded map[string]bool) error {
 	ctx := context.Background()
 	for _, query := range []string{
 		`CREATE TABLE claims (run TEXT PRIMARY KEY, session TEXT NOT NULL, group_id TEXT NOT NULL, signer TEXT NOT NULL, completed INTEGER NOT NULL)`,
@@ -69,7 +77,7 @@ func (index *sqliteGroupAELBatchIndex) build(dir string, trusted []string) error
 			return err
 		}
 	}
-	if err := walkInventoryNames(dir, func(name string) error {
+	if err := walkLegacyInventoryNames(dir, excluded, func(name string) error {
 		session, seq, ok := evidencename.Parse(name)
 		if !ok {
 			return nil
@@ -88,7 +96,7 @@ func (index *sqliteGroupAELBatchIndex) build(dir string, trusted []string) error
 	}); err != nil {
 		return err
 	}
-	if err := walkInventoryNames(dir, func(name string) error {
+	if err := walkLegacyInventoryNames(dir, excluded, func(name string) error {
 		session, seq, ok := evidencename.Parse(name)
 		if !ok || seq != 0 {
 			return nil
@@ -96,7 +104,7 @@ func (index *sqliteGroupAELBatchIndex) build(dir string, trusted []string) error
 		return indexAELClaimsForSessionBatch(dir, session, "", "", trusted, func(run, session, groupID, signer string, completed bool) error {
 			_, err := index.db.ExecContext(ctx, `INSERT INTO claims(run, session, group_id, signer, completed) VALUES (?, ?, ?, ?, ?)`, run, session, groupID, signer, completed)
 			return claimInsertError(err, run)
-		}, index.addTorn)
+		}, groupClaimScan{onTorn: index.addTorn, excluded: excluded})
 	}); err != nil {
 		return err
 	}

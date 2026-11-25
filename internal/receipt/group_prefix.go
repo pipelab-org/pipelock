@@ -26,6 +26,10 @@ func verifyGroupShardPrefix(dir string, open ReceiptGroupOpen, openHash string, 
 }
 
 func verifyGroupShardPrefixWithSession(dir string, open ReceiptGroupOpen, openHash string, index int, shared *startupSessionVerification) (groupPrefixHead, error) {
+	return verifyGroupShardPrefixScoped(dir, open, openHash, index, shared, nil)
+}
+
+func verifyGroupShardPrefixScoped(dir string, open ReceiptGroupOpen, openHash string, index int, shared *startupSessionVerification, excluded map[string]bool) (groupPrefixHead, error) {
 	if index < 0 || index >= len(open.Shards) {
 		return groupPrefixHead{}, errors.New("receipt group prefix shard index is outside membership")
 	}
@@ -66,7 +70,7 @@ func verifyGroupShardPrefixWithSession(dir string, open ReceiptGroupOpen, openHa
 		return groupPrefixHead{seq: shared.durableSeq, hash: shared.durableHash, torn: shared.observation != nil}, nil
 	}
 	var head groupPrefixHead
-	if err := recorder.WalkSessionHistory(dir, session, v.add); err == nil {
+	if err := walkLegacySessionHistory(dir, session, excluded, v.add); err == nil {
 		if err := v.finish(); err != nil {
 			return groupPrefixHead{}, err
 		}
@@ -76,29 +80,29 @@ func verifyGroupShardPrefixWithSession(dir string, open ReceiptGroupOpen, openHa
 		// The observer independently replays the signed prefix and checks the same
 		// gate and opening binding. Any other walk failure remains an error.
 		observed, err := observeRecoveryWithOptions(dir, session, open.SignerKey, recoveryObservationOptions{
-			trusted: []string{open.SignerKey}, groupBinding: &binding,
+			trusted: []string{open.SignerKey}, groupBinding: &binding, excluded: excluded,
 		})
 		if err != nil {
 			return groupPrefixHead{}, fmt.Errorf("verify receipt group predecessor prefix: %w", err)
 		}
 		head = groupPrefixHead{seq: observed.PredecessorTailSeq, hash: observed.PredecessorTailHash, torn: true}
 	}
-	if err := verifyGroupPrefixAEL(dir, session, open); err != nil {
+	if err := verifyGroupPrefixAELScoped(dir, session, open, excluded); err != nil {
 		return groupPrefixHead{}, fmt.Errorf("verify receipt group predecessor native AEL: %w", err)
 	}
 	return head, nil
 }
 
-func verifyGroupPrefixAEL(dir, session string, open ReceiptGroupOpen) error {
+func verifyGroupPrefixAELScoped(dir, session string, open ReceiptGroupOpen, excluded map[string]bool) error {
 	var run string
 	var completed bool
-	err := indexAELClaimsForSession(dir, session, open.GroupID, open.PreviousGroupID, []string{open.SignerKey}, func(claim, owner, groupID, signer string, closed bool) error {
+	err := indexAELClaimsForSessionBatch(dir, session, open.GroupID, open.PreviousGroupID, []string{open.SignerKey}, func(claim, owner, groupID, signer string, closed bool) error {
 		if owner != session || groupID != open.GroupID || signer != open.SignerKey {
 			return errors.New("predecessor native AEL owner differs from signed group opening")
 		}
 		run, completed = claim, closed
 		return nil
-	})
+	}, groupClaimScan{excluded: excluded})
 	if err != nil {
 		return err
 	}

@@ -768,6 +768,9 @@ func scanHistoryWindowBound(location EvidenceLocation, sessionID string, after *
 		batch, readErr := directory.ReadDir(sessionHistoryDirBatch)
 		for _, de := range batch {
 			name := de.Name()
+			if location.ExcludedNames[name] {
+				continue
+			}
 			parsed, seq, ok := evidencename.Parse(name)
 			if !ok || (sessionID != "" && parsed != sessionID) || name != filepath.Base(name) {
 				continue
