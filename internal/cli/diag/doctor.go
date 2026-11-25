@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -23,6 +24,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/evidence/receiptinput"
+	"github.com/luckyPipewrench/pipelock/internal/evidencename"
 	"github.com/luckyPipewrench/pipelock/internal/filesentry"
 	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
@@ -802,10 +804,18 @@ func checkDoctorFlightRecorder(ctx context.Context, cfg *config.Config) doctorRe
 			Next:    "enable flight_recorder to emit signed decision receipts",
 		}
 	}
-	if cfg.FlightRecorder.EffectiveReceiptFormat() == config.ReceiptFormatV3 {
-		return verifyDoctorFlightRecorderV3(ctx, cfg.FlightRecorder)
-	}
+	explicitV3 := cfg.FlightRecorder.EffectiveReceiptFormat() == config.ReceiptFormatV3
 	if cfg.FlightRecorder.Dir == "" {
+		if explicitV3 {
+			return doctorReportCheck{
+				Name:       "flight_recorder",
+				Surface:    doctorSurfaceConfig,
+				Status:     doctorStatusWarn,
+				Configured: true,
+				Detail:     "receipt v3 is configured but flight_recorder.dir is unset",
+				Next:       doctorV3VerifyNext,
+			}
+		}
 		return doctorReportCheck{
 			Name:       "flight_recorder",
 			Surface:    doctorSurfaceConfig,
@@ -815,7 +825,18 @@ func checkDoctorFlightRecorder(ctx context.Context, cfg *config.Config) doctorRe
 			Next:       "set flight_recorder.dir to a writable directory so receipts are persisted",
 		}
 	}
-	if _, err := os.Stat(filepath.Clean(cfg.FlightRecorder.Dir)); errors.Is(err, os.ErrNotExist) && pathProbablyCreatableDir(cfg.FlightRecorder.Dir) {
+	info, statErr := os.Stat(filepath.Clean(cfg.FlightRecorder.Dir))
+	if errors.Is(statErr, os.ErrNotExist) && pathProbablyCreatableDir(cfg.FlightRecorder.Dir) {
+		if explicitV3 {
+			return doctorReportCheck{
+				Name:       "flight_recorder",
+				Surface:    doctorSurfaceConfig,
+				Status:     doctorStatusWarn,
+				Configured: true,
+				Detail:     "receipt v3 is configured but the configured directory has no directly verifiable profile evidence",
+				Next:       doctorV3VerifyNext,
+			}
+		}
 		return doctorReportCheck{
 			Name:       "flight_recorder",
 			Surface:    doctorSurfaceConfig,
@@ -823,6 +844,18 @@ func checkDoctorFlightRecorder(ctx context.Context, cfg *config.Config) doctorRe
 			Configured: true,
 			Detail:     "flight_recorder.dir does not exist; parent permission bits suggest it may be creatable, but persistence is not verified",
 			Next:       "create the directory as the service user, then rerun doctor to verify receipt persistence",
+		}
+	}
+	if statErr == nil && !info.IsDir() {
+		return doctorReportCheck{
+			Name:       "flight_recorder",
+			Surface:    doctorSurfaceConfig,
+			Status:     doctorStatusFail,
+			Configured: true,
+			Reachable:  false,
+			Enforcing:  false,
+			Detail:     "flight_recorder.dir is not a directory",
+			Next:       "configure flight_recorder.dir to point at a writable directory",
 		}
 	}
 	readable := pathReadable(cfg.FlightRecorder.Dir)
@@ -842,7 +875,33 @@ func checkDoctorFlightRecorder(ctx context.Context, cfg *config.Config) doctorRe
 	}
 	claimed, err := receiptinput.Claims(cfg.FlightRecorder.Dir)
 	if err == nil && claimed {
-		return verifyDoctorFlightRecorderV3(ctx, cfg.FlightRecorder)
+		if cfg.FlightRecorder.ReceiptFormat == config.ReceiptFormatLegacy {
+			return doctorReportCheck{
+				Name:       "flight_recorder",
+				Surface:    doctorSurfaceConfig,
+				Status:     doctorStatusFail,
+				Configured: true,
+				Reachable:  true,
+				Enforcing:  false,
+				Detail:     "flight_recorder.receipt_format legacy requires a new evidence directory after a v3 switch",
+				Next:       "configure a new flight_recorder.dir or switch flight_recorder.receipt_format to v3, and " + doctorV3VerifyNext,
+			}
+		}
+		return verifyDoctorFlightRecorderV3(ctx, cfg, true)
+	}
+	if explicitV3 {
+		if err != nil {
+			return doctorReportCheck{
+				Name:       "flight_recorder",
+				Surface:    doctorSurfaceConfig,
+				Status:     doctorStatusFail,
+				Configured: true,
+				Reachable:  true,
+				Detail:     "could not inspect receipt v3 evidence: " + err.Error(),
+				Next:       doctorV3VerifyNext,
+			}
+		}
+		return verifyDoctorFlightRecorderV3(ctx, cfg, false)
 	}
 	if err == nil {
 		err = refuseDoctorFlightRecorderV3(cfg.FlightRecorder.Dir)
@@ -904,46 +963,156 @@ func checkDoctorFlightRecorder(ctx context.Context, cfg *config.Config) doctorRe
 	}
 }
 
+const doctorV3VerifyNext = "run 'pipelock verify-receipt --chain <path>' with the trusted receipt signer key"
+
+// Inline verification bounds keep doctor responsive on large evidence
+// directories; directories exceeding these caps warn with offline verifier
+// guidance instead of running unbounded verification or reporting OK.
+var (
+	doctorV3MaxEntries = 512
+	doctorV3MaxFiles   = 64
+	doctorV3MaxBytes   = int64(32 << 20) // 32 MiB
+	doctorV3Timeout    = 5 * time.Second
+)
+
+var errDoctorV3BudgetExceeded = errors.New("doctor inline receipt v3 verification budget exceeded")
+
 // verifyDoctorFlightRecorderV3 reports the verifier verdict in doctor's status
 // model. It does not enable trust-on-first-use when no signer key is configured.
-func verifyDoctorFlightRecorderV3(ctx context.Context, fr config.FlightRecorder) doctorReportCheck {
+func verifyDoctorFlightRecorderV3(ctx context.Context, cfg *config.Config, claimed bool) doctorReportCheck {
+	fr := cfg.FlightRecorder
 	check := doctorReportCheck{
 		Name: "flight_recorder", Surface: doctorSurfaceConfig, Status: doctorStatusWarn,
-		Configured: true, Next: "run 'pipelock verify-receipt --chain <path>' with the trusted receipt signer key",
+		Configured: true, Reachable: true, Next: doctorV3VerifyNext,
 	}
-	if fr.Dir == "" {
-		check.Detail = "receipt v3 is configured but flight_recorder.dir is unset"
+	if err := checkDoctorNestedV3(fr.Dir); err != nil {
+		if errors.Is(err, errDoctorV3BudgetExceeded) {
+			check.Detail = "receipt v3 directory tree exceeds doctor inline inspection budget; run offline verification"
+			return check
+		}
+		check.Status = doctorStatusFail
+		check.Detail = err.Error()
 		return check
 	}
-	claimed, err := receiptinput.Claims(fr.Dir)
-	if errors.Is(err, os.ErrNotExist) || err == nil && !claimed {
+	if !claimed {
+		if fr.SigningKeyPath != "" {
+			if err := cfg.ValidateReceiptV3(); err != nil {
+				check.Status = doctorStatusFail
+				check.Detail = "runtime config invalid for receipt v3: " + err.Error()
+				check.Next = "fix flight_recorder v3 configuration before starting pipelock"
+				return check
+			}
+		}
 		check.Detail = "receipt v3 is configured but the configured directory has no directly verifiable profile evidence"
 		return check
 	}
-	if err != nil {
+	if budgetMsg, err := checkDoctorV3InlineBudget(fr.Dir); err != nil {
 		check.Status = doctorStatusFail
 		check.Detail = "could not inspect receipt v3 evidence: " + err.Error()
 		return check
+	} else if budgetMsg != "" {
+		check.Detail = budgetMsg
+		return check
 	}
-	check.Reachable = true
 	keys, err := doctorReceiptKeys(fr)
 	if err != nil {
+		check.Status = doctorStatusFail
 		check.Detail = "could not load configured receipt signer key: " + err.Error()
 		return check
 	}
-	result, err := v3.VerifyPaths(ctx, []string{fr.Dir}, v3.Options{Directory: true, Keys: keys})
+	verifyCtx, cancel := context.WithTimeout(ctx, doctorV3Timeout)
+	defer cancel()
+	result, err := v3.VerifyPaths(verifyCtx, []string{fr.Dir}, v3.Options{Directory: true, Keys: keys})
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+			check.Detail = "receipt v3 inline verification timed out; run offline verification"
+			return check
+		}
+		check.Status = doctorStatusFail
 		check.Detail = "could not verify receipt v3 evidence: " + err.Error()
 		return check
 	}
 	check.Detail = "receipt v3 evidence: " + result.Verdict
 	switch {
 	case result.Verdict == "VALID":
+		if err := cfg.ValidateReceiptV3(); err != nil {
+			check.Status = doctorStatusFail
+			check.Detail = "receipt v3 evidence: VALID; runtime config invalid for receipt v3: " + err.Error()
+			check.Next = "fix flight_recorder v3 configuration before starting pipelock"
+			return check
+		}
 		check.Status, check.Enforcing, check.Next = doctorStatusOK, true, ""
 	case result.Integrity == "failed":
 		check.Status = doctorStatusFail
 	}
 	return check
+}
+
+func checkDoctorV3InlineBudget(dir string) (string, error) {
+	realDir, err := filepath.EvalSymlinks(filepath.Clean(dir))
+	if err != nil {
+		return "", err
+	}
+	entries, err := os.ReadDir(realDir)
+	if err != nil {
+		return "", err
+	}
+	if len(entries) > doctorV3MaxEntries {
+		return fmt.Sprintf("receipt v3 directory exceeds doctor inline verification budget (%d entries > %d); run offline verification", len(entries), doctorV3MaxEntries), nil
+	}
+	var files int
+	var totalBytes int64
+	for _, entry := range entries {
+		name := entry.Name()
+		_, isInventory := evidencename.CutoverInventoryHash(name)
+		if !evidencename.ClaimsReceiptName(name) && !isInventory && !evidencename.IsLegacyReceiptCandidate(name) {
+			continue
+		}
+		if !entry.Type().IsRegular() {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return "", err
+		}
+		files++
+		totalBytes += info.Size()
+		if files > doctorV3MaxFiles || totalBytes > doctorV3MaxBytes {
+			return fmt.Sprintf("receipt v3 evidence exceeds doctor inline verification budget (%d files, %d bytes); run offline verification", files, totalBytes), nil
+		}
+	}
+	return "", nil
+}
+
+func checkDoctorNestedV3(dir string) error {
+	root, err := filepath.EvalSymlinks(filepath.Clean(dir))
+	if err != nil {
+		return fmt.Errorf("could not inspect subdirectories under flight_recorder.dir: %w", err)
+	}
+	visited := 0
+	return filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return fmt.Errorf("could not inspect subdirectories under flight_recorder.dir: %w", walkErr)
+		}
+		if path == root {
+			return nil
+		}
+		visited++
+		if visited > doctorV3MaxEntries {
+			return errDoctorV3BudgetExceeded
+		}
+		if !entry.IsDir() {
+			return nil
+		}
+		claimed, checkErr := v3.ClaimsInput(path, true)
+		if checkErr != nil {
+			return fmt.Errorf("could not inspect subdirectory %q: %w", path, checkErr)
+		}
+		if claimed {
+			return fmt.Errorf("unverified receipt v3 evidence found in subdirectory %q under flight_recorder.dir", path)
+		}
+		return nil
+	})
 }
 
 func doctorReceiptKeys(fr config.FlightRecorder) ([]ed25519.PublicKey, error) {

@@ -4,6 +4,8 @@
 package diag
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/hex"
 	"errors"
 	"os"
@@ -12,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/signing"
 
 	"github.com/luckyPipewrench/pipelock/internal/testreceipt"
 )
@@ -32,6 +35,7 @@ func TestDoctorFlightRecorderVerifiesV3(t *testing.T) {
 			cfg.FlightRecorder.Enabled = true
 			cfg.FlightRecorder.Dir = dir
 			if tc.pinned {
+				cfg.FlightRecorder.SigningKeyPath = saveDoctorTestKey(t)
 				cfg.FlightRecorder.ReceiptGroupPriorSignerKeys = []string{hex.EncodeToString(pub)}
 			}
 			check := checkDoctorFlightRecorder(t.Context(), cfg)
@@ -107,4 +111,218 @@ func TestDoctorFlightRecorderConfiguredV3WithoutVerifiedEvidenceWarns(t *testing
 			t.Fatalf("receipt_format %q on an empty directory: %+v", format, check)
 		}
 	}
+}
+
+func saveDoctorTestKey(t *testing.T) string {
+	t.Helper()
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "signer.key")
+	if err := signing.SavePrivateKey(priv, path); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestDoctorFlightRecorderLegacyConfigRefusesV3Directory(t *testing.T) {
+	dir := t.TempDir()
+	_, pub := testreceipt.V3(t, dir, false)
+	cfg := config.Defaults()
+	cfg.FlightRecorder.Enabled = true
+	cfg.FlightRecorder.Dir = dir
+	cfg.FlightRecorder.ReceiptFormat = config.ReceiptFormatLegacy
+	cfg.FlightRecorder.SigningKeyPath = saveDoctorTestKey(t)
+	cfg.FlightRecorder.ReceiptGroupPriorSignerKeys = []string{hex.EncodeToString(pub)}
+
+	check := checkDoctorFlightRecorder(t.Context(), cfg)
+	if check.Status != doctorStatusFail || check.Enforcing {
+		t.Fatalf("explicit legacy config on v3 directory = %+v, want fail and Enforcing=false", check)
+	}
+	if !strings.Contains(check.Detail, "legacy") || !strings.Contains(check.Next, "pipelock verify-receipt --chain") {
+		t.Fatalf("unexpected diagnostic for legacy config on v3 directory: %+v", check)
+	}
+}
+
+func TestDoctorFlightRecorderV3RuntimePreconditions(t *testing.T) {
+	t.Run("missing signing_key_path cannot report OK", func(t *testing.T) {
+		dir := t.TempDir()
+		_, pub := testreceipt.V3(t, dir, false)
+		cfg := config.Defaults()
+		cfg.FlightRecorder.Enabled = true
+		cfg.FlightRecorder.Dir = dir
+		cfg.FlightRecorder.ReceiptGroupPriorSignerKeys = []string{hex.EncodeToString(pub)}
+
+		check := checkDoctorFlightRecorder(t.Context(), cfg)
+		if check.Status != doctorStatusFail || check.Enforcing {
+			t.Fatalf("missing signing_key_path = %+v, want fail and Enforcing=false", check)
+		}
+	})
+
+	t.Run("incompatible anchor config fails", func(t *testing.T) {
+		dir := t.TempDir()
+		_, pub := testreceipt.V3(t, dir, false)
+		cfg := config.Defaults()
+		cfg.FlightRecorder.Enabled = true
+		cfg.FlightRecorder.Dir = dir
+		cfg.FlightRecorder.SigningKeyPath = saveDoctorTestKey(t)
+		cfg.FlightRecorder.ReceiptGroupPriorSignerKeys = []string{hex.EncodeToString(pub)}
+		cfg.FlightRecorder.Anchor.LocalLog = filepath.Join(t.TempDir(), "anchor.jsonl")
+
+		check := checkDoctorFlightRecorder(t.Context(), cfg)
+		if check.Status != doctorStatusFail || check.Enforcing {
+			t.Fatalf("incompatible anchor config = %+v, want fail and Enforcing=false", check)
+		}
+	})
+
+	t.Run("read-only v3 directory fails", func(t *testing.T) {
+		dir := t.TempDir()
+		_, pub := testreceipt.V3(t, dir, false)
+		if err := os.Chmod(dir, 0o500); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			_ = os.Chmod(dir, 0o700) // #nosec G302 -- restore test dir permissions for cleanup.
+		})
+		if pathWritableDir(dir) {
+			t.Skip("process can still write to chmod 0500 directory")
+		}
+		cfg := config.Defaults()
+		cfg.FlightRecorder.Enabled = true
+		cfg.FlightRecorder.Dir = dir
+		cfg.FlightRecorder.ReceiptFormat = config.ReceiptFormatV3
+		cfg.FlightRecorder.SigningKeyPath = saveDoctorTestKey(t)
+		cfg.FlightRecorder.ReceiptGroupPriorSignerKeys = []string{hex.EncodeToString(pub)}
+
+		check := checkDoctorFlightRecorder(t.Context(), cfg)
+		if check.Status != doctorStatusFail || check.Enforcing {
+			t.Fatalf("read-only v3 dir = %+v, want fail and Enforcing=false", check)
+		}
+	})
+
+	t.Run("nested v3 evidence prevents OK", func(t *testing.T) {
+		dir := t.TempDir()
+		_, pub := testreceipt.V3(t, dir, false)
+		child := filepath.Join(dir, "child")
+		if err := os.Mkdir(child, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		testreceipt.V3(t, child, true)
+		cfg := config.Defaults()
+		cfg.FlightRecorder.Enabled = true
+		cfg.FlightRecorder.Dir = dir
+		cfg.FlightRecorder.SigningKeyPath = saveDoctorTestKey(t)
+		cfg.FlightRecorder.ReceiptGroupPriorSignerKeys = []string{hex.EncodeToString(pub)}
+
+		check := checkDoctorFlightRecorder(t.Context(), cfg)
+		if check.Status != doctorStatusFail || check.Enforcing {
+			t.Fatalf("top-level valid v3 with nested damaged v3 = %+v, want fail and Enforcing=false", check)
+		}
+	})
+
+	t.Run("bad signing_key_path fails instead of warning", func(t *testing.T) {
+		dir := t.TempDir()
+		testreceipt.V3(t, dir, false)
+		cfg := config.Defaults()
+		cfg.FlightRecorder.Enabled = true
+		cfg.FlightRecorder.Dir = dir
+		cfg.FlightRecorder.ReceiptFormat = config.ReceiptFormatV3
+		cfg.FlightRecorder.SigningKeyPath = filepath.Join(t.TempDir(), "missing.key")
+
+		check := checkDoctorFlightRecorder(t.Context(), cfg)
+		if check.Status != doctorStatusFail || check.Enforcing {
+			t.Fatalf("missing signing_key_path file = %+v, want fail and Enforcing=false", check)
+		}
+	})
+
+	t.Run("symlink evidence file fails instead of warning", func(t *testing.T) {
+		dir := t.TempDir()
+		_, pub := testreceipt.V3(t, dir, false)
+		outside := filepath.Join(t.TempDir(), "outside.jsonl")
+		if err := os.WriteFile(outside, []byte("{}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(outside, filepath.Join(dir, "evidence-proxy-0.jsonl")); err != nil {
+			t.Fatal(err)
+		}
+		cfg := config.Defaults()
+		cfg.FlightRecorder.Enabled = true
+		cfg.FlightRecorder.Dir = dir
+		cfg.FlightRecorder.SigningKeyPath = saveDoctorTestKey(t)
+		cfg.FlightRecorder.ReceiptGroupPriorSignerKeys = []string{hex.EncodeToString(pub)}
+
+		check := checkDoctorFlightRecorder(t.Context(), cfg)
+		if check.Status != doctorStatusFail || check.Enforcing {
+			t.Fatalf("symlink evidence file = %+v, want fail and Enforcing=false", check)
+		}
+	})
+}
+
+func TestDoctorFlightRecorderV3RespectsInlineBudget(t *testing.T) {
+	t.Run("byte cap warns instead of verifying unbounded data", func(t *testing.T) {
+		orig := doctorV3MaxBytes
+		doctorV3MaxBytes = 16
+		t.Cleanup(func() { doctorV3MaxBytes = orig })
+
+		dir := t.TempDir()
+		_, pub := testreceipt.V3(t, dir, false)
+		cfg := config.Defaults()
+		cfg.FlightRecorder.Enabled = true
+		cfg.FlightRecorder.Dir = dir
+		cfg.FlightRecorder.SigningKeyPath = saveDoctorTestKey(t)
+		cfg.FlightRecorder.ReceiptGroupPriorSignerKeys = []string{hex.EncodeToString(pub)}
+
+		check := checkDoctorFlightRecorder(t.Context(), cfg)
+		if check.Status != doctorStatusWarn || check.Enforcing {
+			t.Fatalf("over byte cap = %+v, want warn and Enforcing=false", check)
+		}
+		if !strings.Contains(check.Next, "pipelock verify-receipt --chain") {
+			t.Fatalf("missing offline verifier guidance: %+v", check)
+		}
+	})
+
+	t.Run("file cap warns instead of verifying unbounded files", func(t *testing.T) {
+		orig := doctorV3MaxFiles
+		doctorV3MaxFiles = 0
+		t.Cleanup(func() { doctorV3MaxFiles = orig })
+
+		dir := t.TempDir()
+		_, pub := testreceipt.V3(t, dir, false)
+		cfg := config.Defaults()
+		cfg.FlightRecorder.Enabled = true
+		cfg.FlightRecorder.Dir = dir
+		cfg.FlightRecorder.SigningKeyPath = saveDoctorTestKey(t)
+		cfg.FlightRecorder.ReceiptGroupPriorSignerKeys = []string{hex.EncodeToString(pub)}
+
+		check := checkDoctorFlightRecorder(t.Context(), cfg)
+		if check.Status != doctorStatusWarn || check.Enforcing {
+			t.Fatalf("over file cap = %+v, want warn and Enforcing=false", check)
+		}
+		if !strings.Contains(check.Next, "pipelock verify-receipt --chain") {
+			t.Fatalf("missing offline verifier guidance: %+v", check)
+		}
+	})
+
+	t.Run("entry cap warns instead of reading unbounded directory", func(t *testing.T) {
+		orig := doctorV3MaxEntries
+		doctorV3MaxEntries = 0
+		t.Cleanup(func() { doctorV3MaxEntries = orig })
+
+		dir := t.TempDir()
+		_, pub := testreceipt.V3(t, dir, false)
+		cfg := config.Defaults()
+		cfg.FlightRecorder.Enabled = true
+		cfg.FlightRecorder.Dir = dir
+		cfg.FlightRecorder.SigningKeyPath = saveDoctorTestKey(t)
+		cfg.FlightRecorder.ReceiptGroupPriorSignerKeys = []string{hex.EncodeToString(pub)}
+
+		check := checkDoctorFlightRecorder(t.Context(), cfg)
+		if check.Status != doctorStatusWarn || check.Enforcing {
+			t.Fatalf("over entry cap = %+v, want warn and Enforcing=false", check)
+		}
+		if !strings.Contains(check.Next, "pipelock verify-receipt --chain") {
+			t.Fatalf("missing offline verifier guidance: %+v", check)
+		}
+	})
 }
