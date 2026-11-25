@@ -1,0 +1,266 @@
+[
+  {
+    "package": "cmd/pipelock-verifier",
+    "role": "v3-verifier",
+    "reason": "Chain verifies v3. Legacy receipt, replay, recheck, completeness, independent and audit packet commands refuse v3.",
+    "test": "TestLegacyVerifierCommandsRefuseV3"
+  },
+  {
+    "package": "enterprise/cli",
+    "role": "refuses-v3",
+    "reason": "Coverage certificate generation only reads legacy receipt chains.",
+    "test": "TestCoverageCertRefusesReceiptV3"
+  },
+  {
+    "package": "enterprise/conductor",
+    "role": "refuses-v3",
+    "reason": "The audit batch receiver reads the legacy recorder payload format.",
+    "test": "TestAuditNamespaceRefusesReceiptV3"
+  },
+  {
+    "package": "enterprise/conductor/auditbatcher",
+    "role": "writer",
+    "reason": "Creates signed batches from the operational recorder stream."
+  },
+  {
+    "package": "enterprise/conductor/bootstrap",
+    "role": "not-a-reader",
+    "reason": "Uses recorder locking during follower bootstrap."
+  },
+  {
+    "package": "enterprise/conductor/fleetreport",
+    "role": "refuses-v3",
+    "reason": "Fleet reports aggregate legacy receipt batches.",
+    "test": "TestFleetReportRefusesReceiptV3"
+  },
+  {
+    "package": "enterprise/counterparty",
+    "role": "not-a-reader",
+    "reason": "Verifies the signed counterparty transaction protocol."
+  },
+  {
+    "package": "enterprise/dashboard",
+    "role": "refuses-v3",
+    "reason": "Session, scorecard, trust, detail and rebuild views use legacy evidence.",
+    "test": "TestDashboardRefusesReceiptV3"
+  },
+  {
+    "package": "internal/ael",
+    "role": "not-a-reader",
+    "reason": "Consumes normalized activity and signed receipt identifiers."
+  },
+  {
+    "package": "internal/anchor",
+    "role": "not-a-reader",
+    "reason": "Builds and verifies checkpoints over legacy receipts already decoded by commands."
+  },
+  {
+    "package": "internal/capture",
+    "role": "writer",
+    "reason": "Writes bounded capture evidence and reads only its own capture log format."
+  },
+  {
+    "package": "internal/cli",
+    "role": "refuses-v3",
+    "reason": "The explain event reader accepts audit log events.",
+    "test": "TestExplainEventRefusesReceiptV3"
+  },
+  {
+    "package": "internal/cli/anchor",
+    "role": "refuses-v3",
+    "reason": "Anchors the legacy receipt chain.",
+    "test": "TestAnchorReceiptsRefusesV3"
+  },
+  {
+    "package": "internal/cli/commitmentkey",
+    "role": "not-a-reader",
+    "reason": "Manages commitment keys and uses recorder durability facilities."
+  },
+  {
+    "package": "internal/cli/diag",
+    "role": "refuses-v3",
+    "reason": "Doctor only measures legacy recorder evidence health.",
+    "test": "TestDoctorFlightRecorderRefusesV3"
+  },
+  {
+    "package": "internal/cli/evidence",
+    "role": "refuses-v3",
+    "reason": "Scorecard views and offline evidence operations use legacy evidence.",
+    "test": "TestEvidenceCommandsRefuseReceiptV3"
+  },
+  {
+    "package": "internal/cli/learn",
+    "role": "refuses-v3",
+    "reason": "Checks the evidence directory before writing legacy lifecycle and shadow receipts.",
+    "test": "TestLearnRefusesV3BeforeWriting"
+  },
+  {
+    "package": "internal/cli/runtime",
+    "role": "writer",
+    "reason": "Selects and runs the receipt writer and gates legacy runtime evidence features."
+  },
+  {
+    "package": "internal/cli/signing",
+    "role": "v3-verifier",
+    "reason": "Routes v3 to its verifier and refuses legacy-only whole-recorder options.",
+    "test": "TestVerifyReceiptV3RefusesWholeRecorderOptions"
+  },
+  {
+    "package": "internal/contract/activation",
+    "role": "writer",
+    "reason": "Produces signed lifecycle receipts."
+  },
+  {
+    "package": "internal/contract/inference/ingest",
+    "role": "refuses-v3",
+    "reason": "Reads typed operational recorder entries for inference.",
+    "test": "TestIngestRefusesReceiptV3"
+  },
+  {
+    "package": "internal/contract/proxydecision",
+    "role": "writer",
+    "reason": "Produces contract decision receipts."
+  },
+  {
+    "package": "internal/contract/receipt",
+    "role": "not-a-reader",
+    "reason": "Defines the v2 schema and checks v2 envelopes and typed chains supplied by callers."
+  },
+  {
+    "package": "internal/contract/runtime",
+    "role": "writer",
+    "reason": "Emits contract decisions into the selected runtime recorder."
+  },
+  {
+    "package": "internal/contract/shadow",
+    "role": "writer",
+    "reason": "Builds shadow delta receipts."
+  },
+  {
+    "package": "internal/coveragecertverify",
+    "role": "not-a-reader",
+    "reason": "Verifies coverage certificate signatures and certificate metadata."
+  },
+  {
+    "package": "internal/evidence/cmd/limitsdoc",
+    "role": "not-a-reader",
+    "reason": "Generates documentation from evidence limit constants."
+  },
+  {
+    "package": "internal/evidence/completeness",
+    "role": "refuses-v3",
+    "reason": "Analyzes already-decoded legacy receipts. The completeness command guards the evidence source.",
+    "test": "cmd/pipelock-verifier:TestLegacyVerifierCommandsRefuseV3"
+  },
+  {
+    "package": "internal/evidence/endproof",
+    "role": "not-a-reader",
+    "reason": "Appraises typed legacy terminal state from receipt verification."
+  },
+  {
+    "package": "internal/evidence/receiptinput",
+    "role": "not-a-reader",
+    "reason": "Shares v3 detection and refusal text without decoding legacy evidence."
+  },
+  {
+    "package": "internal/evidenceview",
+    "role": "refuses-v3",
+    "reason": "Builds the scorecard from decoded legacy receipts. The CLI and dashboard guard the evidence source.",
+    "test": "internal/cli/evidence:TestEvidenceCommandsRefuseReceiptV3"
+  },
+  {
+    "package": "internal/fleetreceipt",
+    "role": "not-a-reader",
+    "reason": "Verifies signed aggregate statement envelopes without raw receipt evidence."
+  },
+  {
+    "package": "internal/mcp",
+    "role": "writer",
+    "reason": "Emits mediated MCP decisions and operational events."
+  },
+  {
+    "package": "internal/metrics",
+    "role": "not-a-reader",
+    "reason": "Consumes recorder metrics and state counters."
+  },
+  {
+    "package": "internal/playground",
+    "role": "refuses-v3",
+    "reason": "Assembles legacy receipt chains into playground artifacts.",
+    "test": "TestAssembleRefusesReceiptV3"
+  },
+  {
+    "package": "internal/posture",
+    "role": "not-a-reader",
+    "reason": "Handles containment posture statements."
+  },
+  {
+    "package": "internal/posturebinding",
+    "role": "not-a-reader",
+    "reason": "Reads and binds posture statements for receipt producers."
+  },
+  {
+    "package": "internal/proxy",
+    "role": "writer",
+    "reason": "Emits action receipts at proxy decision and effect boundaries."
+  },
+  {
+    "package": "internal/receipt",
+    "role": "not-a-reader",
+    "reason": "Implements legacy codecs and chain checks dispatched by format-aware readers and the v3 legacy adapter."
+  },
+  {
+    "package": "internal/receipt/v3",
+    "role": "v3-verifier",
+    "reason": "Implements v3 verification and its writer.",
+    "test": "TestStreamWriterLifecycleAndRotation"
+  },
+  {
+    "package": "internal/receipt/v3/command",
+    "role": "v3-verifier",
+    "reason": "Routes common verifier CLI options to v3 verification.",
+    "test": "TestRunReportsVerifierOutcome"
+  },
+  {
+    "package": "internal/recorder",
+    "role": "writer",
+    "reason": "Writes the operational log and supplies low-level legacy entry readers."
+  },
+  {
+    "package": "internal/replaycapture",
+    "role": "refuses-v3",
+    "reason": "Audit packet verification reads legacy receipt evidence.",
+    "test": "TestVerifyPacketRefusesReceiptV3"
+  },
+  {
+    "package": "internal/report",
+    "role": "not-a-reader",
+    "reason": "Formats appraised inputs and verdicts."
+  },
+  {
+    "package": "internal/signingflag",
+    "role": "not-a-reader",
+    "reason": "Parses externally pinned receipt signing keys."
+  },
+  {
+    "package": "internal/testreceipt",
+    "role": "writer",
+    "reason": "Generates signed v3 streams for reader tests."
+  },
+  {
+    "package": "scripts",
+    "role": "not-a-reader",
+    "reason": "Runs test fixtures and inventory validation."
+  },
+  {
+    "package": "scripts/receipt-load",
+    "role": "v3-verifier",
+    "reason": "Checks the expected writer format and counts verified v3 actions.",
+    "test": "TestLoadExpectedReceiptFormat"
+  },
+  {
+    "package": "tools/gen-shadow-example",
+    "role": "writer",
+    "reason": "Generates an example using legacy shadow receipts it emitted into its temporary recorder."
+  }
+]
