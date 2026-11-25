@@ -320,7 +320,17 @@ func (ctx waitingReceiptContext) Done() <-chan struct{} {
 	return ctx.Context.Done()
 }
 
-func TestStreamWriterCancelsWaitBehindFlush(t *testing.T) {
+type writeCallbackFile struct {
+	StreamFile
+	writeCallback func()
+}
+
+func (f writeCallbackFile) Write(p []byte) (int, error) {
+	f.writeCallback()
+	return f.StreamFile.Write(p)
+}
+
+func TestStreamWriterCancelsWaitBeforeAppend(t *testing.T) {
 	opts := writerTestOptions(t.TempDir())
 	w := requireWriter(t, opts, localWriterStorage())
 	effects := make(chan string, 2)
@@ -344,13 +354,13 @@ func TestStreamWriterCancelsWaitBehindFlush(t *testing.T) {
 		return resp.Body.Close()
 	}
 	entered, resume := make(chan struct{}), make(chan struct{})
-	releaseFlush := sync.OnceFunc(func() { close(resume) })
-	t.Cleanup(releaseFlush)
+	releaseWrite := sync.OnceFunc(func() { close(resume) })
+	t.Cleanup(releaseWrite)
 	deadline, stop := context.WithTimeout(t.Context(), testwait.Deadline(5*time.Second))
 	defer stop()
-	w.active.file = syncCallbackFile{
+	w.active.file = writeCallbackFile{
 		StreamFile: w.active.file,
-		syncCallback: sync.OnceFunc(func() {
+		writeCallback: sync.OnceFunc(func() {
 			close(entered)
 			<-resume
 		}),
@@ -362,9 +372,9 @@ func TestStreamWriterCancelsWaitBehindFlush(t *testing.T) {
 	select {
 	case <-entered:
 	case err := <-first:
-		t.Fatalf("first send finished without waiting for the flush: %v", err)
+		t.Fatalf("first send finished without waiting for the append: %v", err)
 	case <-deadline.Done():
-		t.Fatal("first intent did not reach the flush")
+		t.Fatal("first intent did not reach the append")
 	}
 
 	ctx, cancel := context.WithCancel(t.Context())
@@ -389,14 +399,14 @@ func TestStreamWriterCancelsWaitBehindFlush(t *testing.T) {
 		t.Fatal("second intent did not return after cancellation")
 	}
 	beforeConfirmation := len(effects)
-	releaseFlush()
+	releaseWrite()
 	select {
 	case err := <-first:
 		if err != nil {
 			t.Fatal(err)
 		}
 	case <-deadline.Done():
-		t.Fatal("first send did not return after the flush")
+		t.Fatal("first send did not return after the append")
 	}
 	if beforeConfirmation != 0 || len(effects) != 1 {
 		t.Fatalf("endpoint observed %d calls before confirmation and %d in total", beforeConfirmation, len(effects))
@@ -788,12 +798,15 @@ func TestStreamWriterUnsealedClosePinsFailedReplay(t *testing.T) {
 	outcome := intent
 	outcome.Phase, outcome.EffectRelation, outcome.OutcomeClass = phaseOutcome, relationAfter, "completed"
 	outcome.Policy = policy.ActionPolicy()
+	w.gate <- struct{}{}
 	w.queueActionRepair(outcome, false)
 	fault = writerReplayFault{step: writerReplayStep{FaultAt: 1, Landing: "full"}}
-	if err := w.replayActionRepairs(t.Context(), false); !errors.Is(err, errWriterReplay) {
+	err = w.replayActionRepairs(t.Context(), false)
+	failedStream := w.previous.Stream
+	w.release()
+	if !errors.Is(err, errWriterReplay) {
 		t.Fatalf("repair replay error = %v, want %v", err, errWriterReplay)
 	}
-	failedStream := w.previous.Stream
 	_ = w.CloseUnsealed(context.WithoutCancel(t.Context()))
 
 	result := verifyWritten(t, opts.Dir, opts.SigningKey.Public().(ed25519.PublicKey))

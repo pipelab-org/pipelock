@@ -93,6 +93,8 @@ type ServerOpts struct {
 	// not share mutable state.
 	expireForTesting expireFunc
 
+	openReceiptV3ForTesting runtimeReceiptV3Opener
+
 	// AgentArgs is the command+args that followed "--" on the CLI, or nil
 	// when "--" was absent. Used only for the Phase 2 "Agent: ..." note
 	// emitted during startup.
@@ -177,6 +179,7 @@ type Server struct {
 	receiptWriter          *v3.StreamWriter
 	receiptShardSet        *receipt.ReceiptShardSet
 	receiptGroupFailure    atomic.Pointer[error]
+	startupRequireReceipts bool
 	envelopeEmitter        *envelope.Emitter
 	captureWriter          *capture.Writer
 	mcpListenerBearerToken string
@@ -405,6 +408,7 @@ func NewServer(opts ServerOpts) (*Server, error) {
 
 	s := &Server{
 		opts:                      opts,
+		startupRequireReceipts:    cfg.FlightRecorder.RequireReceipts,
 		hasMCPListen:              hasMCPListen,
 		containmentManaged:        containmentManagedRuntime(),
 		containmentMetricsDenyLog: rate.NewLimiter(rate.Every(time.Second), 5),
@@ -662,8 +666,17 @@ func NewServer(opts ServerOpts) (*Server, error) {
 			if openCtx == nil {
 				openCtx = context.Background()
 			}
-			writer, openErr := openRuntimeReceiptV3(openCtx, cfg, recPrivKey, rec, postureResult,
-				runtimeReceiptStreamOptions{surfaces: serverReceiptSurfaces(cfg, hasMCPListen, opts.ReverseProxy), onHeartbeatError: s.failRequiredReceiptGroup})
+			openReceipt := opts.openReceiptV3ForTesting
+			if openReceipt == nil {
+				openReceipt = openRuntimeReceiptV3
+			}
+			logger := s.logger
+			writer, openErr := openReceipt(openCtx, cfg, recPrivKey, rec, postureResult,
+				runtimeReceiptStreamOptions{
+					surfaces:           serverReceiptSurfaces(cfg, hasMCPListen, opts.ReverseProxy),
+					onFatalError:       s.receiptGroupFailureHandler(logger),
+					onDelayedSyncError: func(err error) { logDelayedReceiptSync(logger, err) },
+				})
 			if openErr != nil {
 				s.cleanup()
 				return nil, fmt.Errorf("open v3 receipt writer: %w", openErr)
@@ -685,7 +698,7 @@ func NewServer(opts ServerOpts) (*Server, error) {
 				PostureBinding:      postureResult.Binding,
 				PostureAvailability: string(postureResult.Availability),
 				HeartbeatSeconds:    cfg.FlightRecorder.HeartbeatIntervalSecondsForReceipt(),
-			}, cfg.FlightRecorder.ReceiptChainCount(), cfg.FlightRecorder.SigningKeyPath, false, s.failRequiredReceiptGroup)
+			}, cfg.FlightRecorder.ReceiptChainCount(), cfg.FlightRecorder.SigningKeyPath, false, s.receiptGroupFailureHandler(s.logger))
 			if groupErr != nil {
 				s.cleanup()
 				return nil, fmt.Errorf("opening receipt shard group: %w", withNativePredecessorRestartHint(groupErr))
@@ -875,17 +888,31 @@ func (s *Server) Shutdown(_ context.Context) error {
 	return nil
 }
 
+// receiptGroupFailureHandler binds the audit logger when the receipt writer
+// is opened. Its callbacks can run asynchronously while cleanup clears
+// s.logger, so they never read the field.
+func (s *Server) receiptGroupFailureHandler(logger *audit.Logger) func(error) {
+	return func(err error) { s.failRequiredReceiptGroupWith(logger, err) }
+}
+
 func (s *Server) failRequiredReceiptGroup(err error) {
+	s.failRequiredReceiptGroupWith(s.logger, err)
+}
+
+func (s *Server) failRequiredReceiptGroupWith(logger *audit.Logger, err error) {
 	if err == nil {
 		return
 	}
-	live := s.currentConfig()
-	if live == nil || !live.FlightRecorder.RequireReceipts {
+	required := s.startupRequireReceipts
+	if live := s.currentConfig(); live != nil {
+		required = live.FlightRecorder.RequireReceipts
+	}
+	if !required {
 		return
 	}
 	if s.receiptGroupFailure.CompareAndSwap(nil, &err) {
-		if s.logger != nil {
-			s.logger.LogError(audit.NewMethodLogContext("RECEIPT"), fmt.Errorf("required receipt group failed: %w", err))
+		if logger != nil {
+			logger.LogError(audit.NewMethodLogContext("RECEIPT"), fmt.Errorf("required receipt group failed: %w", err))
 		}
 	}
 	_ = s.Shutdown(context.Background())
@@ -894,7 +921,7 @@ func (s *Server) failRequiredReceiptGroup(err error) {
 func (s *Server) requiredReceiptGroupError() error {
 	if failure := s.receiptGroupFailure.Load(); failure != nil {
 		if s.receiptWriter != nil {
-			return fmt.Errorf("flight_recorder.require_receipts is enabled but receipt heartbeat emission failed: %w", *failure)
+			return fmt.Errorf("flight_recorder.require_receipts is enabled but receipt stream recovery failed: %w", *failure)
 		}
 		return fmt.Errorf("flight_recorder.require_receipts is enabled but receipt group emission failed: %w", *failure)
 	}

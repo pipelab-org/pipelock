@@ -323,7 +323,7 @@ func TestStreamWriterIgnoresUninterpretedActionInFailedTail(t *testing.T) {
 	}
 }
 
-func TestStreamWriterRecoversFailedTerminalResolutionOnRestart(t *testing.T) {
+func TestStreamWriterReplaysPlainBlockBeforeRestart(t *testing.T) {
 	opts := writerTestOptions(t.TempDir())
 	w := requireWriter(t, opts, localWriterStorage())
 	hold := writerTestHold("terminal")
@@ -334,22 +334,23 @@ func TestStreamWriterRecoversFailedTerminalResolutionOnRestart(t *testing.T) {
 	failure := errors.New("terminal flush failed")
 	w.active.file = errorWriterFile{StreamFile: w.active.file, syncErr: failure}
 	resolution := blockingHoldResolution(hold, "operator", relationAfter, false)
-	if err := w.WriteAction(t.Context(), resolution, policy); !errors.Is(err, failure) {
+	if err := w.WriteAction(t.Context(), resolution, policy); !errors.Is(err, failure) || !errors.Is(err, ErrHoldBlockRecorded) {
 		t.Fatalf("terminal write error = %v, want %v", err, failure)
 	}
 	if err := w.Close(t.Context(), nil); err != nil {
 		t.Fatal(err)
 	}
 	public := opts.SigningKey.Public().(ed25519.PublicKey)
-	if got := writerTestCount(t, verifyWritten(t, opts.Dir, public), "pending"); got != 1 {
-		t.Fatalf("pending before restart = %d, want 1", got)
+	if got := writerTestCount(t, verifyWritten(t, opts.Dir, public), "blocked"); got != 1 {
+		t.Fatalf("blocked before restart = %d, want 1", got)
+	}
+	resolution.Policy = policy.ActionPolicy()
+	if got := readRecoveryActions(t, opts.Dir, w.active.id); !reflect.DeepEqual(got, []Action{resolution}) {
+		t.Fatalf("successor resolution = %+v, want %+v", got, resolution)
 	}
 	restarted := requireWriter(t, opts, localWriterStorage())
-	got := readRecoveryActions(t, opts.Dir, restarted.active.id)
-	hold.Policy = policy.ActionPolicy()
-	want := []Action{blockingHoldResolution(hold, "restart_recovery", "unknown", false)}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("recovery = %+v, want %+v", got, want)
+	if got := readRecoveryActions(t, opts.Dir, restarted.active.id); len(got) != 0 {
+		t.Fatalf("restart repeated settled resolution: %+v", got)
 	}
 }
 

@@ -1032,7 +1032,7 @@ the HTTP bridge waits for held-call callbacks to settle their receipts. Outputs
 with write deadlines are interrupted after the shutdown grace period. For
 outputs without write deadlines, shutdown waits for an ongoing write to return.
 
-Receipt v3 records an intent before forwarding each complete WebSocket message (and each ping/pong) and an outcome after writing it. In this release each record is flushed to disk in turn, including when require_receipts is false. That is two disk syncs per WebSocket message on one shared writer, roughly 100-500 messages per second in total across the process on typical SSD or cloud storage, and HTTP, MCP and WebSocket traffic share that limit. Keep receipt_format: legacy for high-rate WebSocket workloads until shared flushing lands.
+Receipt v3 confirms an intent before forwarding each complete WebSocket message or ping/pong. Concurrent intents can share a disk sync. The writer appends the observed outcome after delivery and can flush it with the next intent or at its idle deadline. If a crash loses that outcome before confirmation, verification reports `outcome_unknown` for the intent. HTTP, MCP and WebSocket receipts share the same writer.
 
 To cut over an existing evidence directory, stop the legacy writer and
 restart with v3 enabled and the same directory. V3 preserves and inventories

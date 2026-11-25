@@ -1730,11 +1730,14 @@ func TestV3BufferedResponseEvidence(t *testing.T) {
 	}
 }
 
-func v3UnrecoverableIntentFault(beforeFailure func()) func(string, string) (v3.StreamFile, error) {
+func v3IntentFault(recoverable bool, beforeFailure func()) func(string, string) (v3.StreamFile, error) {
 	opened := false
 	return func(dir, pattern string) (v3.StreamFile, error) {
 		if opened {
-			return nil, errors.New("receipt stream recovery unavailable")
+			if !recoverable {
+				return nil, errors.New("receipt stream recovery unavailable")
+			}
+			return os.CreateTemp(dir, pattern)
 		}
 		opened = true
 		file, err := os.CreateTemp(dir, pattern)
@@ -1747,41 +1750,61 @@ func v3UnrecoverableIntentFault(beforeFailure func()) func(string, string) (v3.S
 	}
 }
 
-func TestV3OptionalForwardRechecksTaskAfterReceiptWriteError(t *testing.T) {
-	const actor = "bound-worker"
-	var rotate func()
-	var attempted bool
-	p, _, _, _ := newTestV3HTTPProxy(t, TransportForward, false, v3UnrecoverableIntentFault(func() {
-		attempted = true
-		rotate()
-	}), func(cfg *config.Config) {
-		cfg.SessionProfiling.Enabled = true
-		cfg.Agents = map[string]config.AgentProfile{actor: {}}
-	})
-	p.approver = nil
-	var upstreamCalls int
-	p.client.Transport = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
-		upstreamCalls++
-		return &http.Response{StatusCode: http.StatusNoContent, Header: make(http.Header), Body: http.NoBody, Request: req}, nil
-	})
-	req := httptest.NewRequestWithContext(edition.WithAgentOverride(t.Context(), actor), http.MethodPost, "http://peer.vendor.example/update", nil)
-	_, id := p.resolveAgentFromRequest(req)
-	clientIP, _ := requestMeta(req)
-	cfg := p.CurrentConfig()
-	rec := p.sessionMgrPtr.Load().GetOrCreate(responseTaintSessionKey(cfg, id.Name, clientIP, id.Auth))
-	observeHTTPResponseFindings(rec, cfg, "http://status.vendor.example/source", "text/plain", "forward_response", []session.HostileFindingKind{session.FindingDLP})
-	rec.BindTaskSubject("forward:" + actor)
-	responseencoding.RequestIdentity(req.Header)
-	if err := rec.installTaskPermission(rec.TaskSnapshot().CurrentTaskID, session.TaskPermission{
-		Action: forwardRequestTaskAction(req, nil), ExpiresAt: time.Now().Add(time.Hour),
-	}); err != nil {
-		t.Fatal(err)
-	}
-	rotate = func() { rec.BeginNewTask("next task") }
-	w := httptest.NewRecorder()
-	p.handleForwardHTTP(w, req)
-	if !attempted || w.Code != http.StatusForbidden || upstreamCalls != 0 || !strings.Contains(w.Body.String(), session.TaskApprovalStale) {
-		t.Fatalf("write attempted=%t status=%d upstream calls=%d body=%q", attempted, w.Code, upstreamCalls, w.Body)
+func TestV3OptionalForwardWithholdsAfterReceiptWriteStarts(t *testing.T) {
+	for _, recoverable := range []bool{false, true} {
+		name := "unavailable"
+		if recoverable {
+			name = "recovered"
+		}
+		t.Run(name, func(t *testing.T) {
+			const actor = "bound-worker"
+			var rotate func()
+			var attempted bool
+			p, writer, _, _ := newTestV3HTTPProxy(t, TransportForward, false, v3IntentFault(recoverable, func() {
+				attempted = true
+				if !recoverable {
+					rotate()
+				}
+			}), func(cfg *config.Config) {
+				cfg.SessionProfiling.Enabled = true
+				cfg.Agents = map[string]config.AgentProfile{actor: {}}
+			})
+			p.approver = nil
+			var upstreamCalls int
+			p.client.Transport = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				upstreamCalls++
+				return &http.Response{StatusCode: http.StatusNoContent, Header: make(http.Header), Body: http.NoBody, Request: req}, nil
+			})
+			req := httptest.NewRequestWithContext(edition.WithAgentOverride(t.Context(), actor), http.MethodPost, "http://peer.vendor.example/update", nil)
+			_, id := p.resolveAgentFromRequest(req)
+			clientIP, _ := requestMeta(req)
+			cfg := p.CurrentConfig()
+			rec := p.sessionMgrPtr.Load().GetOrCreate(responseTaintSessionKey(cfg, id.Name, clientIP, id.Auth))
+			observeHTTPResponseFindings(rec, cfg, "http://status.vendor.example/source", "text/plain", "forward_response", []session.HostileFindingKind{session.FindingDLP})
+			subject := "forward:" + actor
+			rec.BindTaskSubject(subject)
+			responseencoding.RequestIdentity(req.Header)
+			action := forwardRequestTaskAction(req, nil)
+			if err := rec.installTaskPermission(rec.TaskSnapshot().CurrentTaskID, session.TaskPermission{
+				Action: action, ExpiresAt: time.Now().Add(time.Hour),
+			}); err != nil {
+				t.Fatal(err)
+			}
+			rotate = func() { rec.BeginNewTask("next task") }
+			w := httptest.NewRecorder()
+			p.handleForwardHTTP(w, req)
+			if !attempted || w.Code != http.StatusForbidden || upstreamCalls != 0 || !strings.Contains(w.Body.String(), "receipt admission failed") {
+				t.Fatalf("write attempted=%t status=%d upstream calls=%d body=%q", attempted, w.Code, upstreamCalls, w.Body)
+			}
+			if recoverable {
+				if _, _, approved := rec.TaskPolicySnapshot(subject, action); !approved {
+					t.Fatal("task approval was no longer valid after the receipt write failed")
+				}
+				if err := writer.WriteHeartbeat(t.Context()); err != nil {
+					t.Fatalf("receipt writer did not recover: %v", err)
+				}
+			}
+		})
 	}
 }
 
@@ -1828,7 +1851,7 @@ func TestV3ResponseCollectors(t *testing.T) {
 	}
 }
 
-func TestV3OptionalInterceptRechecksTaskAfterReceiptWriteError(t *testing.T) {
+func TestV3OptionalInterceptWithholdsAfterReceiptWriteStarts(t *testing.T) {
 	p, _, _, target, ic := newTaintInterceptFixture(t, nil)
 	shared := &SessionState{}
 	shared.BeginNewTask("invocation")
@@ -1844,7 +1867,7 @@ func TestV3OptionalInterceptRechecksTaskAfterReceiptWriteError(t *testing.T) {
 		t.Fatal(err)
 	}
 	attempted := false
-	_, writer, _, _ := newTestV3HTTPProxy(t, transportInterceptReceipt, false, v3UnrecoverableIntentFault(func() {
+	_, writer, _, _ := newTestV3HTTPProxy(t, transportInterceptReceipt, false, v3IntentFault(false, func() {
 		attempted = true
 		shared.BeginNewTask("next task")
 	}))
@@ -1855,7 +1878,7 @@ func TestV3OptionalInterceptRechecksTaskAfterReceiptWriteError(t *testing.T) {
 		return &http.Response{StatusCode: http.StatusNoContent, Header: make(http.Header), Body: http.NoBody, Request: r}, nil
 	}))
 	w := interceptTaintRequest(t, handler, http.MethodPost, target)
-	if !attempted || w.Code != http.StatusForbidden || upstreamCalls != 0 || !strings.Contains(w.Body.String(), session.TaskApprovalStale) {
+	if !attempted || w.Code != http.StatusForbidden || upstreamCalls != 0 || !strings.Contains(w.Body.String(), "receipt admission failed") {
 		t.Fatalf("write attempted=%t status=%d upstream calls=%d body=%q", attempted, w.Code, upstreamCalls, w.Body)
 	}
 }
