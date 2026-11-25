@@ -7,6 +7,10 @@ import (
 	"context"
 	"crypto/ed25519"
 	"errors"
+	"fmt"
+	"runtime"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -848,4 +852,178 @@ func TestOptionalAdmissionWithholdsAfterFatalRecoveryAndClose(t *testing.T) {
 	if _, err := gate.AdmitDenialDelivery(t.Context(), writerTestIntent("local-denial-after-fatal-close"), PolicySnapshot{}); err != nil {
 		t.Fatalf("optional local denial withheld after fatal close: %v", err)
 	}
+}
+
+type oneShotSyncFaultFile struct {
+	StreamFile
+	faulted *atomic.Bool
+	syncs   atomic.Int64
+	at      int64
+}
+
+func (f *oneShotSyncFaultFile) Sync() error {
+	if f.syncs.Add(1) == f.at && f.faulted.CompareAndSwap(false, true) {
+		return errors.New("injected one-shot sync fault")
+	}
+	return f.StreamFile.Sync()
+}
+
+func TestSharedFlushConcurrentTrafficAndClose(t *testing.T) {
+	for _, withFault := range []bool{false, true} {
+		name := "healthy"
+		if withFault {
+			name = "transient-fault"
+		}
+		t.Run(name, func(t *testing.T) {
+			opts := writerTestOptions(t.TempDir())
+			delay := time.Millisecond
+			opts.idleFlushDelay = &delay
+			opts.Heartbeat = time.Second
+			storage := localWriterStorage()
+			var faulted atomic.Bool
+			if withFault {
+				create := storage.createTemp
+				storage.createTemp = func(dir, pattern string) (StreamFile, error) {
+					file, err := create(dir, pattern)
+					if err != nil {
+						return nil, err
+					}
+					return &oneShotSyncFaultFile{StreamFile: file, faulted: &faulted, at: 3}, nil
+				}
+			}
+			w := requireWriter(t, opts, storage)
+			w.gate <- struct{}{}
+			w.fileBytes = maxLineBytes + 2048
+			w.release()
+
+			gate := NewEffectGate(w)
+			policy := CapturePolicy(opts.PolicyHash)
+			started := make(chan struct{}, 16)
+			var wg sync.WaitGroup
+			for worker := range 8 {
+				wg.Go(func() {
+					for i := range 20 {
+						id := fmt.Sprintf("w%d-i%d", worker, i)
+						reqCtx, cancel := context.WithCancel(t.Context())
+						if i%5 == 0 {
+							cancel()
+						}
+						if i%4 == 0 {
+							tok, err := gate.AdmitBatch(reqCtx, []Action{writerTestIntent(id + "-a"), writerTestIntent(id + "-b")}, policy)
+							if err == nil && tok != nil {
+								select {
+								case started <- struct{}{}:
+								default:
+								}
+								_ = tok.ConfirmDelivery(t.Context(), func() (bool, error) { return true, nil })
+							}
+						} else {
+							tok, err := gate.Admit(reqCtx, writerTestIntent(id), policy)
+							if err == nil && tok != nil {
+								select {
+								case started <- struct{}{}:
+								default:
+								}
+								if i%3 == 0 {
+									_ = tok.Refuse(t.Context())
+								} else {
+									_ = tok.ConfirmDelivery(t.Context(), func() (bool, error) { return true, nil })
+								}
+							}
+						}
+						cancel()
+					}
+				})
+			}
+			wg.Go(func() {
+				for range 4 {
+					_ = w.WriteHeartbeat(t.Context())
+					_ = w.Rollover(t.Context())
+				}
+			})
+			awaitFlushEvent(t, started)
+			closeErr := w.Close(context.Background(), nil)
+			wg.Wait()
+			if !withFault && closeErr != nil {
+				t.Fatalf("healthy concurrent close returned %v", closeErr)
+			}
+			verified, err := VerifyPaths(t.Context(), []string{opts.Dir}, Options{
+				Directory: true,
+				Keys:      []ed25519.PublicKey{opts.SigningKey.Public().(ed25519.PublicKey)},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if verified.Integrity != "ok" {
+				t.Fatalf("integrity = %s verdict = %s findings = %+v", verified.Integrity, verified.Verdict, verified.Findings)
+			}
+		})
+	}
+}
+
+func TestSharedFlushNoGoroutineLeakAfterCloseAndFatal(t *testing.T) {
+	waitStable := func(t *testing.T, base int) {
+		t.Helper()
+		ticker := time.NewTicker(10 * time.Millisecond)
+		defer ticker.Stop()
+		deadline := time.After(testwait.Deadline(2 * time.Second))
+		for {
+			runtime.GC()
+			if runtime.NumGoroutine() <= base+1 {
+				return
+			}
+			select {
+			case <-ticker.C:
+			case <-deadline:
+				t.Fatalf("goroutine leak: before=%d after=%d", base, runtime.NumGoroutine())
+			}
+		}
+	}
+
+	t.Run("normal-close", func(t *testing.T) {
+		runtime.GC()
+		base := runtime.NumGoroutine()
+		for range 5 {
+			opts := writerTestOptions(t.TempDir())
+			opts.Heartbeat = time.Second
+			w := requireWriter(t, opts, localWriterStorage())
+			tok, err := NewEffectGate(w).Admit(t.Context(), writerTestIntent("clean"), PolicySnapshot{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := tok.ConfirmDelivery(t.Context(), func() (bool, error) { return true, nil }); err != nil {
+				t.Fatal(err)
+			}
+			if err := w.Close(t.Context(), nil); err != nil {
+				t.Fatal(err)
+			}
+		}
+		waitStable(t, base)
+	})
+
+	t.Run("fatal-then-close", func(t *testing.T) {
+		runtime.GC()
+		base := runtime.NumGoroutine()
+		for range 5 {
+			opts := writerTestOptions(t.TempDir())
+			opts.Heartbeat = time.Second
+			fatalSeen := make(chan struct{}, 1)
+			opts.OnFatalError = func(error) {
+				select {
+				case fatalSeen <- struct{}{}:
+				default:
+				}
+			}
+			w := requireWriter(t, opts, localWriterStorage())
+			fault := errors.New("fatal storage")
+			w.gate <- struct{}{}
+			w.active.file = errorWriterFile{StreamFile: w.active.file, syncErr: fault}
+			w.storage.createTemp = func(string, string) (StreamFile, error) { return nil, fault }
+			w.release()
+			_ = w.WriteAction(t.Context(), writerTestIntent("fail"), PolicySnapshot{})
+			awaitFlushEvent(t, fatalSeen)
+			_ = w.Close(t.Context(), nil)
+		}
+		waitStable(t, base)
+	})
 }
