@@ -142,10 +142,12 @@ def rerun(package: str, names: list[str], tags: str, reruns: int, timeout: float
     # A rerun that crashed or timed out before every requested run finished is
     # unknown, including when a run had already failed. A partial count would
     # call that flake and hide that the rerun did not finish. A confirmed data
-    # race during any rerun always classifies as DATA RACE.
+    # race during any rerun always classifies as DATA RACE. A race line with
+    # no Test field belongs to the whole rerun process, including when several
+    # tests share it; counting their passes would label the race flaky.
     outcomes: dict[str, int] = {}
     for name in names:
-        if name in raced or (package_raced and len(names) == 1):
+        if name in raced or package_raced:
             outcomes[name] = RACE_DETECTED
         elif finished[name] >= reruns:
             outcomes[name] = failures[name]

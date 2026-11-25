@@ -138,6 +138,21 @@ func TestPartial(t *testing.T) {
             self.assertIn("| example.test/fixture | TestPartial | rerun did not finish | UNKNOWN |", text)
             self.assertNotIn("FLAKY", text)
 
+    def test_package_level_race_during_multi_test_rerun_is_data_race(self):
+        # A race line with no Test field is the package, not "none of these
+        # tests". Counting the passes would label every one of them flaky.
+        events_out = []
+        for name in ("TestA", "TestB"):
+            for _ in range(2):
+                events_out.append({"Action": "pass", "Package": "example.test/p", "Test": name})
+        events_out.append({"Action": "output", "Package": "example.test/p", "Output": "WARNING: DATA RACE\n"})
+        completed = subprocess.CompletedProcess(args=["go", "test"], returncode=0,
+                                                stdout="\n".join(json.dumps(event) for event in events_out),
+                                                stderr="")
+        with patch.object(report.subprocess, "run", return_value=completed):
+            outcomes = report.rerun("example.test/p", ["TestA", "TestB"], "", 2, 30)
+        self.assertEqual(outcomes, {"TestA": report.RACE_DETECTED, "TestB": report.RACE_DETECTED})
+
     def test_data_race_during_rerun_is_classified_as_data_race_not_flaky(self):
         # A test that triggers a data race only on one rerun must be labeled
         # DATA RACE rather than FLAKY.
