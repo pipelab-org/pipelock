@@ -106,6 +106,32 @@ func v3LayoutRecipes(t *testing.T) []v3Recipe {
 		line = append(line, head.line[entryEnd:]...)
 		recipes = append(recipes, v3Invalid(1, tc.name, "LINE_LAYOUT", v3File{first, line}))
 	}
+	// Sign the same payload with four distinct keys, including the declared signer.
+	entries := make([]string, 0, 4)
+	pae := v3.PAE(head.payload)
+	for _, key := range []ed25519.PrivateKey{s.key, v3Key("second"), v3Key("third"), v3Key("fourth")} {
+		entries = append(entries, fmt.Sprintf("{\"keyid\":\"%s\",\"sig\":\"%s\"}",
+			v3.Digest(v3Public(key)), base64.StdEncoding.EncodeToString(ed25519.Sign(key, pae))))
+	}
+	slices.Sort(entries)
+	four := head
+	four.line = slices.Concat(head.line[:entryStart], []byte(strings.Join(entries, ",")), head.line[entryEnd:])
+	withClose := func(line []byte) v3File {
+		return v3File{valid.name, slices.Concat(line, s.records[1].line)}
+	}
+	recipes = append(recipes, v3Recipe{group: 1, name: "four-signatures", verdict: "VALID", files: []v3File{withClose(four.line)}})
+	for _, tc := range []struct {
+		name     string
+		line     v3Signed
+		from, to string
+	}{
+		{"four-signatures-trailing-comma", four, "],\"payload\":", ",],\"payload\":"},
+		{"signature-empty-entry", four, "},{\"keyid\":", "},,{\"keyid\":"},
+		{"outer-trailing-comma", head, "}}\n", "},}\n"},
+		{"signature-trailing-comma", head, "],\"payload\":", ",],\"payload\":"},
+	} {
+		recipes = append(recipes, v3Invalid(1, tc.name, "LINE_LAYOUT", withClose(v3LineTransform(t, tc.line, tc.from, tc.to))))
+	}
 	recipes = append(recipes,
 		v3Invalid(1, "bom", "LINE_LAYOUT", v3File{first, append([]byte{0xef, 0xbb, 0xbf}, head.line...)}),
 		v3Invalid(1, "damaged-first-line", "LINE_LAYOUT", v3File{first, append([]byte("broken\n"), valid.bytes...)}),
