@@ -94,3 +94,15 @@ func TestFirstGroupEvidenceEntrySkipsLeadingBlankLines(t *testing.T) {
 		t.Fatalf("first entry = %+v seen=%t err=%v", first, seen, err)
 	}
 }
+
+func TestGroupMembershipChangeIncludesNamedPredecessor(t *testing.T) {
+	const predecessor = "other.run.0123456789abcdef0123456789abcdef"
+	const unrelated = "other.run.1123456789abcdef0123456789abcdef"
+	links := []chainLinkRecord{{namePred: predecessor}}
+	if !groupMembershipChanged("proxy", links, map[string]bool{predecessor: true}, nil) {
+		t.Fatal("losing the gate of a named predecessor did not invalidate the restart snapshot")
+	}
+	if groupMembershipChanged("proxy", links, map[string]bool{unrelated: true}, nil) {
+		t.Fatal("losing an unrelated gate invalidated the restart snapshot")
+	}
+}

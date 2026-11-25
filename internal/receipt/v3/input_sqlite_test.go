@@ -6,6 +6,9 @@
 package v3
 
 import (
+	"context"
+	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -110,5 +113,40 @@ func TestScratchDirectoryCreationFailure(t *testing.T) {
 	parent := filepath.Join(t.TempDir(), "missing")
 	if _, err := newStoreIn(t.Context(), parent); err == nil || !strings.Contains(err.Error(), "scratch directory") {
 		t.Fatalf("unexpected scratch-directory result: %v", err)
+	}
+}
+
+func TestScratchInitializationCancellationRemovesDirectory(t *testing.T) {
+	parent := t.TempDir()
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if store, err := newStoreIn(ctx, parent); !errors.Is(err, context.Canceled) || store != nil {
+		t.Fatalf("canceled scratch initialization: %v", err)
+	}
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatal("failed initialization left a scratch directory")
+	}
+}
+
+func TestRecordStagingRefusesMissingTable(t *testing.T) {
+	ctx := t.Context()
+	store, err := newStore(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.close()
+	if _, err := store.ExecContext(ctx, "DROP TABLE records"); err != nil {
+		t.Fatal(err)
+	}
+	err = store.stage(ctx, func(recordWriter) error {
+		t.Error("staging proceeded without its scratch table")
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "prepare record staging") {
+		t.Fatalf("staging error = %v, want scratch table preparation failure", err)
 	}
 }

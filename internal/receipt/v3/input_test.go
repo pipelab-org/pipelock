@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"testing/iotest"
@@ -19,13 +20,86 @@ import (
 	contract "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
 )
 
-func TestCallerOptionsAndResultFormat(t *testing.T) {
-	_, err := (CallerOptions{Format: "unknown"}).Parse(1)
-	if err == nil {
-		t.Fatal("accepted unknown receipt format")
+func TestCallerOptionsParse(t *testing.T) {
+	stream := strings.Repeat("1", 32)
+	headID := Digest(nil)
+	key := strings.Repeat("ab", ed25519.PublicKeySize)
+	caller := CallerOptions{
+		Keys:                  []string{key},
+		ExpectHeads:           []string{stream + ":2:" + headID},
+		ExpectSequences:       []string{stream + ":1"},
+		AcceptDiscontinuities: []string{headID},
+		AllowPartialHistories: []string{stream},
+		ExpectLineage:         stream,
+		Format:                "v3",
+		AllowPrefix:           true,
+		AllowUnpinned:         true,
 	}
-	if _, err := UseHostVerifier(Options{}).ResultBytes("unknown"); err == nil {
-		t.Fatal("accepted unknown result format")
+	want := Options{
+		Keys:                  []ed25519.PublicKey{bytes.Repeat([]byte{0xab}, ed25519.PublicKeySize)},
+		ExpectHeads:           []Head{{Stream: stream, Position: Position{Record: headID, Seq: 2}}},
+		ExpectSequences:       []Sequence{{Stream: stream, Seq: 1}},
+		AcceptDiscontinuities: []string{headID},
+		AllowPartialHistories: []string{stream},
+		ExpectLineage:         stream,
+		ExplicitV3:            true,
+		AllowPrefix:           true,
+		AllowUnpinned:         true,
+	}
+	got, err := caller.Parse(1)
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("caller options lost or altered a verification requirement: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name      string
+		caller    CallerOptions
+		fileCount int
+		want      string
+	}{
+		{"unknown format", CallerOptions{Format: "unknown"}, 1, "format must be v3"},
+		{"multiple files", CallerOptions{Format: "v3"}, 2, "requires exactly one file"},
+		{"explicit format with directory", CallerOptions{Format: "v3", Directory: true}, 1, "only to a single file"},
+		{"short key", CallerOptions{Keys: []string{"ab"}}, 1, "lowercase hexadecimal"},
+		{"uppercase key", CallerOptions{Keys: []string{strings.ToUpper(key)}}, 1, "lowercase hexadecimal"},
+		{"malformed key", CallerOptions{Keys: []string{strings.Repeat("z", len(key))}}, 1, "decode public key"},
+		{"malformed head", CallerOptions{ExpectHeads: []string{stream + ":2"}}, 1, "expected head"},
+		{"malformed sequence", CallerOptions{ExpectSequences: []string{stream + ":01"}}, 1, "expected sequence"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := tc.caller.Parse(tc.fileCount); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Parse error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestCallerResultBytes(t *testing.T) {
+	result := UseHostVerifier(Options{AllowUnpinned: true, AllowPrefix: true})
+	if result.Counts.Scope != "not_appraised" {
+		t.Fatalf("browser fallback appraisal scope = %q", result.Counts.Scope)
+	}
+	for _, tc := range []struct {
+		output    string
+		canonical func() ([]byte, error)
+	}{
+		{"result", result.JSON},
+		{"projection", result.Projection},
+		{"unknown", nil},
+	} {
+		t.Run(tc.output, func(t *testing.T) {
+			data, err := result.ResultBytes(tc.output)
+			if tc.canonical == nil {
+				if IsV3Output(tc.output) || err == nil || data != nil {
+					t.Fatalf("unsupported output was accepted: %v", err)
+				}
+				return
+			}
+			want, canonicalErr := tc.canonical()
+			if !IsV3Output(tc.output) || err != nil || canonicalErr != nil || !bytes.Equal(data, append(want, '\n')) {
+				t.Fatalf("output differs from the canonical document with a terminal newline: %v, %v", err, canonicalErr)
+			}
+		})
 	}
 }
 

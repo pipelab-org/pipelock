@@ -104,6 +104,7 @@ func TestLegacyBatchDiscrimination(t *testing.T) {
 		{"operational recorder", "evidence-example-0.jsonl", operational, true, false, 0, 0},
 		{"unknown format", "unknown.jsonl", []byte("{}"), false, false, 0, 0},
 		{"oversized legacy line", "unknown.jsonl", bytes.Repeat([]byte{' '}, recorder.MaxEntryLineBytes+1), false, true, 0, 0},
+		{"oversized buffered record", "unknown.jsonl", bytes.Repeat([]byte{' '}, recorder.MaxEntryLineBytes+3), false, true, 0, 0},
 		{"mixed record types", "mixed.jsonl", bytes.Join([][]byte{compact.Bytes(), v2}, []byte{'\n'}), false, true, 0, 0},
 		{"invalid JSON", "bad.jsonl", []byte("{"), false, true, 0, 0},
 		{"invalid action", "bad.jsonl", []byte("{\"version\":1,\"action_record\":[]}"), false, true, 0, 0},
@@ -578,5 +579,51 @@ func TestBareWrapperExclusionFollowsTheFileThatWasRead(t *testing.T) {
 	v.verifyLegacyContinuity(dir, "example", nil, false, map[string]bool{name: true}, func() bool { return stampsUnchanged(dir, stamps) })
 	if len(v.result.Legacy) != 1 || v.result.Legacy[0].Verdict != "RESTART CONTINUITY INCOMPLETE" || !hasFinding(v.result, codeLegacyInvalid) {
 		t.Fatalf("replaced wrapper was not reported: %+v %+v", v.result.Legacy, v.result.Findings)
+	}
+}
+
+func TestLegacyDirectoryPreservesGroupAndBareWrapperVerdicts(t *testing.T) {
+	for _, name := range []string{
+		"g09-legacy-bare-evidence-under-run-name",
+		"g09-group-with-tampered-shard",
+		"g09-group-with-unclaimed-v3-content",
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := filepath.Join(corpusRoot, name)
+			recipe := readMutationRecipe(t, dir)
+			keys, err := DecodeKeys(recipe.Keys)
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := VerifyPaths(t.Context(), []string{dir}, Options{
+				Directory: true, Keys: keys, AllowPrefix: recipe.AllowPrefix, AllowUnpinned: recipe.AllowUnpinned,
+			})
+			if err != nil {
+				t.Fatalf("verify %s: %v", dir, err)
+			}
+			got, err := result.ResultBytes("projection")
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(dir, "projection.json")
+			want, err := os.ReadFile(filepath.Clean(path))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(got, want) {
+				t.Fatalf("verdict %q, exit %d: projection differs from %s", result.Verdict, result.ExitCode, path)
+			}
+		})
+	}
+}
+
+func TestMissingBareWrapperStampCannotKeepExclusion(t *testing.T) {
+	const session = "example"
+	dir := t.TempDir()
+	name := "evidence-" + session + "-0.jsonl"
+	path := filepath.Join(dir, name)
+	stamps := sessionStamps([]string{path}, session)
+	if len(stamps) != 1 || stampsUnchanged(dir, stamps) {
+		t.Fatal("a wrapper that could not be identified retained its exclusion")
 	}
 }

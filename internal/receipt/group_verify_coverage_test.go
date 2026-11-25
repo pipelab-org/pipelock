@@ -199,3 +199,57 @@ func TestClosedGroupRechecksEvidenceLocation(t *testing.T) {
 		t.Fatalf("closed group inventory missed a location created during verification: %s, %s", got.Verdict, got.Error)
 	}
 }
+
+func TestLegacyReceiptGroupsScopeProfileClaims(t *testing.T) {
+	dir, open := newCoverageGroup(t, true)
+	const session = "proxy.run.ffffffffffffffffffffffffffffffff"
+	shard := "evidence-" + session + "-0.jsonl"
+	if err := os.WriteFile(filepath.Join(dir, shard), []byte("other profile\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	trusted := []string{open.SignerKey}
+	excluded := map[string]bool{shard: true}
+	summary, err := VerifyLegacyReceiptGroups(dir, trusted, excluded, func(row ReceiptGroupResult) error {
+		if row.GroupID != open.GroupID || row.Verdict != GroupValid {
+			t.Errorf("scoped inventory reported %s for group %q: %s", row.Verdict, row.GroupID, row.Error)
+		}
+		return nil
+	})
+	if err != nil || summary != (ReceiptGroupInventoryResult{Groups: 1}) {
+		t.Fatalf("scoped inventory = %+v, %v", summary, err)
+	}
+	sessions, err := ResolveLegacyBaseSessions(dir, open.BaseSession, excluded)
+	if err != nil || len(sessions) != 0 {
+		t.Fatalf("legacy restart inventory retained a grouped or excluded session: %v, %v", sessions, err)
+	}
+
+	closeName, err := ReceiptGroupFileName(open.GroupID, "close")
+	if err != nil {
+		t.Fatal(err)
+	}
+	excluded[closeName] = true
+	summary, err = VerifyLegacyReceiptGroups(dir, trusted, excluded, func(row ReceiptGroupResult) error {
+		if row.Verdict != GroupIncomplete || row.CloseManifestSHA != "" {
+			t.Errorf("excluded close was treated as evidence: %s, %s", row.Verdict, row.Error)
+		}
+		return nil
+	})
+	if err != nil || summary != (ReceiptGroupInventoryResult{Groups: 1, Incomplete: 1}) {
+		t.Fatalf("inventory without a legacy close = %+v, %v", summary, err)
+	}
+
+	openName, err := ReceiptGroupFileName(open.GroupID, "open")
+	if err != nil {
+		t.Fatal(err)
+	}
+	excluded[openName] = true
+	summary, err = VerifyLegacyReceiptGroups(dir, trusted, excluded, func(row ReceiptGroupResult) error {
+		if row.GroupID != open.GroupID || row.Verdict != GroupInvalid || !strings.Contains(row.Error, "gated session") {
+			t.Errorf("gate without a legacy opening reported %s: %s", row.Verdict, row.Error)
+		}
+		return nil
+	})
+	if err != nil || summary != (ReceiptGroupInventoryResult{Groups: uint64(len(open.Shards)), Invalid: uint64(len(open.Shards))}) {
+		t.Fatalf("gates without an eligible opening = %+v, %v", summary, err)
+	}
+}

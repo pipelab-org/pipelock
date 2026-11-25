@@ -116,3 +116,42 @@ func TestAppraisalRejectsHoldCollisionsAndInvalidShapes(t *testing.T) {
 		})
 	}
 }
+
+func TestMemoryDecisionIndexScopesShapesAndHoldOwnership(t *testing.T) {
+	index := decisionIndex{}
+	if err := index.reset(); err != nil {
+		t.Fatal(err)
+	}
+	const hold, action, other = "hold", "first", "second"
+	if err := index.rememberBadShape(1, action); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		segment int
+		action  string
+		bad     bool
+	}{
+		{1, action, true},
+		{2, action, false},
+		{1, other, false},
+	} {
+		got, err := index.badShape(tc.segment, tc.action)
+		if err != nil || got != tc.bad {
+			t.Fatalf("segment %d, %s: bad shape = %t, %v", tc.segment, tc.action, got, err)
+		}
+	}
+	for _, claim := range []string{action, other} {
+		if owner, err := index.holdOwner(hold, claim); err != nil || owner != action {
+			t.Fatalf("hold ownership changed after claim by %q: owner %q, %v", claim, owner, err)
+		}
+	}
+	if err := index.reset(); err != nil {
+		t.Fatal(err)
+	}
+	if bad, err := index.badShape(1, action); err != nil || bad {
+		t.Fatalf("malformed shape leaked across histories: %t, %v", bad, err)
+	}
+	if owner, err := index.holdOwner(hold, other); err != nil || owner != other {
+		t.Fatalf("hold ownership leaked across histories: %q, %v", owner, err)
+	}
+}

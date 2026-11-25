@@ -73,6 +73,7 @@ func TestDecisionIndexRejectsUnusableTransaction(t *testing.T) {
 		{"get", func() error { _, err := index.get("decision"); return err }},
 		{"put", func() error { return index.put("decision", pieceEntry{}) }},
 		{"each", func() error { return index.eachPiece(func(pieceEntry) {}) }},
+		{"remember shape", func() error { return index.rememberBadShape(0, "decision") }},
 		{"shape", func() error { _, err := index.badShape(0, "decision"); return err }},
 		{"hold", func() error { _, err := index.holdOwner("hold", "decision"); return err }},
 		{"walk", func() error {

@@ -576,3 +576,20 @@ func TestPerFileHistoryReadersHaveNoBudget(t *testing.T) {
 		t.Fatalf("torn reader error = %v", err)
 	}
 }
+
+func TestWalkResolvedHistorySkipsClaimedShards(t *testing.T) {
+	const session = "example"
+	dir := t.TempDir()
+	writeHistoryShard(t, dir, session, 0, 1)
+	claimed := writeHistoryShard(t, dir, session, 1, 1)
+	location := historyLocation(t, dir)
+	location.ExcludedNames = map[string]bool{filepath.Base(claimed): true}
+	var sequences []uint64
+	err := WalkSessionHistoryResolved(location, session, func(entry Entry) error {
+		sequences = append(sequences, entry.Sequence)
+		return nil
+	})
+	if err != nil || len(sequences) != 1 || sequences[0] != 0 {
+		t.Fatalf("scoped walk saw sequences %v: %v", sequences, err)
+	}
+}

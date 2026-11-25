@@ -169,3 +169,14 @@ func TestGroupInventoryReportsOrphanWithoutAEL(t *testing.T) {
 		t.Fatalf("orphan inventory did not identify its group: %+v, %q, %v", summary, groupID, err)
 	}
 }
+
+func TestScopedLegacyHistoryReportsUnavailableDirectory(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing")
+	err := walkLegacySessionHistory(path, "proxy", map[string]bool{"excluded.jsonl": true}, func(recorder.Entry) error {
+		t.Error("visited an entry from unavailable evidence")
+		return nil
+	})
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("scoped read reported %v, want missing directory", err)
+	}
+}
