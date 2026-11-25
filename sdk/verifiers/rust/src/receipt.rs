@@ -19,7 +19,18 @@ pub fn run_receipt(
     let key_hex = resolve_signer_key(signer_key)?;
     // Read the raw text so duplicate-key detection sees every key occurrence,
     // not the last-wins map serde_json would build.
-    let text = read_verifier_text(&clean)?;
+    let text = read_verifier_text(&clean).map_err(|error| match error {
+        VerifierError::Runtime(message)
+            if message
+                == format!(
+                    "input exceeds {} bytes",
+                    crate::util::MAX_VERIFIER_INPUT_BYTES
+                ) =>
+        {
+            VerifierError::Runtime(format!("read receipt: {message}"))
+        }
+        error => error,
+    })?;
     let mut report = ReceiptReport {
         path: clean.display().to_string(),
         valid: false,

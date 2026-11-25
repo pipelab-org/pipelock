@@ -199,6 +199,145 @@ pub fn verify_receipt_group(
     verify_receipt_group_after_inventory(dir, group_id, trusted_keys, || {})
 }
 
+/// Counts reported across every published group and orphan in a directory.
+#[derive(Debug, Default)]
+pub struct ReceiptGroupInventory {
+    pub groups: usize,
+    pub incomplete: usize,
+    pub invalid: usize,
+}
+
+/// Verify all receipt groups and detect orphan manifests and recorder gates.
+///
+/// Visit reports in artifact and recorder filename order. The caller must
+/// check the directory result before treating a reported group as final.
+pub fn verify_receipt_groups(
+    dir: &Path,
+    trusted_keys: &[String],
+    mut visit: impl FnMut(ReceiptGroupReport) -> crate::util::Result<()>,
+) -> crate::util::Result<ReceiptGroupInventory> {
+    let unavailable =
+        |err| VerifierError::Unavailable(format!("inspect receipt group inventory: {err}"));
+    let mut summary = ReceiptGroupInventory::default();
+    if !receipt_group_evidence_present(dir).map_err(unavailable)? {
+        return Ok(summary);
+    }
+    let before = batch_inventory_fingerprint(dir)?;
+    let result = visit_group_inventory(dir, trusted_keys, |report| {
+        let verdict = report.verdict.clone();
+        visit(report)?;
+        summary.groups += 1;
+        match verdict.as_str() {
+            "GROUP_VALID" => {}
+            "GROUP_INCOMPLETE" => summary.incomplete += 1,
+            _ => summary.invalid += 1,
+        }
+        Ok(())
+    });
+    if batch_inventory_fingerprint(dir).ok().as_ref() != Some(&before) {
+        return Err(VerifierError::Unavailable(
+            "receipt group directory changed during verification".into(),
+        ));
+    }
+    result?;
+    Ok(summary)
+}
+
+fn visit_group_inventory(
+    dir: &Path,
+    trusted_keys: &[String],
+    mut visit: impl FnMut(ReceiptGroupReport) -> crate::util::Result<()>,
+) -> crate::util::Result<()> {
+    verify_group_artifact_names(dir).map_err(VerifierError::Invalid)?;
+    let mut entries = fs::read_dir(dir)
+        .and_then(|entries| {
+            entries
+                .map(|entry| entry.map(|e| e.file_name()))
+                .collect::<std::io::Result<Vec<_>>>()
+        })
+        .map_err(|e| VerifierError::Unavailable(e.to_string()))?;
+    entries.sort();
+    let orphan = |id: &str, reason: String| report_from_inner(Err(("GROUP_INVALID", reason)), id);
+    for name in &entries {
+        let name = name.to_string_lossy();
+        if let Some((id, phase)) = name
+            .strip_prefix("receipt-group-")
+            .and_then(|s| s.split_once('-'))
+        {
+            if phase != "open.json" && !has_group_open(dir, id)? {
+                visit(orphan(
+                    id,
+                    "receipt group artifact has no opening manifest".into(),
+                ))?;
+            }
+        }
+    }
+    for name in &entries {
+        let text = name.to_string_lossy();
+        let Some((session, 0)) = parse_evidence_filename(&text) else {
+            continue;
+        };
+        let Some(gate) = first_group_gate(&dir.join(name)).map_err(VerifierError::Unavailable)?
+        else {
+            continue;
+        };
+        let id = gate["group_id"].as_str().unwrap_or_default();
+        if !hex_exact(id, 32) || !has_group_open(dir, id)? {
+            visit(orphan(
+                id,
+                format!("gated session {session:?} has no valid opening manifest"),
+            ))?;
+        }
+    }
+    for name in &entries {
+        let name = name.to_string_lossy();
+        if let Some(id) = name
+            .strip_prefix("receipt-group-")
+            .and_then(|s| s.strip_suffix("-open.json"))
+        {
+            visit(report_from_inner(verify_inner(dir, id, trusted_keys), id))?;
+        }
+    }
+    Ok(())
+}
+
+fn has_group_open(dir: &Path, id: &str) -> crate::util::Result<bool> {
+    match fs::symlink_metadata(dir.join(format!("receipt-group-{id}-open.json"))) {
+        Ok(_) => Ok(true),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(err) => Err(VerifierError::Unavailable(err.to_string())),
+    }
+}
+
+/// Read a complete first group gate even if a later recorder write is torn.
+pub(crate) fn first_group_gate(path: &Path) -> Result<Option<Value>, String> {
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return Ok(None);
+    };
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return Ok(None);
+    }
+    let file = open_checked_regular(path, &metadata)?;
+    let mut first = Vec::new();
+    BufReader::new(file.take((1 << 20) + 1))
+        .read_until(b'\n', &mut first)
+        .map_err(unavailable_read)?;
+    let Some(first) = first.strip_suffix(b"\n") else {
+        return Ok(None);
+    };
+    let Ok(text) = std::str::from_utf8(first) else {
+        return Ok(None);
+    };
+    let Ok(lines) = read_entry_lines_text(text) else {
+        return Ok(None);
+    };
+    Ok(lines
+        .into_iter()
+        .next()
+        .filter(|line| line.entry["type"] == "receipt_group_v1")
+        .map(|line| line.entry["detail"].clone()))
+}
+
 fn verify_receipt_group_after_inventory(
     dir: &Path,
     group_id: &str,
@@ -2065,6 +2204,76 @@ fn read_bounded_stream(reader: impl Read, max: u64) -> Result<Vec<u8>, String> {
 struct InventoryFingerprint {
     xor: [u8; 32],
     count: u64,
+}
+
+fn batch_inventory_fingerprint(dir: &Path) -> crate::util::Result<InventoryFingerprint> {
+    let mut out = InventoryFingerprint {
+        xor: [0; 32],
+        count: 0,
+    };
+    fingerprint_directory_level(dir, dir, &mut out)?;
+    let ael = dir.join("ael");
+    fingerprint_directory_level(dir, &ael, &mut out)?;
+    for entry in fs::read_dir(&ael).map_err(batch_io_error)? {
+        let run = entry.map_err(batch_io_error)?;
+        let name = run.file_name();
+        if !hex_exact(&name.to_string_lossy(), 32) {
+            return Err(VerifierError::Invalid(format!(
+                "invalid native AEL run directory {name:?}"
+            )));
+        }
+        let run = run.path();
+        fingerprint_directory_level(dir, &run, &mut out)?;
+        for child in ["keys", "recorders"] {
+            let path = run.join(child);
+            match fs::symlink_metadata(&path) {
+                Ok(_) => fingerprint_directory_level(dir, &path, &mut out)?,
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => return Err(batch_io_error(err)),
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn fingerprint_directory_level(
+    root: &Path,
+    dir: &Path,
+    out: &mut InventoryFingerprint,
+) -> crate::util::Result<()> {
+    let stamp = fs::symlink_metadata(dir).map_err(batch_io_error)?;
+    if !stamp.is_dir() || stamp.file_type().is_symlink() {
+        return Err(VerifierError::Invalid(
+            "receipt group inventory path is not a real directory".into(),
+        ));
+    }
+    let mut fingerprint = |path: &Path, metadata: &fs::Metadata| {
+        let relative = path.strip_prefix(root).expect("inventory path under root");
+        fingerprint_entry(&relative.to_string_lossy(), metadata, out)
+            .map_err(VerifierError::Invalid)
+    };
+    fingerprint(dir, &stamp)?;
+    for entry in fs::read_dir(dir).map_err(batch_io_error)? {
+        let path = entry.map_err(batch_io_error)?.path();
+        let metadata = fs::symlink_metadata(&path).map_err(batch_io_error)?;
+        fingerprint(&path, &metadata)?;
+    }
+    Ok(())
+}
+
+fn batch_io_error(error: std::io::Error) -> VerifierError {
+    use std::io::ErrorKind;
+    let unavailable = matches!(
+        error.kind(),
+        ErrorKind::PermissionDenied | ErrorKind::Interrupted | ErrorKind::WouldBlock
+    );
+    #[cfg(unix)]
+    let unavailable = unavailable || matches!(error.raw_os_error(), Some(libc::EIO | libc::ESTALE));
+    if unavailable {
+        VerifierError::Unavailable(error.to_string())
+    } else {
+        VerifierError::Invalid(error.to_string())
+    }
 }
 
 fn inventory_fingerprint(dir: &Path) -> Result<InventoryFingerprint, String> {

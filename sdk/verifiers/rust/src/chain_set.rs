@@ -37,7 +37,7 @@ use crate::util::{
 use ed25519_dalek::{Signature, VerifyingKey};
 use serde::Serialize;
 use serde_json::Value;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::fs::OpenOptions;
 #[cfg(unix)]
@@ -226,10 +226,34 @@ fn is_base_chain(session: &str, base: &str) -> bool {
     session == base || run_session_base(session) == Some(base)
 }
 
+thread_local! {
+    static EXCLUDED_RECORDER_FILES: std::cell::RefCell<BTreeSet<String>> =
+        const { std::cell::RefCell::new(BTreeSet::new()) };
+}
+
+/// Keep already-classified inputs out of all legacy recorder scans for this
+/// call. The ordinary chain and group entry points use an empty exclusion set.
+pub(crate) fn with_recorder_file_exclusions<T>(
+    names: BTreeSet<String>,
+    verify: impl FnOnce() -> T,
+) -> T {
+    struct Restore(BTreeSet<String>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            EXCLUDED_RECORDER_FILES.replace(std::mem::take(&mut self.0));
+        }
+    }
+    let _scope = Restore(EXCLUDED_RECORDER_FILES.replace(names));
+    verify()
+}
+
 /// Mirrors Go `evidencename.Parse`: the session is everything between
 /// `evidence-` and the LAST dash, and a sequence that is not a u64 parses
 /// as 0.
 pub fn parse_evidence_filename(name: &str) -> Option<(String, u64)> {
+    if EXCLUDED_RECORDER_FILES.with_borrow(|names| names.contains(name)) {
+        return None;
+    }
     let rest = name
         .strip_prefix(EVIDENCE_PREFIX)?
         .strip_suffix(EVIDENCE_SUFFIX)?;
@@ -751,6 +775,34 @@ pub fn resolve_base_sessions(dir: &Path, base: &str) -> Result<Vec<String>, Stri
         .collect())
 }
 
+/// Lists ordinary base runs, excluding sessions that begin with a group gate.
+pub fn resolve_base_sessions_excluding_receipt_groups(
+    dir: &Path,
+    base: &str,
+) -> Result<Vec<String>, String> {
+    Ok(index_ordinary_recorder_files(dir)?
+        .files
+        .into_keys()
+        .filter(|session| is_base_chain(session, base))
+        .collect())
+}
+
+fn index_ordinary_recorder_files(dir: &Path) -> Result<EvidenceIndex, String> {
+    let mut index = index_recorder_files(dir)?;
+    index.files.retain(|_, paths| {
+        paths
+            .iter()
+            .find(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .and_then(parse_evidence_filename)
+                    .is_some_and(|(_, start)| start == 0)
+            })
+            .is_none_or(|path| matches!(crate::receipt_group::first_group_gate(path), Ok(None)))
+    });
+    Ok(index)
+}
+
 /// Reads every recorder entry of one session in shard order. Like Go's
 /// session reader (`internal/recorder/query.go`), it refuses an entry whose
 /// `session_id` is not the session its file name claims: a file named for run
@@ -842,6 +894,23 @@ pub(crate) fn read_session_evidence(
     let typed =
         extract_typed_from_lines(lines).map_err(|err| SessionReadError::from(err.to_string()))?;
     Ok((outer, typed))
+}
+
+/// Visits the selected session files under the same inventory check as the
+/// recorder reader, before deciding whether they use the bare v2 wrapper.
+pub(crate) fn with_session_files<T>(
+    dir: &Path,
+    session: &str,
+    consume: impl FnOnce(&[PathBuf]) -> Result<T, SessionReadError>,
+) -> Result<T, SessionReadError> {
+    with_history_snapshot(
+        dir,
+        |name| parse_evidence_filename(name).is_some_and(|(found, _)| found == session),
+        || {
+            let index = index_recorder_files(dir)?;
+            consume(index_files(&index, session)?)
+        },
+    )
 }
 
 /// Returns one session's receipts in shard order, as the action-receipt and
@@ -1587,7 +1656,16 @@ fn chain_acceptable(res: &ChainResult) -> bool {
 /// error means the directory could not be enumerated; a caller must treat
 /// that as incomplete, never as healthy.
 pub fn verify_base(dir: &Path, base: &str, opts: &BaseVerifyOptions) -> Result<BaseReport, String> {
-    with_base_history_snapshot(dir, base, || verify_base_inner(dir, base, opts))
+    with_base_history_snapshot(dir, base, || verify_base_inner(dir, base, opts, false))
+}
+
+/// Verify ordinary restart continuity in a directory containing receipt groups.
+pub fn verify_base_excluding_receipt_groups(
+    dir: &Path,
+    base: &str,
+    opts: &BaseVerifyOptions,
+) -> Result<BaseReport, String> {
+    with_base_history_snapshot(dir, base, || verify_base_inner(dir, base, opts, true))
 }
 
 pub(crate) fn with_base_history_snapshot<T>(
@@ -1649,8 +1727,13 @@ fn verify_base_inner(
     dir: &Path,
     base: &str,
     opts: &BaseVerifyOptions,
+    exclude_groups: bool,
 ) -> Result<BaseReport, String> {
-    let ix = index_recorder_files(dir)?;
+    let ix = if exclude_groups {
+        index_ordinary_recorder_files(dir)?
+    } else {
+        index_recorder_files(dir)?
+    };
     let sessions: Vec<String> = ix
         .files
         .keys()

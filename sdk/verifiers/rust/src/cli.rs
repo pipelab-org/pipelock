@@ -57,6 +57,7 @@ pub fn run(args: &[String]) -> Result<i32> {
         "chain" => run_chain_command(rest),
         "group" => run_group_command(rest),
         "receipt" => run_receipt_command(rest),
+        "v3" => crate::v3::run(rest),
         "provenance" => run_provenance_command(rest),
         _ => Err(VerifierError::Usage(format!(
             "unknown command {command}\n{}",

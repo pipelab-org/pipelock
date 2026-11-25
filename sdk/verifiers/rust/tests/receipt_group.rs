@@ -1,7 +1,9 @@
 // Copyright 2026 Pipelock contributors
 // SPDX-License-Identifier: Apache-2.0
 
-use pipelock_verifier_rs::receipt_group::verify_receipt_group;
+mod common;
+
+use pipelock_verifier_rs::receipt_group::{verify_receipt_group, verify_receipt_groups};
 use serde_json::Value;
 use std::fs;
 use std::process::Command;
@@ -151,6 +153,7 @@ fn shared_native_ael_matrix() {
     .unwrap();
     let cases = matrix.as_array().unwrap();
     assert_eq!(cases.len(), 119);
+    let mut compared = 0;
     for case in cases {
         let name = case["name"].as_str().unwrap();
         let group_id = case["group_id"].as_str().unwrap();
@@ -163,6 +166,27 @@ fn shared_native_ael_matrix() {
         let want = case["expected"].as_str().unwrap();
         let report = verify_receipt_group(&cases_root.join(name), group_id, &keys);
         assert_eq!(report.verdict, want, "{name}: {report:?}");
+        let mut batched = Vec::new();
+        let checked = verify_receipt_groups(&cases_root.join(name), &keys, |row| {
+            batched.push(row);
+            Ok(())
+        });
+        if let Ok(summary) = checked {
+            compared += 1;
+            assert_eq!(summary.groups, batched.len(), "{name}");
+            assert_eq!(
+                batched
+                    .iter()
+                    .rfind(|row| row.group_id == group_id)
+                    .map(|row| row.verdict.as_str()),
+                Some(want),
+                "{name}: {batched:?}"
+            );
+            if name.contains("__torn-early") || name.contains("__bad-middle-json") {
+                assert!(summary.invalid > 0, "{name}: {summary:?}");
+            }
+        }
+
         if name == "predecessor__signed-close-head-disagrees" {
             assert!(
                 report
@@ -181,6 +205,7 @@ fn shared_native_ael_matrix() {
                 .contains("GROUP_INCOMPLETE"));
         }
     }
+    assert!(compared > 0, "directory verification produced no reports");
     let controls: Value = serde_json::from_slice(
         &fs::read(cases_root.parent().unwrap().join("controls.json")).unwrap(),
     )
@@ -432,6 +457,17 @@ fn go_produced_groups_verify_with_native_ael() {
     let (id, keys) = trust(&dir);
     let report = verify_receipt_group(&dir, &id, &keys);
     assert_eq!(report.verdict, "GROUP_VALID", "{report:?}");
+    let mut groups = Vec::new();
+    let summary = verify_receipt_groups(&dir, &keys, |row| {
+        groups.push(row);
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(
+        (summary.groups, summary.invalid, summary.incomplete),
+        (1, 0, 0)
+    );
+    assert_eq!(groups, [report]);
 }
 
 #[test]
@@ -906,4 +942,183 @@ fn shared_go_sealed_recovery_tail_kinds_verify() {
             "{name}: {report:?}"
         );
     }
+}
+
+#[test]
+fn whole_directory_verifies_groups_and_reports_orphans() {
+    use pipelock_verifier_rs::{
+        chain_set::{
+            resolve_base_sessions_excluding_receipt_groups, verify_base_excluding_receipt_groups,
+            BaseVerifyOptions,
+        },
+        receipt_group::ReceiptGroupOpen,
+        util::VerifierError,
+    };
+
+    let dir = fixture("group-valid");
+    let (id, keys) = trust(&dir);
+    let opening = dir.join(format!("receipt-group-{id}-open.json"));
+    let manifest: ReceiptGroupOpen = serde_json::from_slice(&fs::read(&opening).unwrap()).unwrap();
+    let shard = &manifest.shards[0].session_id;
+    let base = pipelock_verifier_rs::chain_set::run_session_base(shard).unwrap_or(shard);
+    assert!(resolve_base_sessions_excluding_receipt_groups(&dir, base)
+        .unwrap()
+        .is_empty());
+    let report = verify_base_excluding_receipt_groups(
+        &dir,
+        base,
+        &BaseVerifyOptions {
+            trusted_keys: keys.clone(),
+            ..BaseVerifyOptions::default()
+        },
+    )
+    .unwrap();
+    assert!(report.healthy());
+    assert!(report.chains.is_empty());
+
+    fs::remove_file(&opening).unwrap();
+    let mut groups = Vec::new();
+    let summary = verify_receipt_groups(&dir, &keys, |row| {
+        groups.push(row);
+        Ok(())
+    })
+    .unwrap();
+    assert!(summary.groups > 1, "{summary:?}");
+    assert_eq!(summary.groups, summary.invalid);
+    assert!(groups
+        .iter()
+        .any(|row| row.error.as_ref().unwrap().contains("gated session")));
+    assert!(groups.iter().any(|row| row
+        .error
+        .as_ref()
+        .unwrap()
+        .contains("artifact has no opening")));
+
+    let error = verify_receipt_groups(&dir, &keys, |_| {
+        Err(VerifierError::Runtime("visitor stopped".into()))
+    })
+    .unwrap_err();
+    assert_eq!(error.to_string(), "visitor stopped");
+    fs::write(dir.join("receipt-group-unrecognized"), []).unwrap();
+    assert!(matches!(
+        verify_receipt_groups(&dir, &keys, |_| Ok(())),
+        Err(VerifierError::Invalid(_))
+    ));
+}
+
+#[test]
+fn v3_directory_binds_a_published_group() {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    use ed25519_dalek::{Signer, SigningKey};
+    use pipelock_verifier_rs::{
+        util::sha256_hex,
+        v3::{verify_paths, Options},
+    };
+
+    let corpus = common::repo_root().join("sdk/conformance/testdata/v3/g01-valid-line");
+    if !corpus.is_dir() {
+        return;
+    }
+    let dir = fixture("group-valid");
+    let (id, mut keys) = trust(&dir);
+    let group = verify_receipt_group(&dir, &id, &keys);
+    let file = fs::read_dir(corpus)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| path.extension().is_some_and(|ext| ext == "jsonl"))
+        .unwrap();
+    let v3_path = dir.join(file.file_name().unwrap());
+    let source = fs::read_to_string(file).unwrap();
+    let signing = SigningKey::from_bytes(&[7; 32]);
+    let public = signing.verifying_key().to_bytes();
+    keys.push(hex::encode(public));
+    let digest = |bytes: &[u8]| format!("sha256:{}", sha256_hex(bytes));
+    let signer = digest(&public);
+    let inventory = serde_json::json!({
+        "chains": [{
+            "chain": id,
+            "format": "receipt_group",
+            "record": format!("sha256:{}", group.close_manifest_sha256.unwrap()),
+            "seq": group.shard_count
+        }],
+        "v": 1
+    });
+    let mut inventory = inventory;
+    inventory.sort_all_objects();
+    let inventory = serde_json::to_vec(&inventory).unwrap();
+    let hex = sha256_hex(&inventory);
+    fs::write(
+        dir.join(format!("receipt-v3-cutover-{hex}.json")),
+        &inventory,
+    )
+    .unwrap();
+
+    let payload_type = "application/vnd.pipelock.receipt.v3+json";
+    let mut prev = String::new();
+    let mut wire = String::new();
+    for line in source.lines() {
+        let envelope: Value = serde_json::from_str(line).unwrap();
+        let mut payload = envelope["payload"].clone();
+        if payload["seq"] == 0 {
+            payload["body"]["signer_key"]["public"] = Value::String(STANDARD.encode(public));
+            payload["body"]["legacy_cutover"] =
+                serde_json::json!({"chains": 1, "inventory": format!("sha256:{hex}")});
+        } else {
+            payload["prev"] = Value::String(prev);
+        }
+        payload["signer"] = Value::String(signer.clone());
+        payload.sort_all_objects();
+        let payload = serde_json::to_string(&payload).unwrap();
+        let pae = format!(
+            "DSSEv1 {} {payload_type} {} {payload}",
+            payload_type.len(),
+            payload.len()
+        );
+        let signature = STANDARD.encode(signing.sign(pae.as_bytes()).to_bytes());
+        prev = digest(pae.as_bytes());
+        use std::fmt::Write;
+        writeln!(wire, "{{\"payloadType\":\"{payload_type}\",\"signatures\":[{{\"keyid\":\"{signer}\",\"sig\":\"{signature}\"}}],\"payload\":{payload}}}").unwrap();
+    }
+    fs::write(v3_path, wire).unwrap();
+
+    let options = Options {
+        keys,
+        directory: true,
+        ..Options::default()
+    };
+    let check = || {
+        let result = verify_paths(&[dir.to_path_buf()], &options).unwrap();
+        serde_json::from_slice::<Value>(result.json()).unwrap()
+    };
+    let document = check();
+    assert_eq!(document["verdict"], "VALID", "{document}");
+    assert_eq!(
+        document["legacy"],
+        serde_json::json!([{
+            "chain": id, "class": "pass", "format": "receipt_group", "verdict": "GROUP_VALID"
+        }])
+    );
+    // A file claimed by the v3 profile can also resemble a recorder shard.
+    // A malformed claim must still produce only its v3 layout finding.
+    let open = fs::read(dir.join(format!("receipt-group-{id}-open.json"))).unwrap();
+    let open: Value = serde_json::from_slice(&open).unwrap();
+    let session = open["shards"][0]["session_id"].as_str().unwrap();
+    let malformed = dir.join(format!("evidence-{session}-0.receipt-v3.jsonl"));
+    fs::write(&malformed, b"malformed\n").unwrap();
+    let document = check();
+    assert_eq!(
+        document["findings"],
+        serde_json::json!([{"class":"invalid","code":"FILE_LAYOUT"}])
+    );
+    assert_eq!(document["legacy"][0]["verdict"], "GROUP_VALID");
+    fs::remove_file(malformed).unwrap();
+
+    fs::remove_file(dir.join(format!("receipt-group-{id}-close.json"))).unwrap();
+    let document = check();
+    assert_eq!(document["legacy"][0]["verdict"], "GROUP_INCOMPLETE");
+    assert!(document["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|f| f["code"] == "LEGACY_GROUP_INCOMPLETE"));
 }
