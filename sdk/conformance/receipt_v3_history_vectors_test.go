@@ -319,6 +319,16 @@ func v3CutoverRecipes(t *testing.T) []v3Recipe {
 			files: []v3File{owned, {"example.jsonl", row.bytes}},
 		})
 	}
+	bareEvidence, err := os.ReadFile("testdata/secret-egress-v1/valid-raw-unrewritable-intent.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapper := slices.Concat([]byte(`{"type":"evidence_receipt","detail":`), bytes.TrimSpace(bareEvidence), []byte("}\n"))
+	recipes = append(recipes, v3Recipe{
+		group: 9, name: "legacy-bare-evidence-under-run-name", code: "LEGACY_CHAIN_UNLISTED", verdict: "INVALID",
+		request: v3Request{Directory: true, Keys: append(v3LegacyRequest(t, "valid-raw-unrewritable-intent.json", bareEvidence).Keys, hex.EncodeToString(v3Public(root.key)))},
+		files:   []v3File{owned, {"evidence-example.run.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-0.jsonl", wrapper}},
+	})
 	return append(recipes, v3RotatedCutoverRecipes(t)...)
 }
 

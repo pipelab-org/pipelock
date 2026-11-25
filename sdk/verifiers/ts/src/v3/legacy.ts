@@ -9,6 +9,7 @@ import {
   checkFileEntrySessions,
   parseEvidenceFilename,
   recorderExcludedNames,
+  withRecorderFileExclusions,
   readSessionEvidence,
   resolveBaseSessionsExcludingReceiptGroups,
   runSessionBase,
@@ -68,6 +69,7 @@ export function compareCutoverPosition(actual: LegacyPresentation, row: LegacyRo
 
 interface Batch extends ExtractedReceipts {
   recorder: boolean;
+  bare?: boolean;
 }
 
 const identity = (format: string, chain: string): string => format + ":" + chain;
@@ -233,7 +235,7 @@ function readBareEvidence(dir: string, session: string): Receipt[] | undefined {
 
 function readSession(dir: string, session: string): Batch {
   const bare = readBareEvidence(dir, session);
-  if (bare) return { action: [], evidence: bare, recorder: true };
+  if (bare) return { action: [], evidence: bare, recorder: true, bare: true };
   return withPinnedEvidenceDirectorySync(dir, () => {
     const { lines, typed } = readSessionEvidence(".", session);
     checkFileEntrySessions("evidence-" + session + "-0.jsonl", lines);
@@ -396,6 +398,7 @@ export async function verifyLegacy(
   }
 
   const ordinary = new Map<string, string[]>();
+  const bareSessions = new Set<string>();
   for (const session of [...sessions.keys()].sort(byteOrder)) {
     const dir = sessions.get(session)!;
     const base = runSessionBase(session);
@@ -408,6 +411,7 @@ export async function verifyLegacy(
     if (base !== undefined) bases.set(base, dir);
     try {
       const batch = readSession(dir, session);
+      if (batch.bare) bareSessions.add(session);
       if (batch.action.length || batch.evidence.length) await verifier.verifyBatch(batch);
       else v.result.ignored_files++;
     } catch (error) {
@@ -415,14 +419,22 @@ export async function verifyLegacy(
     }
   }
 
+  const restartExcluded = [
+    ...recorderExcludedNames(),
+    ...paths
+      .map((path) => basename(path))
+      .filter((name) => bareSessions.has(parseEvidenceFilename(name)?.session ?? "")),
+  ];
   for (const base of [...bases.keys()].sort(byteOrder)) {
     const dir = bases.get(base)!;
     try {
-      const restart = await verifyBase(dir, base, {
-        trustedKeys: [...(v.opts.keys ?? [])],
-        endorsements: [],
-        excludeReceiptGroupSessions: groupDirs.get(dir),
-      });
+      const restart = await withRecorderFileExclusions(restartExcluded, () =>
+        verifyBase(dir, base, {
+          trustedKeys: [...(v.opts.keys ?? [])],
+          endorsements: [],
+          excludeReceiptGroupSessions: groupDirs.get(dir),
+        }),
+      );
       if (!baseHealthy(restart)) failure(v, base, actionFormat, "RESTART CONTINUITY FAILED");
     } catch {
       failure(v, base, actionFormat, "RESTART CONTINUITY INCOMPLETE");

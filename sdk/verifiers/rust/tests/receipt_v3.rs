@@ -94,7 +94,7 @@ fn shared_v3_corpus() {
          {reordered} reversed file orders, {identical} full documents identical"
     );
     assert!(failures.is_empty(), "{}", failures.join("\n"));
-    assert_eq!((projected, legacy), (387, 5));
+    assert_eq!((projected, legacy), (388, 5));
 }
 
 struct TestDirectory(PathBuf);
@@ -280,7 +280,9 @@ fn mixed_directory_reads_bare_v2_session() {
     fs::copy(&v3_file, directory.0.join(v3_file.file_name().unwrap())).unwrap();
     let receipt = fs::read_to_string(v2_file).unwrap();
     fs::write(
-        directory.0.join("evidence-example-0.jsonl"),
+        directory
+            .0
+            .join(format!("evidence-example.run.{}-0.jsonl", "a".repeat(32))),
         format!(
             "{{\"type\":\"evidence_receipt\",\"detail\":{}}}\n",
             receipt.trim()

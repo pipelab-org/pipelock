@@ -201,6 +201,7 @@ class RecorderRun:
     evidence: list[Document] = field(default_factory=list)
     last: Document | None = None
     outer_error: str = ""
+    bare_wrapper: bool = False
 
 
 def _wrapper(line: str, entry: Document) -> tuple[bytes, str]:
@@ -308,6 +309,7 @@ def read_run(
     *,
     recovery_offset: int | None = None,
     include_torn: bool = False,
+    allow_bare_wrapper: bool = False,
 ) -> RecorderRun:
     """Decode the ordered shards and check their outer recorder chain."""
     run = RecorderRun()
@@ -338,11 +340,29 @@ def read_run(
                     continue
                 entry = _json(text)
             text = trim_go_space(raw.decode("utf-8"))
-            bare = entry.get("record_type") == V2_RECORD_TYPE
-            if mode is not None and mode != bare:
+            wrapped = (
+                allow_bare_wrapper
+                and set(entry) == {"type", "detail"}
+                and entry["type"] == EVIDENCE_ENTRY_TYPE
+                and isinstance(entry["detail"], dict)
+            )
+            kind = (
+                "wrapper"
+                if wrapped
+                else (
+                    "evidence"
+                    if entry.get("record_type") == V2_RECORD_TYPE
+                    else "recorder"
+                )
+            )
+            if mode is not None and mode != kind:
                 raise ReceiptError("mixed recorder and bare evidence")
-            mode = bare
-            if bare:
+            mode = kind
+            if wrapped:
+                start_at, end_at = object_member_span(text, 0, "detail")
+                _append_receipt(run, text[start_at:end_at], entry["detail"], True)
+                run.bare_wrapper = True
+            elif kind == "evidence":
                 _append_receipt(run, text, entry, True)
             else:
                 if first and (

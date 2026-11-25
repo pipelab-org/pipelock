@@ -20,6 +20,7 @@ from ..group import (
     GROUP_INVALID,
     GROUP_VALID,
     _parse_evidence_filename,
+    _recorder_file_exclusions,
 )
 from ..input_file import _open_regular_input
 from ..legacy_directory import (
@@ -240,11 +241,14 @@ class _LegacyVerifier:
             grouped = self._groups(root)
             index = recorder_index(root, exclude_groups=grouped)
             bases = set()
+            bare_names: set[str] = set()
             for session in sorted(selected & index.keys()):
                 if base := run_base(session):
                     bases.add(base)
                 try:
-                    batch = read_run(session, index[session])
+                    batch = read_run(session, index[session], allow_bare_wrapper=True)
+                    if batch.bare_wrapper:
+                        bare_names.update(path.name for _, path in index[session])
                     if batch.outer_error:
                         raise ReceiptError(batch.outer_error)
                     if batch.action or batch.evidence:
@@ -253,8 +257,14 @@ class _LegacyVerifier:
                         self.v.result["ignored_files"] += 1
                 except _ERRORS as exc:
                     self._fail(session, exc)
-            for base in sorted(bases):
-                self._continuity(root, base, grouped)
+            marker = _recorder_file_exclusions.set(
+                _recorder_file_exclusions.get() | bare_names
+            )
+            try:
+                for base in sorted(bases):
+                    self._continuity(root, base, grouped)
+            finally:
+                _recorder_file_exclusions.reset(marker)
         result = self.v.result["legacy"]
         result.extend(
             _result_label(self.v, key, item) for key, item in self.rows.items()

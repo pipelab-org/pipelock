@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -128,6 +129,7 @@ func (v *verification) verifyLegacy(paths []string, excluded map[string]bool) (m
 		groupDirs[dir] = summary.Groups != 0 || err != nil
 	}
 	ordinarySessions := map[string][]string{}
+	bareSessions := map[string]bool{}
 	for _, session := range sortedKeys(sessions) {
 		dir := sessions[session]
 		if groupDirs[dir] {
@@ -162,6 +164,13 @@ func (v *verification) verifyLegacy(paths []string, excluded map[string]bool) (m
 		err := recorder.WithSessionHistorySnapshot(location, session, func() error {
 			var readErr error
 			batch.action, batch.evidence, readErr = legacy.ReadSessionChains(location, session)
+			if readErr == nil && len(batch.evidence) != 0 && len(batch.action) == 0 {
+				var bare bool
+				bare, readErr = legacy.IsBareEvidenceSession(location, session)
+				if bare {
+					bareSessions[session] = true
+				}
+			}
 			return readErr
 		})
 		switch {
@@ -173,9 +182,21 @@ func (v *verification) verifyLegacy(paths []string, excluded map[string]bool) (m
 			v.result.IgnoredFiles++
 		}
 	}
+	restartExcluded := maps.Clone(excluded)
+	if len(bareSessions) > 0 {
+		if restartExcluded == nil {
+			restartExcluded = make(map[string]bool)
+		}
+		for _, path := range paths {
+			name := filepath.Base(path)
+			if session, _, ok := recorder.ParseEvidenceFilename(name); ok && bareSessions[session] {
+				restartExcluded[name] = true
+			}
+		}
+	}
 	for _, base := range sortedKeys(bases) {
 		dir := bases[base]
-		v.verifyLegacyContinuity(dir, base, keys, groupDirs[dir], excluded)
+		v.verifyLegacyContinuity(dir, base, keys, groupDirs[dir], restartExcluded)
 	}
 	v.checkLegacySelection(presented)
 	if err := v.verifyLegacyEndpoint(presented); err != nil {

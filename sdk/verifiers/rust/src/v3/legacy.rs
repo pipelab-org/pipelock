@@ -262,6 +262,7 @@ impl Verifier<'_> {
             });
             *grouped = match result {
                 Ok(summary) => summary.groups != 0,
+
                 Err(error) => {
                     let incomplete = unavailable(&error);
                     self.doc.add_code(
@@ -288,6 +289,7 @@ impl Verifier<'_> {
             };
         }
         let mut ordinary = BTreeMap::new();
+        let mut bare_sessions = BTreeSet::new();
         let mut bases = BTreeMap::new();
         for (session, dir) in sessions {
             let base = run_session_base(&session).unwrap_or(&session);
@@ -309,6 +311,7 @@ impl Verifier<'_> {
             }
             let batch = read_bare_session(dir, &session).and_then(|bare| {
                 if let Some(batch) = bare {
+                    bare_sessions.insert(session.clone());
                     Ok((None, batch))
                 } else {
                     read_session_evidence(dir, &session)
@@ -331,13 +334,23 @@ impl Verifier<'_> {
             trusted_keys: self.options.keys.clone(),
             endorsements: Vec::new(),
         };
+        let bare_names = paths
+            .iter()
+            .filter_map(|path| {
+                let file = name(path);
+                let (session, _) = parse_evidence_filename(file)?;
+                bare_sessions.contains(&session).then_some(file.to_owned())
+            })
+            .collect::<BTreeSet<_>>();
         for (base, dir) in bases {
             let verify = if dirs[dir] {
                 verify_base_excluding_receipt_groups
             } else {
                 verify_base
             };
-            let checked = verify(dir, &base, &legacy_opts);
+            let checked = with_recorder_file_exclusions(bare_names.clone(), || {
+                verify(dir, &base, &legacy_opts)
+            });
             if checked.as_ref().is_ok_and(|report| report.healthy()) {
                 continue;
             }

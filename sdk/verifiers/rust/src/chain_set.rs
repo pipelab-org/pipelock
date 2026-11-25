@@ -243,6 +243,8 @@ pub(crate) fn with_recorder_file_exclusions<T>(
             EXCLUDED_RECORDER_FILES.replace(std::mem::take(&mut self.0));
         }
     }
+    let mut names = names;
+    EXCLUDED_RECORDER_FILES.with_borrow(|previous| names.extend(previous.iter().cloned()));
     let _scope = Restore(EXCLUDED_RECORDER_FILES.replace(names));
     verify()
 }
