@@ -24,7 +24,7 @@ func TestDashboardRefusesReceiptV3(t *testing.T) {
 		_, trustErr := m.TrustKeys()
 		handler := &dashboardHandler{model: m}
 		response := httptest.NewRecorder()
-		handler.handleIndex(response, httptest.NewRequest(http.MethodGet, "/evidence", nil))
+		handler.handleIndex(response, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/evidence", nil))
 		if response.Code != http.StatusConflict {
 			t.Fatalf("HTTP status: %d", response.Code)
 		}
@@ -32,6 +32,8 @@ func TestDashboardRefusesReceiptV3(t *testing.T) {
 		for _, err := range []error{sessionsErr, sessionErr, actionErr, trustErr} {
 			testreceipt.RequiresV3Refusal(t, err, "dashboard", "the dashboard")
 		}
+		_, _, indexErr := InspectReadModelIndex("", dir)
+		testreceipt.RequiresV3Refusal(t, indexErr, "dashboard", "the dashboard read model")
 		testreceipt.RequiresV3Refusal(t, RebuildReadModel(RebuildOptions{SourceDir: dir}), "dashboard rebuild", "the dashboard read model")
 	})
 }

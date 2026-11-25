@@ -5,11 +5,13 @@ package main
 
 import (
 	"io"
+	"path/filepath"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 
 	"github.com/luckyPipewrench/pipelock/internal/testreceipt"
+	auditpacket "github.com/luckyPipewrench/pipelock/sdk/audit-packet"
 )
 
 func TestLegacyVerifierCommandsRefuseV3(t *testing.T) {
@@ -25,6 +27,8 @@ func TestLegacyVerifierCommandsRefuseV3(t *testing.T) {
 			{"independent", "the independent anchor verifier", runIndependent(io.Discard, io.Discard, dir, independentOptions{})},
 			{"audit-packet", "the audit packet verifier", runAuditPacket(io.Discard, io.Discard, path, auditPacketOptions{})},
 		}
+		_, _, _, packetErr := reverifyChain(dir, &auditpacket.Packet{Artifacts: auditpacket.Artifacts{Evidence: filepath.Base(path)}}, "")
+		testreceipt.RequiresV3Refusal(t, packetErr, "audit-packet", "the audit packet verifier")
 		for _, tc := range cases {
 			testreceipt.RequiresV3Refusal(t, tc.err, tc.command, tc.reader)
 			if cliutil.ExitCodeOf(tc.err) != cliutil.ExitConfig {

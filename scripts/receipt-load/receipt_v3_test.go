@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -20,6 +21,9 @@ import (
 )
 
 func TestLoadExpectedReceiptFormat(t *testing.T) {
+	if err := checkReceiptFormat(filepath.Join(t.TempDir(), "missing"), config.ReceiptFormatV3); !os.IsNotExist(err) {
+		t.Fatalf("missing recorder evidence: %v", err)
+	}
 	legacyDir := t.TempDir()
 	rec, err := recorder.New(recorder.Config{Dir: legacyDir, Enabled: true}, nil, nil)
 	if err != nil {
@@ -46,6 +50,14 @@ func TestLoadExpectedReceiptFormat(t *testing.T) {
 	res, err := readLoadV3(t.Context(), dir, pub, &counts)
 	if err != nil || res.Verdict != "VALID" || counts.actions != 1 || counts.blockDecisions != 1 {
 		t.Fatalf("v3 verification: %+v, counts %+v: %v", res, counts, err)
+	}
+	if _, err := readLoadV3(t.Context(), dir, nil, new(v3LoadCounts)); err == nil {
+		t.Fatal("unusable pin accepted")
+	}
+	canceled, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := readLoadV3(canceled, dir, pub, new(v3LoadCounts)); err == nil {
+		t.Fatal("verified with a canceled context")
 	}
 	damaged := t.TempDir()
 	_, pub = testreceipt.V3(t, damaged, true)
@@ -105,6 +117,16 @@ func TestV3LoadVerificationReport(t *testing.T) {
 	integrity = finishV3Integrity(t.Context(), options{}, dirs, plan, receiver, shutdownReport{Clean: true})
 	if integrity.Verdict != verdictFail || !strings.Contains(integrity.Verify.Output, "legacy agent event log") {
 		t.Fatalf("unexpected mixed format result: %+v", integrity)
+	}
+	verifyPath := filepath.Join(dirs.root, "verify.txt")
+	if err := os.Remove(verifyPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(verifyPath, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if report, _ := verifyLoadV3(t.Context(), dirs, counts); report.Exit == 0 || !strings.Contains(report.Output, "writing verify.txt") {
+		t.Fatalf("missing report write failure: %+v", report)
 	}
 }
 

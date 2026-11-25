@@ -4,11 +4,14 @@
 package signing
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
+	"github.com/luckyPipewrench/pipelock/internal/testreceipt"
 )
 
 func TestVerifyReceiptV3RefusesWholeRecorderOptions(t *testing.T) {
@@ -30,4 +33,19 @@ func TestVerifyReceiptV3RefusesWholeRecorderOptions(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestReceiptRotationEndorseRefusesV3(t *testing.T) {
+	testreceipt.EachV3(t, func(t *testing.T, dir, _ string) {
+		output := filepath.Join(t.TempDir(), "endorsement.json")
+		cmd := receiptRotationEndorseCmd(time.Now)
+		cmd.SetArgs([]string{
+			"--chain", dir, "--prior-key-file", "prior.key", "--new-key-file", "new.key",
+			"--root-key", "root.pub", "--out", output,
+		})
+		testreceipt.RequiresV3Refusal(t, cmd.Execute(), "receipt rotation endorse", "legacy receipt rotation")
+		if _, err := os.Stat(output); !os.IsNotExist(err) {
+			t.Fatalf("refused rotation created output: %v", err)
+		}
+	})
 }

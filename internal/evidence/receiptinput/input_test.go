@@ -29,10 +29,16 @@ func TestReceiptInputRefusal(t *testing.T) {
 			t.Fatalf("legacy input %s: %v", target, err)
 		}
 	}
+	if claimed, err := receiptinput.Claims(path); claimed || err != nil {
+		t.Fatalf("legacy claim: %t, %v", claimed, err)
+	}
 	if err := receiptinput.RefusePayload(legacy, command, reader); err != nil {
 		t.Fatal(err)
 	}
 	testreceipt.EachV3(t, func(t *testing.T, dir, path string) {
+		if claimed, err := receiptinput.Claims(dir); !claimed || err != nil {
+			t.Fatalf("v3 directory claim: %t, %v", claimed, err)
+		}
 		err := receiptinput.Refuse(dir, command, reader)
 		testreceipt.RequiresV3Refusal(t, err, command, reader)
 		if !strings.Contains(err.Error(), "verify-receipt --chain") {
