@@ -996,8 +996,8 @@ func TestScanTextForDLP(t *testing.T) {
 			wantClean: true,
 		},
 		{
-			name:      "FP: Together token followed by underscore suffix",
-			text:      "tok_" + strings.Repeat("a", 40) + "_payload",
+			name:      "FP: Together prefix with short suffix",
+			text:      "tgp_" + "v1_" + strings.Repeat("a", 39),
 			wantClean: true,
 		},
 		{
@@ -1061,7 +1061,7 @@ func TestScanTextForDLP(t *testing.T) {
 		},
 		{
 			name:        "raw DLP pattern match - Together AI Key",
-			text:        "My token is " + "tok_" + strings.Repeat("c", 40),
+			text:        "My token is " + "tgp_" + "v1_" + strings.Repeat("c", 43),
 			wantClean:   false,
 			wantPattern: "Together AI Key",
 		},

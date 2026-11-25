@@ -16,7 +16,7 @@ func TestProviderTokenExistingLeftBoundary(t *testing.T) {
 	cfg.DLP.ScanEnv = false
 	s := MustNew(cfg)
 	t.Cleanup(s.Close)
-	value := "tok_" + strings.Repeat("a1", 24)
+	value := "tgp_" + "v1_" + strings.Repeat("a1", 22)
 	for _, prefix := range []string{".", "header.", "opaque_", "opaque-", "opaque", "", " ", "\"", "="} {
 		result := s.ScanTextForDLP(t.Context(), prefix+value)
 		found := false

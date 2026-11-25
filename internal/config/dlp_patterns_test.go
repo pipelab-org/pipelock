@@ -175,6 +175,34 @@ func TestProviderKeyPatternsRejectProsePrefixes(t *testing.T) {
 	}
 }
 
+// TestTogetherAIKeyIgnoresBearerTokenSubstrings pins the false positive that
+// retired the "tok_" shape: matched case-insensitively with no left boundary,
+// it fired on Google OAuth access tokens whose base64url body happened to hold
+// "Tok_" followed by 40 alphanumerics.
+func TestTogetherAIKeyIgnoresBearerTokenSubstrings(t *testing.T) {
+	t.Parallel()
+
+	re := regexpMustCompile(t, "(?i)"+mustDLPPatternRegex(t, "Together AI Key"))
+	body := "a0AQvPyIM" + "Tok_" + strings.Repeat("Xq7", 15) + "-Zk9_" + strings.Repeat("m", 30)
+	for _, value := range []string{
+		"ya29." + body,
+		"Bearer ya29." + body,
+		"tok_" + strings.Repeat("a", 40),
+	} {
+		if re.MatchString(value) {
+			t.Errorf("non-Together value %q matched", value)
+		}
+	}
+	for _, key := range []string{
+		"tgp_" + "v1_" + strings.Repeat("Ab9", 14) + "c",
+		"Bearer " + "tgp_" + "v1_" + strings.Repeat("Z", 20) + "-_" + strings.Repeat("4", 21),
+	} {
+		if !re.MatchString(key) {
+			t.Errorf("Together-shaped key %q did not match", key)
+		}
+	}
+}
+
 func mustDLPPatternRegex(t *testing.T, name string) string {
 	t.Helper()
 	pattern, ok := dlpPatternByName(DefaultDLPPatterns(), name)
@@ -333,7 +361,8 @@ func TestDefaultDLPPatternsRedactionMirrorCoverage(t *testing.T) {
 		{name: "Hugging Face Token", value: "hf_" + strings.Repeat("A", 34), class: redact.ClassHuggingFaceToken},
 		{name: "Databricks Token", value: "dapi" + strings.Repeat("a", 32), class: redact.ClassDatabricksPAT},
 		{name: "Replicate API Token", value: "r8_" + strings.Repeat("a", 40), class: redact.ClassReplicateAPIToken},
-		{name: "Together AI Key", value: "tok_" + strings.Repeat("a", 40), class: redact.ClassTogetherAIKey},
+		{name: "Together AI Key", value: "tgp_" + "v1_" + strings.Repeat("a", 43), class: redact.ClassTogetherAIKey},
+		{name: "Together AI Key", variant: " base64url tail", value: "tgp_" + "v1_" + strings.Repeat("A", 20) + "-" + strings.Repeat("b", 21) + "_", class: redact.ClassTogetherAIKey, exact: true},
 		{name: "HashiCorp Vault Token", value: "hvs." + strings.Repeat("A", 24), class: redact.ClassVaultToken},
 		{name: "HashiCorp Vault Token", variant: " batch", value: "hvb." + strings.Repeat("A", 24), class: redact.ClassVaultToken},
 		{name: "HashiCorp Vault Token", variant: " batch base64url", value: "hvb." + "A-b_" + strings.Repeat("Cd", 10) + "-", class: redact.ClassVaultToken},

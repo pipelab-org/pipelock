@@ -67,7 +67,7 @@ func dlpAgentTrafficFixtures(t *testing.T) map[string]string {
 		"Hugging Face Token":                 "hf_" + strings.Repeat("H", 34),
 		"Databricks Token":                   "dapi" + strings.Repeat("a", 32),
 		"Replicate API Token":                "r8_" + strings.Repeat("b", 40),
-		"Together AI Key":                    "tok_" + strings.Repeat("c", 40),
+		"Together AI Key":                    "tgp_" + "v1_" + strings.Repeat("c", 43),
 		"Pinecone API Key":                   "pcsk_" + strings.Repeat("I", 36),
 		"Groq API Key":                       "gsk_" + strings.Repeat("J", 48),
 		"xAI API Key":                        "xai-" + strings.Repeat("K", 80),

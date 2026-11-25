@@ -1224,7 +1224,7 @@ Core safety-floor patterns (`AWS Access ID`, `AWS Secret Key`, `GitHub Token`, `
 | Hugging Face Token | `hf_` | critical |
 | Databricks Token | `dapi` | critical |
 | Replicate API Token | `r8_` | critical |
-| Together AI Key | `tok_` | critical |
+| Together AI Key | `tgp_v1_` | critical |
 | Pinecone API Key | `pcsk_` | critical |
 | Groq API Key | `gsk_` | critical |
 | xAI API Key | `xai-` | critical |
