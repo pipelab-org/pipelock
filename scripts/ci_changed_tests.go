@@ -46,7 +46,11 @@ type test struct {
 	// New is false when the package already declared this test name at the
 	// base for the same build variant, even in another file. The runner
 	// measures packages with new tests first, since no weight exists for them.
-	New    bool   `json:"new"`
+	New bool `json:"new"`
+	// Reason is set only with --include-support: "changed" when the test's
+	// own source changed, "support" when it only reaches a changed
+	// declaration. The repeat gate bounds the second group by cost.
+	Reason string `json:"reason,omitempty"`
 	Source string `json:"-"`
 	ident  string
 	// refs holds every identifier the test's declaration mentions; support
@@ -177,8 +181,14 @@ func supportDecls(fset *token.FileSet, file string, parsed *ast.File, into map[p
 		}
 		// Key by declaration, not file, so moving a helper between files is
 		// not a change. Mutually exclusive build-tagged files that declare the
-		// same helper differently are combined in a stable order.
-		id := kind + "/" + key
+		// same helper differently are combined in a stable order. Package-level
+		// names are unique within a package, so a function, type, variable or
+		// constant is keyed by name alone and a change of kind is a change.
+		// Methods are keyed by receiver type and name.
+		id := key
+		if kind == "method" {
+			id = "method/" + key
+		}
 		item := support{name: name, source: source, refs: identifiers(refsNode)}
 		if prior, ok := decls[id]; ok {
 			sources := []string{prior.source, source}
@@ -235,13 +245,25 @@ func supportDecls(fset *token.FileSet, file string, parsed *ast.File, into map[p
 						return err
 					}
 				case *ast.ValueSpec:
+					blank := false
 					for _, name := range sp.Names {
 						if name.Name == "_" {
+							blank = true
 							continue
 						}
 						if err := add(d.Tok.String(), name.Name, name.Name, sp, sp); err != nil {
 							return err
 						}
+					}
+					// A blank variable's initializer runs at package
+					// initialization for every test, like init, and no test
+					// names it. Record it in the same ordered sequence.
+					if blank {
+						source, err := formatted(fset, sp)
+						if err != nil {
+							return err
+						}
+						inits[key] = append(inits[key], d.Tok.String()+" "+source)
 					}
 				}
 			}
@@ -322,7 +344,7 @@ func affectedNames(base, head map[string]support, baseInits, headInits, baseBlan
 	whole := !sameSequence(baseInits, headInits) || !sameSet(baseBlanks, headBlanks)
 	for id, item := range head {
 		old, ok := base[id]
-		if id == "func/TestMain" && (!ok || old.source != item.source) {
+		if id == "TestMain" && (!ok || old.source != item.source) {
 			whole = true
 		}
 		if ok && old.source != item.source {
@@ -330,7 +352,7 @@ func affectedNames(base, head map[string]support, baseInits, headInits, baseBlan
 		}
 	}
 	for id := range base {
-		if _, ok := head[id]; !ok && id == "func/TestMain" {
+		if _, ok := head[id]; !ok && id == "TestMain" {
 			whole = true
 		}
 	}
@@ -373,15 +395,23 @@ func sameSequence(left, right []string) bool {
 	return true
 }
 
+// sameSet compares as sets: importing the same package from one more file
+// changes nothing a test can observe.
 func sameSet(left, right []string) bool {
-	if len(left) != len(right) {
-		return false
+	return sameSequence(uniqueSorted(left), uniqueSorted(right))
+}
+
+func uniqueSorted(values []string) []string {
+	out := append([]string(nil), values...)
+	sort.Strings(out)
+	n := 0
+	for i, v := range out {
+		if i == 0 || v != out[n-1] {
+			out[n] = v
+			n++
+		}
 	}
-	sortedLeft := append([]string(nil), left...)
-	sortedRight := append([]string(nil), right...)
-	sort.Strings(sortedLeft)
-	sort.Strings(sortedRight)
-	return sameSequence(sortedLeft, sortedRight)
+	return out[:n]
 }
 
 // cmd/go ignores dot/underscore directories and testdata during ./... walks.
@@ -471,8 +501,8 @@ func selectTests(base, head string, includeSupport bool) ([]test, error) {
 			impacts[key] = packageImpact{names: names, whole: whole}
 		}
 	}
-	reaches := func(item test) bool {
-		impact, ok := impacts[item.pkg]
+	reachedBy := func(item test, key packageKey) bool {
+		impact, ok := impacts[key]
 		if !ok {
 			return false
 		}
@@ -486,11 +516,28 @@ func selectTests(base, head string, includeSupport bool) ([]test, error) {
 		}
 		return false
 	}
+	// An external test package (foo_test) is compiled with package foo's
+	// test files, so it reaches their declarations as foo.Name. The reverse
+	// does not hold.
+	reaches := func(item test) bool {
+		if reachedBy(item, item.pkg) {
+			return true
+		}
+		internal, external := strings.CutSuffix(item.pkg.name, "_test")
+		return external && reachedBy(item, packageKey{item.pkg.dir, internal})
+	}
 	changed := []test{}
 	for key, item := range inventories[1] {
 		old, exists := inventories[0][key]
-		if !exists || old.Source != item.Source || includeSupport && reaches(item) {
+		edited := !exists || old.Source != item.Source
+		if edited || includeSupport && reaches(item) {
 			item.New = !declared[item.ident]
+			if includeSupport {
+				item.Reason = "support"
+				if edited {
+					item.Reason = "changed"
+				}
+			}
 			changed = append(changed, item)
 		}
 	}

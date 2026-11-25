@@ -208,7 +208,66 @@ func TestOtherDone(t *testing.T) { <-context.Background().Done() }
             head = repo.commit({"a_test.go": test, "b_test.go": "package fixture\n" + helper})
             self.assertEqual(self.select(repo, base, head, support=True), set())
 
-    def test_external_test_package_is_separate(self):
+    def select_full(self, repo: FixtureRepo, base: str, head: str) -> dict[str, str]:
+        result = subprocess.run([str(self.binary), "--base", base, "--head", head, "--include-support"],
+                                cwd=repo.root, check=True, capture_output=True, text=True)
+        return {test["name"]: test["reason"] for test in json.loads(result.stdout)}
+
+    def test_reason_separates_edited_from_reached_tests(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = FixtureRepo(Path(directory))
+            helper = "package fixture\nfunc helper() int { return 1 }\n"
+            tests = 'package fixture\nimport "testing"\nfunc TestUses(t *testing.T) { _ = helper() }\nfunc TestEdited(t *testing.T) {}\n'
+            base = repo.commit({"h_test.go": helper, "a_test.go": tests})
+            head = repo.commit({"h_test.go": helper.replace("1", "2"),
+                                "a_test.go": tests.replace("TestEdited(t *testing.T) {}", "TestEdited(t *testing.T) { t.Log(1) }")})
+            self.assertEqual(self.select_full(repo, base, head), {"TestUses": "support", "TestEdited": "changed"})
+            plain = subprocess.run([str(self.binary), "--base", base, "--head", head],
+                                   cwd=repo.root, check=True, capture_output=True, text=True)
+            self.assertNotIn("reason", plain.stdout, "the measurement selection keeps its shape")
+
+    def test_declaration_kind_change_is_a_change(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = FixtureRepo(Path(directory))
+            uses = 'package fixture\nimport "testing"\nfunc TestUses(t *testing.T) { _ = limit }\n'
+            base = repo.commit({"h_test.go": "package fixture\nvar limit = 1\n", "a_test.go": uses})
+            head = repo.commit({"h_test.go": "package fixture\nconst limit = 2\n"})
+            self.assertEqual(self.select(repo, base, head, support=True), {"TestUses"})
+
+    def test_internal_helper_reaches_the_external_test_package(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = FixtureRepo(Path(directory))
+            export = "package fixture\nfunc Helper() int { return 1 }\n"
+            base = repo.commit({
+                "export_test.go": export,
+                "x_test.go": 'package fixture_test\nimport ("testing"; fixture "example.test/fixture")\nfunc TestX(t *testing.T) { _ = fixture.Helper() }\n',
+            })
+            head = repo.commit({"export_test.go": export.replace("1", "2")})
+            self.assertEqual(self.select(repo, base, head, support=True), {"TestX"})
+
+    def test_blank_variable_initializer_change_selects_the_whole_package(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = FixtureRepo(Path(directory))
+            base = repo.commit({
+                "hook_test.go": 'package fixture\nfunc register(int) bool { return true }\nvar _ = register(1)\n',
+                "a_test.go": 'package fixture\nimport "testing"\nfunc TestOne(t *testing.T) {}\n',
+            })
+            head = repo.commit({"hook_test.go": 'package fixture\nfunc register(int) bool { return true }\nvar _ = register(2)\n'})
+            self.assertEqual(self.select(repo, base, head, support=True), {"TestOne"})
+
+    def test_repeated_blank_import_is_not_a_change(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = FixtureRepo(Path(directory))
+            base = repo.commit({
+                "a_test.go": 'package fixture\nimport ("testing"; _ "errors")\nfunc TestOne(t *testing.T) {}\n',
+            })
+            head = repo.commit({"b_test.go": 'package fixture\nimport _ "errors"\n'})
+            self.assertEqual(self.select(repo, base, head, support=True), set())
+
+    def test_external_package_name_collision_over_selects(self):
+        # Matching is by name, so an external test package's own helper with
+        # the same name as a changed internal one is also selected. That costs
+        # repeat budget, never coverage; the reverse direction stays separate.
         with tempfile.TemporaryDirectory() as directory:
             repo = FixtureRepo(Path(directory))
             base = repo.commit({
@@ -218,7 +277,13 @@ func TestOtherDone(t *testing.T) { <-context.Background().Done() }
             head = repo.commit({
                 "internal_test.go": 'package fixture\nimport "testing"\nfunc helper() int { return 2 }\nfunc TestInternal(t *testing.T) { _ = helper() }\n',
             })
-            self.assertEqual(self.select(repo, base, head, support=True), {"TestInternal"})
+            self.assertEqual(self.select(repo, base, head, support=True), {"TestInternal", "TestExternal"})
+            # An external helper change never reaches the internal package.
+            head2 = repo.commit({
+                "internal_test.go": 'package fixture\nimport "testing"\nfunc helper() int { return 1 }\nfunc TestInternal(t *testing.T) { _ = helper() }\n',
+                "external_test.go": 'package fixture_test\nimport "testing"\nfunc helper() int { return 3 }\nfunc TestExternal(t *testing.T) { _ = helper() }\n',
+            })
+            self.assertEqual(self.select(repo, base, head2, support=True), {"TestExternal"})
 
 
 class RepeatRunsTest(unittest.TestCase):
@@ -236,6 +301,27 @@ class RepeatRunsTest(unittest.TestCase):
     def test_cap_catches_the_flake_that_reached_main(self):
         # TestMCPV3EarlyResponseDropRecordsRefusal failed 5 of 600 race runs.
         self.assertGreater(planner.detection(planner.REPEAT_MAX_RUNS, 120), 0.98)
+
+
+class BoundedReachedTest(unittest.TestCase):
+    def test_keeps_the_cheapest_tests_within_the_budget(self):
+        trees = {"proxy": {"TestCheap": 1.0, "TestMid": 30.0, "TestHeavy": 500.0}}
+        packages = {"example.test/rest": 50.0}
+        reached = {"github.com/luckyPipewrench/pipelock/internal/proxy": ["TestHeavy", "TestMid", "TestCheap", "TestUnrecorded"],
+                   "example.test/rest": ["TestA", "TestB"]}
+        with patch.object(planner, "load_durations", return_value=trees), \
+             patch.object(planner, "load_package_durations", return_value=packages):
+            kept, dropped, spent = planner.bounded_reached(reached, budget=90.0)
+        # 1 + 1 (unrecorded) + 30 + 50 (rest package as a group) = 82 <= 90; the 500s test is left out.
+        self.assertEqual(kept, {"github.com/luckyPipewrench/pipelock/internal/proxy": ["TestCheap", "TestMid", "TestUnrecorded"],
+                                "example.test/rest": ["TestA", "TestB"]})
+        self.assertEqual((dropped, spent), (1, 82.0))
+
+    def test_nothing_fits_keeps_nothing(self):
+        with patch.object(planner, "load_durations", return_value={}), \
+             patch.object(planner, "load_package_durations", return_value={"example.test/rest": 400.0}):
+            kept, dropped, spent = planner.bounded_reached({"example.test/rest": ["TestA"]}, budget=120.0)
+        self.assertEqual((kept, dropped, spent), ({}, 1, 0.0))
 
 
 class RepeatGateEndToEndTest(unittest.TestCase):

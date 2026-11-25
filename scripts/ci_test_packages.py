@@ -1241,6 +1241,12 @@ def measure_changed_tests(
 REPEAT_BUDGET_SECONDS = 6 * 60
 REPEAT_MAX_RUNS = 500
 REPEAT_MIN_RUNS = 2
+# Tests that only reach a changed test helper, TestMain, init or blank import
+# can be a whole heavy package, which two race runs cannot finish. They are
+# added cheapest first, by recorded race time, until this many seconds per run;
+# the rest run once in main's race lane. Tests whose own source changed are
+# always repeated.
+REPEAT_REACHED_BUDGET_SECONDS = 2 * 60
 # Outer bound on the whole gate, compilation included, inside the job's ceiling.
 REPEAT_DEADLINE_SECONDS = 40 * 60
 REPEAT_PACKAGE_TIMEOUT_SECONDS = 30 * 60
@@ -1311,6 +1317,41 @@ def repeat_results(path: Path, selected: dict[str, list[str]]) -> tuple[dict[tup
     return passes, failures, seconds
 
 
+def bounded_reached(
+    reached: dict[str, list[str]], budget: float = REPEAT_REACHED_BUDGET_SECONDS,
+) -> tuple[dict[str, list[str]], int, float]:
+    """Keep the cheapest helper-reached tests that fit the per-run budget.
+
+    Heavy trees record seconds per test; other packages record one total, which
+    bounds any subset of the package, so their reached tests move as a group.
+    A test with no record costs MIN_UNMEASURED_SECONDS. Returns the kept
+    selection, the number of tests left out and the estimated seconds kept.
+    """
+    if __package__:
+        from .ci_test_durations import tree_for_package
+    else:
+        from ci_test_durations import tree_for_package
+    trees, packages = load_durations(), load_package_durations()
+    candidates: list[tuple[float, str, list[str]]] = []
+    for package, names in reached.items():
+        tree = tree_for_package(package)
+        if tree is not None:
+            weights = trees.get(tree, {})
+            candidates.extend((weights.get(name, MIN_UNMEASURED_SECONDS), package, [name]) for name in names)
+        else:
+            candidates.append((packages.get(package, MIN_UNMEASURED_SECONDS * len(names)), package, list(names)))
+    candidates.sort(key=lambda c: (c[0], c[1], c[2]))
+    kept: dict[str, list[str]] = {}
+    spent, dropped = 0.0, 0
+    for cost, package, names in candidates:
+        if spent + cost <= budget:
+            kept.setdefault(package, []).extend(names)
+            spent += cost
+        else:
+            dropped += len(names)
+    return {package: sorted(names) for package, names in kept.items()}, dropped, spent
+
+
 def repeat_changed_tests(
     tests: list[dict[str, str]], tags: str, json_out: Path,
     deadline_seconds: float = REPEAT_DEADLINE_SECONDS, clock=time.monotonic,
@@ -1320,7 +1361,23 @@ def repeat_changed_tests(
         if not isinstance(test, dict) or not all(isinstance(test.get(key), str) and test[key]
                                                 for key in ("package", "file", "name")) or type(test.get("new")) is not bool:
             raise ValueError(f"unknown changed-test classification: {test}")
-    selected = runnable_changed_tests(tests, tags) if tests else {}
+    for test in tests:
+        if test.get("reason", "changed") not in ("changed", "support"):
+            raise ValueError(f"unknown changed-test reason: {test}")
+    edited = [test for test in tests if test.get("reason", "changed") == "changed"]
+    selected = runnable_changed_tests(edited, tags) if edited else {}
+    reached_all = runnable_changed_tests(tests, tags) if len(edited) != len(tests) else {}
+    reached = {pkg: sorted(set(names) - set(selected.get(pkg, [])))
+               for pkg, names in reached_all.items()}
+    reached = {pkg: names for pkg, names in reached.items() if names}
+    if reached:
+        kept, dropped, estimate = bounded_reached(reached)
+        total = sum(len(names) for names in reached.values())
+        print(f"{total} tests reach a changed test helper; repeating {total - dropped} of them "
+              f"(about {estimate:.0f}s per run by recorded race time); "
+              f"{dropped} left to main's single race run", flush=True)
+        for pkg, names in kept.items():
+            selected[pkg] = sorted(set(selected.get(pkg, [])) | set(names))
     if not selected:
         print(f"No added or changed runnable tests (tags={tags or 'none'}); nothing to repeat")
         return 0
