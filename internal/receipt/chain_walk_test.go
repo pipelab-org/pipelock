@@ -6,6 +6,7 @@ package receipt
 import (
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -391,6 +392,14 @@ func baseOptionVariants(dir string) []BaseVerifyOptions {
 
 func compareVerifyBase(t *testing.T, label, dir string, options []BaseVerifyOptions) int {
 	t.Helper()
+	if recorder.RefuseReceiptDirectory(dir) != nil {
+		// The in-memory oracle predates the receipt-profile claim. The streaming
+		// reader must refuse a directory that holds receipt-profile files.
+		if _, err := VerifyBase(dir, "proxy", BaseVerifyOptions{}); !errors.Is(err, recorder.ErrLegacyEvidenceFormat) {
+			t.Fatalf("%s: VerifyBase on a receipt-profile directory = %v, want a legacy-format refusal", label, err)
+		}
+		return 0
+	}
 	bases, err := ContinuityBases(dir)
 	if err != nil {
 		bases = nil

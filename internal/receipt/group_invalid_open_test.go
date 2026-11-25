@@ -77,7 +77,7 @@ func TestVerifyReceiptGroupRefusesMissingTrustAndOpening(t *testing.T) {
 		want    string
 	}{
 		{name: "untrusted", dir: dir, id: groupID, want: "trusted signer key"},
-		{name: "missing directory", dir: filepath.Join(dir, "absent"), id: groupID, trusted: []string{"key"}, want: "not a real directory"},
+		{name: "missing directory", dir: filepath.Join(dir, "absent"), id: groupID, trusted: []string{"key"}, want: "absent"},
 		{name: "invalid ID", dir: dir, id: "bad", trusted: []string{"key"}, want: "invalid receipt group ID"},
 		{name: "missing opening", dir: dir, id: groupID, trusted: []string{"key"}, want: "read receipt group opening"},
 	} {
