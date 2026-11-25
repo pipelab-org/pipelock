@@ -674,7 +674,7 @@ func NewServer(opts ServerOpts) (*Server, error) {
 			writer, openErr := openReceipt(openCtx, cfg, recPrivKey, rec, postureResult,
 				runtimeReceiptStreamOptions{
 					surfaces:           serverReceiptSurfaces(cfg, hasMCPListen, opts.ReverseProxy),
-					onFatalError:       s.failRequiredReceiptGroup,
+					onFatalError:       s.receiptGroupFailureHandler(logger),
 					onDelayedSyncError: func(err error) { logDelayedReceiptSync(logger, err) },
 				})
 			if openErr != nil {
@@ -698,7 +698,7 @@ func NewServer(opts ServerOpts) (*Server, error) {
 				PostureBinding:      postureResult.Binding,
 				PostureAvailability: string(postureResult.Availability),
 				HeartbeatSeconds:    cfg.FlightRecorder.HeartbeatIntervalSecondsForReceipt(),
-			}, cfg.FlightRecorder.ReceiptChainCount(), cfg.FlightRecorder.SigningKeyPath, false, s.failRequiredReceiptGroup)
+			}, cfg.FlightRecorder.ReceiptChainCount(), cfg.FlightRecorder.SigningKeyPath, false, s.receiptGroupFailureHandler(s.logger))
 			if groupErr != nil {
 				s.cleanup()
 				return nil, fmt.Errorf("opening receipt shard group: %w", withNativePredecessorRestartHint(groupErr))
@@ -888,7 +888,18 @@ func (s *Server) Shutdown(_ context.Context) error {
 	return nil
 }
 
+// receiptGroupFailureHandler binds the audit logger when the receipt writer
+// is opened. Its callbacks can run asynchronously while cleanup clears
+// s.logger, so they never read the field.
+func (s *Server) receiptGroupFailureHandler(logger *audit.Logger) func(error) {
+	return func(err error) { s.failRequiredReceiptGroupWith(logger, err) }
+}
+
 func (s *Server) failRequiredReceiptGroup(err error) {
+	s.failRequiredReceiptGroupWith(s.logger, err)
+}
+
+func (s *Server) failRequiredReceiptGroupWith(logger *audit.Logger, err error) {
 	if err == nil {
 		return
 	}
@@ -900,8 +911,8 @@ func (s *Server) failRequiredReceiptGroup(err error) {
 		return
 	}
 	if s.receiptGroupFailure.CompareAndSwap(nil, &err) {
-		if s.logger != nil {
-			s.logger.LogError(audit.NewMethodLogContext("RECEIPT"), fmt.Errorf("required receipt group failed: %w", err))
+		if logger != nil {
+			logger.LogError(audit.NewMethodLogContext("RECEIPT"), fmt.Errorf("required receipt group failed: %w", err))
 		}
 	}
 	_ = s.Shutdown(context.Background())
