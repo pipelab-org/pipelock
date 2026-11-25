@@ -891,6 +891,30 @@ class MeasurementDeadline(ValueError):
     """A package's measurement was still running when the shared deadline hit."""
 
 
+def measurement_recorded_failure(path: Path) -> bool:
+    """Whether a deadline-killed run already recorded a test or package failure.
+
+    The kill leaves no process exit code. A flushed fail event is the same
+    failed measurement as a nonzero exit; ignoring it would keep the recorded
+    weight and let that failure pass the gate.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(event, dict) and event.get("Action") == "fail":
+            return True
+    return False
+
+
 def run_measurement(command: list[str], stream, root: Path, remaining: float) -> int:
     """Bound compilation as well as tests, and reap descendants on timeout."""
     with subprocess.Popen(command, stdout=stream, cwd=root, start_new_session=True) as process:
@@ -1087,10 +1111,18 @@ def measure_changed_tests(
             stream = json_out.with_suffix(f".{'base' if base_side else 'head'}.{index}.json")
             names = base_selected[package] if base_side else selected[package]
             pair_started = clock()
-            result = measured_selection(
-                {package: names}, [package] if package in whole else [], tags, stream,
-                base_root if base_side else ROOT, remaining_seconds,
-            )
+            try:
+                result = measured_selection(
+                    {package: names}, [package] if package in whole else [], tags, stream,
+                    base_root if base_side else ROOT, remaining_seconds,
+                )
+            except MeasurementDeadline:
+                # A fail event already flushed has no exit code after the kill.
+                # That is a failed measurement on either side, not an unmeasured
+                # package that keeps its recorded weight.
+                if measurement_recorded_failure(stream):
+                    raise ValueError(f"changed-test race run failed: {package}; inspect {stream}") from None
+                raise
             if base_side:
                 base_seconds += clock() - pair_started
                 base_streams.append(stream)

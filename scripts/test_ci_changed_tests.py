@@ -774,6 +774,27 @@ func TestParent(t *testing.T) {
              self.assertRaisesRegex(ValueError, "changed-test measurement timeout"):
             self.measure_with(tests, resolve, run, now, 1000.0, directory)
 
+    def test_deadline_mid_run_still_fails_when_the_killed_stream_recorded_a_failure(self):
+        # The shared deadline SIGKILLs the process, so there is no exit code.
+        # A fail event already flushed is the same failed measurement as a
+        # nonzero exit and must not fall through to the recorded-weight skip.
+        first, second, tests, resolve, now, commands, plain, _ = self.paired_deadline_run(new_second=False)
+
+        def killing(command, stream, root, remaining):
+            if command[-1] == second and root == planner.ROOT:
+                commands.append((command[-1], root))
+                stream.write(json.dumps({
+                    "Package": command[-1], "Action": "fail", "Test": "TestSecond", "Elapsed": 1,
+                }) + "\n")
+                stream.flush()
+                now[0] += remaining
+                raise planner.MeasurementDeadline("changed-test measurement timeout")
+            return plain(command, stream, root, remaining)
+
+        with tempfile.TemporaryDirectory() as directory, \
+             self.assertRaisesRegex(ValueError, "changed-test race run failed"):
+            self.measure_with(tests, resolve, killing, now, 1000.0, directory)
+
     def test_deadline_mid_run_keeps_the_head_when_its_base_is_killed(self):
         first, second, tests, resolve, now, commands, run = self.deadline_killed_run(False, Path("base"))
         with tempfile.TemporaryDirectory() as directory:
