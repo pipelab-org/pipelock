@@ -352,6 +352,7 @@ func registerActionProjection() *receiptcontent.Producer {
 	schema.Fields["action_id"] = receiptcontent.ProvenID
 	schema.Fields["parent_action_id"] = receiptcontent.ProvenID
 	schema.Fields["request_id"] = receiptcontent.ProvenRequestID
+	schema.Fields["session.task_id"] = receiptcontent.ProvenTaskID
 	schema.Fields["policy.hash"] = receiptcontent.ComputedDigest
 	schema.Fields["normalization.digest"] = receiptcontent.ComputedDigest
 	schema.Fields["checker.config_hash"] = receiptcontent.ComputedDigest

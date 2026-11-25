@@ -12,7 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/google/uuid"
+	"github.com/luckyPipewrench/pipelock/internal/receiptcontent"
 )
 
 // SignalType identifies a threat signal for adaptive enforcement.
@@ -284,13 +284,13 @@ func NextInvocationKey(prefix string) string {
 // meaningful context. Matches the UUIDv7 pattern already used for
 // action IDs in internal/receipt/action.go.
 func NextTaskID() string {
-	id, err := uuid.NewV7()
-	if err != nil {
+	id := receiptcontent.NewGeneratedID().String()
+	if id == "" {
 		// UUIDv7 generation fails only when crypto/rand or the
 		// clock is broken - neither happens in practice. Emit a
 		// sentinel that is clearly non-colliding and easy to
 		// grep for if it ever appears in a receipt.
 		return "task-00000000-0000-7000-8000-000000000000"
 	}
-	return "task-" + id.String()
+	return receiptcontent.TaskIDPrefix + id
 }

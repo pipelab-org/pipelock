@@ -12,10 +12,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/google/uuid"
-
 	"github.com/luckyPipewrench/pipelock/internal/contract"
 	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/receiptcontent"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
@@ -202,11 +201,10 @@ func SignReceipt(kind contractreceipt.PayloadKind, payload any, ctx ReceiptConte
 		if ctx.DeterministicEventID != "" {
 			eventID = ctx.DeterministicEventID
 		} else {
-			id, uuidErr := uuid.NewV7()
-			if uuidErr != nil {
-				return contractreceipt.EvidenceReceipt{}, fmt.Errorf("generate lifecycle event id: %w", uuidErr)
+			eventID = receiptcontent.NewGeneratedID().String()
+			if eventID == "" {
+				return contractreceipt.EvidenceReceipt{}, errors.New("generate lifecycle event id")
 			}
-			eventID = id.String()
 		}
 	}
 	timestamp := ctx.Timestamp.UTC()
