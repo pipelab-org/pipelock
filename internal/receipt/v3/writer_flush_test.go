@@ -866,7 +866,7 @@ func TestSharedFlushPreAppendDeadlineDuringRollover(t *testing.T) {
 	unblock := sync.OnceFunc(func() { close(finishPublish) })
 	defer unblock()
 
-	ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(200*time.Millisecond))
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	w.gate <- struct{}{}
 	w.onWaitState = func(waitCtx context.Context) {
@@ -894,14 +894,15 @@ func TestSharedFlushPreAppendDeadlineDuringRollover(t *testing.T) {
 	awaitFlushEvent(t, waiting)
 	seal <- nil
 	awaitFlushEvent(t, publishing)
-	<-ctx.Done()
+	// End the admission only while the successor publication holds the gate.
+	cancel()
 	select {
 	case err := <-admission:
-		if !errors.Is(err, context.DeadlineExceeded) {
-			t.Fatalf("pre-append admission returned %v, want deadline exceeded", err)
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("pre-append admission returned %v, want context canceled", err)
 		}
 	case <-time.After(testwait.Deadline(time.Second)):
-		t.Fatal("pre-append admission waited for the stalled successor after its deadline")
+		t.Fatal("pre-append admission waited for the stalled successor after cancellation")
 	}
 	unblock()
 	if err := awaitFlushEvent(t, rollover); err != nil {
@@ -1148,4 +1149,65 @@ func TestSharedFlushNoGoroutineLeakAfterCloseAndFatal(t *testing.T) {
 		}
 		waitStable(t, base)
 	})
+}
+
+func TestFlusherStopDispatchesQueuedFatalNotification(t *testing.T) {
+	opts := writerTestOptions(t.TempDir())
+	called := make(chan error, 1)
+	opts.OnFatalError = func(err error) { called <- err }
+	w := requireWriter(t, opts, localWriterStorage())
+	fault := errors.New("injected fatal after the last notification snapshot")
+
+	// Pause the flusher after its last notification snapshot, just before it
+	// waits. Queue the callback, consume the wake signal and close the stop
+	// channel there, so the flusher can only take the stop case.
+	idle := make(chan struct{})
+	proceed := make(chan struct{})
+	pause := sync.OnceFunc(func() {
+		close(idle)
+		<-proceed
+	})
+	w.gate <- struct{}{}
+	w.onFlusherIdle = pause
+	w.wakeFlush()
+	w.release()
+	awaitFlushEvent(t, idle)
+	w.gate <- struct{}{}
+	w.reportFatal(fault)
+	select {
+	case <-w.flushWake:
+	default:
+		t.Fatal("fatal report did not signal the paused flusher")
+	}
+	close(w.flushStop)
+	w.release()
+	close(proceed)
+	awaitFlushEvent(t, w.flushDone)
+	// Close owns flushStop; give it a fresh channel to close at cleanup.
+	w.gate <- struct{}{}
+	w.flushStop = make(chan struct{})
+	w.release()
+
+	select {
+	case err := <-called:
+		if !errors.Is(err, fault) {
+			t.Fatalf("fatal callback got %v", err)
+		}
+	case <-time.After(testwait.Deadline(time.Second)):
+		t.Fatal("fatal callback queued before the flusher stopped never ran")
+	}
+
+	// Once the flusher has stopped, a later fatal report runs directly.
+	late := errors.New("injected fatal after the flusher stopped")
+	w.gate <- struct{}{}
+	w.reportFatal(late)
+	w.release()
+	select {
+	case err := <-called:
+		if !errors.Is(err, late) {
+			t.Fatalf("late fatal callback got %v", err)
+		}
+	case <-time.After(testwait.Deadline(time.Second)):
+		t.Fatal("fatal callback after the flusher stopped never ran")
+	}
 }

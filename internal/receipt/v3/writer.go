@@ -102,16 +102,18 @@ type StreamWriter struct {
 
 	// All state below is protected by gate. Only the flusher releases the
 	// gate during an active-file sync.
-	changed       chan struct{}
-	onWaitState   func(context.Context) // Test hook, called with the gate held.
-	transition    chan struct{}
-	draining      bool
-	syncing       bool
-	pending       []*writeTicket
-	ready         []*writeTicket
-	waiters       int
-	lastWriteErr  error
-	notifications []flushNotification
+	changed        chan struct{}
+	onWaitState    func(context.Context) // Test hook, called with the gate held.
+	onFlusherIdle  func()                // Test hook, called before the flusher waits.
+	transition     chan struct{}
+	draining       bool
+	flusherStopped bool // Set once the flusher stops dispatching.
+	syncing        bool
+	pending        []*writeTicket
+	ready          []*writeTicket
+	waiters        int
+	lastWriteErr   error
+	notifications  []flushNotification
 
 	active     writerStream
 	previous   *Previous

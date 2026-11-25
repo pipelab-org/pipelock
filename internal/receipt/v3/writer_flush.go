@@ -102,24 +102,34 @@ func (w *StreamWriter) runFlusher() {
 		worked, deadline := w.flushStep()
 		notifications := w.notifications
 		w.notifications = nil
+		idle := w.onFlusherIdle
 		w.release()
-		for _, notification := range notifications {
-			go notification.callback(notification.err)
-		}
+		dispatchNotifications(notifications)
 		if worked {
 			continue
 		}
 
-		var idle <-chan time.Time
+		var expired <-chan time.Time
 		if !deadline.IsZero() {
 			timer.Reset(time.Until(deadline))
-			idle = timer.C
+			expired = timer.C
+		}
+		if idle != nil {
+			idle()
 		}
 		select {
 		case <-w.flushStop:
+			// Deliver anything queued after the last snapshot. Later
+			// notifications are dispatched directly by notify.
+			w.gate <- struct{}{}
+			w.flusherStopped = true
+			notifications := w.notifications
+			w.notifications = nil
+			w.release()
+			dispatchNotifications(notifications)
 			return
 		case <-w.flushWake:
-		case <-idle:
+		case <-expired:
 		}
 		timer.Stop()
 	}
@@ -264,8 +274,8 @@ func (w *StreamWriter) failGeneration(err error, syncError bool) {
 	}
 	w.pending = nil
 	w.waiters = 0
-	if delayed && syncError && w.onDelayedSyncError != nil {
-		w.notifications = append(w.notifications, flushNotification{w.onDelayedSyncError, err})
+	if delayed && syncError {
+		w.notify(w.onDelayedSyncError, err)
 	}
 	w.wakeFlush()
 }
@@ -282,9 +292,26 @@ func (w *StreamWriter) recoverRepairs() {
 
 func (w *StreamWriter) reportFatal(err error) {
 	w.fatal = err
-	if w.onFatalError != nil {
-		w.notifications = append(w.notifications, flushNotification{w.onFatalError, err})
-		w.wakeFlush()
+	w.notify(w.onFatalError, err)
+}
+
+// notify queues a callback for dispatch outside the gate. The caller holds
+// the gate. Once the flusher has stopped, the callback runs directly.
+func (w *StreamWriter) notify(callback func(error), err error) {
+	if callback == nil {
+		return
+	}
+	if w.flusherStopped {
+		go callback(err)
+		return
+	}
+	w.notifications = append(w.notifications, flushNotification{callback, err})
+	w.wakeFlush()
+}
+
+func dispatchNotifications(notifications []flushNotification) {
+	for _, notification := range notifications {
+		go notification.callback(notification.err)
 	}
 }
 
