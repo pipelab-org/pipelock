@@ -9,6 +9,7 @@ import (
 	"go/token"
 	"io/fs"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -42,20 +43,17 @@ func TestMixedReceiptProfileOptIns(t *testing.T) {
 			return err
 		}
 		relative = filepath.ToSlash(relative)
-		if relative == "internal/recorder/discovery.go" {
-			return nil
-		}
 		file, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.SkipObjectResolution)
 		if err != nil {
 			return err
 		}
-		var references int
-		ast.Inspect(file, func(node ast.Node) bool {
-			if id, ok := node.(*ast.Ident); ok && id.Name == "MixedReceiptProfiles" {
-				references++
-			}
-			return true
-		})
+		references, raw := profileModeReferences(file)
+		if raw != 0 {
+			t.Errorf("%s has %d raw EvidenceReadMode literal conversions; use named modes", relative, raw)
+		}
+		if relative == "internal/recorder/discovery.go" {
+			return nil
+		}
 		var expected int
 		for call, count := range want {
 			if strings.HasPrefix(call, relative+":") {
@@ -121,5 +119,77 @@ func expressionName(expr ast.Expr) string {
 		return x.Sel.Name
 	default:
 		return ""
+	}
+}
+
+func profileModeReferences(file *ast.File) (named, raw int) {
+	recorderNames := make(map[string]bool)
+	if file.Name.Name == "recorder" {
+		recorderNames["."] = true
+	}
+	for _, spec := range file.Imports {
+		path, err := strconv.Unquote(spec.Path.Value)
+		if err != nil || path != "github.com/luckyPipewrench/pipelock/internal/recorder" {
+			continue
+		}
+		name := "recorder"
+		if spec.Name != nil {
+			name = spec.Name.Name
+		}
+		recorderNames[name] = true
+	}
+	ast.Inspect(file, func(node ast.Node) bool {
+		switch n := node.(type) {
+		case *ast.Ident:
+			if n.Name == "MixedReceiptProfiles" {
+				named++
+			}
+		case *ast.CallExpr:
+			if len(n.Args) == 1 && isRecorderReadMode(n.Fun, recorderNames) && isModeLiteral(n.Args[0]) {
+				raw++
+			}
+		}
+		return true
+	})
+	return named, raw
+}
+
+func isRecorderReadMode(expr ast.Expr, names map[string]bool) bool {
+	switch expr := ast.Unparen(expr).(type) {
+	case *ast.Ident:
+		return expr.Name == "EvidenceReadMode" && names["."]
+	case *ast.SelectorExpr:
+		qualifier, ok := expr.X.(*ast.Ident)
+		return ok && expr.Sel.Name == "EvidenceReadMode" && names[qualifier.Name]
+	default:
+		return false
+	}
+}
+
+func isModeLiteral(expr ast.Expr) bool {
+	expr = ast.Unparen(expr)
+	if unary, ok := expr.(*ast.UnaryExpr); ok {
+		expr = ast.Unparen(unary.X)
+	}
+	_, literal := expr.(*ast.BasicLit)
+	return literal
+}
+
+func TestProfileModeReferencesRejectLiteralConversions(t *testing.T) {
+	source := `package sample
+import r "github.com/luckyPipewrench/pipelock/internal/recorder"
+var _ = r.EvidenceReadMode(1)
+var _ = r.EvidenceReadMode((+1))
+var _ = r.EvidenceReadMode(0)
+var _ = r.MixedReceiptProfiles
+var _ = other.EvidenceReadMode(1)
+`
+	file, err := parser.ParseFile(token.NewFileSet(), "sample.go", source, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatal(err)
+	}
+	named, raw := profileModeReferences(file)
+	if named != 1 || raw != 3 {
+		t.Fatalf("mode references = %d named, %d raw; want 1 named, 3 raw", named, raw)
 	}
 }
