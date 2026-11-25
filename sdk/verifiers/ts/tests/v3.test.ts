@@ -344,6 +344,33 @@ test("v3 rejects missing or directory inputs even when filename claims v3", (t) 
   }
 });
 
+test("v3 claims require the exact profile filename suffix", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "pipelock-v3-suffix-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "other.receipt-v3.jsonl\n");
+  writeFileSync(path, "{}\n");
+  assert.equal(claimsV3Input(path), false);
+});
+
+test("v3 canonical results reject unpaired surrogates", () => {
+  const result = newResult({}, 0);
+  for (const invalid of ["\ud800", "\udc00"]) {
+    assert.throws(() => canonicalV3({ ...result, [invalid]: 1 }), TypeError);
+    assert.throws(() => canonicalV3({ ...result, verdict: invalid } as typeof result), TypeError);
+  }
+  assert.match(
+    canonicalV3({ ...result, ["\ud83d\ude00"]: "\ud83d\ude00" } as typeof result),
+    /"😀":"😀"/u,
+  );
+});
+
+test("v3 canonical results reject non-finite numbers", () => {
+  for (const invalid of [NaN, Infinity, -Infinity]) {
+    assert.throws(() => canonicalV3(newResult({}, invalid)), TypeError);
+  }
+  assert.match(canonicalV3(newResult({}, 0)), /"ignored_files":0/u);
+});
+
 test("v3 canonical results omit undefined optional members", async () => {
   const { path, keys } = fixture("g05-completed");
   const { result } = await verifyV3Paths([path], { keys });
@@ -366,6 +393,15 @@ test("v3 verification holds the original option values across awaits", async () 
   head.record = "sha256:" + "0".repeat(64);
   opts.expectHeads.push({ ...head, stream: "0".repeat(32) });
   assert.deepEqual(await pending, expected);
+});
+
+test("v3 verification holds the original prefix policy across awaits", async () => {
+  const { path, keys } = fixture("g04-open-end");
+  const opts = { keys, allowPrefix: false };
+  const pending = verifyV3Paths([path], opts);
+  opts.allowPrefix = true;
+  assert.equal((await pending).result.exit_code, 3);
+  assert.equal((await verifyV3Paths([path], opts)).result.exit_code, 0);
 });
 
 test("v3 discards provisional groups when the inventory fails", async () => {

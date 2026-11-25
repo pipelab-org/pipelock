@@ -105,12 +105,22 @@ export function canonicalJSON(value: unknown): string {
       Object.keys(object)
         .filter((key) => object[key] !== undefined)
         .sort()
-        .map((key) => JSON.stringify(key) + ":" + canonicalJSON(object[key]))
+        .map((key) => quote(key) + ":" + canonicalJSON(object[key]))
         .join(",") +
       "}"
     );
   }
+  if (typeof value === "string") return quote(value);
+  if (typeof value === "number" && !Number.isFinite(value))
+    throw new TypeError("canonicalJSON: non-finite numbers cannot be represented in JSON");
   return JSON.stringify(value);
+}
+
+// RFC 8785 forbids a lone surrogate, which JSON.stringify would escape.
+function quote(text: string): string {
+  if (/\p{Surrogate}/u.test(text))
+    throw new TypeError("canonicalJSON: unpaired surrogate cannot be represented in UTF-8");
+  return JSON.stringify(text);
 }
 
 export function newResult(opts: VerifyV3Options, ignoredFiles: number): V3Result {
@@ -166,13 +176,16 @@ function compareAccepted(a: Acceptance, b: Acceptance): number {
   return ascii(a.kind, b.kind) || ascii(a.value, b.value);
 }
 
-function acceptedFinding(f: V3Finding, accepted: Acceptance[]): boolean {
-  return accepted.some(
-    ({ kind, value }) =>
-      (f.code === "PREDECESSOR_NOT_PRESENTED" &&
-        kind === "allow-partial-history" &&
-        value === f.stream) ||
-      (f.code === "LEGACY_END_UNPROVEN" && kind === "accept-discontinuity" && value === f.record),
+function acceptanceIndex(accepted: Acceptance[]): { partial: Set<string>; gaps: Set<string> } {
+  const values = (wanted: string): Set<string> =>
+    new Set(accepted.filter(({ kind }) => kind === wanted).map(({ value }) => value));
+  return { partial: values("allow-partial-history"), gaps: values("accept-discontinuity") };
+}
+
+function acceptedFinding(f: V3Finding, index: ReturnType<typeof acceptanceIndex>): boolean {
+  return (
+    (f.code === "PREDECESSOR_NOT_PRESENTED" && index.partial.has(f.stream ?? "")) ||
+    (f.code === "LEGACY_END_UNPROVEN" && index.gaps.has(f.record ?? ""))
   );
 }
 
@@ -187,7 +200,8 @@ export function finish(result: V3Result, opts: VerifyV3Options): V3Projection {
     .sort(compareAccepted)
     .filter((a, i, arr) => !i || compareAccepted(arr[i - 1], a) !== 0);
 
-  const effective = result.findings.filter((f) => !acceptedFinding(f, result.accepted));
+  const acceptance = acceptanceIndex(result.accepted);
+  const effective = result.findings.filter((f) => !acceptedFinding(f, acceptance));
   const classes = new Set(effective.map((f) => f.class));
   const invalid = classes.has("invalid");
   const unsupported = classes.has("unsupported");
