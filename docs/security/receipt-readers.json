@@ -204,8 +204,9 @@
   },
   {
     "package": "internal/posture",
-    "role": "not-a-reader",
-    "reason": "Handles containment posture statements."
+    "role": "refuses-v3",
+    "reason": "Posture capsules count legacy recorder receipts, so a receipt-profile stream is refused rather than reported as zero receipts.",
+    "test": "TestCollectFlightRecorderEvidenceRefusesReceiptProfile"
   },
   {
     "package": "internal/posturebinding",
