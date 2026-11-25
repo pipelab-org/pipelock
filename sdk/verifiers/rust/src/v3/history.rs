@@ -227,12 +227,7 @@ impl Verifier<'_> {
                 if record.kind != OPEN {
                     continue;
                 }
-                if record.unknown
-                    || record.body["previous"].is_null()
-                    || record.body["lineage"]
-                        .as_str()
-                        .is_none_or(|lineage| !self.histories.contains_key(lineage))
-                {
+                if opener_leaves_membership_unknown(&record, &self.histories) {
                     return Ok(false);
                 }
             }
@@ -575,4 +570,65 @@ fn summarize(
         }
     }
     summary
+}
+
+/// A contested opener that cannot be read as a successor of a listed lineage
+/// leaves membership unknown: unknown content, a `previous` that is not an
+/// object, or a lineage that is not a string naming a known history.
+fn opener_leaves_membership_unknown(
+    record: &Record,
+    histories: &BTreeMap<String, Vec<String>>,
+) -> bool {
+    record.unknown
+        || !record.body["previous"].is_object()
+        || record.body["lineage"]
+            .as_str()
+            .is_none_or(|lineage| !histories.contains_key(lineage))
+}
+
+#[cfg(test)]
+mod membership_tests {
+    use super::*;
+
+    fn opener(body: serde_json::Value) -> Record {
+        Record {
+            stream: String::new(),
+            signer: String::new(),
+            kind: OPEN.into(),
+            body,
+            body_version: 1,
+            seq: 0,
+            prev: String::new(),
+            ts: String::new(),
+            id: String::new(),
+            critical: false,
+            unknown: false,
+            body_code: None,
+            after_damage: false,
+        }
+    }
+
+    #[test]
+    fn a_malformed_previous_leaves_membership_unknown() {
+        let histories = BTreeMap::from([("a".to_owned(), Vec::new())]);
+        let known = serde_json::json!({"previous": {}, "lineage": "a"});
+        assert!(!opener_leaves_membership_unknown(
+            &opener(known),
+            &histories
+        ));
+        for previous in [
+            serde_json::json!(true),
+            serde_json::json!(null),
+            serde_json::json!([]),
+            serde_json::json!("x"),
+        ] {
+            let body = serde_json::json!({"previous": previous, "lineage": "a"});
+            assert!(opener_leaves_membership_unknown(&opener(body), &histories));
+        }
+        let unlisted = serde_json::json!({"previous": {}, "lineage": "b"});
+        assert!(opener_leaves_membership_unknown(
+            &opener(unlisted),
+            &histories
+        ));
+    }
 }

@@ -360,6 +360,31 @@ def test_contested_opening_with_nonstring_lineage_is_unknown_membership():
     assert _membership_known(state) is False
 
 
+@pytest.mark.parametrize(
+    ("previous", "known"),
+    [({}, True), (True, False), (None, False), ([], False), ("x", False)],
+)
+def test_contested_opening_with_malformed_previous_is_unknown_membership(
+    previous, known
+):
+    from types import SimpleNamespace
+
+    from pipelock_aarp_verify.v3.legacy import _membership_known
+    from pipelock_aarp_verify.v3.verify import _Stream
+
+    root = _Stream(body={"legacy_cutover": {}})
+    opener = SimpleNamespace(
+        kind="stream_open",
+        unknown=False,
+        body={"previous": previous, "lineage": "a"},
+    )
+    state = SimpleNamespace(
+        histories={"a": [root]},
+        streams={"contested": _Stream(limit=-1, fork=[opener])},
+    )
+    assert _membership_known(state) is known
+
+
 def test_group_inventory_propagates_unreadable_genesis(tmp_path, monkeypatch):
     from pipelock_aarp_verify import legacy_directory
     from pipelock_aarp_verify.group import GroupVerificationError
