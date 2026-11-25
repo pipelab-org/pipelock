@@ -7,11 +7,14 @@
 package entcli
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/spf13/cobra"
+
+	"github.com/luckyPipewrench/pipelock/internal/license"
 
 	"github.com/luckyPipewrench/pipelock/internal/testreceipt"
 )
@@ -41,4 +44,20 @@ func TestCoverageCertRefusesReceiptV3InResolvedSubdir(t *testing.T) {
 		windowStart: "2026-01-01T00:00:00Z", windowEnd: "2026-01-01T01:00:00Z",
 	})
 	testreceipt.RequiresV3Refusal(t, err, "dashboard coverage-cert generate", "coverage certificates")
+}
+
+func TestDashboardServeRefusesReceiptV3AtStartup(t *testing.T) {
+	tokenFile := writeDashTokenFile(t)
+	testreceipt.EachV3(t, func(t *testing.T, dir, _ string) {
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		cmd := &cobra.Command{}
+		cmd.SetContext(ctx)
+		err := runDashboardServe(cmd, dashboardServeOptions{
+			listen:        "127.0.0.1:0",
+			receiptDir:    dir,
+			authTokenFile: tokenFile,
+		}, license.License{})
+		testreceipt.RequiresV3Refusal(t, err, "dashboard serve", "the dashboard")
+	})
 }

@@ -70,8 +70,24 @@ type StalenessMarker struct {
 	Status     string    `json:"status"`
 }
 
+func refuseReadModelSources(sourceDir, command, reader string) error {
+	if err := receiptinput.Refuse(sourceDir, command, reader); err != nil {
+		return err
+	}
+	paths, err := boundedEvidencePaths(sourceDir)
+	if err != nil {
+		return nil
+	}
+	for _, path := range paths {
+		if err := receiptinput.Refuse(path, command, reader); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func RebuildReadModel(opts RebuildOptions) error {
-	if err := receiptinput.Refuse(opts.SourceDir, "dashboard rebuild", "the dashboard read model"); err != nil {
+	if err := refuseReadModelSources(opts.SourceDir, "dashboard rebuild", "the dashboard read model"); err != nil {
 		if errors.Is(err, receiptinput.ErrUnsupported) {
 			return err
 		}

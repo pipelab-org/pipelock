@@ -59,3 +59,43 @@ func TestDashboardRefusesReceiptV3InResolvedSubdir(t *testing.T) {
 		testreceipt.RequiresV3Refusal(t, err, "dashboard", "the dashboard")
 	}
 }
+
+func TestDashboardAgentsHandlersAndSingleDashEvidenceRefuseReceiptV3(t *testing.T) {
+	testreceipt.EachV3(t, func(t *testing.T, dir, _ string) {
+		m := NewReadModel(Options{ReceiptDir: dir})
+		handler := &dashboardHandler{model: m}
+		for _, route := range []struct {
+			path string
+			fn   func(http.ResponseWriter, *http.Request)
+		}{
+			{"/agents", handler.handleAgents},
+			{"/agent/example", handler.handleAgent},
+		} {
+			resp := httptest.NewRecorder()
+			route.fn(resp, httptest.NewRequestWithContext(t.Context(), http.MethodGet, route.path, nil))
+			if resp.Code != http.StatusConflict {
+				t.Fatalf("%s HTTP status: %d, want %d; body=%q", route.path, resp.Code, http.StatusConflict, resp.Body.String())
+			}
+			testreceipt.RequiresV3Refusal(t, errors.New(resp.Body.String()), "dashboard", "the dashboard")
+		}
+	})
+
+	// Single-dash evidence-v3.jsonl is matched by filterEvidenceEntries but skipped
+	// by v3 directory legacyCandidate; rebuild and index inspection must still refuse it.
+	v3File, _ := testreceipt.V3(t, t.TempDir(), false)
+	v3Data, err := os.ReadFile(filepath.Clean(v3File))
+	if err != nil {
+		t.Fatal(err)
+	}
+	singleDashDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(singleDashDir, "evidence-v3.jsonl"), v3Data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	indexOut := filepath.Join(t.TempDir(), "index.json")
+	testreceipt.RequiresV3Refusal(t, RebuildReadModel(RebuildOptions{SourceDir: singleDashDir, Output: indexOut}), "dashboard rebuild", "the dashboard read model")
+	if _, statErr := os.Stat(indexOut); !os.IsNotExist(statErr) {
+		t.Fatalf("refused rebuild created index: %v", statErr)
+	}
+	_, _, inspectErr := InspectReadModelIndex(indexOut, singleDashDir)
+	testreceipt.RequiresV3Refusal(t, inspectErr, "dashboard", "the dashboard read model")
+}

@@ -970,7 +970,7 @@ func (d *dashboardHandler) handleAgents(w http.ResponseWriter, r *http.Request) 
 	filter := d.model.ResolveFilter(r)
 	groups, err := d.model.Agents(filter)
 	if err != nil {
-		http.Error(w, "could not read agent evidence", http.StatusInternalServerError)
+		writeEvidenceReadError(w, err, "could not read agent evidence")
 		return
 	}
 	data := agentsPageData{
@@ -1001,7 +1001,7 @@ func (d *dashboardHandler) handleAgent(w http.ResponseWriter, r *http.Request) {
 	filter := d.model.ResolveFilter(r)
 	group, found, err := d.model.Agent(agentID, filter)
 	if err != nil {
-		http.Error(w, "could not read agent evidence", http.StatusInternalServerError)
+		writeEvidenceReadError(w, err, "could not read agent evidence")
 		return
 	}
 	if !found {

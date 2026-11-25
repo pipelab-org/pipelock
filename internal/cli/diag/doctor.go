@@ -836,7 +836,7 @@ func checkDoctorFlightRecorder(cfg *config.Config) doctorReportCheck {
 			Next:       next,
 		}
 	}
-	if err := receiptinput.Refuse(cfg.FlightRecorder.Dir, "doctor", "flight recorder evidence health"); err != nil {
+	if err := refuseDoctorFlightRecorderV3(cfg.FlightRecorder.Dir); err != nil {
 		return doctorReportCheck{
 			Name: "flight_recorder", Surface: doctorSurfaceConfig, Status: doctorStatusFail,
 			Configured: true, Reachable: true, Detail: err.Error(),
@@ -887,6 +887,27 @@ func checkDoctorFlightRecorder(cfg *config.Config) doctorReportCheck {
 		Enforcing:  true,
 		Detail:     "flight_recorder is enabled with a configured directory",
 	}
+}
+
+func refuseDoctorFlightRecorderV3(dir string) error {
+	const command, reader = "doctor", "flight recorder evidence health"
+	if err := receiptinput.Refuse(dir, command, reader); err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(filepath.Clean(dir))
+	if err != nil {
+		return nil
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if !entry.Type().IsRegular() || !strings.HasPrefix(name, "evidence-") || !strings.HasSuffix(name, ".jsonl") {
+			continue
+		}
+		if err := receiptinput.Refuse(filepath.Join(dir, name), command, reader); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func flightRecorderAccessDetail(readable, writable bool) (detail, next string) {
