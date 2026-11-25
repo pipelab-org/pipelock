@@ -13,10 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -387,19 +384,29 @@ func TestTLSCRLFailureAndWarning(t *testing.T) {
 	}
 }
 
-func TestTLSCRLHTTPSClient(t *testing.T) { testTLSCRLHTTPSClient(t, false) }
-
-func TestWindowsTLSCRLSchannel(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		t.Skip("requires native Windows Schannel")
+func TestTLSCRLHTTPSClient(t *testing.T) {
+	proxyURL, _, ca, target := startTLSCRLHTTPSProxy(t)
+	trust := x509.NewCertPool()
+	trust.AddCert(ca)
+	client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL), TLSClientConfig: &tls.Config{RootCAs: trust, MinVersion: tls.VersionTLS12}}, Timeout: 10 * time.Second}
+	defer client.CloseIdleConnections()
+	resp, err := client.Do(tlsCRLClientRequest(t, target))
+	if err != nil {
+		t.Fatal(err)
 	}
-	testTLSCRLHTTPSClient(t, true)
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil || string(body) != testTLSCRLBody {
+		t.Fatalf("HTTPS response: %v: %s", err, body)
+	}
 }
 
-func testTLSCRLHTTPSClient(t *testing.T, schannel bool) {
+// startTLSCRLHTTPSProxy runs an intercepting proxy in front of a TLS upstream
+// and returns the proxy URL, its config, the interception CA and the upstream URL.
+func startTLSCRLHTTPSProxy(t *testing.T) (*url.URL, *config.Config, *x509.Certificate, string) {
 	t.Helper()
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, testTLSCRLBody) }))
-	defer upstream.Close()
+	t.Cleanup(upstream.Close)
 	p, cfg, ca := newTLSCRLProxy(t, func(c *config.Config) {
 		c.ForwardProxy.Enabled = true
 		c.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
@@ -431,32 +438,7 @@ func testTLSCRLHTTPSClient(t *testing.T, schannel bool) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if schannel {
-		// Select the built-in client even if Git's OpenSSL curl precedes it on PATH.
-		curl := filepath.Join(os.Getenv("SystemRoot"), "System32", "curl.exe")
-		version, err := exec.CommandContext(t.Context(), curl, "--version").CombinedOutput() // #nosec G204 G702 -- the Windows-only test runs the built-in curl under SystemRoot.
-		if err != nil || !strings.Contains(strings.ToLower(string(version)), "schannel") {
-			t.Fatalf("native Schannel curl unavailable: %v: %s", err, version)
-		}
-		output, err := exec.CommandContext(t.Context(), curl, "--silent", "--show-error", "--fail", "--max-time", "15", "--noproxy", "", "--proxy", proxyURL.String(), "--cacert", cfg.TLSInterception.CACertPath, upstream.URL).CombinedOutput() // #nosec G204 G702 -- the Windows-only test runs the built-in curl under SystemRoot.
-		if err != nil || string(output) != testTLSCRLBody {
-			t.Fatalf("Schannel HTTPS request: %v: %s", err, output)
-		}
-		return
-	}
-	trust := x509.NewCertPool()
-	trust.AddCert(ca)
-	client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL), TLSClientConfig: &tls.Config{RootCAs: trust, MinVersion: tls.VersionTLS12}}, Timeout: 10 * time.Second}
-	defer client.CloseIdleConnections()
-	resp, err := client.Do(tlsCRLClientRequest(t, upstream.URL))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil || string(body) != testTLSCRLBody {
-		t.Fatalf("HTTPS response: %v: %s", err, body)
-	}
+	return proxyURL, cfg, ca, upstream.URL
 }
 
 func tlsCRLClientRequest(t *testing.T, target string) *http.Request {
