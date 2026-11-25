@@ -37,6 +37,7 @@ func TestReceiptCommandTreeOracle(t *testing.T) {
 	digest := strings.Repeat("0", 64)
 	plans := map[string][]testreceipt.ReceiptProbe{
 		"anchor receipts":                        {file, dir("$dir", "--dir", "--key", "$pub")},
+		"contain explain":                        {probe("example", "--events", "$file"), probe("", "--events", "$file")},
 		"doctor":                                 {{Args: []string{"--config", "$config", "--no-color"}, Directory: true, Doctor: true}},
 		"evidence compact":                       {sessionDir},
 		"evidence doctor":                        {dir("$dir")},

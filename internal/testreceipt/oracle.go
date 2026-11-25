@@ -38,7 +38,7 @@ func VisitPathCommands(root *cobra.Command, visit func(*cobra.Command)) {
 	candidate := pathOperand.MatchString(operands)
 	root.LocalFlags().VisitAll(func(flag *pflag.Flag) {
 		switch flag.Name {
-		case "chain", "dir", "location", "input", "file", "receipt-out", "sessions", "log", "config":
+		case "chain", "dir", "location", "input", "file", "receipt-out", "sessions", "log", "events", "config":
 			candidate = candidate || flag.Name != "config" || root.Name() == "doctor"
 		default:
 			name := strings.ToLower(flag.Name)

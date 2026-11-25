@@ -18,6 +18,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
+	"github.com/luckyPipewrench/pipelock/internal/evidencename"
 )
 
 const (
@@ -126,12 +127,16 @@ func runExplain(out io.Writer, opts containExplainOpts, id string) error {
 var errEgressEventNotFound = errors.New("contain egress event not found")
 
 func findEgressBlockEvent(path, id string) (egressBlockEvent, error) {
+	if err := evidencename.RefuseReceiptName(path); err != nil {
+		return egressBlockEvent{}, err
+	}
 	f, err := os.Open(filepath.Clean(path))
 	if err != nil {
 		return egressBlockEvent{}, err
 	}
 	defer func() { _ = f.Close() }()
 	sc := bufio.NewScanner(f)
+	sc.Split(evidencename.SplitLegacyJSONLines)
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
 		if line == "" {
@@ -146,6 +151,9 @@ func findEgressBlockEvent(path, id string) (egressBlockEvent, error) {
 		}
 	}
 	if err := sc.Err(); err != nil {
+		if errors.Is(err, bufio.ErrTooLong) {
+			return egressBlockEvent{}, fmt.Errorf("contain explain cannot inspect an oversized line in %s; for receipt evidence use 'pipelock verify-receipt <path>': %w", path, err)
+		}
 		return egressBlockEvent{}, fmt.Errorf("read %s: %w", path, err)
 	}
 	return egressBlockEvent{}, errEgressEventNotFound

@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/testreceipt"
 )
 
 func TestRunExplain_HappyPathText(t *testing.T) {
@@ -78,4 +80,51 @@ func TestRunExplain_PrintsExplicitZeroMetadata(t *testing.T) {
 			t.Fatalf("output missing %q:\n%s", want, got)
 		}
 	}
+}
+
+func TestRunExplain_RefusesReceiptProfiles(t *testing.T) {
+	testreceipt.EachV3(t, func(t *testing.T, _, path string) {
+		for _, id := range []string{"", "evt-1"} {
+			var out bytes.Buffer
+			err := runExplain(&out, containExplainOpts{eventsPath: path, format: "text"}, id)
+			if err == nil || !strings.Contains(err.Error(), "pipelock verify-receipt") {
+				t.Fatalf("runExplain(id=%q, path=%s): err=%v, out=%q; want receipt verifier guidance", id, path, err, out.String())
+			}
+		}
+	})
+
+	t.Run("renamed v3 content with leading whitespace", func(t *testing.T) {
+		v3File, _ := testreceipt.V3(t, t.TempDir(), false)
+		raw, err := os.ReadFile(filepath.Clean(v3File))
+		if err != nil {
+			t.Fatal(err)
+		}
+		renamed := filepath.Join(t.TempDir(), "egress-events.jsonl")
+		if err := os.WriteFile(renamed, append([]byte("\n  "), raw...), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		var out bytes.Buffer
+		err = runExplain(&out, containExplainOpts{eventsPath: renamed, format: "text"}, "")
+		if err == nil || !strings.Contains(err.Error(), "pipelock verify-receipt") {
+			t.Fatalf("renamed v3 content: err=%v, out=%q; want receipt verifier guidance", err, out.String())
+		}
+	})
+
+	t.Run("oversized line before v3 record", func(t *testing.T) {
+		v3File, _ := testreceipt.V3(t, t.TempDir(), false)
+		raw, err := os.ReadFile(filepath.Clean(v3File))
+		if err != nil {
+			t.Fatal(err)
+		}
+		oversized := filepath.Join(t.TempDir(), "egress-events.jsonl")
+		data := append([]byte(strings.Repeat("x", 128<<10)+"\n"), raw...)
+		if err := os.WriteFile(oversized, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		var out bytes.Buffer
+		err = runExplain(&out, containExplainOpts{eventsPath: oversized, format: "text"}, "evt-1")
+		if err == nil || !strings.Contains(err.Error(), "pipelock verify-receipt") {
+			t.Fatalf("oversized line: err=%v, out=%q; want receipt verifier guidance", err, out.String())
+		}
+	})
 }
