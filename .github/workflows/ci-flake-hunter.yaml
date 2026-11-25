@@ -27,9 +27,9 @@ jobs:
   hunt:
     runs-on: ubuntu-latest
     name: flake hunt (1.26, ${{ matrix.shard }})
-    # Three repeats of a shard planned for about 15 minutes, plus reruns of
-    # any failures and setup.
-    timeout-minutes: 120
+    # 90m whole-command hunt cap (with 85m per-package hang detector inside),
+    # 25m failure classifier, and 10m for setup, kill grace, and artifact upload.
+    timeout-minutes: 125
     strategy:
       fail-fast: false
       max-parallel: 6
@@ -72,12 +72,12 @@ jobs:
             package_parallelism=1
           fi
           # shellcheck disable=SC2086 # packages is a space-separated list
-          go test -tags enterprise -race -p="$package_parallelism" -parallel=2 -timeout=90m -count="$HUNT_COUNT" \
+          timeout --kill-after=10s 5400 go test -tags enterprise -race -p="$package_parallelism" -parallel=2 -timeout=85m -count="$HUNT_COUNT" \
             ${test_selector:+"$test_selector"} -json $packages \
             | python3 scripts/stream_go_test_json.py --label "$TEST_LABEL" --json-out /tmp/go-test-hunt.json
           test_status=$?
           if [ "$test_status" -ne 0 ]; then
-            timeout 1500 python3 scripts/ci_flake_report.py --tags enterprise --reruns 10 --label "$TEST_LABEL" \
+            timeout --kill-after=10s 1500 python3 scripts/ci_flake_report.py --tags enterprise --reruns 10 --label "$TEST_LABEL" \
               < /tmp/go-test-hunt.json \
               || echo "::warning title=Failure classification incomplete::the rerun of failed tests did not finish"
           fi

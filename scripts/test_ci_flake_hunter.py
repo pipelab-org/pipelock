@@ -43,11 +43,26 @@ class FailedTestsTest(unittest.TestCase):
         # q failed with no named test: a build error, panic or timeout.
         self.assertEqual(bare, ["q"])
 
+    def test_subtest_failure_before_race_is_classified_only_as_race(self):
+        failed, bare, races = report.failed_tests(report.read_events(events(
+            {"Action": "fail", "Package": "p", "Test": "TestA/sub1"},
+            {"Action": "output", "Package": "p", "Test": "TestA/sub2", "Output": "WARNING: DATA RACE\n"},
+            {"Action": "fail", "Package": "p", "Test": "TestA/sub2"},
+            {"Action": "fail", "Package": "p", "Test": "TestA"},
+            {"Action": "fail", "Package": "p"},
+            {"Action": "output", "Package": "q", "Output": "WARNING: DATA RACE\n"},
+            {"Action": "fail", "Package": "q"},
+        )))
+        self.assertEqual(failed, {})
+        self.assertEqual(bare, [])
+        self.assertEqual(races, {"p": ["TestA"], "q": ["(package)"]})
+
     def test_classification(self):
         self.assertEqual(report.classify(5, 5), "DETERMINISTIC")
         self.assertEqual(report.classify(1, 5), "FLAKY")
         self.assertEqual(report.classify(0, 5), "FLAKY")
         self.assertEqual(report.classify(-1, 5), "UNKNOWN")
+        self.assertEqual(report.classify(report.RACE_DETECTED, 5), "DATA RACE")
 
 
 class RerunEndToEndTest(unittest.TestCase):
@@ -123,6 +138,57 @@ func TestPartial(t *testing.T) {
             self.assertIn("| example.test/fixture | TestPartial | rerun did not finish | UNKNOWN |", text)
             self.assertNotIn("FLAKY", text)
 
+    def test_data_race_during_rerun_is_classified_as_data_race_not_flaky(self):
+        # A test that triggers a data race only on one rerun must be labeled
+        # DATA RACE rather than FLAKY.
+        source = '''package fixture
+import (
+	"sync"
+	"testing"
+)
+var runs int
+func TestIntermittentRace(t *testing.T) {
+	runs++
+	if runs == 2 {
+		x := 0
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() { defer wg.Done(); x = 1 }()
+		go func() { defer wg.Done(); x = 2 }()
+		wg.Wait()
+		_ = x
+	}
+}
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "go.mod").write_text("module example.test/fixture\n\ngo 1.26\n")
+            (root / "fixture_test.go").write_text(source)
+            stream = "\n".join(events(
+                {"Action": "fail", "Package": "example.test/fixture", "Test": "TestIntermittentRace"},
+                {"Action": "fail", "Package": "example.test/fixture"},
+            ))
+            out = io.StringIO()
+            env = {k: v for k, v in os.environ.items() if k != "GITHUB_STEP_SUMMARY"}
+            with patch.object(report, "ROOT", root), patch.dict(os.environ, env, clear=True), \
+                 patch("sys.stdin", io.StringIO(stream)), \
+                 patch("sys.argv", ["ci_flake_report.py", "--reruns", "3"]), \
+                 redirect_stdout(out):
+                self.assertEqual(report.main(), 0)
+            text = out.getvalue()
+            self.assertIn("Data race", text)
+            self.assertIn("| example.test/fixture | TestIntermittentRace | data race during rerun | DATA RACE |", text)
+            self.assertNotIn("FLAKY", text)
+
+    def test_empty_stream_reports_unclassified_failure(self):
+        out = io.StringIO()
+        with patch.dict(os.environ, {}, clear=True), patch("sys.stdin", io.StringIO("")), \
+             patch("sys.argv", ["ci_flake_report.py", "--label", "empty shard"]), redirect_stdout(out):
+            self.assertEqual(report.main(), 0)
+        text = out.getvalue()
+        self.assertIn("Unclassified failure", text)
+        self.assertIn("| (none) | (no failed tests in JSON stream) | not rerun | UNKNOWN |", text)
+
     def test_too_many_failures_are_not_rerun(self):
         stream = "\n".join(events(*[{"Action": "fail", "Package": "p", "Test": f"Test{i}"}
                                      for i in range(report.MAX_TESTS + 1)]))
@@ -158,6 +224,13 @@ class WorkflowContractTest(unittest.TestCase):
         self.assertIn('if [ -z "$packages" ]; then', run)
         self.assertLess(run.index('if [ -z "$packages" ]; then'), run.index("go test"))
         self.assertIn('exit "$test_status"', run, "a found flake must fail the run")
+        hunt_cap = int(re.search(r"\btimeout --kill-after=\S+ (\d+) go test\b", run).group(1))
+        classify = int(re.search(r"\btimeout --kill-after=\S+ (\d+) python3 scripts/ci_flake_report.py", run).group(1))
+        self.assertGreaterEqual(
+            self.hunter["jobs"]["hunt"]["timeout-minutes"] * 60,
+            hunt_cap + classify + 6 * 60,
+            "the hunter job timeout must fit the whole-command hunt cap, classifier, and setup/upload margin",
+        )
 
     def test_main_race_jobs_classify_failures_without_changing_the_result(self):
         for job in ("test-oss-go126", "test-enterprise-go126"):
@@ -167,9 +240,9 @@ class WorkflowContractTest(unittest.TestCase):
                 self.assertIn("ci_flake_report.py", run)
                 # The classifier runs before the original status is returned.
                 self.assertLess(run.index("ci_flake_report.py"), run.index('exit "$test_status"'))
-                self.assertIn('timeout 900 python3 scripts/ci_flake_report.py', run)
+                self.assertIn('timeout --kill-after=10s 900 python3 scripts/ci_flake_report.py', run)
                 attempt = int(re.search(r"--attempt-timeout-seconds (\d+)", run).group(1))
-                classify = int(re.search(r"\btimeout (\d+) python3 scripts/ci_flake_report.py", run).group(1))
+                classify = int(re.search(r"\btimeout --kill-after=\S+ (\d+) python3 scripts/ci_flake_report.py", run).group(1))
                 # The previous 68-minute cap was two 31-minute attempts plus 6
                 # minutes for setup, kill grace, and upload. Classification is
                 # sequential with those attempts and has to leave the 6 minutes.
@@ -196,6 +269,16 @@ class WorkflowContractTest(unittest.TestCase):
             empty_file = subprocess.run(["bash", "-c", script], cwd=ROOT, env=env, capture_output=True, text=True)
             self.assertEqual(empty_file.returncode, 1, empty_file.stdout + empty_file.stderr)
             self.assertIn("Timing file empty", empty_file.stdout)
+            (timing / "empty.json").write_text("\n".join(events(
+                {"Action": "start", "Package": "p"},
+            )) + "\n")
+            start_only = subprocess.run(["bash", "-c", script], cwd=ROOT, env=env, capture_output=True, text=True)
+            self.assertEqual(start_only.returncode, 1, start_only.stdout + start_only.stderr)
+            self.assertIn("Timing file empty", start_only.stdout)
+            (timing / "empty.json").write_text('not valid json "Action"\n')
+            corrupt = subprocess.run(["bash", "-c", script], cwd=ROOT, env=env, capture_output=True, text=True)
+            self.assertEqual(corrupt.returncode, 1, corrupt.stdout + corrupt.stderr)
+            self.assertIn("Timing file empty", corrupt.stdout)
             (timing / "empty.json").unlink()
             (timing / "slow.json").write_text("\n".join(events(
                 {"Action": "run", "Package": "p", "Test": "TestSlow"},

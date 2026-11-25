@@ -42,10 +42,10 @@ RACE_MARKER = "WARNING: DATA RACE"
 
 def failed_tests(events) -> tuple[dict[str, list[str]], list[str], dict[str, list[str]]]:
     """Return (rerunnable failures by package, packages failing with no test, races by package)."""
-    failed: dict[str, set[str]] = {}
-    races: dict[str, set[str]] = {}
+    failed_raw: dict[str, set[str]] = {}
     package_failed: set[str] = set()
-    raced_output: dict[tuple[str, str], bool] = {}
+    raced_tests: dict[str, set[str]] = {}
+    raced_packages: set[str] = set()
     for event in events:
         if not isinstance(event, dict):
             continue
@@ -53,16 +53,38 @@ def failed_tests(events) -> tuple[dict[str, list[str]], list[str], dict[str, lis
         if not isinstance(package, str) or not package:
             continue
         top = test.split("/", 1)[0] if isinstance(test, str) and test else None
-        if action == "output" and top and RACE_MARKER in str(event.get("Output", "")):
-            raced_output[(package, top)] = True
+        if action == "output" and RACE_MARKER in str(event.get("Output", "")):
+            if top:
+                raced_tests.setdefault(package, set()).add(top)
+            else:
+                raced_packages.add(package)
         if action != "fail":
             continue
         if top is None:
             package_failed.add(package)
-        elif raced_output.get((package, top)):
-            races.setdefault(package, set()).add(top)
         else:
-            failed.setdefault(package, set()).add(top)
+            failed_raw.setdefault(package, set()).add(top)
+
+    # Decide races after the full stream is scanned so a subtest failing before
+    # WARNING: DATA RACE arrives is never both reported as a race and rerun.
+    races: dict[str, set[str]] = {}
+    failed: dict[str, set[str]] = {}
+    for package, names in failed_raw.items():
+        pkg_races = raced_tests.get(package, set())
+        for name in names:
+            if name in pkg_races:
+                races.setdefault(package, set()).add(name)
+            else:
+                failed.setdefault(package, set()).add(name)
+    # Any race reported with a named test even without a matching test-level fail
+    # event (for example, a race during cleanup) still counts as a data race.
+    for package, names in raced_tests.items():
+        races.setdefault(package, set()).update(names)
+    # A package-level data race (no Test field) is never downgraded to PACKAGE.
+    for package in raced_packages:
+        if package not in races:
+            races.setdefault(package, set()).add("(package)")
+
     # A package whose only failure is the package line had no named test to rerun.
     bare = sorted(pkg for pkg in package_failed if pkg not in failed and pkg not in races)
     return ({pkg: sorted(names) for pkg, names in failed.items()}, bare,
@@ -82,8 +104,12 @@ def read_events(stream) -> list:
     return events
 
 
+# Distinct sentinel returned by rerun() when a rerun triggers WARNING: DATA RACE.
+RACE_DETECTED = -2
+
+
 def rerun(package: str, names: list[str], tags: str, reruns: int, timeout: float) -> dict[str, int]:
-    """Rerun names under -race; return failures per test, or -1 when the rerun could not finish."""
+    """Rerun names under -race; return failures per test, -1 if unfinished, or RACE_DETECTED on a data race."""
     command = ["go", "test", "-race", f"-count={reruns}", "-parallel=2", f"-timeout={int(timeout)}s", "-json"]
     if tags:
         command.extend(["-tags", tags])
@@ -94,9 +120,20 @@ def rerun(package: str, names: list[str], tags: str, reruns: int, timeout: float
         return {name: -1 for name in names}
     failures = {name: 0 for name in names}
     finished = {name: 0 for name in names}
+    raced: set[str] = set()
+    package_raced = False
     for event in read_events(result.stdout.splitlines()):
+        if event.get("Package") != package:
+            continue
         test = event.get("Test")
-        if event.get("Package") != package or test not in failures:
+        top = test.split("/", 1)[0] if isinstance(test, str) and test else None
+        if event.get("Action") == "output" and RACE_MARKER in str(event.get("Output", "")):
+            if top in failures:
+                raced.add(top)
+            else:
+                package_raced = True
+            continue
+        if test not in failures:
             continue
         if event.get("Action") in ("pass", "fail", "skip"):
             finished[test] += 1
@@ -104,11 +141,22 @@ def rerun(package: str, names: list[str], tags: str, reruns: int, timeout: float
                 failures[test] += 1
     # A rerun that crashed or timed out before every requested run finished is
     # unknown, including when a run had already failed. A partial count would
-    # call that flake and hide that the rerun did not finish.
-    return {name: failures[name] if finished[name] >= reruns else -1 for name in names}
+    # call that flake and hide that the rerun did not finish. A confirmed data
+    # race during any rerun always classifies as DATA RACE.
+    outcomes: dict[str, int] = {}
+    for name in names:
+        if name in raced or (package_raced and len(names) == 1):
+            outcomes[name] = RACE_DETECTED
+        elif finished[name] >= reruns:
+            outcomes[name] = failures[name]
+        else:
+            outcomes[name] = -1
+    return outcomes
 
 
 def classify(failures: int, reruns: int) -> str:
+    if failures == RACE_DETECTED:
+        return "DATA RACE"
     if failures < 0:
         return "UNKNOWN"
     if failures == reruns:
@@ -138,7 +186,10 @@ def main() -> int:
         print(f"::error title=Package failure::{package} failed outside any named test (build error, panic or timeout); not rerun.")
         lines.append(f"| {package} | (package) | not rerun | PACKAGE |")
     total = sum(len(names) for names in failed.values())
-    if total > MAX_TESTS:
+    if not races and not bare and total == 0:
+        print(f"::warning title=Unclassified failure::{args.label} failed with no failed tests recorded in the JSON stream.")
+        lines.append("| (none) | (no failed tests in JSON stream) | not rerun | UNKNOWN |")
+    elif total > MAX_TESTS:
         print(f"::warning title=Too many failures to classify::{total} tests failed; over {MAX_TESTS} is not flakiness, so none were rerun.")
         lines.append(f"| | {total} failed tests | not rerun | TOO MANY |")
     else:
@@ -147,9 +198,16 @@ def main() -> int:
             for name in names:
                 count = counts[name]
                 kind = classify(count, args.reruns)
-                shown = "rerun did not finish" if count < 0 else f"{count} of {args.reruns}"
+                if kind == "DATA RACE":
+                    shown = "data race during rerun"
+                elif count < 0:
+                    shown = "rerun did not finish"
+                else:
+                    shown = f"{count} of {args.reruns}"
                 lines.append(f"| {package} | {name} | {shown} | {kind} |")
-                if kind == "DETERMINISTIC":
+                if kind == "DATA RACE":
+                    print(f"::error title=Data race::{package} {name} reported a data race during rerun; a race is a bug whether or not it repeats.")
+                elif kind == "DETERMINISTIC":
                     print(f"::error title=Deterministic failure::{package} {name} failed all {args.reruns} reruns: a regression to fix or revert.")
                 elif kind == "FLAKY":
                     print(f"::error title=Flaky test::{package} {name} failed {count} of {args.reruns} reruns after failing in the shard: fix its cause; the shard stays red.")

@@ -91,9 +91,10 @@ jobs:
             exit 1
           fi
           while IFS= read -r -d '' file; do
-            # A zero-byte or non-event file passes the directory check and the
-            # summarizer exits 0 on it. That is an empty scan and must not pass.
-            if [ ! -s "$file" ] || ! grep -q '"Action"' "$file"; then
+            # A zero-byte, header-only, or unparseable file passes the directory
+            # check and summarize_go_test_json.py prints "packages: 0" and exits 0.
+            # Refuse any timing file that recorded zero completed packages.
+            if [ ! -s "$file" ]; then
               echo "::error title=Timing file empty::$file has no go test events; an empty scan must not pass"
               status=1
               continue
@@ -107,6 +108,9 @@ jobs:
               status=1
             elif [ "$rc" -ne 0 ]; then
               echo "::error title=Timing file unreadable::$file could not be summarized (exit $rc)"
+              status=1
+            elif ! printf '%s\n' "$out" | grep -Eq '^packages: [1-9][0-9]*;'; then
+              echo "::error title=Timing file empty::$file recorded zero completed packages; an empty scan must not pass"
               status=1
             fi
           done < <(find "$RUNNER_TEMP/timing" -name '*.json' -print0)

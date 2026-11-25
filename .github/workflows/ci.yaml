@@ -436,7 +436,7 @@ jobs:
           if [ "$test_status" -ne 0 ]; then
             # Diagnostic only: rerun the failed tests and label each flaky or
             # deterministic. The shard keeps its failing status either way.
-            timeout 900 python3 scripts/ci_flake_report.py --label "$TEST_LABEL" < /tmp/go-test-oss.json \
+            timeout --kill-after=10s 900 python3 scripts/ci_flake_report.py --label "$TEST_LABEL" < /tmp/go-test-oss.json \
               || echo "::warning title=Failure classification incomplete::the rerun of failed tests did not finish"
           fi
           if [ "$SECONDS" -gt "$SHARD_BUDGET_SECONDS" ]; then
@@ -867,7 +867,7 @@ jobs:
           if [ "$test_status" -ne 0 ]; then
             # Diagnostic only: rerun the failed tests and label each flaky or
             # deterministic. The shard keeps its failing status either way.
-            timeout 900 python3 scripts/ci_flake_report.py --tags enterprise --label "$TEST_LABEL" < /tmp/go-test-enterprise.json \
+            timeout --kill-after=10s 900 python3 scripts/ci_flake_report.py --tags enterprise --label "$TEST_LABEL" < /tmp/go-test-enterprise.json \
               || echo "::warning title=Failure classification incomplete::the rerun of failed tests did not finish"
           fi
           if [ "$SECONDS" -gt "$SHARD_BUDGET_SECONDS" ]; then
