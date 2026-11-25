@@ -93,6 +93,8 @@ type ServerOpts struct {
 	// not share mutable state.
 	expireForTesting expireFunc
 
+	openReceiptV3ForTesting runtimeReceiptV3Opener
+
 	// AgentArgs is the command+args that followed "--" on the CLI, or nil
 	// when "--" was absent. Used only for the Phase 2 "Agent: ..." note
 	// emitted during startup.
@@ -662,11 +664,16 @@ func NewServer(opts ServerOpts) (*Server, error) {
 			if openCtx == nil {
 				openCtx = context.Background()
 			}
-			writer, openErr := openRuntimeReceiptV3(openCtx, cfg, recPrivKey, rec, postureResult,
+			openReceipt := opts.openReceiptV3ForTesting
+			if openReceipt == nil {
+				openReceipt = openRuntimeReceiptV3
+			}
+			logger := s.logger
+			writer, openErr := openReceipt(openCtx, cfg, recPrivKey, rec, postureResult,
 				runtimeReceiptStreamOptions{
 					surfaces:           serverReceiptSurfaces(cfg, hasMCPListen, opts.ReverseProxy),
 					onFatalError:       s.failRequiredReceiptGroup,
-					onDelayedSyncError: func(err error) { logDelayedReceiptSync(s.logger, err) },
+					onDelayedSyncError: func(err error) { logDelayedReceiptSync(logger, err) },
 				})
 			if openErr != nil {
 				s.cleanup()

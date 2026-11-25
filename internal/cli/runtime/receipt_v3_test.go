@@ -762,3 +762,170 @@ func TestStandaloneMCPV3DelayedOutcomeFailureWithoutHeartbeat(t *testing.T) {
 		})
 	}
 }
+
+func TestServerV3DelayedOutcomeFailureWithoutHeartbeat(t *testing.T) {
+	for _, fatal := range []bool{false, true} {
+		name := "recoverable"
+		if fatal {
+			name = "fatal"
+		}
+		t.Run(name, func(t *testing.T) {
+			evidence := t.TempDir()
+			keyPath := filepath.Join(t.TempDir(), "signer.key")
+			logPath := filepath.Join(t.TempDir(), "audit.log")
+			_, key, err := signing.GenerateKeyPair()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := signing.SavePrivateKey(key, keyPath); err != nil {
+				t.Fatal(err)
+			}
+			body := fmt.Sprintf("logging:\n  output: file\n  file: %q\ndefer:\n  enabled: false\nflight_recorder:\n  enabled: true\n  dir: %q\n  signing_key_path: %q\n  receipt_format: v3\n  require_receipts: true\n", logPath, evidence, keyPath)
+			delayed := make(chan error, 1)
+			delayedDone := make(chan struct{})
+			open := func(ctx context.Context, cfg *config.Config, key ed25519.PrivateKey, _ *recorder.Recorder, _ posturebinding.Result, opts runtimeReceiptStreamOptions) (*v3.StreamWriter, error) {
+				first := true
+				return v3.OpenStreamWriter(ctx, v3.StreamWriterOptions{
+					Dir: cfg.FlightRecorder.Dir, SigningKey: key, PolicyHash: v3.Digest(nil),
+					Identity:     v3.Writer{Instance: "example", Product: "Pipelock", Version: "3"},
+					Coverage:     v3.Coverage{ReceiptsRequired: true, Surfaces: opts.surfaces, RedactionRuleset: v3.Ruleset{ID: "example", Version: "1", Hash: v3.Digest(nil)}},
+					OnFatalError: opts.onFatalError,
+					OnDelayedSyncError: func(err error) {
+						defer close(delayedDone)
+						opts.onDelayedSyncError(err)
+						delayed <- err
+					},
+					CreateTempFile: func(dir, pattern string) (v3.StreamFile, error) {
+						if !first && fatal {
+							return nil, errReceiptFixtureWrite
+						}
+						file, err := os.CreateTemp(dir, pattern)
+						if err != nil || !first {
+							return file, err
+						}
+						first = false
+						return &observedOutcomeFaultFile{File: file}, nil
+					},
+				})
+			}
+			s, err := NewServer(ServerOpts{
+				ConfigFile:                        writeServerTestConfig(t, body),
+				Listen:                            serverTestEphemeralListen,
+				ListenChanged:                     true,
+				allowEphemeralListenersForTesting: true,
+				openReceiptV3ForTesting:           open,
+				Stdout:                            &syncBuffer{},
+				Stderr:                            &syncBuffer{},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(5*time.Second))
+			defer cancel()
+			done := runJoined(t, ctx, s.Start, nil)
+			select {
+			case <-s.startupNotified():
+			case err := <-done:
+				t.Fatalf("server exited before readiness: %v", err)
+			case <-ctx.Done():
+				t.Fatal("server did not become ready")
+			}
+			action := v3.Action{
+				ActionID: "test-server-action", ActionType: "unclassified", Actor: "actor", Principal: "principal",
+				Caller: v3.Caller{Authn: "none"}, Data: v3.Data{Reversibility: "unknown", SideEffectClass: "unknown"},
+				Transport: "fetch", Method: "GET", Target: "https://api.vendor.example/",
+				EffectBoundary: "upstream_send", Verdict: "allow",
+			}
+			token, err := v3.NewEffectGate(s.receiptWriter).Admit(ctx, action, v3.CapturePolicy(v3.Digest(nil)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := token.ConfirmDelivery(ctx, func() (bool, error) { return true, nil }); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case err := <-delayed:
+				if !errors.Is(err, errReceiptFixtureWrite) {
+					t.Fatalf("delayed error = %v", err)
+				}
+			case <-ctx.Done():
+				t.Fatal("delayed outcome sync error was not reported")
+			}
+			if !fatal {
+				if err := s.receiptWriter.WriteHeartbeat(ctx); err != nil {
+					t.Fatalf("server did not continue on a usable successor: %v", err)
+				}
+				cancel()
+			}
+			select {
+			case err := <-done:
+				<-delayedDone
+				if fatal && (err == nil || !strings.Contains(err.Error(), "receipt stream recovery failed")) {
+					t.Fatalf("fatal server recovery returned %v", err)
+				}
+				if !fatal && err != nil && !errors.Is(err, context.Canceled) {
+					t.Fatalf("recoverable delayed outcome error shut down server: %v", err)
+				}
+			case <-ctx.Done():
+				if fatal {
+					t.Fatal("fatal outcome recovery did not shut down server")
+				}
+			}
+			data, err := os.ReadFile(filepath.Clean(logPath))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(data), "flush acknowledged receipt outcome") {
+				t.Fatalf("audit log missing delayed sync error: %s", string(data))
+			}
+		})
+	}
+}
+
+func TestServerDelayedSyncCallbackDoesNotRaceCleanup(t *testing.T) {
+	evidence := t.TempDir()
+	keyPath := filepath.Join(t.TempDir(), "signer.key")
+	_, key, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := signing.SavePrivateKey(key, keyPath); err != nil {
+		t.Fatal(err)
+	}
+	logPath := filepath.Join(t.TempDir(), "audit.log")
+	body := fmt.Sprintf("logging:\n  output: file\n  file: %q\ndefer:\n  enabled: false\nflight_recorder:\n  enabled: true\n  dir: %q\n  signing_key_path: %q\n  receipt_format: v3\n  require_receipts: true\n", logPath, evidence, keyPath)
+	var callback func(error)
+	open := func(ctx context.Context, cfg *config.Config, key ed25519.PrivateKey, rec *recorder.Recorder, binding posturebinding.Result, opts runtimeReceiptStreamOptions) (*v3.StreamWriter, error) {
+		callback = opts.onDelayedSyncError
+		return openRuntimeReceiptV3(ctx, cfg, key, rec, binding, opts)
+	}
+	s, err := NewServer(ServerOpts{
+		ConfigFile:                        writeServerTestConfig(t, body),
+		Listen:                            serverTestEphemeralListen,
+		ListenChanged:                     true,
+		allowEphemeralListenersForTesting: true,
+		openReceiptV3ForTesting:           open,
+		Stdout:                            &syncBuffer{},
+		Stderr:                            &syncBuffer{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = s.closeReceiptV3()
+	done := make(chan struct{})
+	stop := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			callback(errReceiptFixtureWrite)
+			select {
+			case <-stop:
+				return
+			default:
+			}
+		}
+	}()
+	s.cleanup()
+	close(stop)
+	<-done
+}
