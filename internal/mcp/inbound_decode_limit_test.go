@@ -107,8 +107,8 @@ func TestInboundDecodeLimitRedirectOutputNotBlocked(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			dlp := sc.ScanTextForDLP(scanner.WithInboundDirection(t.Context()), body)
-			if !hasNamedDLP(dlp.Matches, scanner.PartialEncodedContentPattern) {
-				t.Fatalf("redirect output scan lost the warning: %v", dlp.Matches)
+			if !hasNamedDLP(dlp.InformationalMatches, scanner.PartialEncodedContentPattern) {
+				t.Fatalf("redirect output scan lost the warning: %v", dlp.Findings())
 			}
 			merged := mergeRedirectResponseDLP(jsonrpc.ScanVerdict{Clean: true}, dlp)
 			if !merged.Clean || merged.Error != "" || !scanner.OnlyInformational(merged.DLPMatches) {

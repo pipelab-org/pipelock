@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
+	"github.com/luckyPipewrench/pipelock/internal/jsonnumber"
 	"gopkg.in/yaml.v3"
 )
 
@@ -1077,7 +1078,7 @@ func markBuiltInCreditCard(includeDefaults *bool, patterns []DLPPattern) {
 			candidate := &patterns[i]
 			candidate.BuiltInCreditCard = candidate.Bundle == "" &&
 				candidate.Name == builtIn.Name &&
-				candidate.Regex == builtIn.Regex &&
+				jsonnumber.IsShippedCardPattern(candidate.Regex) &&
 				candidate.Severity == builtIn.Severity &&
 				candidate.Validator == builtIn.Validator &&
 				candidate.Action == builtIn.Action &&

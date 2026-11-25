@@ -8,6 +8,8 @@ import (
 	"io"
 	"regexp"
 	"strings"
+
+	"github.com/luckyPipewrench/pipelock/internal/carddlp"
 )
 
 // NumberBoundary marks a typed scalar join in the card-only view. It is not
@@ -36,55 +38,21 @@ type CardRun struct {
 
 // ShippedCardPattern is the canonical generic card rule. Config and the
 // structured redactor share it; the scanner applies the configured luhn rule.
-const ShippedCardPattern = `\b\d{4}(?:[- ]?\d){11,15}\b`
+const ShippedCardPattern = `\b(?:\d{14,19}|\d{4}(?:[ ._/-]{1,2}\d{4}){2}[ ._/-]{1,2}\d{2,4}|\d{4}[ ._/-]{1,2}\d{6}[ ._/-]{1,2}\d{4,5}|\d{4}(?:[ ._/-]{1,2}\d{4}){3}[ ._/-]{1,2}\d{1,3})\b`
 
-var shippedCardRule = regexp.MustCompile(ShippedCardPattern)
+// LegacyCardPattern remains recognized in existing operator preset copies.
+const LegacyCardPattern = `\b\d{4}(?:[- ]?\d){11,15}\b`
+
+var (
+	shippedCardRule         = regexp.MustCompile(LegacyCardPattern)
+	shippedPresentationRule = regexp.MustCompile(ShippedCardPattern)
+)
 
 // IsShippedCardPattern reports whether regex is the canonical card rule. Only
 // that rule retries shorter candidates; an operator regex that merely carries
 // the luhn validator keeps whole-match semantics.
-func IsShippedCardPattern(regex string) bool { return regex == ShippedCardPattern }
-
-// AcceptedCardEnd returns the end of the card in one ordinary FindAll hit of
-// the shipped rule, judged by accept(end) over hit[:end]. The complete hit is
-// tried first. The rule is greedy and its validator sees only what it is
-// given, so a card followed by a separator and another digit ("12/27",
-// "2 apples", "-3") yields one hit that fails the issuer or Luhn check.
-//
-// On that failure the start stays fixed and the end moves back to each
-// separator already inside the hit, longest first. The separators are the
-// rule's own [- ] class. A retried prefix keeps at least cardRunMinDigits
-// digits, which is both the rule's floor (\d{4} plus eleven repeats) and the
-// validator's, so every retry is itself a complete match of the shipped rule
-// ending on a word boundary. A retry never ends inside a contiguous digit
-// group, never moves the start, and never looks past the original hit.
-func AcceptedCardEnd(hit string, accept func(end int) bool) (int, bool) {
-	if accept(len(hit)) {
-		return len(hit), true
-	}
-	digits := 0
-	for i := range len(hit) {
-		if hit[i] >= '0' && hit[i] <= '9' {
-			digits++
-		}
-	}
-	for end := len(hit) - 1; end > 0; end-- {
-		switch c := hit[end]; {
-		case c >= '0' && c <= '9':
-			digits--
-			continue
-		case c != ' ' && c != '-':
-			// Not a shipped-rule hit; judge only the complete candidate.
-			return 0, false
-		}
-		if digits < cardRunMinDigits {
-			break
-		}
-		if accept(end) {
-			return end, true
-		}
-	}
-	return 0, false
+func IsShippedCardPattern(regex string) bool {
+	return regex == ShippedCardPattern || regex == LegacyCardPattern
 }
 
 // Enforces applies UNION to a validated candidate: either a complete-piece
@@ -99,7 +67,17 @@ func (run CardRun) Enforces(pattern *regexp.Regexp) bool {
 
 // EnforcesShippedRule shares the scanner's default criterion with consumers
 // that cannot import the scanner, such as the structured redactor.
-func (run CardRun) EnforcesShippedRule() bool { return run.Enforces(shippedCardRule) }
+func (run CardRun) EnforcesShippedRule() bool {
+	if run.NumberOnly {
+		return false
+	}
+	if run.Enforces(shippedCardRule) {
+		return true
+	}
+	// Typed scalar joins keep their existing whole-piece grammar; literal
+	// leaf matching separately retains every legacy space/dash presentation.
+	return run.Enforces(shippedPresentationRule)
+}
 
 type cardPiece struct {
 	digits    string
@@ -152,99 +130,22 @@ func CardBoundary(leftNumber, rightNumber bool) string {
 // These are the existing validateLuhn length bounds. Run enumeration uses
 // them only to cap work; the configured regex and validator decide findings.
 const (
-	cardRunMinDigits = 15
+	cardRunMinDigits = carddlp.MinDigits
 	cardRunMaxDigits = 19
 )
 
-// HasShippedCardCandidate tests a necessary condition for a match of the
-// shipped card grammar. Every validated span starts with four ASCII digits,
-// can have one optional separator per remaining digit, and has 15–19 digits.
-// Visit overlapping starts and ignore word boundaries so a short window
-// cannot conceal a match due to artificial edges or regexp match ordering.
-// The caller still uses the full grammar to confirm any candidate.
+// HasShippedCardCandidate shares the bounded candidate language with the
+// terminal decoder's admission check. The full lane still confirms every span.
 func HasShippedCardCandidate(text string, validate func(string) bool) bool {
-	for start := 0; start+cardRunMinDigits <= len(text); start++ {
-		if !allDigits(text[start : start+4]) {
-			continue
-		}
-		end := start + 4
-		for digits := 5; digits <= cardRunMaxDigits && end < len(text); digits++ {
-			if text[end] == ' ' || text[end] == '-' {
-				end++
-			}
-			if end == len(text) || text[end] < '0' || text[end] > '9' {
-				break
-			}
-			end++
-			if digits >= cardRunMinDigits && validate(text[start:end]) {
-				return true
-			}
-		}
-	}
-	return false
+	return carddlp.VisitWindow(text, func(c carddlp.Candidate) bool { return validate(text[c.Start:c.End]) })
 }
 
 // ValidCardNumber applies the card issuer ranges and Luhn checksum used by
 // the scanner's luhn validator. The JSON run pass and redactor share it.
-func ValidCardNumber(s string) bool {
-	var digits [cardRunMaxDigits]byte
-	n := 0
-	for i := range len(s) {
-		if s[i] < '0' || s[i] > '9' {
-			continue
-		}
-		if n >= len(digits) {
-			return false
-		}
-		digits[n] = s[i] - '0'
-		n++
-	}
-	if n < cardRunMinDigits || !ValidCardIssuer(digits[:n], n) {
-		return false
-	}
-	sum := 0
-	for i := n - 1; i >= 0; i-- {
-		d := int(digits[i])
-		if (n-i)%2 == 0 {
-			d *= 2
-			if d > 9 {
-				d -= 9
-			}
-		}
-		sum += d
-	}
-	return sum%10 == 0
-}
+func ValidCardNumber(s string) bool { return carddlp.ValidCardNumber(s) }
 
-// ValidCardIssuer checks the established card network prefixes and lengths.
-func ValidCardIssuer(digits []byte, n int) bool {
-	// Every issuer length below is at least cardRunMinDigits, so shorter
-	// input is never a card; the guard also keeps the prefix reads in bounds.
-	if n < cardRunMinDigits || len(digits) < cardRunMinDigits {
-		return false
-	}
-	prefix4 := int(digits[0])*1000 + int(digits[1])*100 + int(digits[2])*10 + int(digits[3])
-	prefix6 := prefix4*100 + int(digits[4])*10 + int(digits[5])
-	switch digits[0] {
-	case 4:
-		return n == 16 || n == 19
-	case 5:
-		return digits[1] >= 1 && digits[1] <= 5 && n == 16
-	case 3:
-		if digits[1] == 4 || digits[1] == 7 {
-			return n == 15
-		}
-		return prefix4 >= 3528 && prefix4 <= 3589 && n >= 16 && n <= 19
-	case 6:
-		if prefix4 == 6011 || (prefix4 >= 6440 && prefix4 <= 6499) ||
-			(prefix6 >= 622126 && prefix6 <= 622925) || digits[1] == 5 {
-			return n == 16 || n == 19
-		}
-	case 2:
-		return prefix4 >= 2221 && prefix4 <= 2720 && n == 16
-	}
-	return false
-}
+// ValidCardIssuer shares issuer validation with every card consumer.
+func ValidCardIssuer(digits []byte, n int) bool { return carddlp.ValidCardIssuer(digits, n) }
 
 func appendCardSubruns(runs []CardRun, pieces []cardPiece) []CardRun {
 	for start, first := range pieces {
@@ -282,9 +183,8 @@ func appendCardSubruns(runs []CardRun, pieces []cardPiece) []CardRun {
 	return runs
 }
 
-// appendCardWindows applies the shipped rule's ordinary greedy FindAll to the
-// typed scalar sequence, accepting each hit's card through AcceptedCardEnd as
-// the scanner does. Keep literal string context and separators: compacting
+// appendCardWindows enumerates overlapping candidates in the typed scalar
+// sequence while retaining its existing whole-match grammar. Keep literal string context and separators: compacting
 // them would invent matches outside that rule. Only hits crossing a typed join
 // belong here; whole-leaf matching remains the caller's ordinary scan.
 func appendCardWindows(runs []CardRun, pieces []cardPiece) []CardRun {
@@ -314,41 +214,56 @@ func appendCardWindows(runs []CardRun, pieces []cardPiece) []CardRun {
 	for _, run := range runs {
 		seen[run] = struct{}{}
 	}
+
 	next := 0
-	for _, loc := range shippedCardRule.FindAllStringIndex(text, -1) {
-		hit := text[loc[0]:loc[1]]
-		end, ok := AcceptedCardEnd(hit, func(end int) bool { return ValidCardNumber(hit[:end]) })
-		if !ok {
-			continue
+	carddlp.Visit(text, true, func(c carddlp.Candidate) bool {
+		// Typed WINDOW reconstruction retains the original bounded grammar. New
+		// literal group presentations are inspected on each leaf independently.
+		loc := shippedCardRule.FindStringIndex(text[c.Start:c.End])
+		if loc == nil || loc[0] != 0 || loc[1] != c.End-c.Start {
+			return false
 		}
-		candidate := hit[:end]
-		for next < len(spans) && spans[next].end <= loc[0] {
+		if c.Start > 0 {
+			b := text[c.Start-1]
+			if b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9' || b == '_' {
+				return false
+			}
+		}
+
+		for next < len(spans) && spans[next].end <= c.Start {
 			next++
 		}
-		// Pieces cut off by a shorter accepted end take no part in the run:
-		// a trailing string cannot promote a number-only card to enforcing.
 		count, stringHit := 0, false
-		for i := next; i < len(spans) && spans[i].start < loc[0]+end; i++ {
-			if spans[i].end > loc[0] {
+		for _, span := range spans[next:] {
+			if span.start >= c.End {
+				break
+			}
+			if span.end > c.Start {
 				count++
-				stringHit = stringHit || !spans[i].number
+				stringHit = stringHit || !span.number
 			}
 		}
 		if count > 1 {
-			digits := cardSeparatorRemover.Replace(candidate)
-			run := CardRun{Digits: digits, SpaceCandidate: candidate, NumberOnly: !stringHit, RetryOnly: end != len(hit)}
-			if run.RetryOnly {
-				// A complete-piece run already existed before retry was added.
-				if _, exists := seen[CardRun{Digits: digits, SpaceCandidate: candidate, NumberOnly: !stringHit}]; exists {
-					continue
-				}
+			run := CardRun{Digits: c.Digits, SpaceCandidate: text[c.Start:c.End], NumberOnly: !stringHit}
+			// Preserve whole-match semantics for operator Luhn regexes. WINDOW
+			// candidates absent from complete-piece reconstruction are fallback-only.
+			if _, exists := seen[run]; exists {
+				return false
+			}
+			// The old greedy grammar could swallow a following digit group. Only
+			// that shortening is canonical-only; ordinary WINDOW hits stay shared.
+			window := text[c.Start:min(len(text), c.Start+40)]
+			if greedy := shippedCardRule.FindStringIndex(window); greedy != nil && greedy[0] == 0 && greedy[1] > c.End-c.Start {
+				run.RetryOnly = true
 			}
 			if _, exists := seen[run]; !exists {
 				seen[run] = struct{}{}
 				runs = append(runs, run)
 			}
 		}
-	}
+		return false
+	})
+
 	return runs
 }
 

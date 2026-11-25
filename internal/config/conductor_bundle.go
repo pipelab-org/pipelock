@@ -353,7 +353,7 @@ func dlpPatternIdentity(p DLPPattern) string {
 
 func sameDLPPatternDefinition(a, b DLPPattern) bool {
 	return a.Name == b.Name &&
-		a.Regex == b.Regex &&
+		(a.Regex == b.Regex || sameBuiltInCardPattern(a, b)) &&
 		a.Severity == b.Severity &&
 		a.Validator == b.Validator &&
 		a.Action == b.Action &&

@@ -691,6 +691,18 @@ func builtInAudiencePattern(name string) (DLPPattern, bool) {
 	return DLPPattern{}, false
 }
 
+// sameBuiltInCardPattern reports whether a and b both specify the built-in
+// Credit Card Number detector using either the current or legacy shipped
+// pattern spelling. On this binary both compile to the same candidate engine.
+func sameBuiltInCardPattern(a, b DLPPattern) bool {
+	return a.Name == "Credit Card Number" &&
+		b.Name == "Credit Card Number" &&
+		a.Validator == ValidatorLuhn &&
+		b.Validator == ValidatorLuhn &&
+		jsonnumber.IsShippedCardPattern(a.Regex) &&
+		jsonnumber.IsShippedCardPattern(b.Regex)
+}
+
 // changedFromBuiltIn names the identity fields in which a same-name pattern
 // differs from the shipped one: the fields whose change costs the pattern its
 // compiled credential audience.

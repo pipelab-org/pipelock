@@ -215,7 +215,7 @@ func scanResponseObject(trimmed []byte, sc *scanner.Scanner, opts ResponseScanOp
 		var rpcErr jsonrpc.RPCError
 		if err := json.Unmarshal(rpc.Error, &rpcErr); err == nil && rpcErr.Message != "" {
 			text = joinResponseText(text, rpcErr.Message)
-			cardText = joinResponseText(cardText, rpcErr.Message)
+			cardText = jsonrpc.JoinResponseCardViews(cardText, jsonnumber.EscapeCardBoundaries(rpcErr.Message))
 			// Also scan error.data if present.
 			errData := extract(rpcErr.Data)
 			if errData.Truncated {
@@ -227,7 +227,7 @@ func scanResponseObject(trimmed []byte, sc *scanner.Scanner, opts ResponseScanOp
 			cardKeys = append(cardKeys, errData.CardKeys...)
 			if errData.Text != "" {
 				text = joinResponseText(text, errData.Text)
-				cardText = joinResponseText(cardText, errData.CardText)
+				cardText = jsonrpc.JoinResponseCardViews(cardText, errData.CardText)
 			}
 			numeric = joinNumericChannel(numeric, errData.Numeric)
 		} else {
@@ -242,7 +242,7 @@ func scanResponseObject(trimmed []byte, sc *scanner.Scanner, opts ResponseScanOp
 			cardKeys = append(cardKeys, errText.CardKeys...)
 			if errText.Text != "" {
 				text = joinResponseText(text, errText.Text)
-				cardText = joinResponseText(cardText, errText.CardText)
+				cardText = jsonrpc.JoinResponseCardViews(cardText, errText.CardText)
 			}
 			numeric = joinNumericChannel(numeric, errText.Numeric)
 		}
@@ -261,7 +261,7 @@ func scanResponseObject(trimmed []byte, sc *scanner.Scanner, opts ResponseScanOp
 		cardKeys = append(cardKeys, paramsText.CardKeys...)
 		if paramsText.Text != "" {
 			text = joinResponseText(text, paramsText.Text)
-			cardText = joinResponseText(cardText, paramsText.CardText)
+			cardText = jsonrpc.JoinResponseCardViews(cardText, paramsText.CardText)
 		}
 		numeric = joinNumericChannel(numeric, paramsText.Numeric)
 	}
@@ -294,7 +294,7 @@ func scanResponseObject(trimmed []byte, sc *scanner.Scanner, opts ResponseScanOp
 	var dlpViews []responseDLPView
 	if includeDLP {
 		dlpViews = []responseDLPView{
-			{text: joined, card: joinResponseText(cardText, envelope.card)},
+			{text: joined, card: jsonrpc.JoinResponseCardViews(cardText, envelope.card)},
 			{text: text, card: cardText},
 			{text: envelopeText, card: envelope.card, structural: true},
 		}
@@ -478,7 +478,10 @@ func scanResponseViewsWithCards(ctx context.Context, sc *scanner.Scanner, opts R
 		// Response card views omit object keys. Reconstruct only that view;
 		// the ordinary text join can contain JSON-shaped key fragments.
 		// These are untrusted text views, not extractor boundary markers.
-		cardView := jsonnumber.EscapeCardBoundaries(view.card)
+		cardView := view.card
+		if view.structural {
+			cardView = jsonnumber.EscapeCardBoundaries(cardView)
+		}
 		var dlpResult scanner.TextDLPResult
 		if view.structural {
 			dlpResult = sc.ScanTextForDLPInboundStructuralView(ctx, view.text, cardView)
@@ -488,7 +491,7 @@ func scanResponseViewsWithCards(ctx context.Context, sc *scanner.Scanner, opts R
 		if err := dlpResult.Err(); err != nil {
 			return scanner.ResponseScanResult{ScanError: err.Error()}, nil, nil
 		}
-		matches, lowConfidence := scanner.PartitionInboundTextDLPMatches(view.text, dlpResult.Matches)
+		matches, lowConfidence := scanner.PartitionInboundTextDLPMatches(view.text, dlpResult.Findings())
 		dlpMatches = appendUniqueA2ADLPFindings(dlpMatches, matches)
 		droppedDLP = appendUniqueA2ADLPFindings(droppedDLP, lowConfidence)
 	}
@@ -795,7 +798,7 @@ func scanToolsListNonToolFieldsContext(ctx context.Context, line []byte, sc *sca
 				cardKeys = append(cardKeys, siblingText.CardKeys...)
 				if siblingText.Text != "" {
 					text = joinResponseText(text, siblingText.Text)
-					cardText = joinResponseText(cardText, siblingText.CardText)
+					cardText = jsonrpc.JoinResponseCardViews(cardText, siblingText.CardText)
 				}
 				numeric = joinNumericChannel(numeric, siblingText.Numeric)
 			}
@@ -807,7 +810,7 @@ func scanToolsListNonToolFieldsContext(ctx context.Context, line []byte, sc *sca
 		var rpcErr jsonrpc.RPCError
 		if err := json.Unmarshal(rpc.Error, &rpcErr); err == nil && rpcErr.Message != "" {
 			text = joinResponseText(text, rpcErr.Message)
-			cardText = joinResponseText(cardText, rpcErr.Message)
+			cardText = jsonrpc.JoinResponseCardViews(cardText, jsonnumber.EscapeCardBoundaries(rpcErr.Message))
 			errData := extract(rpcErr.Data)
 			if errData.Truncated {
 				return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: false, Error: uninspectableJSONDepthReason}
@@ -818,7 +821,7 @@ func scanToolsListNonToolFieldsContext(ctx context.Context, line []byte, sc *sca
 			cardKeys = append(cardKeys, errData.CardKeys...)
 			if errData.Text != "" {
 				text = joinResponseText(text, errData.Text)
-				cardText = joinResponseText(cardText, errData.CardText)
+				cardText = jsonrpc.JoinResponseCardViews(cardText, errData.CardText)
 			}
 			numeric = joinNumericChannel(numeric, errData.Numeric)
 		} else {
@@ -832,7 +835,7 @@ func scanToolsListNonToolFieldsContext(ctx context.Context, line []byte, sc *sca
 			cardKeys = append(cardKeys, errText.CardKeys...)
 			if errText.Text != "" {
 				text = joinResponseText(text, errText.Text)
-				cardText = joinResponseText(cardText, errText.CardText)
+				cardText = jsonrpc.JoinResponseCardViews(cardText, errText.CardText)
 			}
 			numeric = joinNumericChannel(numeric, errText.Numeric)
 		}
@@ -850,7 +853,7 @@ func scanToolsListNonToolFieldsContext(ctx context.Context, line []byte, sc *sca
 		cardKeys = append(cardKeys, paramsText.CardKeys...)
 		if paramsText.Text != "" {
 			text = joinResponseText(text, paramsText.Text)
-			cardText = joinResponseText(cardText, paramsText.CardText)
+			cardText = jsonrpc.JoinResponseCardViews(cardText, paramsText.CardText)
 		}
 		numeric = joinNumericChannel(numeric, paramsText.Numeric)
 	}
@@ -882,7 +885,7 @@ func scanToolsListNonToolFieldsContext(ctx context.Context, line []byte, sc *sca
 	// As on every other response path, sibling, error, params and envelope
 	// strings form one view so a finding split across them still matches.
 	// Tool text joins only the DLP view; the tool scanner owns its injection.
-	dlpViews := []responseDLPView{{text: joinResponseText(dlpText, envelopeText), card: joinResponseText(cardText, toolCardText, envelope.card)}}
+	dlpViews := []responseDLPView{{text: joinResponseText(dlpText, envelopeText), card: jsonrpc.JoinResponseCardViews(cardText, toolCardText, envelope.card)}}
 	for _, key := range cardKeys {
 		dlpViews = append(dlpViews, responseDLPView{text: key, card: key, structural: true})
 	}

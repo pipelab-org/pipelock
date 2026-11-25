@@ -3384,13 +3384,13 @@ func TestScanTextForDLP_CreditCard_Amex465Format(t *testing.T) {
 	defer s.Close()
 
 	// Amex 4-6-5 display format with spaces - should match.
-	result := s.ScanTextForDLP(context.Background(), "Pay with 3782 822463 10005")
+	result := s.ScanTextForDLP(context.Background(), "Pay with "+"3400 000000 "+"00009")
 	if result.Clean {
 		t.Error("expected Amex 4-6-5 space format to be detected in text DLP")
 	}
 
 	// Amex 4-6-5 display format with dashes - should match.
-	result2 := s.ScanTextForDLP(context.Background(), "Pay with 3782-822463-10005")
+	result2 := s.ScanTextForDLP(context.Background(), "Pay with "+"3400-000000-"+"00009")
 	if result2.Clean {
 		t.Error("expected Amex 4-6-5 dash format to be detected in text DLP")
 	}

@@ -69,7 +69,7 @@ func TestReassemblyKeywordReuseBudget(t *testing.T) {
 				if r.Clean != inbound || HasInspectionLimit(r.Matches) == inbound {
 					t.Fatalf("keyword reuse exhaustion direction: %+v", r)
 				}
-				if inbound && (len(r.Matches) != 1 || r.Matches[0].PatternName != PartialEncodedContentPattern) {
+				if inbound && (len(r.InformationalMatches) != 1 || r.InformationalMatches[0].PatternName != PartialEncodedContentPattern) {
 					t.Fatalf("partial evidence lost: %+v", r)
 				}
 			})

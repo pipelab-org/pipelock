@@ -26,7 +26,7 @@ func TestReassemblyNestedKeywordExhaustion(t *testing.T) {
 			memo.reassemblyObserve(body)
 			result := finishAssembled(TextDLPResult{Clean: true}, memo)
 			if inbound {
-				if !slices.Contains(matchNames(result.Matches), PartialEncodedContentPattern) || !result.Clean || HasInspectionLimit(result.Matches) {
+				if !slices.Contains(matchNames(result.InformationalMatches), PartialEncodedContentPattern) || !result.Clean || HasInspectionLimit(result.Matches) {
 					t.Errorf("inbound lost partial warning: %+v", result)
 				}
 			} else if !HasInspectionLimit(result.Matches) {

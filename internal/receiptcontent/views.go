@@ -103,8 +103,9 @@ type Finding struct {
 // Report is the result of Scan. When any atom finding exists the joint views
 // were not run: the producer must redact or reject first, then rescan.
 type Report struct {
-	kind     string
-	Findings []Finding
+	kind                 string
+	Findings             []Finding
+	InformationalMatches []scanner.TextDLPMatch
 }
 
 // Clean reports whether no view matched.
@@ -148,6 +149,13 @@ func Scan(ctx context.Context, det Detector, p *Projection) (Report, error) {
 		return rep, errors.New("receiptcontent: scan requires a detector")
 	}
 
+	originalDetector := det
+	det = func(ctx context.Context, text string) scanner.TextDLPResult {
+		result := originalDetector(ctx, text)
+		rep.InformationalMatches = append(rep.InformationalMatches, result.InformationalMatches...)
+		return result
+	}
+	scan := func(text string) scanner.TextDLPResult { return det(ctx, text) }
 	// (i) Every atom alone. Distinct texts are scanned once.
 	type atomVerdict struct {
 		pattern    string
@@ -158,7 +166,7 @@ func Scan(ctx context.Context, det Detector, p *Projection) (Report, error) {
 		cached, seen := verdict[a.Text]
 		pattern, contextual := cached.pattern, cached.contextual
 		if !seen {
-			res := det(ctx, a.Text)
+			res := scan(a.Text)
 			if err := res.Err(); err != nil {
 				return rep, err
 			}
@@ -179,7 +187,7 @@ func Scan(ctx context.Context, det Detector, p *Projection) (Report, error) {
 	}
 
 	// (iv) The structured content projection, for context-dependent rules.
-	res := det(ctx, string(p.structured))
+	res := scan(string(p.structured))
 	if err := res.Err(); err != nil {
 		return rep, err
 	}
@@ -199,7 +207,7 @@ func Scan(ctx context.Context, det Detector, p *Projection) (Report, error) {
 		}
 	}
 	if values.Len() > 0 {
-		res := det(ctx, values.String())
+		res := scan(values.String())
 		if err := res.Err(); err != nil {
 			return rep, err
 		}

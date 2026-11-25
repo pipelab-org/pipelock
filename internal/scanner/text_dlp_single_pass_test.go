@@ -9,9 +9,11 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/luckyPipewrench/pipelock/internal/cardtest"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
@@ -153,6 +155,30 @@ func singlePassInputs() []singlePassInput {
 			add(sName+"/"+cName+"/cardview", text, text+"\x1f")
 		}
 	}
+	for _, pan := range []string{singlePassCard, cardtest.Issuer("4019", 16)} {
+		fixture := "published"
+		if pan != singlePassCard {
+			fixture = "generated"
+		}
+		addCard := func(name, text, cardView string) { add(fixture+"/"+name, text, cardView) }
+		// Card matching must use the source before ordinary DLP erases controls.
+		for _, sep := range []string{"\t", "\r", "\n", " ", "-", "."} {
+			card := pan[:4] + sep + pan[4:]
+			addCard("card/boundary/"+strconv.Quote(sep), card, card)
+			encoded := base64.StdEncoding.EncodeToString([]byte(card))
+			addCard("card/boundary-encoded/"+strconv.Quote(sep), encoded, encoded)
+		}
+		urlCard := "https://api.vendor.example/path/" + pan[:4] + "." + pan[4:]
+		encodedURL := base64.StdEncoding.EncodeToString([]byte(urlCard))
+		addCard("card/decoded-url", encodedURL, encodedURL)
+		unicodeCard := strings.Map(func(r rune) rune { return '０' + r - '0' }, pan)
+		addCard("card/unicode", unicodeCard, unicodeCard)
+		for _, card := range []string{pan, unicodeCard} {
+			text := "https://api.vendor.example/pay?part=" + card[:len(card)/2] + "&rest=" + card[len(card)/2:]
+			addCard("card/url/"+card, text, text)
+		}
+
+	}
 	// Outbound inspection limits (entity depth, percent depth, decode work)
 	// sit between the non-card and card findings; receipts report the first
 	// match, and a reserved-name card pattern must not suppress the refusal.
@@ -283,5 +309,51 @@ func compareSinglePass(t *testing.T, sName string) {
 	}
 	if diffs > 0 {
 		t.Fatalf("%d single-pass differences", diffs)
+	}
+}
+
+func TestSinglePassGeneratedCardEnforcement(t *testing.T) {
+	sc := singlePassScanners(t)["defaults"]
+	pan := cardtest.Issuer("4019", 16)
+	var cases []struct {
+		text    string
+		enforce bool
+	}
+	for _, sep := range []string{"\t", "\r", "\n", " ", "-", "."} {
+		raw := pan[:4] + sep + pan[4:]
+		want := sep == " " || sep == "-"
+		cases = append(cases, struct {
+			text    string
+			enforce bool
+		}{raw, want}, struct {
+			text    string
+			enforce bool
+		}{base64.StdEncoding.EncodeToString([]byte(raw)), want})
+	}
+	unicode := strings.Map(func(r rune) rune { return '０' + r - '0' }, pan)
+	target := "https://api.vendor.example/path/" + pan[:4] + "." + pan[4:]
+	for _, text := range []string{pan, unicode, target, base64.StdEncoding.EncodeToString([]byte(target)), "https://api.vendor.example/pay?a=" + pan[:8] + "&b=" + pan[8:], "https://api.vendor.example/pay?a=" + unicode[:len(unicode)/2] + "&b=" + unicode[len(unicode)/2:]} {
+		cases = append(cases, struct {
+			text    string
+			enforce bool
+		}{text, true})
+	}
+	saved := textDLPSinglePass
+	t.Cleanup(func() { textDLPSinglePass = saved })
+	for _, tc := range cases {
+		textDLPSinglePass = false
+		before := sc.ScanTextForDLP(t.Context(), tc.text)
+		textDLPSinglePass = true
+		after := sc.ScanTextForDLP(t.Context(), tc.text)
+		if canonicalSinglePassResult(before) != canonicalSinglePassResult(after) {
+			t.Fatalf("single-pass classification differs for %q", tc.text)
+		}
+		enforced := false
+		for _, m := range after.Matches {
+			enforced = enforced || m.PatternName == "Credit Card Number" && !m.Warn
+		}
+		if enforced != tc.enforce {
+			t.Fatalf("input=%q enforcement=%v want=%v result=%+v", tc.text, enforced, tc.enforce, after)
+		}
 	}
 }

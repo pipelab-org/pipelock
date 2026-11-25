@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/luckyPipewrench/pipelock/internal/jsonnumber"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 )
 
@@ -23,7 +24,7 @@ func TestResponseEnvelopeValueViews(t *testing.T) {
 			raw:  `{"jsonrpc":"2.0","id":1,"note":"meta"}`,
 			want: responseEnvelopeViews{
 				text: "2.0 \nmeta \nid \njsonrpc \nnote",
-				card: "null \n2.0 \nmeta",
+				card: strings.Join([]string{"null", "2.0", "meta"}, jsonnumber.StringBoundary),
 				keys: []string{"id", "jsonrpc", "note"},
 			},
 		},
@@ -32,7 +33,7 @@ func TestResponseEnvelopeValueViews(t *testing.T) {
 			raw:  `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"typed","uri":"https://api.vendor.example/record"}],"structuredContent":{"s":"owned"},"extra":"extension"},"_meta":{"note":"meta"}}`,
 			want: responseEnvelopeViews{
 				text: "meta \n2.0 \ntext \nextension \n_meta \nnote \nid \njsonrpc \nresult \ncontent \ntext \ntype \nuri \nextra \nstructuredContent",
-				card: "meta \nnull \n2.0 \nnull \ntext \nnull \nextension \nnull",
+				card: strings.Join([]string{"meta", "null", "2.0", "null", "text", "null", "extension", "null"}, jsonnumber.StringBoundary),
 				uris: "https://api.vendor.example/record",
 				keys: []string{"_meta", "note", "id", "jsonrpc", "result", "content", "text", "type", "uri", "extra", "structuredContent"},
 			},

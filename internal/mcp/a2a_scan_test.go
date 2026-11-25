@@ -2059,3 +2059,33 @@ func TestAuditA2ABudgetWithContentStaysBlocked(t *testing.T) {
 		t.Fatalf("budget block became %q", got)
 	}
 }
+
+func TestA2AJoinedWarnFindings(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.DLP.ScanEnv = false
+	cfg.DLP.Patterns = []config.DLPPattern{{Name: "Custom token", Regex: `TOKEN[0-9]{8}`, Severity: config.SeverityHigh, Action: config.ActionWarn}}
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	body := []byte(`{"parts":[{"text":"TOKEN1234"},{"text":"5678"}]}`)
+	result := scanA2ABody(t.Context(), body, sc, enabledA2ACfg(), nil)
+	if len(result.DLPFindings) == 0 || result.Action != config.ActionWarn {
+		t.Fatalf("joined warning lost: %+v", result)
+	}
+}
+
+func TestA2AFieldTailWarnCallback(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.DLP.ScanEnv = false
+	cfg.DLP.Patterns = []config.DLPPattern{{Name: "Custom token", Regex: `TOKEN[0-9]{8}`, Severity: config.SeverityHigh, Action: config.ActionWarn}}
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	body := "data: {\"part\":\"TOKEN1234\"}\n\ndata: {\"part\":\"5678\"}\n\ndata: {\"after\":\"safe\"}\n\n"
+	var out bytes.Buffer
+	var findings []error
+	err := ScanA2AStreamWithOptions(t.Context(), strings.NewReader(body), &out, nil, sc, A2AStreamOptions{Config: enabledA2ACfg(), Warning: GenericSSEScanOptions{OnFinding: func(e error) { findings = append(findings, e) }}})
+	if err != nil || len(findings) != 1 || !strings.Contains(findings[0].Error(), "Custom token") || out.String() != body {
+		t.Fatalf("field warning err=%v findings=%v out=%q", err, findings, out.String())
+	}
+}

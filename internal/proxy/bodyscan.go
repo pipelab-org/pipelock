@@ -1999,8 +1999,8 @@ func scanBodyTextViewsForDLPWithAudience(ctx context.Context, sc *scanner.Scanne
 		} else {
 			result = sc.ScanTextForDLPWithCardView(ctx, text, cards[i])
 		}
-		if len(result.Matches) > 0 {
-			if matches := filterMatches(result.Matches); len(matches) > 0 {
+		if len(result.Findings()) > 0 {
+			if matches := filterMatches(result.Findings()); len(matches) > 0 {
 				allMatches = append(allMatches, matches...)
 			}
 		}
@@ -2067,19 +2067,19 @@ func scanBodyTextViewsForDLPWithAudience(ctx context.Context, sc *scanner.Scanne
 		}
 	})
 	replayOrdered()
-	if len(ordered.Matches) > 0 {
-		allMatches = append(allMatches, filterMatches(ordered.Matches)...)
+	if len(ordered.Findings()) > 0 {
+		allMatches = append(allMatches, filterMatches(ordered.Findings())...)
 	}
 	replaySorted()
-	if len(result.Matches) > 0 {
-		if matches := filterMatches(result.Matches); len(matches) > 0 {
+	if len(result.Findings()) > 0 {
+		if matches := filterMatches(result.Findings()); len(matches) > 0 {
 			allMatches = append(allMatches, matches...)
 		}
 	}
 	replayRaw()
 	if views.rawDocument != "" {
-		if len(raw.Matches) > 0 {
-			allMatches = appendNewBodyDLPValues(allMatches, filterMatches(raw.Matches))
+		if len(raw.Findings()) > 0 {
+			allMatches = appendNewBodyDLPValues(allMatches, filterMatches(raw.Findings()))
 		}
 	}
 	recordUniqueBodyDLPDrops(dropped, onDropped)
