@@ -85,7 +85,13 @@ func refuseSuccessorOverBrokenPredecessor(t *testing.T, breakShard func(*testing
 
 	secondRecorder, err := recorder.New(recorder.Config{Enabled: true, Dir: dir, SignCheckpoints: true}, nil, key)
 	if err != nil {
-		t.Fatal(err)
+		// Startup checks every legacy candidate for a receipt-profile claim before
+		// resuming, so a shard it cannot read refuses the recorder itself.
+		after, globErr := filepath.Glob(filepath.Join(dir, "receipt-group-*"))
+		if globErr != nil || len(after) != len(before) {
+			t.Fatalf("refused startup published group artifacts: before=%v after=%v err=%v", before, after, globErr)
+		}
+		return
 	}
 	t.Cleanup(func() { _ = secondRecorder.Close() })
 	if _, err := OpenSuccessorReceiptShardSet(EmitterConfig{
