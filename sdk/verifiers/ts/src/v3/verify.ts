@@ -304,8 +304,16 @@ export interface VerifyV3Report {
 /** Verify explicitly supplied files or the top-level evidence in one directory. */
 export async function verifyV3Paths(
   paths: readonly string[],
-  opts: VerifyV3Options = {},
+  options: VerifyV3Options = {},
 ): Promise<VerifyV3Report> {
+  const opts: VerifyV3Options = {
+    ...options,
+    keys: options.keys?.slice(),
+    expectHeads: options.expectHeads?.map((head) => ({ ...head })),
+    expectSequences: options.expectSequences?.map((sequence) => ({ ...sequence })),
+    acceptDiscontinuities: options.acceptDiscontinuities?.slice(),
+    allowPartialHistories: options.allowPartialHistories?.slice(),
+  };
   validateOptions(paths, opts);
   const { files, legacy, inventories, ignored } = discover(paths, opts);
   const v = new Verifier(opts, ignored);

@@ -344,3 +344,17 @@ test("v3 canonical results omit undefined optional members", async () => {
   stream.previous = undefined;
   assert.equal(canonicalV3(result), expected);
 });
+
+test("v3 verification holds the original option values across awaits", async () => {
+  const { path, keys } = fixture("g05-completed");
+  const { result } = await verifyV3Paths([path], { keys });
+  const stream = result.histories[0].streams[0];
+  const head = { stream: stream.stream, ...stream.tip! };
+  const opts = { keys, expectHeads: [head], allowPrefix: false };
+  const expected = await verifyV3Paths([path], opts);
+  const pending = verifyV3Paths([path], opts);
+  opts.allowPrefix = true;
+  head.record = "sha256:" + "0".repeat(64);
+  opts.expectHeads.push({ ...head, stream: "0".repeat(32) });
+  assert.deepEqual(await pending, expected);
+});
