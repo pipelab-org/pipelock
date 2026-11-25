@@ -23,6 +23,7 @@ from .group import (
     _open_evidence_file,
     _parse_evidence_filename,
     _record_hash,
+    _recorder_file_exclusions,
     verify_receipt_group,
 )
 from .input_file import MAX_RECORDER_LINE_BYTES, iter_verifier_jsonl_lines
@@ -103,6 +104,8 @@ def recorder_index(directory: Path, *, exclude_groups: bool = False) -> Index:
 
 
 def _missing(path: Path) -> bool:
+    if path.name in _recorder_file_exclusions.get():
+        return True
     try:
         path.lstat()
     except FileNotFoundError:
@@ -118,7 +121,9 @@ def verify_receipt_groups(
     Inventory errors raise instead of letting partial results imply a pass.
     """
     root = Path(directory)
-    entries = sorted(root.iterdir())
+    entries = sorted(
+        p for p in root.iterdir() if p.name not in _recorder_file_exclusions.get()
+    )
     artifacts = [p for p in entries if p.name.startswith("receipt-group-")]
     gates = []
     for path in entries:

@@ -8,6 +8,7 @@ import {
   baseHealthy,
   checkFileEntrySessions,
   parseEvidenceFilename,
+  recorderExcludedNames,
   readSessionEvidence,
   resolveBaseSessionsExcludingReceiptGroups,
   runSessionBase,
@@ -51,7 +52,18 @@ export interface LegacyPresentation extends LegacyRow {
   verdict: string;
   position: number;
   forked?: boolean;
-  actionPositions?: Map<number, string>;
+  positions?: Map<number, string>;
+}
+
+export function compareCutoverPosition(actual: LegacyPresentation, row: LegacyRow): number {
+  if (actual.record !== row.record && !actual.forked) {
+    for (const [position, record] of actual.positions ?? []) {
+      if (position >= 0 && position < actual.position && record === row.record) return 1;
+    }
+    // An absent sequence-zero pin can start a later signing epoch.
+    if (actual.format === actionFormat && row.seq === 0 && actual.seq > 0) return -1;
+  }
+  return Math.sign(actual.seq - row.seq);
 }
 
 interface Batch extends ExtractedReceipts {
@@ -302,7 +314,7 @@ class LegacyVerifier {
         record: hash(last),
         verdict,
         position: action ? chain.length - 1 : seq(last),
-        actionPositions: action ? positions : undefined,
+        positions,
       };
       this.save(key, item, valid);
       first = end;
@@ -354,19 +366,24 @@ export async function verifyLegacy(
   }
 
   for (const dir of [...groupDirs.keys()].sort(byteOrder)) {
-    const summary = await verifyReceiptGroups(dir, v.opts.keys ?? [], (group) => {
-      if (group.verdict === "GROUP_INCOMPLETE") v.add("LEGACY_GROUP_INCOMPLETE");
-      if (group.verdict === "GROUP_INVALID") v.add("LEGACY_INVALID");
-      const head = group.close_manifest_sha256 ?? group.open_manifest_sha256;
-      verifier.presented.set(identity(groupFormat, group.group_id), {
-        chain: group.group_id,
-        format: groupFormat,
-        record: head ? legacyDigest(head) : "",
-        seq: group.shard_count,
-        position: 0,
-        verdict: group.verdict,
-      });
-    });
+    const summary = await verifyReceiptGroups(
+      dir,
+      v.opts.keys ?? [],
+      (group) => {
+        if (group.verdict === "GROUP_INCOMPLETE") v.add("LEGACY_GROUP_INCOMPLETE");
+        if (group.verdict === "GROUP_INVALID") v.add("LEGACY_INVALID");
+        const head = group.close_manifest_sha256 ?? group.open_manifest_sha256;
+        verifier.presented.set(identity(groupFormat, group.group_id), {
+          chain: group.group_id,
+          format: groupFormat,
+          record: head ? legacyDigest(head) : "",
+          seq: group.shard_count,
+          position: 0,
+          verdict: group.verdict,
+        });
+      },
+      recorderExcludedNames(),
+    );
     if (summary.error)
       failure(
         v,

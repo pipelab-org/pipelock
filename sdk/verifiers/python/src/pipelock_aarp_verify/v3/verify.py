@@ -17,6 +17,7 @@ from typing import BinaryIO
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
+from ..group import _recorder_file_exclusions
 from ..input_file import _open_regular_input
 from .decision import appraise
 from .legacy import legacy_candidate, verify_cutover
@@ -778,7 +779,16 @@ def verify_paths(
         v.stage_files(files)
         v.verify_streams()
         v.verify_succession()
-        unproven = verify_cutover(v, old, inventories, bool(files))
+        excluded = (
+            frozenset(file.path.name for file in files)
+            if v.opts.directory
+            else frozenset()
+        )
+        token = _recorder_file_exclusions.set(excluded)
+        try:
+            unproven = verify_cutover(v, old, inventories, bool(files))
+        finally:
+            _recorder_file_exclusions.reset(token)
         v.result["counts"] = appraise(v)
         v.expectations(unproven)
         v.result["trust"]["keys"] = sorted(v.used)

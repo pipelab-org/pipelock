@@ -15,6 +15,7 @@
 // records carry the same run_nonce are reported (finding duplicate_run_nonce),
 // because a process run writes exactly one chain.
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { lstatSync, readdirSync, realpathSync, statSync } from "node:fs";
 import * as path from "node:path";
 import * as ed25519 from "@noble/ed25519";
@@ -179,9 +180,24 @@ function isBaseChain(session: string, base: string): boolean {
 // parseEvidenceFilename mirrors Go evidencename.Parse: the session is
 // everything between "evidence-" and the LAST dash, and a sequence that is not
 // a uint64 parses as 0.
+const recorderFileExclusions = new AsyncLocalStorage<ReadonlySet<string>>();
+
+export function isExcludedLegacyFile(name: string): boolean {
+  return recorderFileExclusions.getStore()?.has(name) ?? false;
+}
+
+export function recorderExcludedNames(): string[] {
+  return [...(recorderFileExclusions.getStore() ?? [])];
+}
+
+export function withRecorderFileExclusions<T>(excluded: readonly string[], read: () => T): T {
+  return recorderFileExclusions.run(new Set(excluded), read);
+}
+
 export function parseEvidenceFilename(
   name: string,
 ): { session: string; seqStart: bigint } | undefined {
+  if (isExcludedLegacyFile(name)) return undefined;
   if (!name.startsWith(evidencePrefix) || !name.endsWith(evidenceSuffix)) return undefined;
   const rest = name.slice(evidencePrefix.length, name.length - evidenceSuffix.length);
   const lastDash = rest.lastIndexOf("-");

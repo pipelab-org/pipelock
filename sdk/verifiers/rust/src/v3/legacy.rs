@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::{
+    cmp::Ordering,
     collections::{BTreeMap, BTreeSet},
     io::{self, BufRead, BufReader, Read},
     path::{Path, PathBuf},
@@ -22,7 +23,7 @@ use crate::{
     },
     lifecycle::close_ends_chain,
     rawjson::{go_raw_message_bytes, object_member_span, EXT_SOURCE_KEY},
-    receipt_group::{verify_receipt_groups, ReceiptGroupReport},
+    receipt_group::{verify_receipt_groups_for_cutover, ReceiptGroupReport},
     recorder::{extract_typed_from_lines, read_entry_lines_text, ExtractedReceipts},
     recorder_chain::recorder_entry_hash,
     types::Receipt,
@@ -98,19 +99,39 @@ struct Presented {
     positions: BTreeMap<u64, String>,
 }
 
+impl Presented {
+    fn compare_cutover_position(&self, row: &InventoryRow) -> Ordering {
+        if self.head != row.record && !self.forked {
+            if self
+                .positions
+                .range(..self.order)
+                .any(|(_, hash)| hash == &row.record)
+            {
+                return Ordering::Greater;
+            }
+            // An absent sequence-zero pin can start a later signing epoch.
+            if row.format == ACTION && row.seq == 0 && self.seq > 0 {
+                return Ordering::Less;
+            }
+        }
+        self.seq.cmp(&row.seq)
+    }
+}
+
 type Legacy = BTreeMap<(&'static str, String), Presented>;
 type CutoverEnds = BTreeMap<String, String>;
 
 impl Verifier<'_> {
     pub(super) fn verify_cutover(&mut self, found: &Discovery) -> Result<CutoverEnds> {
-        let excluded = found
-            .files
-            .iter()
-            .filter_map(|file| {
-                let filename = name(&file.path);
-                parse_evidence_filename(filename).map(|_| filename.to_owned())
-            })
-            .collect();
+        let excluded = if self.options.directory {
+            found
+                .files
+                .iter()
+                .map(|file| name(&file.path).to_owned())
+                .collect()
+        } else {
+            BTreeSet::new()
+        };
         let legacy = with_recorder_file_exclusions(excluded, || self.verify_legacy(&found.old))?;
         let mut unproven = BTreeMap::new();
         if found.files.is_empty() {
@@ -156,26 +177,25 @@ impl Verifier<'_> {
                     EVIDENCE => EVIDENCE,
                     _ => GROUP,
                 };
-                let key = (format, row.chain);
+                let key = (format, row.chain.clone());
                 let actual = legacy.get(&key);
                 listed.insert(key);
                 let Some(actual) = actual else {
                     self.doc.add_record("LEGACY_CHAIN_NOT_PRESENTED", origin);
                     continue;
                 };
-                let extended = actual.seq > row.seq
-                    || (format == ACTION
-                        && actual.head != row.record
-                        && !actual.forked
-                        && actual.positions.values().any(|hash| hash == &row.record));
-                if extended {
-                    self.doc.add_record("LEGACY_EXTENDED_AFTER_CUTOVER", origin);
-                } else if actual.seq < row.seq {
-                    self.doc.add_record("LEGACY_CHAIN_TRUNCATED", origin);
-                } else if actual.forked || actual.head != row.record {
-                    self.doc.add_record("LEGACY_CHAIN_HEAD_MISMATCH", origin);
-                } else if actual.end_unproven && !actual.invalid {
-                    unproven.insert(origin.id.clone(), id.clone());
+                match actual.compare_cutover_position(&row) {
+                    Ordering::Greater => {
+                        self.doc.add_record("LEGACY_EXTENDED_AFTER_CUTOVER", origin);
+                    }
+                    Ordering::Less => self.doc.add_record("LEGACY_CHAIN_TRUNCATED", origin),
+                    Ordering::Equal if actual.forked || actual.head != row.record => {
+                        self.doc.add_record("LEGACY_CHAIN_HEAD_MISMATCH", origin);
+                    }
+                    Ordering::Equal if actual.end_unproven && !actual.invalid => {
+                        unproven.insert(origin.id.clone(), id.clone());
+                    }
+                    Ordering::Equal => {}
                 }
             }
         }
@@ -234,7 +254,7 @@ impl Verifier<'_> {
             }
         }
         for (dir, grouped) in &mut dirs {
-            let result = verify_receipt_groups(dir, &self.options.keys, |report| {
+            let result = verify_receipt_groups_for_cutover(dir, &self.options.keys, |report| {
                 add_group(&mut presented, &mut self.doc, report);
                 Ok(())
             });

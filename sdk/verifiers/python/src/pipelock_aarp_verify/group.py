@@ -11,6 +11,7 @@ import json
 import os
 import re
 import stat
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, BinaryIO
 
@@ -94,6 +95,8 @@ def _go_json(value: Any) -> bytes:
 
 
 def _strict_artifact(path: Path, kind: str) -> tuple[dict[str, Any], bytes]:
+    if path.name in _recorder_file_exclusions.get():
+        raise FileNotFoundError(path)
     try:
         info = path.lstat()
         if (
@@ -552,7 +555,14 @@ def _verify_checkpoints(entries: list[dict[str, Any]], pub: bytes) -> str:
     return last_hash
 
 
+_recorder_file_exclusions: ContextVar[frozenset[str]] = ContextVar(
+    "recorder_file_exclusions", default=frozenset()
+)
+
+
 def _parse_evidence_filename(name: str) -> tuple[str, int] | None:
+    if name in _recorder_file_exclusions.get():
+        return None
     """Match evidencename.Parse, including its legacy sequence-zero fallback."""
     if not name.startswith("evidence-") or not name.endswith(".jsonl"):
         return None
@@ -1157,6 +1167,8 @@ def _verify_transition_inventory(
 ) -> None:
     found = 0
     for path in directory.glob("receipt-group-*-transition.json"):
+        if path.name in _recorder_file_exclusions.get():
+            continue
         transition, _ = _strict_artifact(path, "transition")
         filename_id = path.name[len("receipt-group-") : -len("-transition.json")]
         if (
@@ -1467,6 +1479,8 @@ def verify_receipt_group(
             inventory_unavailable = True
             raise
         for artifact in root.iterdir():
+            if artifact.name in _recorder_file_exclusions.get():
+                continue
             if artifact.name.startswith(
                 "receipt-group-"
             ) and not _GROUP_ARTIFACT.fullmatch(artifact.name):

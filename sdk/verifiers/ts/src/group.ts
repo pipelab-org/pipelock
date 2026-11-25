@@ -22,7 +22,9 @@ import * as ed25519 from "@noble/ed25519";
 import { parseJSONStrict, RawNumber } from "./aarp/strictjson.js";
 import { evidenceChainKey, receiptHash, verifyChain } from "./chain.js";
 import {
+  isExcludedLegacyFile,
   parseEvidenceFilename,
+  withRecorderFileExclusions,
   readSessionEvidence,
   sessionEvidenceFiles,
   withPinnedEvidenceDirectory,
@@ -371,6 +373,8 @@ export function readBoundedArtifactBytes(
 }
 
 function readChild(name: string, max = 128 * 1024): Buffer {
+  if (isExcludedLegacyFile(name))
+    throw Object.assign(new Error("receipt group artifact is absent: " + name), { code: "ENOENT" });
   const before = lstatSync(name, { bigint: true });
   if (!before.isFile() || before.isSymbolicLink())
     throw new Error(`artifact ${name} is not a regular file`);
@@ -405,6 +409,7 @@ function readChild(name: string, max = 128 * 1024): Buffer {
 }
 
 function existsNoFollow(name: string): boolean {
+  if (isExcludedLegacyFile(name)) return false;
   try {
     lstatSync(name);
     return true;
@@ -445,7 +450,7 @@ export function readFirstLine(name: string, max: number): Buffer {
 // first terminated entry before the legacy directory command selects a path.
 export function receiptGroupEvidencePresent(dir: string): boolean {
   for (const name of readdirSync(dir)) {
-    if (name.startsWith("receipt-group-")) return true;
+    if (!isExcludedLegacyFile(name) && name.startsWith("receipt-group-")) return true;
     const parsed = parseEvidenceFilename(name);
     if (!parsed || parsed.seqStart !== 0n) continue;
     const child = path.join(dir, name);
@@ -749,6 +754,7 @@ async function verifyGroupAt(
     afterInventory?.();
     for (const name of readdirSync(".")) {
       if (
+        !isExcludedLegacyFile(name) &&
         name.startsWith("receipt-group-") &&
         !/^receipt-group-[0-9a-f]{32}-(?:open|close|transition)\.json$/u.test(name)
       )
@@ -1131,7 +1137,12 @@ async function verifySuccessorTransitionInventory(
   const { trusted } = verification;
   let matched = 0;
   for (const name of readdirSync(".")) {
-    if (!name.startsWith("receipt-group-") || !name.endsWith("-transition.json")) continue;
+    if (
+      isExcludedLegacyFile(name) ||
+      !name.startsWith("receipt-group-") ||
+      !name.endsWith("-transition.json")
+    )
+      continue;
     const rawBytes = readChild(name),
       raw = strictObject(rawBytes, transitionFields, "group transition");
     const fileID = name.slice("receipt-group-".length, -"-transition.json".length);
@@ -1894,7 +1905,7 @@ export async function verifyReceiptGroupsInProcess(
         const names = readdirSync(".");
         const openings: string[] = [];
         for (const name of names) {
-          if (!name.startsWith("receipt-group-")) continue;
+          if (isExcludedLegacyFile(name) || !name.startsWith("receipt-group-")) continue;
           const parts = /^receipt-group-([0-9a-f]{32})-(open|close|transition)\.json$/u.exec(name);
           if (!parts) throw new Error("unknown receipt group artifact " + JSON.stringify(name));
           const [, id, phase] = parts;
@@ -1945,7 +1956,7 @@ export async function verifyReceiptGroupsInProcess(
 function directoryHasGroups(): boolean {
   return readdirSync(".").some(
     (name) =>
-      name.startsWith("receipt-group-") ||
+      (!isExcludedLegacyFile(name) && name.startsWith("receipt-group-")) ||
       (parseEvidenceFilename(name)?.seqStart === 0n && firstRecorderGroupGate(name)),
   );
 }
@@ -1968,10 +1979,16 @@ export async function verifyReceiptGroups(
   dir: string,
   trustedKeys: readonly string[],
   visit: (group: ReceiptGroupResult) => void = () => {},
+  excluded: readonly string[] = [],
 ): Promise<ReceiptGroupInventoryResult> {
   const summary = newGroupInventory();
   try {
-    if (!withPinnedEvidenceDirectorySync(dir, directoryHasGroups)) return summary;
+    if (
+      !withRecorderFileExclusions(excluded, () =>
+        withPinnedEvidenceDirectorySync(dir, directoryHasGroups),
+      )
+    )
+      return summary;
   } catch (error) {
     return {
       ...summary,
@@ -2006,7 +2023,7 @@ export async function verifyReceiptGroups(
       summary.error = error.message;
       summary.unavailable = true;
     });
-    child.send({ dir, trustedKeys }, (error) => {
+    child.send({ dir, trustedKeys, excluded }, (error) => {
       if (error && summary.error === undefined) {
         summary.error = error.message;
         summary.unavailable = true;

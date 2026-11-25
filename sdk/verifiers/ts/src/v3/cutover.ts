@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import { closeSync, readSync } from "node:fs";
 import { cutoverMembershipKnown, type Cutover } from "./history.js";
 import { openEvidence } from "./input.js";
-import { legacyIdentity, verifyLegacy, type LegacyRow } from "./legacy.js";
+import { compareCutoverPosition, legacyIdentity, verifyLegacy, type LegacyRow } from "./legacy.js";
 import { prefixVerdict } from "./result.js";
 import type { Staged } from "./store.js";
 import type { Verification } from "./verify.js";
@@ -169,16 +169,13 @@ export async function verifyCutover(
       const key = legacyIdentity(row);
       listed.add(key);
       const actual = old.get(key);
-      if (!actual) v.add("LEGACY_CHAIN_NOT_PRESENTED", open);
-      else if (
-        actual.seq > row.seq ||
-        (actual.record !== row.record &&
-          !actual.forked &&
-          actual.actionPositions &&
-          [...actual.actionPositions.values()].includes(row.record))
-      )
-        v.add("LEGACY_EXTENDED_AFTER_CUTOVER", open);
-      else if (actual.seq < row.seq) v.add("LEGACY_CHAIN_TRUNCATED", open);
+      if (!actual) {
+        v.add("LEGACY_CHAIN_NOT_PRESENTED", open);
+        continue;
+      }
+      const position = compareCutoverPosition(actual, row);
+      if (position > 0) v.add("LEGACY_EXTENDED_AFTER_CUTOVER", open);
+      else if (position < 0) v.add("LEGACY_CHAIN_TRUNCATED", open);
       else if (actual.forked || actual.record !== row.record)
         v.add("LEGACY_CHAIN_HEAD_MISMATCH", open);
       else if (actual.verdict === prefixVerdict) unproven.set(open.id, open);

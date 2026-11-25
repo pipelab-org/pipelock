@@ -47,7 +47,9 @@ fn shared_v3_corpus() {
                 // The vector directory also contains the control JSON files.
                 temporary = TestDirectory::new();
                 for path in paths {
-                    fs::copy(path, temporary.0.join(path.file_name().unwrap())).unwrap();
+                    let target = temporary.0.join(path.strip_prefix(&vector).unwrap());
+                    fs::create_dir_all(target.parent().unwrap()).unwrap();
+                    fs::copy(path, target).unwrap();
                 }
                 directory = [temporary.0.clone()];
                 &directory
@@ -85,7 +87,7 @@ fn shared_v3_corpus() {
          {reordered} reversed file orders, {identical} full documents identical"
     );
     assert!(failures.is_empty(), "{}", failures.join("\n"));
-    assert_eq!((projected, legacy), (366, 5));
+    assert_eq!((projected, legacy), (373, 5));
 }
 
 struct TestDirectory(PathBuf);

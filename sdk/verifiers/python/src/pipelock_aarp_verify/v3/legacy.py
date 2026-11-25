@@ -88,13 +88,15 @@ class _Legacy:
     forked: bool = False
     seen: dict[int, str] | None = None
 
-    def contains_earlier(self, record: str) -> bool:
-        return bool(
-            self.seen
-            and not self.forked
-            and record != self.record
-            and record in self.seen.values()
-        )
+    def compare_cutover_position(self, row: Document) -> int:
+        if self.record != row["record"] and not self.forked:
+            for position, record in (self.seen or {}).items():
+                if 0 <= position < self.position and record == row["record"]:
+                    return 1
+            # An absent sequence-zero pin can start a later signing epoch.
+            if row["format"] == _ACTION and row["seq"] == 0 and self.seq > 0:
+                return -1
+        return self.seq - row["seq"]
 
 
 def _legacy_row(key: Identity, status: str, passed: bool) -> Document:
@@ -204,9 +206,7 @@ class _LegacyVerifier:
         previous = self.rows.get(key)
         was_invalid = previous is not None and previous.verdict == "INVALID"
         if previous is None or position > previous.position:
-            previous = _Legacy(
-                final_seq, hashes[-1], verdict, position, seen=seen if action else None
-            )
+            previous = _Legacy(final_seq, hashes[-1], verdict, position, seen=seen)
         if not valid:
             self.v.add("LEGACY_INVALID")
         if not valid or was_invalid:
@@ -433,9 +433,11 @@ def verify_cutover(
             actual = old.get(key)
             if actual is None:
                 v.add("LEGACY_CHAIN_NOT_PRESENTED", record=opener)
-            elif actual.seq > row["seq"] or actual.contains_earlier(row["record"]):
+                continue
+            position = actual.compare_cutover_position(row)
+            if position > 0:
                 v.add("LEGACY_EXTENDED_AFTER_CUTOVER", record=opener)
-            elif actual.seq < row["seq"]:
+            elif position < 0:
                 v.add("LEGACY_CHAIN_TRUNCATED", record=opener)
             elif actual.forked or actual.record != row["record"]:
                 v.add("LEGACY_CHAIN_HEAD_MISMATCH", record=opener)

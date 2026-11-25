@@ -1,6 +1,8 @@
 // Copyright 2026 Pipelock contributors
 // SPDX-License-Identifier: Apache-2.0
 
+import { basename } from "node:path";
+import { withRecorderFileExclusions } from "../chain-set.js";
 import type { KeyObject } from "node:crypto";
 import { appraiseDecisions } from "./decision.js";
 import { verifyCutover } from "./cutover.js";
@@ -312,7 +314,10 @@ export async function verifyV3Paths(
     v.stageFiles(files);
     v.verifyStreams();
     verifySuccession(v);
-    const cutoverEnds = await verifyCutover(v, legacy, inventories, files.length > 0);
+    const cutoverEnds = await withRecorderFileExclusions(
+      opts.directory ? files.map(({ path }) => basename(path)) : [],
+      () => verifyCutover(v, legacy, inventories, files.length > 0),
+    );
     appraiseDecisions(v);
     checkExpectations(v, cutoverEnds);
     v.result.trust.keys = [...v.used].sort();

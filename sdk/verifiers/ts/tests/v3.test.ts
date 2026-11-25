@@ -6,6 +6,7 @@ import { spawnSync } from "node:child_process";
 import {
   copyFileSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
@@ -13,7 +14,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { canonicalV3, claimsV3Input, verifyV3Paths } from "../src/index.js";
 import { findPackageRoot } from "./paths.js";
@@ -66,7 +67,11 @@ test("shared v3 projections, legacy detection, and full-document order determini
         const scratch = mkdtempSync(join(tmpdir(), "ts-v3-corpus-"));
         try {
           const names = reverse ? [...request.inputs].reverse() : request.inputs;
-          for (const name of names) copyFileSync(join(dir, name), join(scratch, name));
+          for (const name of names) {
+            const target = join(scratch, name);
+            mkdirSync(dirname(target), { recursive: true });
+            copyFileSync(join(dir, name), target);
+          }
           return await verifyV3Paths([scratch], options);
         } finally {
           rmSync(scratch, { recursive: true });

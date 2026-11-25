@@ -51,7 +51,9 @@ def test_v3_corpus(request_path, tmp_path):
             directory = tmp_path / str(index)
             directory.mkdir()
             for path in order:
-                shutil.copyfile(path, directory / path.name)
+                target = directory / path.relative_to(request_path.parent)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(path, target)
         first, projection = verify_v3([tmp_path / "0"], options)
         second, _ = verify_v3([tmp_path / "1"], options)
     else:

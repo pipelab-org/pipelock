@@ -247,11 +247,15 @@ pub(crate) fn with_recorder_file_exclusions<T>(
     verify()
 }
 
+pub(crate) fn is_excluded_legacy_file(name: &str) -> bool {
+    EXCLUDED_RECORDER_FILES.with_borrow(|names| names.contains(name))
+}
+
 /// Mirrors Go `evidencename.Parse`: the session is everything between
 /// `evidence-` and the LAST dash, and a sequence that is not a u64 parses
 /// as 0.
 pub fn parse_evidence_filename(name: &str) -> Option<(String, u64)> {
-    if EXCLUDED_RECORDER_FILES.with_borrow(|names| names.contains(name)) {
+    if is_excluded_legacy_file(name) {
         return None;
     }
     let rest = name

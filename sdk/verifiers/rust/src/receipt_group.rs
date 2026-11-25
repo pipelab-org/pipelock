@@ -9,6 +9,7 @@
 
 use crate::canonical::go_json_bytes;
 use crate::chain::{receipt_hash, verify_chain_with_options};
+use crate::chain_set::is_excluded_legacy_file;
 use crate::chain_set::{indexed_session_files, parse_evidence_filename};
 use crate::line_space::trim_go_space;
 use crate::recorder::{
@@ -39,7 +40,7 @@ pub(crate) fn receipt_group_evidence_present(dir: &Path) -> Result<bool, String>
     for entry in fs::read_dir(dir).map_err(|e| e.to_string())? {
         let entry = entry.map_err(|e| e.to_string())?;
         let name = entry.file_name().to_string_lossy().into_owned();
-        if name.starts_with("receipt-group-") {
+        if !is_excluded_legacy_file(&name) && name.starts_with("receipt-group-") {
             return Ok(true);
         }
         let Some((_, start)) = parse_evidence_filename(&name) else {
@@ -214,6 +215,23 @@ pub struct ReceiptGroupInventory {
 pub fn verify_receipt_groups(
     dir: &Path,
     trusted_keys: &[String],
+    visit: impl FnMut(ReceiptGroupReport) -> crate::util::Result<()>,
+) -> crate::util::Result<ReceiptGroupInventory> {
+    verify_groups(dir, trusted_keys, false, visit)
+}
+
+pub(crate) fn verify_receipt_groups_for_cutover(
+    dir: &Path,
+    trusted_keys: &[String],
+    visit: impl FnMut(ReceiptGroupReport) -> crate::util::Result<()>,
+) -> crate::util::Result<ReceiptGroupInventory> {
+    verify_groups(dir, trusted_keys, true, visit)
+}
+
+fn verify_groups(
+    dir: &Path,
+    trusted_keys: &[String],
+    preserve_manifest_pins: bool,
     mut visit: impl FnMut(ReceiptGroupReport) -> crate::util::Result<()>,
 ) -> crate::util::Result<ReceiptGroupInventory> {
     let unavailable =
@@ -223,7 +241,7 @@ pub fn verify_receipt_groups(
         return Ok(summary);
     }
     let before = batch_inventory_fingerprint(dir)?;
-    let result = visit_group_inventory(dir, trusted_keys, |report| {
+    let result = visit_group_inventory(dir, trusted_keys, preserve_manifest_pins, |report| {
         let verdict = report.verdict.clone();
         visit(report)?;
         summary.groups += 1;
@@ -246,6 +264,7 @@ pub fn verify_receipt_groups(
 fn visit_group_inventory(
     dir: &Path,
     trusted_keys: &[String],
+    preserve_manifest_pins: bool,
     mut visit: impl FnMut(ReceiptGroupReport) -> crate::util::Result<()>,
 ) -> crate::util::Result<()> {
     verify_group_artifact_names(dir).map_err(VerifierError::Invalid)?;
@@ -256,6 +275,7 @@ fn visit_group_inventory(
                 .collect::<std::io::Result<Vec<_>>>()
         })
         .map_err(|e| VerifierError::Unavailable(e.to_string()))?;
+    entries.retain(|name| !is_excluded_legacy_file(&name.to_string_lossy()));
     entries.sort();
     let orphan = |id: &str, reason: String| report_from_inner(Err(("GROUP_INVALID", reason)), id);
     for name in &entries {
@@ -295,14 +315,27 @@ fn visit_group_inventory(
             .strip_prefix("receipt-group-")
             .and_then(|s| s.strip_suffix("-open.json"))
         {
-            visit(report_from_inner(verify_inner(dir, id, trusted_keys), id))?;
+            let mut pins = ManifestPins::default();
+            let mut report = report_from_inner(verify_inner(dir, id, trusted_keys, &mut pins), id);
+            if preserve_manifest_pins {
+                // Group integrity and the identity of its authenticated manifest
+                // are independent inputs to cutover appraisal.
+                report.shard_count = pins.shard_count;
+                report.open_manifest_sha256 = pins.open;
+                report.close_manifest_sha256 = pins.close;
+            }
+            visit(report)?;
         }
     }
     Ok(())
 }
 
 fn has_group_open(dir: &Path, id: &str) -> crate::util::Result<bool> {
-    match fs::symlink_metadata(dir.join(format!("receipt-group-{id}-open.json"))) {
+    let name = format!("receipt-group-{id}-open.json");
+    if is_excluded_legacy_file(&name) {
+        return Ok(false);
+    }
+    match fs::symlink_metadata(dir.join(name)) {
         Ok(_) => Ok(true),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
         Err(err) => Err(VerifierError::Unavailable(err.to_string())),
@@ -361,11 +394,19 @@ fn verify_receipt_group_with_inventory(
     inventory: impl Fn(&Path) -> Result<InventoryFingerprint, String>,
 ) -> ReceiptGroupReport {
     if trusted_keys.is_empty() || !hex_exact(group_id, 32) {
-        return report_from_inner(verify_inner(dir, group_id, trusted_keys), group_id);
+        return report_from_inner(
+            verify_inner(dir, group_id, trusted_keys, &mut ManifestPins::default()),
+            group_id,
+        );
     }
     let root = match fs::symlink_metadata(dir) {
         Ok(meta) if meta.is_dir() && !meta.file_type().is_symlink() => meta,
-        _ => return report_from_inner(verify_inner(dir, group_id, trusted_keys), group_id),
+        _ => {
+            return report_from_inner(
+                verify_inner(dir, group_id, trusted_keys, &mut ManifestPins::default()),
+                group_id,
+            )
+        }
     };
     let before = match inventory(dir) {
         Ok(before) => before,
@@ -393,7 +434,10 @@ fn verify_receipt_group_with_inventory(
         }
     };
     after_inventory();
-    let mut report = report_from_inner(verify_inner(dir, group_id, trusted_keys), group_id);
+    let mut report = report_from_inner(
+        verify_inner(dir, group_id, trusted_keys, &mut ManifestPins::default()),
+        group_id,
+    );
     let root_after = match fs::symlink_metadata(dir) {
         Ok(meta) if meta.is_dir() && !meta.file_type().is_symlink() => meta,
         _ => {
@@ -435,10 +479,18 @@ fn report_from_inner(
     }
 }
 
+#[derive(Default)]
+struct ManifestPins {
+    shard_count: usize,
+    open: Option<String>,
+    close: Option<String>,
+}
+
 fn verify_inner(
     dir: &Path,
     group_id: &str,
     trusted: &[String],
+    pins: &mut ManifestPins,
 ) -> Result<ReceiptGroupReport, (&'static str, String)> {
     if trusted.is_empty() {
         return Err((
@@ -471,13 +523,16 @@ fn verify_inner(
     )
     .map_err(invalid)?;
     let open_hash = sha256_hex(&open_raw);
+    pins.shard_count = open.shard_count;
+    pins.open = Some(open_hash.clone());
     let close_name = format!("receipt-group-{group_id}-close.json");
     let close_path = dir.join(&close_name);
-    let close_missing = match fs::symlink_metadata(&close_path) {
-        Ok(_) => false,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => true,
-        Err(err) => return Err(invalid(err.to_string())),
-    };
+    let close_missing = is_excluded_legacy_file(&close_name)
+        || match fs::symlink_metadata(&close_path) {
+            Ok(_) => false,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => true,
+            Err(err) => return Err(invalid(err.to_string())),
+        };
     let close_raw = match bounded_read(dir, &close_name) {
         Ok(bytes) => bytes,
         Err(reason) if close_missing => {
@@ -523,6 +578,8 @@ fn verify_inner(
         trusted,
     )
     .map_err(invalid)?;
+    let close_hash = sha256_hex(&close_raw);
+    pins.close = Some(close_hash.clone());
     for (i, (claimed, shard)) in close.shards.iter().zip(open.shards.iter()).enumerate() {
         let actual = verify_shard(dir, &open, &open_hash, i, shard).map_err(invalid)?;
         if *claimed != actual {
@@ -561,7 +618,7 @@ fn verify_inner(
         base_session: Some(open.base_session),
         shard_count: open.shard_count,
         open_manifest_sha256: Some(open_hash),
-        close_manifest_sha256: Some(sha256_hex(&close_raw)),
+        close_manifest_sha256: Some(close_hash),
         error: if open_ael_tail {
             Some("native AEL run has an open recorder tail".into())
         } else if predecessor_incomplete {
@@ -1819,7 +1876,7 @@ fn verify_group_artifact_names(dir: &Path) -> Result<(), String> {
     for entry in fs::read_dir(dir).map_err(|e| e.to_string())? {
         let entry = entry.map_err(|e| e.to_string())?;
         let name = entry.file_name().to_string_lossy().into_owned();
-        if !name.starts_with("receipt-group-") {
+        if is_excluded_legacy_file(&name) || !name.starts_with("receipt-group-") {
             continue;
         }
         let rest = &name["receipt-group-".len()..];
@@ -1850,7 +1907,10 @@ fn verify_transitions_referencing(
     for entry in fs::read_dir(dir).map_err(|e| e.to_string())? {
         let entry = entry.map_err(|e| e.to_string())?;
         let name = entry.file_name().to_string_lossy().into_owned();
-        if !name.starts_with("receipt-group-") || !name.ends_with("-transition.json") {
+        if is_excluded_legacy_file(&name)
+            || !name.starts_with("receipt-group-")
+            || !name.ends_with("-transition.json")
+        {
             continue;
         }
         let raw = bounded_read(dir, &name)?;
@@ -2131,6 +2191,9 @@ fn decode_seal(raw: &[u8]) -> Result<RecoverySeal, String> {
 }
 
 fn bounded_read(dir: &Path, name: &str) -> Result<Vec<u8>, String> {
+    if is_excluded_legacy_file(name) {
+        return Err(format!("receipt group artifact {name} is absent"));
+    }
     if name.contains('/') || name.contains('\\') {
         return Err("invalid artifact basename".into());
     }
