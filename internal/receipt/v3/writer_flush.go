@@ -66,20 +66,30 @@ func (w *StreamWriter) notifyChange() {
 	w.changed = make(chan struct{})
 }
 
-func (w *StreamWriter) waitState(ctx context.Context, waiting func() bool) error {
-	for waiting() {
+func (w *StreamWriter) waitState(ctx context.Context, held *bool, waiting func() bool) error {
+	for {
+		// Capture the signal before checking the predicate. A transition
+		// owner can close it without acquiring the gate.
+		transition := w.transitionDone()
+		if !waiting() {
+			return ctx.Err()
+		}
 		changed := w.changed
-		w.release()
+		if w.onWaitState != nil {
+			w.onWaitState(ctx)
+		}
+		w.releaseHeld(held)
 		select {
 		case <-changed:
+		case <-transition:
 		case <-ctx.Done():
+			return ctx.Err()
 		}
-		w.gate <- struct{}{}
-		if err := ctx.Err(); err != nil {
+		if err := w.acquire(ctx); err != nil {
 			return err
 		}
+		*held = true
 	}
-	return ctx.Err()
 }
 
 func (w *StreamWriter) runFlusher() {
@@ -124,7 +134,7 @@ func (w *StreamWriter) flushStep() (worked bool, deadline time.Time) {
 		return true, time.Time{}
 	}
 	if len(w.pending) != 0 {
-		if w.waiters == 0 && len(w.repairs) == 0 && !w.draining {
+		if w.waiters == 0 && len(w.repairs) == 0 && (!w.draining || w.transitionDone() == nil) {
 			deadline = w.pending[0].observedAt.Add(w.idleFlushDelay)
 			if time.Until(deadline) > 0 {
 				return false, deadline
@@ -290,14 +300,29 @@ func (w *StreamWriter) registerTicket(ticket *writeTicket, tip Position) {
 	w.wakeFlush()
 }
 
-func (w *StreamWriter) drainSegment(ctx context.Context) error {
-	transition := w.transition
-	w.transition = true
-	defer func() {
-		w.transition = transition
-		w.notifyChange()
-	}()
-	return w.drainForEnd(ctx, true)
+// Closing a transition wakes its waiters without acquiring the gate.
+func (w *StreamWriter) beginTransition() func() {
+	done := make(chan struct{})
+	w.transition = done
+	w.draining = false
+	return func() { close(done) }
+}
+
+func (w *StreamWriter) transitionDone() <-chan struct{} {
+	select {
+	case <-w.transition:
+		return nil
+	default:
+		return w.transition
+	}
+}
+
+func (w *StreamWriter) drainSegment(ctx context.Context, held *bool) error {
+	if w.transitionDone() == nil {
+		finish := w.beginTransition()
+		defer finish()
+	}
+	return w.drainForEnd(ctx, true, held)
 }
 
 func (w *StreamWriter) busy(includeOutcomes bool) bool {

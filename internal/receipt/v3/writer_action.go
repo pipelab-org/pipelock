@@ -58,12 +58,13 @@ func (w *StreamWriter) writeAction(ctx context.Context, action Action, policy Po
 	if err := w.acquire(ctx); err != nil {
 		return err
 	}
-	defer w.release()
+	held := true
+	defer w.releaseHeld(&held)
 	action.Policy = policy.ActionPolicy()
 	if !actionShape(action, w.open.Coverage.ReceiptsRequired) {
 		return errors.New("receipt action does not match its effect phase")
 	}
-	if err := w.prepareAppend(ctx, 1); err != nil {
+	if err := w.prepareAppend(ctx, 1, &held); err != nil {
 		return err
 	}
 	if action.Phase == phaseResolution {
@@ -75,12 +76,12 @@ func (w *StreamWriter) writeAction(ctx context.Context, action Action, policy Po
 			if !w.hasPendingAction(action.ActionID) {
 				break
 			}
-			if err := w.waitState(ctx, func() bool {
-				return w.fatal == nil && (w.transition || w.failed() || len(w.repairs) != 0 || w.hasPendingAction(action.ActionID))
+			if err := w.waitState(ctx, &held, func() bool {
+				return w.fatal == nil && (w.transitionDone() != nil || w.failed() || len(w.repairs) != 0 || w.hasPendingAction(action.ActionID))
 			}); err != nil {
 				return err
 			}
-			if err := w.prepareAppend(ctx, 1); err != nil {
+			if err := w.prepareAppend(ctx, 1, &held); err != nil {
 				return err
 			}
 		}
@@ -94,7 +95,7 @@ func (w *StreamWriter) writeAction(ctx context.Context, action Action, policy Po
 		pendingAction.Attempt = &attempt
 	}
 	ticket := newWriteTicket(ctx, []Action{pendingAction}, mode)
-	if err := w.appendRecord(ctx, kindAction, action, ticket); err != nil {
+	if err := w.appendRecord(ctx, kindAction, action, ticket, &held); err != nil {
 		return err
 	}
 	if mode == writeObserved {
@@ -115,7 +116,8 @@ func (w *StreamWriter) WriteAdmissionBatch(ctx context.Context, actions []Action
 	if err := w.acquire(ctx); err != nil {
 		return err
 	}
-	defer w.release()
+	held := true
+	defer w.releaseHeld(&held)
 
 	seen := make(map[string]struct{}, len(actions))
 	batch := make([]Action, 0, len(actions))
@@ -130,17 +132,17 @@ func (w *StreamWriter) WriteAdmissionBatch(ctx context.Context, actions []Action
 		action.Policy = policy.ActionPolicy()
 		batch = append(batch, action)
 	}
-	if err := w.prepareAppend(ctx, int64(len(batch))); err != nil {
+	if err := w.prepareAppend(ctx, int64(len(batch)), &held); err != nil {
 		return err
 	}
 	ticket := newWriteTicket(ctx, batch, writeConfirmed)
-	if err := w.appendBatch(ctx, ticket); err != nil {
+	if err := w.appendBatch(ctx, ticket, &held); err != nil {
 		return err
 	}
 	return w.waitTicket(ticket)
 }
 
-func (w *StreamWriter) appendBatch(ctx context.Context, ticket *writeTicket) error {
+func (w *StreamWriter) appendBatch(ctx context.Context, ticket *writeTicket, held *bool) error {
 	for {
 		before := w.active.appended
 		tip := before
@@ -158,7 +160,7 @@ func (w *StreamWriter) appendBatch(ctx context.Context, ticket *writeTicket) err
 			tip.Record = pos
 		}
 		if w.needsSegment(kindAction, len(batch)) && before != w.active.confirmed {
-			if err := w.drainSegment(ctx); err != nil {
+			if err := w.drainSegment(ctx, held); err != nil {
 				return err
 			}
 			if before != w.active.appended {
@@ -329,7 +331,12 @@ func (w *StreamWriter) replayActionRepairs(ctx context.Context, retryWriteErrors
 			break
 		}
 		action := w.repairs[0]
-		err := w.appendRecord(ctx, kindAction, action, nil)
+		held := true
+		err := w.appendRecord(ctx, kindAction, action, nil, &held)
+		if !held {
+			// Internal replay returns to its owner with the gate held.
+			w.gate <- struct{}{}
+		}
 		if err == nil && w.active.appended != w.active.confirmed {
 			err = w.flushActive()
 		}

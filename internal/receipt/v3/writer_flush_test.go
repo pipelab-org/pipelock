@@ -717,7 +717,7 @@ func TestSharedFlushReservesSequenceForCancellationBeforeRollover(t *testing.T) 
 		if err := w.acquire(deadline); err != nil {
 			t.Fatal("heartbeat did not wait for rollover")
 		}
-		rolling, tip := w.transition, w.active.appended.Seq
+		rolling, tip := w.transitionDone() != nil, w.active.appended.Seq
 		w.release()
 		if rolling {
 			break
@@ -830,6 +830,68 @@ func TestSharedFlushRefuseOutcomeReplayPreservesParent(t *testing.T) {
 	if got := writerTestCount(t, verified, "not_released"); got != 1 {
 		t.Fatalf("verified not_released outcomes = %d, want 1", got)
 	}
+}
+
+func TestSharedFlushPreAppendDeadlineDuringRollover(t *testing.T) {
+	storage := localWriterStorage()
+	opts := writerTestOptions(t.TempDir())
+	w := requireWriter(t, opts, storage)
+	f := controlWriterFlushes(t, w)
+	waiting := make(chan struct{})
+	markWaiting := sync.OnceFunc(func() { close(waiting) })
+	publishing := make(chan struct{})
+	finishPublish := make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(finishPublish) })
+	defer unblock()
+
+	ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(200*time.Millisecond))
+	defer cancel()
+	w.gate <- struct{}{}
+	w.onWaitState = func(waitCtx context.Context) {
+		if waitCtx == ctx {
+			markWaiting()
+		}
+	}
+	w.storage.syncDir = func(dir string) error {
+		select {
+		case <-publishing:
+		default:
+			close(publishing)
+			<-finishPublish
+		}
+		return storage.syncDir(dir)
+	}
+	w.release()
+	rollover := asyncWriterResult(func() error { return w.Rollover(t.Context()) })
+	awaitFlushEvent(t, f.writes)
+	seal := awaitFlushEvent(t, f.syncs)
+	admission := asyncWriterResult(func() error {
+		_, err := NewEffectGate(w).Admit(ctx, writerTestIntent("cancelled-before-append"), PolicySnapshot{})
+		return err
+	})
+	awaitFlushEvent(t, waiting)
+	seal <- nil
+	awaitFlushEvent(t, publishing)
+	<-ctx.Done()
+	select {
+	case err := <-admission:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("pre-append admission returned %v, want deadline exceeded", err)
+		}
+	case <-time.After(testwait.Deadline(time.Second)):
+		t.Fatal("pre-append admission waited for the stalled successor after its deadline")
+	}
+	unblock()
+	if err := awaitFlushEvent(t, rollover); err != nil {
+		t.Fatal(err)
+	}
+	w.gate <- struct{}{}
+	tip := w.active.appended.Seq
+	w.release()
+	if tip != 0 {
+		t.Fatalf("cancelled admission advanced successor tip to %d", tip)
+	}
+	requirePending(t, f.writes)
 }
 
 func TestOptionalAdmissionClassifiesRolloverPublicationFailure(t *testing.T) {

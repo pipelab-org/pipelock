@@ -103,7 +103,8 @@ type StreamWriter struct {
 	// All state below is protected by gate. Only the flusher releases the
 	// gate during an active-file sync.
 	changed       chan struct{}
-	transition    bool
+	onWaitState   func(context.Context) // Test hook, called with the gate held.
+	transition    chan struct{}
 	draining      bool
 	syncing       bool
 	pending       []*writeTicket
@@ -446,6 +447,14 @@ func (w *StreamWriter) release() {
 	<-w.gate
 }
 
+// releaseHeld handles waits that return on cancellation without reacquiring.
+func (w *StreamWriter) releaseHeld(held *bool) {
+	if *held {
+		w.release()
+		*held = false
+	}
+}
+
 // ErrWriterUnavailable means writes cannot resume on this writer.
 var ErrWriterUnavailable = errors.New("receipt writer is unavailable")
 
@@ -496,7 +505,7 @@ func (w *StreamWriter) needsSegment(kind string, size int) bool {
 	return w.active.bytes+size+reserve > w.fileBytes
 }
 
-func (w *StreamWriter) appendRecord(ctx context.Context, kind string, body any, ticket *writeTicket) error {
+func (w *StreamWriter) appendRecord(ctx context.Context, kind string, body any, ticket *writeTicket, held *bool) error {
 	for {
 		before := w.active.appended
 		seq := before.Seq + 1
@@ -505,7 +514,7 @@ func (w *StreamWriter) appendRecord(ctx context.Context, kind string, body any, 
 			return err
 		}
 		if w.needsSegment(kind, len(line)) && before != w.active.confirmed {
-			if err := w.drainSegment(ctx); err != nil {
+			if err := w.drainSegment(ctx, held); err != nil {
 				return err
 			}
 			if before != w.active.appended {
@@ -562,9 +571,9 @@ func (w *StreamWriter) appendLines(kind string, line []byte, first int64, tip Po
 	return nil
 }
 
-func (w *StreamWriter) waitForAppend(ctx context.Context) error {
-	if err := w.waitState(ctx, func() bool {
-		return w.fatal == nil && (w.transition || w.failed() || len(w.repairs) != 0)
+func (w *StreamWriter) waitForAppend(ctx context.Context, held *bool) error {
+	if err := w.waitState(ctx, held, func() bool {
+		return w.fatal == nil && (w.transitionDone() != nil || w.failed() || len(w.repairs) != 0)
 	}); err != nil {
 		return err
 	}
@@ -579,8 +588,8 @@ func (w *StreamWriter) waitForAppend(ctx context.Context) error {
 	return w.ensureStream(ctx)
 }
 
-func (w *StreamWriter) prepareAppend(ctx context.Context, records int64) error {
-	if err := w.waitForAppend(ctx); err != nil {
+func (w *StreamWriter) prepareAppend(ctx context.Context, records int64, held *bool) error {
+	if err := w.waitForAppend(ctx, held); err != nil {
 		return err
 	}
 	// A pending gate may need one settlement per record before rollover.
@@ -588,7 +597,7 @@ func (w *StreamWriter) prepareAppend(ctx context.Context, records int64) error {
 	unconfirmed := w.active.appended.Seq - w.active.confirmed.Seq
 	available := maxInteger - 2 - w.active.appended.Seq - unconfirmed
 	if records > available/2 {
-		return w.rollover(ctx)
+		return w.rollover(ctx, held)
 	}
 	return nil
 }
@@ -599,8 +608,9 @@ func (w *StreamWriter) WriteHeartbeat(ctx context.Context) error {
 	if err := w.acquire(ctx); err != nil {
 		return err
 	}
-	defer w.release()
-	if err := w.prepareAppend(ctx, 1); err != nil {
+	held := true
+	defer w.releaseHeld(&held)
+	if err := w.prepareAppend(ctx, 1, &held); err != nil {
 		return err
 	}
 	ticket := newWriteTicket(ctx, nil, writeConfirmed)
@@ -610,7 +620,7 @@ func (w *StreamWriter) WriteHeartbeat(ctx context.Context) error {
 		Beat: w.active.beat + 1, DurabilityBlocks: w.durability.DurabilityBlocks,
 		FsyncErrorsGated: w.durability.FsyncErrorsGated,
 	}
-	if err := w.appendRecord(ctx, kindHeartbeat, body, ticket); err != nil {
+	if err := w.appendRecord(ctx, kindHeartbeat, body, ticket, &held); err != nil {
 		return err
 	}
 	w.active.beat++
@@ -623,35 +633,37 @@ func (w *StreamWriter) Rollover(ctx context.Context) error {
 	if err := w.acquire(ctx); err != nil {
 		return err
 	}
-	defer w.release()
-	if err := w.waitForAppend(ctx); err != nil {
+	held := true
+	defer w.releaseHeld(&held)
+	if err := w.waitForAppend(ctx, &held); err != nil {
 		return err
 	}
-	return w.rollover(ctx)
+	return w.rollover(ctx, &held)
 }
 
-func (w *StreamWriter) rollover(ctx context.Context) error {
-	w.transition = true
-	defer func() {
-		w.transition = false
-		w.notifyChange()
-	}()
-	if err := w.drainForEnd(ctx, false); err != nil {
+func (w *StreamWriter) rollover(ctx context.Context, held *bool) error {
+	finish := w.beginTransition()
+	defer finish()
+	if err := w.drainForEnd(ctx, false, held); err != nil {
 		return err
 	}
-	if err := w.writeClose(ctx, closeRollover, nil); err != nil {
+	if err := w.writeClose(ctx, closeRollover, nil, held); err != nil {
 		return err
 	}
 	w.retire(endedClosed)
 	return w.ensureStream(ctx)
 }
 
-func (w *StreamWriter) drainForEnd(ctx context.Context, outcomes bool) error {
+func (w *StreamWriter) drainForEnd(ctx context.Context, outcomes bool, held *bool) error {
 	w.draining = outcomes
-	defer func() { w.draining = false }()
+	defer func() {
+		if *held {
+			w.draining = false
+		}
+	}()
 	before := w.durability.FsyncErrorsGated
 	w.wakeFlush()
-	if err := w.waitState(ctx, func() bool { return w.fatal == nil && w.busy(outcomes) }); err != nil {
+	if err := w.waitState(ctx, held, func() bool { return w.fatal == nil && w.busy(outcomes) }); err != nil {
 		return err
 	}
 	if before != w.durability.FsyncErrorsGated {
@@ -660,11 +672,11 @@ func (w *StreamWriter) drainForEnd(ctx context.Context, outcomes bool) error {
 	return w.restartError()
 }
 
-func (w *StreamWriter) writeClose(ctx context.Context, reason string, operational *Recorder) error {
+func (w *StreamWriter) writeClose(ctx context.Context, reason string, operational *Recorder, held *bool) error {
 	ticket := newWriteTicket(ctx, nil, writeConfirmed)
 	if err := w.appendRecord(ctx, kindStreamClose, StreamClose{
 		Records: w.active.appended.Seq + 2, Reason: reason, Durability: w.durability, Recorder: operational,
-	}, ticket); err != nil {
+	}, ticket, held); err != nil {
 		return err
 	}
 	return w.waitTicket(ticket)
@@ -706,21 +718,26 @@ func (w *StreamWriter) finishClose(ctx context.Context, operational *Recorder, s
 		w.stopHeartbeat()
 	}
 	w.gate <- struct{}{}
-	_ = w.waitState(context.Background(), func() bool { return w.transition })
-	w.transition = true
-	w.closeErr = w.drainForEnd(context.Background(), !seal)
+	held := true
+	_ = w.waitState(context.Background(), &held, func() bool { return w.transitionDone() != nil })
+	finish := w.beginTransition()
+	w.closeErr = w.drainForEnd(context.Background(), !seal, &held)
 	if seal && w.closeErr == nil && w.active.file != nil {
-		w.closeErr = w.writeClose(ctx, closeShutdown, operational)
+		w.closeErr = w.writeClose(ctx, closeShutdown, operational, &held)
+		if !held {
+			// Internal close must retain ownership until cleanup is complete.
+			w.gate <- struct{}{}
+			held = true
+		}
 		if w.closeErr != nil && w.fatal == nil && len(w.pending) != 0 {
-			w.closeErr = errors.Join(w.closeErr, w.drainForEnd(context.Background(), true))
+			w.closeErr = errors.Join(w.closeErr, w.drainForEnd(context.Background(), true, &held))
 		}
 	}
 	if w.active.file != nil {
 		w.closeErr = errors.Join(w.closeErr, w.active.file.Close())
 		w.active.file = nil
 	}
-	w.transition = false
-	w.notifyChange()
+	finish()
 	close(w.flushStop)
 	w.release()
 	<-w.flushDone
