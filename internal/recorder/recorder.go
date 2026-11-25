@@ -2033,7 +2033,7 @@ func EvidenceDirectoryHealthForDir(dir string, retentionDays int) (EvidenceDirec
 	if err != nil {
 		return health, fmt.Errorf("reading evidence directory: %w", err)
 	}
-	if err := refuseReceiptDirectoryEntries(dir, dirEntries, 0); err != nil {
+	if err := refuseReceiptDirectoryEntries(dir, dirEntries, EvidenceReadMode{}); err != nil {
 		return health, err
 	}
 	cutoff := time.Time{}

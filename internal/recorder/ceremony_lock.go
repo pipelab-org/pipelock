@@ -102,7 +102,7 @@ func checkLegacyEvidenceFormat(dir string) error {
 	if err != nil {
 		return fmt.Errorf("checking legacy evidence directory format: %w", err)
 	}
-	if err := refuseReceiptDirectoryEntries(resolved, entries, 0); err != nil {
+	if err := refuseReceiptDirectoryEntries(resolved, entries, EvidenceReadMode{}); err != nil {
 		return err
 	}
 	var probeErr error

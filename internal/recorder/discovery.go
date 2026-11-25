@@ -12,7 +12,6 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"sort"
 	"strings"
 
@@ -40,21 +39,27 @@ type EvidenceLocation struct {
 
 // EvidenceReadMode determines whether a legacy inventory can omit known
 // receipt-profile files that another verifier will check separately.
-type EvidenceReadMode uint8
+//
+// The mode is a struct so that no constant or literal outside this package can
+// stand in for it: a numeric type would let DiscoverEvidenceLocations(dir, 1)
+// opt in without naming MixedReceiptProfiles.
+type EvidenceReadMode struct{ mixed bool }
 
 // MixedReceiptProfiles is reserved for callers that independently handle
 // receipt profiles in the same directory. It never relaxes a legacy decoder.
-const MixedReceiptProfiles EvidenceReadMode = 1
+var MixedReceiptProfiles = EvidenceReadMode{mixed: true}
 
 func (mode EvidenceReadMode) allowsMixedReceiptProfiles() bool {
-	return mode == MixedReceiptProfiles
+	return mode.mixed
 }
 
 func evidenceReadMode(modes []EvidenceReadMode) EvidenceReadMode {
-	if slices.Contains(modes, MixedReceiptProfiles) {
-		return MixedReceiptProfiles
+	for _, mode := range modes {
+		if mode.mixed {
+			return MixedReceiptProfiles
+		}
 	}
-	return 0
+	return EvidenceReadMode{}
 }
 
 func refuseReceiptDirectoryEntries(dir string, entries []fs.DirEntry, mode EvidenceReadMode) error {
@@ -85,7 +90,7 @@ func RefuseReceiptDirectory(dir string, modes ...EvidenceReadMode) error {
 func refuseRemainingReceiptNames(handle *os.File, dir string) error {
 	for {
 		entries, readErr := handle.ReadDir(sessionHistoryDirBatch)
-		if err := refuseReceiptDirectoryEntries(dir, entries, 0); err != nil {
+		if err := refuseReceiptDirectoryEntries(dir, entries, EvidenceReadMode{}); err != nil {
 			return err
 		}
 		if errors.Is(readErr, io.EOF) {

@@ -193,3 +193,39 @@ var _ = other.EvidenceReadMode(1)
 		t.Fatalf("mode references = %d named, %d raw; want 1 named, 3 raw", named, raw)
 	}
 }
+
+// An untyped constant converts to any integer-based mode silently, so a call
+// such as DiscoverEvidenceLocations(dir, 1) would opt in without naming
+// MixedReceiptProfiles. The mode must be a struct that only the recorder can
+// build as mixed.
+func TestEvidenceReadModeCannotBeForged(t *testing.T) {
+	path := filepath.Join("..", "..", "recorder", "discovery.go")
+	file, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	ast.Inspect(file, func(node ast.Node) bool {
+		spec, ok := node.(*ast.TypeSpec)
+		if !ok || spec.Name.Name != "EvidenceReadMode" {
+			return true
+		}
+		found = true
+		structure, isStruct := spec.Type.(*ast.StructType)
+		if !isStruct {
+			t.Errorf("EvidenceReadMode is %T; a numeric type lets a literal opt in", spec.Type)
+			return false
+		}
+		for _, field := range structure.Fields.List {
+			for _, name := range field.Names {
+				if name.IsExported() {
+					t.Errorf("EvidenceReadMode field %s is exported and can be set outside the recorder", name.Name)
+				}
+			}
+		}
+		return false
+	})
+	if !found {
+		t.Fatal("recorder.EvidenceReadMode is missing")
+	}
+}
