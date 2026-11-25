@@ -96,7 +96,23 @@ func v3GroupRecipes(t *testing.T) []v3Recipe {
 		[]v3.InventoryChain{ordinary.row}, append(slices.Clone(validKeys), ordinary.key))
 	orphan.verdict, orphan.code = "INVALID", groupInvalid
 	orphan.extraInvalid = []string{"LEGACY_CHAIN_UNLISTED"}
-	return []v3Recipe{complete, claimed, unclaimed, tampered, orphan, restart, recovery}
+	// A v3 claim on the unclosed predecessor's close name leaves that name
+	// excluded, so the transition is checked as for an absent close.
+	excludedClose := recovery
+	excludedClose.name, excludedClose.verdict, excludedClose.code = "group-recovery-excluded-predecessor-close", "INVALID", "V3_CONTENT_UNCLAIMED"
+	excludedClose.files = slices.Clone(recovery.files)
+	for _, file := range recovery.files {
+		id, found := strings.CutPrefix(file.name, "receipt-group-")
+		if id, found = strings.CutSuffix(id, "-open.json"); !found {
+			continue
+		}
+		closeName := "receipt-group-" + id + "-close.json"
+		if !slices.ContainsFunc(recovery.files, func(other v3File) bool { return other.name == closeName }) {
+			excludedClose.files = append(excludedClose.files, v3File{closeName, []byte(unclaimedContent)})
+			break
+		}
+	}
+	return []v3Recipe{complete, claimed, unclaimed, tampered, orphan, restart, recovery, excludedClose}
 }
 
 func v3ReadGroupFiles(t *testing.T, archive *zip.ReadCloser, scenario string) ([]v3File, []string) {

@@ -622,13 +622,15 @@ fn verify_inner(
     let predecessor_incomplete = if open.previous_group_id.is_empty() {
         false
     } else {
-        match fs::symlink_metadata(dir.join(format!(
-            "receipt-group-{}-close.json",
-            open.previous_group_id
-        ))) {
-            Ok(_) => false,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => true,
-            Err(err) => return Err(invalid(err.to_string())),
+        let previous_close = format!("receipt-group-{}-close.json", open.previous_group_id);
+        if is_excluded_legacy_file(&previous_close) {
+            true
+        } else {
+            match fs::symlink_metadata(dir.join(previous_close)) {
+                Ok(_) => false,
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => true,
+                Err(err) => return Err(invalid(err.to_string())),
+            }
         }
     };
     Ok(ReceiptGroupReport {
@@ -1744,14 +1746,16 @@ fn verify_transition(
         &format!("receipt-group-{}-transition.json", open.group_id),
     )?;
     let tr: ReceiptGroupTransition = strict_artifact(&transition_raw)?;
-    let pred_close_path = dir.join(format!("receipt-group-{}-close.json", pred.group_id));
-    let pred_close_raw = match fs::symlink_metadata(&pred_close_path) {
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
-        Err(err) => return Err(format!("stat predecessor close: {err}")),
-        Ok(_) => Some(bounded_read(
-            dir,
-            &format!("receipt-group-{}-close.json", pred.group_id),
-        )?),
+    let pred_close_name = format!("receipt-group-{}-close.json", pred.group_id);
+    // A name another verifier already claimed is absent here, as in Go.
+    let pred_close_raw = if is_excluded_legacy_file(&pred_close_name) {
+        None
+    } else {
+        match fs::symlink_metadata(dir.join(&pred_close_name)) {
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+            Err(err) => return Err(format!("stat predecessor close: {err}")),
+            Ok(_) => Some(bounded_read(dir, &pred_close_name)?),
+        }
     };
     let close_hash = pred_close_raw
         .as_deref()
