@@ -186,14 +186,11 @@ func scanExplainEventWithSanitizer(r io.Reader, id string, sanitizer explainEven
 
 	const maxAuditLineBytes = 1 << 20
 	br := bufio.NewReaderSize(r, 64*1024)
+	requestMatched := false
 	for {
 		lineBytes, tooLong, err := readExplainEventAuditLine(br, maxAuditLineBytes)
-		if tooLong {
-			out.skippedLines++
-			if err != nil {
-				return out, err
-			}
-			continue
+		if tooLong && err == nil {
+			return out, fmt.Errorf("explain event cannot inspect an oversized line; for receipt evidence use 'pipelock verify-receipt <path>': %w", bufio.ErrTooLong)
 		}
 		if err != nil {
 			if errors.Is(err, io.EOF) {
@@ -203,6 +200,9 @@ func scanExplainEventWithSanitizer(r io.Reader, id string, sanitizer explainEven
 		}
 		if err := receiptinput.RefusePayload(lineBytes, "explain event", "the audit event reader"); err != nil {
 			return out, err
+		}
+		if requestMatched {
+			continue
 		}
 		line := strings.TrimSpace(string(lineBytes))
 		if line == "" {
@@ -216,7 +216,8 @@ func scanExplainEventWithSanitizer(r io.Reader, id string, sanitizer explainEven
 		if eventFieldString(raw, explainEventIDRequest) == id {
 			out.report = buildExplainEventReport(raw, id, explainEventIDRequest, sanitizer)
 			out.found = true
-			return out, nil
+			requestMatched = true
+			continue
 		}
 		matchedField := matchedExplainEventFallbackID(raw, id)
 		if matchedField == "" {
@@ -238,12 +239,6 @@ func readExplainEventAuditLine(r *bufio.Reader, maxBytes int) ([]byte, bool, err
 			if err != nil && !errors.Is(err, bufio.ErrBufferFull) && !errors.Is(err, io.EOF) {
 				return nil, true, fmt.Errorf("scan audit log: %w", err)
 			}
-			if err == nil || errors.Is(err, io.EOF) {
-				return nil, true, nil
-			}
-			if discardErr := discardExplainEventAuditLineRemainder(r); discardErr != nil {
-				return nil, true, discardErr
-			}
 			return nil, true, nil
 		}
 		line = append(line, frag...)
@@ -259,22 +254,6 @@ func readExplainEventAuditLine(r *bufio.Reader, maxBytes int) ([]byte, bool, err
 			return line, false, nil
 		default:
 			return nil, false, err
-		}
-	}
-}
-
-func discardExplainEventAuditLineRemainder(r *bufio.Reader) error {
-	for {
-		_, err := r.ReadSlice('\n')
-		switch {
-		case err == nil:
-			return nil
-		case errors.Is(err, bufio.ErrBufferFull):
-			continue
-		case errors.Is(err, io.EOF):
-			return nil
-		default:
-			return fmt.Errorf("scan audit log: %w", err)
 		}
 	}
 }

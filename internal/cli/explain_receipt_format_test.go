@@ -26,9 +26,11 @@ func TestExplainEventRefusesReceiptV3(t *testing.T) {
 	if err := os.WriteFile(mixed, content, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// Unmatched lookup scans past line 1 and must refuse line 2 as v3.
-	_, err = lookupExplainEvent(mixed, "req-missing", explainEventSanitizer{})
-	testreceipt.RequiresV3Refusal(t, err, "explain event", "the audit event reader")
+	// Both matched and unmatched lookups must refuse line 2 as v3.
+	for _, id := range []string{"req-1", "req-missing"} {
+		_, err = lookupExplainEvent(mixed, id, explainEventSanitizer{})
+		testreceipt.RequiresV3Refusal(t, err, "explain event", "the audit event reader")
+	}
 	// Leading blank line before v3 must also be refused.
 	leadingBlank := filepath.Join(t.TempDir(), "leading-blank.jsonl")
 	if err := os.WriteFile(leadingBlank, append([]byte("\n"), v3Bytes...), 0o600); err != nil {

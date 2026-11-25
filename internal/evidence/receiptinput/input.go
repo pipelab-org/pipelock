@@ -71,7 +71,7 @@ func RefusePayload(payload []byte, command, reader string) error {
 		} else {
 			remaining = nil
 		}
-		if evidencename.ClaimsReceiptContent(line) {
+		if err := evidencename.RefuseReceiptContent(line); err != nil {
 			return unsupported(command, reader, false)
 		}
 	}
