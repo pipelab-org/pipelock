@@ -430,3 +430,47 @@ def test_inventory_rows_reject_bad_identity_and_sequence():
     assert not _valid_row({**row, "seq": -1})
     assert not _valid_row({**row, "format": "receipt_group", "chain": digest(b"row")})
     assert not _valid_row({**row, "extra": "data"})
+
+
+def test_parse_line_rejects_trailing_comma_after_max_signatures(tmp_path):
+    from pipelock_aarp_verify.v3.wire import WireError, parse_line
+
+    fixture = VECTORS / "g08-pinned"
+    request = json.loads((fixture / "request.json").read_bytes())
+    original = (fixture / request["inputs"][0]).read_bytes()
+    lines = original.splitlines(keepends=True)
+    first = lines[0]
+    prefix = b'{"payloadType":"application/vnd.pipelock.receipt.v3+json","signatures":['
+    marker = b'],"payload":'
+    start = len(prefix)
+    end = first.index(marker)
+    signer_entry = first[start:end]
+    # Extract the 88-byte base64 signature from the existing entry and construct
+    # 4 distinct strictly sorted signature entries (LIMITS["signatures"] == 4).
+    sig_part = signer_entry.split(b'","sig":"', 1)[1][:-2]
+    signer_keyid = signer_entry[len(b'{"keyid":"') : len(b'{"keyid":"') + 71]
+    entries = {signer_keyid: signer_entry}
+    for byte in (b"0", b"1", b"2", b"3"):
+        if len(entries) == 4:
+            break
+        kid = b"sha256:" + byte * 64
+        if kid not in entries:
+            entries[kid] = b'{"keyid":"' + kid + b'","sig":"' + sig_part + b'"}'
+    four_sigs = b",".join(entries[k] for k in sorted(entries))
+    valid_four = prefix + four_sigs + first[end:]
+    trailing_comma = prefix + four_sigs + b"," + first[end:]
+
+    # 4 valid sorted signatures parse cleanly.
+    parse_line(valid_four)
+
+    # A trailing comma after the 4th signature must fail closed with LINE_LAYOUT.
+    with pytest.raises(WireError) as exc_info:
+        parse_line(trailing_comma)
+    assert str(exc_info.value) == "LINE_LAYOUT"
+
+    out = tmp_path / request["inputs"][0]
+    out.write_bytes(trailing_comma + b"".join(lines[1:]))
+    _, proj = verify_v3([out], _options(request))
+    assert proj["verdict"] == "INVALID"
+    assert proj["exit_code"] == 1
+    assert proj["finding_codes"] == ["LINE_LAYOUT"]

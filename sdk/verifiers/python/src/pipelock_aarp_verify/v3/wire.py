@@ -340,6 +340,8 @@ def parse_line(line: bytes) -> tuple[Record, bytes, bytes]:
         cursor = match.end()
         if not line.startswith(b",", cursor):
             break
+        if len(signatures) == LIMITS["signatures"]:
+            raise WireError("LINE_LAYOUT")
         cursor += 1
     if not line.startswith(PAYLOAD_PREFIX, cursor) or not line.endswith(SUFFIX):
         raise WireError("LINE_LAYOUT")
