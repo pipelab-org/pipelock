@@ -1,0 +1,674 @@
+// Copyright 2026 Pipelab
+// SPDX-License-Identifier: Apache-2.0
+
+package v3
+
+import (
+	"context"
+	"crypto/ed25519"
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
+)
+
+type controlledFlushFile struct {
+	StreamFile
+	writes   chan struct{}
+	syncs    chan chan error
+	closed   chan struct{}
+	stop     chan struct{}
+	writeErr error
+}
+
+func controlWriterFlushes(t *testing.T, w *StreamWriter) *controlledFlushFile {
+	t.Helper()
+	w.gate <- struct{}{}
+	f := &controlledFlushFile{
+		StreamFile: w.active.file,
+		writes:     make(chan struct{}, 32), syncs: make(chan chan error),
+		closed: make(chan struct{}), stop: make(chan struct{}),
+	}
+	w.active.file = f
+	w.release()
+	t.Cleanup(func() { close(f.stop) })
+	return f
+}
+
+func (f *controlledFlushFile) Write(data []byte) (int, error) {
+	if f.writeErr != nil {
+		return 0, f.writeErr
+	}
+	n, err := f.StreamFile.Write(data)
+	f.writes <- struct{}{}
+	return n, err
+}
+
+func (f *controlledFlushFile) Sync() error {
+	result := make(chan error, 1)
+	select {
+	case f.syncs <- result:
+		select {
+		case err := <-result:
+			if err != nil {
+				return err
+			}
+		case <-f.stop:
+		}
+	case <-f.stop:
+	}
+	return f.StreamFile.Sync()
+}
+
+func (f *controlledFlushFile) Close() error {
+	close(f.closed)
+	return f.StreamFile.Close()
+}
+
+func awaitFlushEvent[T any](t *testing.T, ch <-chan T) T {
+	t.Helper()
+	select {
+	case value := <-ch:
+		return value
+	case <-time.After(testwait.Deadline(5 * time.Second)):
+		t.Fatal("timed out waiting for receipt storage event")
+		var zero T
+		return zero
+	}
+}
+
+func requirePending[T any](t *testing.T, ch <-chan T) {
+	t.Helper()
+	select {
+	case value := <-ch:
+		t.Fatalf("receipt operation completed early: %v", value)
+	default:
+	}
+}
+
+func asyncWriterResult(run func() error) <-chan error {
+	result := make(chan error, 1)
+	go func() { result <- run() }()
+	return result
+}
+
+func appendTestIntent(t *testing.T, w *StreamWriter, f *controlledFlushFile, ctx context.Context, id string) <-chan error {
+	t.Helper()
+	result := asyncWriterResult(func() error { return w.WriteAction(ctx, writerTestIntent(id), PolicySnapshot{}) })
+	awaitFlushEvent(t, f.writes)
+	return result
+}
+
+func TestSharedFlushConfirmsCapturedPrefix(t *testing.T) {
+	w := requireWriter(t, writerTestOptions(t.TempDir()), localWriterStorage())
+	f := controlWriterFlushes(t, w)
+	first := appendTestIntent(t, w, f, t.Context(), "first")
+	syncFirst := awaitFlushEvent(t, f.syncs)
+	second := appendTestIntent(t, w, f, t.Context(), "second")
+	batch := asyncWriterResult(func() error {
+		return w.WriteAdmissionBatch(t.Context(), []Action{writerTestIntent("batch-first"), writerTestIntent("batch-second")}, PolicySnapshot{})
+	})
+	awaitFlushEvent(t, f.writes)
+	w.gate <- struct{}{}
+	queued := len(w.pending)
+	batchEnd := w.pending[queued-1].tip.Seq
+	w.release()
+	if queued != 3 || batchEnd != 4 {
+		t.Fatalf("batch reservation: %d tickets through %d", queued, batchEnd)
+	}
+	requirePending(t, first)
+	requirePending(t, second)
+	requirePending(t, batch)
+	syncFirst <- nil
+	syncShared := awaitFlushEvent(t, f.syncs)
+	if err := awaitFlushEvent(t, first); err != nil {
+		t.Fatal(err)
+	}
+	requirePending(t, second)
+	requirePending(t, batch)
+	syncShared <- nil
+	if err := errors.Join(awaitFlushEvent(t, second), awaitFlushEvent(t, batch)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSharedFlushCancelsTwoTicketsBeforeReleasingNext(t *testing.T) {
+	opts := writerTestOptions(t.TempDir())
+	w := requireWriter(t, opts, localWriterStorage())
+	f := controlWriterFlushes(t, w)
+	first := appendTestIntent(t, w, f, t.Context(), "preceding")
+	syncFirst := awaitFlushEvent(t, f.syncs)
+	ctx1, cancel1 := context.WithCancel(t.Context())
+	defer cancel1()
+	ctx2, cancel2 := context.WithCancel(t.Context())
+	defer cancel2()
+	request1 := appendTestIntent(t, w, f, ctx1, "cancel-one")
+	request2 := appendTestIntent(t, w, f, ctx2, "cancel-two")
+	last := appendTestIntent(t, w, f, t.Context(), "after-cancellation")
+	syncFirst <- nil
+	syncShared := awaitFlushEvent(t, f.syncs)
+	cancel1()
+	cancel2()
+	syncShared <- nil
+	if err := awaitFlushEvent(t, first); err != nil {
+		t.Fatal(err)
+	}
+	repair1 := awaitFlushEvent(t, f.syncs)
+	requirePending(t, request1)
+	requirePending(t, request2)
+	requirePending(t, last)
+	repair1 <- nil
+	repair2 := awaitFlushEvent(t, f.syncs)
+	requirePending(t, request2)
+	requirePending(t, last)
+	repair2 <- nil
+	for _, request := range []<-chan error{request1, request2} {
+		if err := awaitFlushEvent(t, request); !errors.Is(err, context.Canceled) || !errors.Is(err, ErrEffectNotReleased) {
+			t.Fatalf("cancelled admission = %v, want confirmed refusal", err)
+		}
+	}
+	if err := awaitFlushEvent(t, last); err != nil {
+		t.Fatal(err)
+	}
+	verified := verifyWritten(t, opts.Dir, opts.SigningKey.Public().(ed25519.PublicKey))
+	if got := writerTestCount(t, verified, outcomeNotReleased); got != 2 {
+		t.Fatalf("verified refusals = %d, want 2", got)
+	}
+}
+
+func TestSharedFlushIgnoresRetiredSync(t *testing.T) {
+	fault := errors.New("injected append fault")
+	staleFault := errors.New("injected stale sync fault")
+	for _, tc := range []struct {
+		name    string
+		syncErr error
+	}{{"success", nil}, {"failure", staleFault}} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := writerTestOptions(t.TempDir())
+			reported := make(chan error, 2)
+			opts.OnDelayedSyncError = func(err error) { reported <- err }
+			w := requireWriter(t, opts, localWriterStorage())
+			f := controlWriterFlushes(t, w)
+			openTip := w.active.confirmed
+			stream := w.active.id
+			first := appendTestIntent(t, w, f, t.Context(), "in-flight")
+			stale := awaitFlushEvent(t, f.syncs)
+			w.gate <- struct{}{}
+			f.writeErr = fault
+			w.release()
+			second := asyncWriterResult(func() error {
+				return w.WriteAction(t.Context(), writerTestIntent("torn"), PolicySnapshot{})
+			})
+			ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(5*time.Second))
+			defer cancel()
+			for {
+				if err := w.acquire(ctx); err != nil {
+					t.Fatal("append did not retire stream during Sync")
+				}
+				retired := w.active.file == nil
+				w.release()
+				if retired {
+					break
+				}
+			}
+			requirePending(t, f.closed)
+			requirePending(t, first)
+			stale <- tc.syncErr
+			for _, request := range []<-chan error{first, second} {
+				err := awaitFlushEvent(t, request)
+				if !errors.Is(err, fault) || errors.Is(err, staleFault) || !errors.Is(err, ErrEffectNotReleased) {
+					t.Fatalf("failed admission = %v, want append error and settled refusal", err)
+				}
+			}
+			awaitFlushEvent(t, f.closed)
+			requirePending(t, reported)
+			if w.durability.FsyncErrorsGated != 1 {
+				t.Fatalf("durability failures = %d, want 1", w.durability.FsyncErrorsGated)
+			}
+			verified := verifyWritten(t, opts.Dir, opts.SigningKey.Public().(ed25519.PublicKey))
+			for _, prior := range verified.Histories[0].Streams {
+				if prior.Stream == stream && prior.Tip != nil && *prior.Tip == openTip {
+					return
+				}
+			}
+			t.Fatal("successor did not pin the original confirmed tip")
+		})
+	}
+}
+
+func TestSharedFlushErrorFanoutAndLaterFailure(t *testing.T) {
+	opts := writerTestOptions(t.TempDir())
+	w := requireWriter(t, opts, localWriterStorage())
+	policy := PolicySnapshot{}
+	if err := w.WriteAction(t.Context(), writerTestIntent("confirmed"), policy); err != nil {
+		t.Fatal(err)
+	}
+	f := controlWriterFlushes(t, w)
+	first := appendTestIntent(t, w, f, t.Context(), "failed-prefix")
+	result := awaitFlushEvent(t, f.syncs)
+	tail := appendTestIntent(t, w, f, t.Context(), "failed-tail")
+	fault := errors.New("injected shared sync fault")
+	result <- fault
+	for _, request := range []<-chan error{first, tail} {
+		err := awaitFlushEvent(t, request)
+		if !errors.Is(err, fault) || !errors.Is(err, ErrActionVisible) || !errors.Is(err, ErrEffectNotReleased) {
+			t.Fatalf("failed group disposition: %v", err)
+		}
+	}
+	w.gate <- struct{}{}
+	w.active.file = errorWriterFile{StreamFile: w.active.file, syncErr: fault}
+	w.release()
+	if err := w.WriteAction(t.Context(), writerTestIntent("later-failure"), policy); !errors.Is(err, ErrEffectNotReleased) {
+		t.Fatalf("later failed flush disposition: %v", err)
+	}
+	verified := verifyWritten(t, opts.Dir, opts.SigningKey.Public().(ed25519.PublicKey))
+	if writerTestCount(t, verified, outcomeNotReleased) != 3 || writerTestCount(t, verified, "outcome_unknown") != 1 {
+		t.Fatalf("failed group damaged a prior confirmation or lost repair: %+v", verified.Counts)
+	}
+}
+
+func TestSharedFlushDrainsBeforePublishingSegment(t *testing.T) {
+	opts := writerTestOptions(t.TempDir())
+	longDelay := time.Hour
+	opts.idleFlushDelay = &longDelay
+	w := requireWriter(t, opts, localWriterStorage())
+	gate := NewEffectGate(w)
+	token, err := gate.Admit(t.Context(), writerTestIntent("observed"), PolicySnapshot{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := controlWriterFlushes(t, w)
+	first := appendTestIntent(t, w, f, t.Context(), "before-outcome")
+	syncFirst := awaitFlushEvent(t, f.syncs)
+	if err := token.ConfirmDelivery(t.Context(), func() (bool, error) { return true, nil }); err != nil {
+		t.Fatal(err)
+	}
+	awaitFlushEvent(t, f.writes)
+	linked := make(chan struct{}, 1)
+	w.gate <- struct{}{}
+	w.fileBytes = w.active.bytes + maxLineBytes
+	linkFile := w.storage.link
+	w.storage.link = func(oldName, newName string) error {
+		linked <- struct{}{}
+		return linkFile(oldName, newName)
+	}
+	w.release()
+	next := asyncWriterResult(func() error { return w.WriteAction(t.Context(), writerTestIntent("next-segment"), PolicySnapshot{}) })
+	requirePending(t, linked)
+	syncFirst <- nil
+	if err := awaitFlushEvent(t, first); err != nil {
+		t.Fatal(err)
+	}
+	syncOutcome := awaitFlushEvent(t, f.syncs)
+	requirePending(t, linked)
+	requirePending(t, next)
+	syncOutcome <- nil
+	awaitFlushEvent(t, linked)
+	if err := awaitFlushEvent(t, next); err != nil {
+		t.Fatal(err)
+	}
+	verified := verifyWritten(t, opts.Dir, opts.SigningKey.Public().(ed25519.PublicKey))
+	if got := writerTestCount(t, verified, "completed"); got != 1 {
+		t.Fatalf("verified outcomes = %d, want 1", got)
+	}
+}
+
+func TestCloseUnsealedBoundsWaitAndRetainsLock(t *testing.T) {
+	opts := writerTestOptions(t.TempDir())
+	w := requireWriter(t, opts, localWriterStorage())
+	f := controlWriterFlushes(t, w)
+	request := appendTestIntent(t, w, f, t.Context(), "in-flight")
+	flush := awaitFlushEvent(t, f.syncs)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := w.CloseUnsealed(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("bounded close = %v, want cancelled", err)
+	}
+	bounded := asyncWriterResult(func() error { return w.CloseUnsealed(context.Background()) })
+	select {
+	case err := <-bounded:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("writer-owned drain limit = %v, want deadline", err)
+		}
+	case <-time.After(testwait.Deadline(8 * time.Second)):
+		t.Fatal("writer-owned drain limit did not bound close")
+	}
+	requirePending(t, f.closed)
+	if second, err := OpenStreamWriter(t.Context(), opts); err == nil {
+		_ = second.Close(t.Context(), nil)
+		t.Fatal("directory lock was released with Sync in flight")
+	}
+	flush <- nil
+	if err := errors.Join(awaitFlushEvent(t, request), w.CloseUnsealed(t.Context())); err != nil {
+		t.Fatal(err)
+	}
+	awaitFlushEvent(t, f.closed)
+	verified := verifyWritten(t, opts.Dir, opts.SigningKey.Public().(ed25519.PublicKey))
+	if got := verified.Histories[0].Streams[0].End; got != "open" {
+		t.Fatalf("closed without seal: got %s", got)
+	}
+}
+
+func TestObservedOutcomeFlushWithHeartbeatDisabled(t *testing.T) {
+	fault := errors.New("injected delayed sync fault")
+	for _, failedSuccessor := range []bool{false, true} {
+		t.Run(map[bool]string{false: "recoverable", true: "fatal"}[failedSuccessor], func(t *testing.T) {
+			opts := writerTestOptions(t.TempDir())
+			fast := time.Nanosecond
+			opts.idleFlushDelay = &fast
+			delayed := make(chan error, 2)
+			fatal := make(chan error, 2)
+			opts.OnDelayedSyncError = func(err error) { delayed <- err }
+			opts.OnFatalError = func(err error) { fatal <- err }
+			w := requireWriter(t, opts, localWriterStorage())
+			gate := NewEffectGate(w)
+			token, err := gate.Admit(t.Context(), writerTestIntent("observed"), PolicySnapshot{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			f := controlWriterFlushes(t, w)
+			if failedSuccessor {
+				w.gate <- struct{}{}
+				w.storage.createTemp = func(string, string) (StreamFile, error) { return nil, fault }
+				w.release()
+			}
+			observed := asyncWriterResult(func() error {
+				return token.ConfirmDelivery(t.Context(), func() (bool, error) { return true, nil })
+			})
+			if err := awaitFlushEvent(t, observed); err != nil {
+				t.Fatal(err)
+			}
+			syncOutcome := awaitFlushEvent(t, f.syncs)
+			syncOutcome <- fault
+			if err := awaitFlushEvent(t, delayed); !errors.Is(err, fault) {
+				t.Fatalf("delayed error = %v", err)
+			}
+			err = w.WriteHeartbeat(t.Context())
+			if failedSuccessor {
+				if fatalErr := awaitFlushEvent(t, fatal); !errors.Is(fatalErr, fault) || !errors.Is(err, ErrWriterUnavailable) {
+					t.Fatalf("fatal callback = %v, subsequent write = %v", fatalErr, err)
+				}
+			} else {
+				if err != nil {
+					t.Fatal(err)
+				}
+				requirePending(t, fatal)
+				verified := verifyWritten(t, opts.Dir, opts.SigningKey.Public().(ed25519.PublicKey))
+				if got := writerTestCount(t, verified, "completed"); got != 1 {
+					t.Fatalf("verified repaired outcomes = %d, want 1", got)
+				}
+			}
+			requirePending(t, delayed)
+		})
+	}
+}
+
+func TestOptionalGroupFailureWithholdsOnlyStartedAdmissions(t *testing.T) {
+	for _, operation := range []string{"single", "batch", "local-denial"} {
+		t.Run(operation, func(t *testing.T) {
+			opts := writerTestOptions(t.TempDir())
+			opts.Coverage.ReceiptsRequired = false
+			w := requireWriter(t, opts, localWriterStorage())
+			fault := errors.New("injected unavailable storage")
+			w.gate <- struct{}{}
+			w.active.file = errorWriterFile{StreamFile: w.active.file, syncErr: fault}
+			w.storage.createTemp = func(string, string) (StreamFile, error) { return nil, fault }
+			w.release()
+			gate := NewEffectGate(w)
+			action := writerTestIntent("intent")
+			switch operation {
+			case "single":
+				_, err := gate.Admit(t.Context(), action, PolicySnapshot{})
+				if !errors.Is(err, ErrActionPersistStarted) || errors.Is(err, ErrEffectNotReleased) {
+					t.Fatalf("admission after failed recovery = %v", err)
+				}
+			case "batch":
+				_, err := gate.AdmitBatch(t.Context(), []Action{action, writerTestIntent("support")}, PolicySnapshot{})
+				if !errors.Is(err, ErrActionPersistStarted) || errors.Is(err, ErrEffectNotReleased) {
+					t.Fatalf("batch admission after failed recovery = %v", err)
+				}
+			case "local-denial":
+				if _, err := gate.AdmitDenialDelivery(t.Context(), action, PolicySnapshot{}); err != nil || len(w.repairs) != 0 {
+					t.Fatalf("local denial withheld or repaired: %v, %d repairs", err, len(w.repairs))
+				}
+			}
+		})
+	}
+}
+
+func TestSharedFlushRefusalAndCloseStaySynchronous(t *testing.T) {
+	opts := writerTestOptions(t.TempDir())
+	longDelay := time.Hour
+	opts.idleFlushDelay = &longDelay
+	w := requireWriter(t, opts, localWriterStorage())
+	gate := NewEffectGate(w)
+	observed, err := gate.Admit(t.Context(), writerTestIntent("observed"), PolicySnapshot{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	refused, err := gate.Admit(t.Context(), writerTestIntent("refused"), PolicySnapshot{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := controlWriterFlushes(t, w)
+	refusal := asyncWriterResult(func() error { return refused.Refuse(t.Context()) })
+	retain := awaitFlushEvent(t, f.syncs)
+	requirePending(t, refusal)
+	retain <- nil
+	if err := awaitFlushEvent(t, refusal); err != nil {
+		t.Fatal(err)
+	}
+	if err := observed.ConfirmDelivery(t.Context(), func() (bool, error) { return true, nil }); err != nil {
+		t.Fatal(err)
+	}
+	w.gate <- struct{}{}
+	before := w.active.confirmed.Seq
+	w.release()
+	closing := asyncWriterResult(func() error { return w.Close(t.Context(), nil) })
+	seal := awaitFlushEvent(t, f.syncs)
+	w.gate <- struct{}{}
+	gap := w.active.appended.Seq - before
+	w.release()
+	if gap != 2 {
+		t.Fatalf("seal did not share an outcome flush: %d appended records", gap)
+	}
+	requirePending(t, closing)
+	seal <- nil
+	if err := awaitFlushEvent(t, closing); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSharedFlushCloseReplaysObservedOutcomeBeforeUnlock(t *testing.T) {
+	opts := writerTestOptions(t.TempDir())
+	longDelay := time.Hour
+	opts.idleFlushDelay = &longDelay
+	w := requireWriter(t, opts, localWriterStorage())
+	token, err := NewEffectGate(w).Admit(t.Context(), writerTestIntent("observed-before-close"), PolicySnapshot{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fault := errors.New("injected seal sync failure")
+	w.gate <- struct{}{}
+	w.active.file = errorWriterFile{StreamFile: w.active.file, syncErr: fault}
+	w.release()
+	if err := token.ConfirmDelivery(t.Context(), func() (bool, error) { return true, nil }); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(t.Context(), nil); !errors.Is(err, fault) {
+		t.Fatalf("close error = %v, want %v", err, fault)
+	}
+	verified := verifyWritten(t, opts.Dir, opts.SigningKey.Public().(ed25519.PublicKey))
+	if got := writerTestCount(t, verified, "completed"); got != 1 {
+		t.Fatalf("verified repaired outcomes after close = %d, want 1", got)
+	}
+}
+
+func TestSharedFlushReplaysOnlyOneCopyOfIdenticalObligation(t *testing.T) {
+	opts := writerTestOptions(t.TempDir())
+	w := requireWriter(t, opts, localWriterStorage())
+	f := controlWriterFlushes(t, w)
+	first := appendTestIntent(t, w, f, t.Context(), "same")
+	flush := awaitFlushEvent(t, f.syncs)
+	second := appendTestIntent(t, w, f, t.Context(), "same")
+	flush <- errors.New("injected duplicate append group failure")
+	for _, request := range []<-chan error{first, second} {
+		if err := awaitFlushEvent(t, request); !errors.Is(err, ErrEffectNotReleased) {
+			t.Fatalf("shared obligation did not settle: %v", err)
+		}
+	}
+	actions := readRecoveryActions(t, opts.Dir, w.active.id)
+	if len(actions) != 1 || actions[0].OutcomeClass != outcomeNotReleased {
+		t.Fatalf("copied obligations = %+v, want 1 refusal", actions)
+	}
+}
+
+func TestIdleFlushUsesOldestObservedOutcome(t *testing.T) {
+	opts := writerTestOptions(t.TempDir())
+	longDelay := time.Hour
+	opts.idleFlushDelay = &longDelay
+	w := requireWriter(t, opts, localWriterStorage())
+	gate := NewEffectGate(w)
+	first, err := gate.Admit(t.Context(), writerTestIntent("oldest"), PolicySnapshot{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	last, err := gate.Admit(t.Context(), writerTestIntent("newest"), PolicySnapshot{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := controlWriterFlushes(t, w)
+	observed := func() (bool, error) { return true, nil }
+	if err := errors.Join(first.ConfirmDelivery(t.Context(), observed), last.ConfirmDelivery(t.Context(), observed)); err != nil {
+		t.Fatal(err)
+	}
+	w.gate <- struct{}{}
+	w.pending[0].observedAt = time.Now().Add(-2 * longDelay)
+	w.wakeFlush()
+	w.release()
+	result := awaitFlushEvent(t, f.syncs)
+	result <- nil
+	if err := w.CloseUnsealed(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	verified := verifyWritten(t, opts.Dir, opts.SigningKey.Public().(ed25519.PublicKey))
+	if got := writerTestCount(t, verified, "completed"); got != 2 {
+		t.Fatalf("idle flush confirmed %d outcomes, want 2", got)
+	}
+}
+
+func TestSharedFlushRetainsRepairsAcrossFailedSuccessor(t *testing.T) {
+	opts := writerTestOptions(t.TempDir())
+	fault := errors.New("injected sync fault")
+	storage := localWriterStorage()
+	create := storage.createTemp
+	files := 0
+	storage.createTemp = func(dir, pattern string) (StreamFile, error) {
+		file, err := create(dir, pattern)
+		files++
+		if err != nil || files != 2 {
+			return file, err
+		}
+		return &failRepairSyncFile{StreamFile: file, fault: fault}, nil
+	}
+	w := requireWriter(t, opts, storage)
+	f := controlWriterFlushes(t, w)
+	first := appendTestIntent(t, w, f, t.Context(), "first-repair")
+	flush := awaitFlushEvent(t, f.syncs)
+	last := appendTestIntent(t, w, f, t.Context(), "last-repair")
+	flush <- fault
+	for _, request := range []<-chan error{first, last} {
+		if err := awaitFlushEvent(t, request); !errors.Is(err, ErrEffectNotReleased) {
+			t.Fatalf("unsettled request: %v", err)
+		}
+	}
+	verified := verifyWritten(t, opts.Dir, opts.SigningKey.Public().(ed25519.PublicKey))
+	if count := len(verified.Histories[0].Streams); count != 3 {
+		t.Fatalf("stream count after two faults: %d, want 3", count)
+	}
+	if got := writerTestCount(t, verified, outcomeNotReleased); got != 2 {
+		t.Fatalf("verified refusals after two faults: %d, want 2", got)
+	}
+}
+
+type failRepairSyncFile struct {
+	StreamFile
+	fault  error
+	opened bool
+}
+
+func (f *failRepairSyncFile) Sync() error {
+	if f.opened {
+		return f.fault
+	}
+	f.opened = true
+	return f.StreamFile.Sync()
+}
+
+func TestSharedFlushHeartbeatAndRollover(t *testing.T) {
+	opts := writerTestOptions(t.TempDir())
+	longDelay := time.Hour
+	opts.idleFlushDelay = &longDelay
+	w := requireWriter(t, opts, localWriterStorage())
+	gate := NewEffectGate(w)
+	observed, err := gate.Admit(t.Context(), writerTestIntent("before-heartbeat"), PolicySnapshot{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inFlight, err := gate.Admit(t.Context(), writerTestIntent("across-rollover"), PolicySnapshot{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := controlWriterFlushes(t, w)
+	observedEffect := func() (bool, error) { return true, nil }
+	if err := observed.ConfirmDelivery(t.Context(), observedEffect); err != nil {
+		t.Fatal(err)
+	}
+	awaitFlushEvent(t, f.writes)
+	firstBeat := asyncWriterResult(func() error { return w.WriteHeartbeat(t.Context()) })
+	awaitFlushEvent(t, f.writes)
+	firstSync := awaitFlushEvent(t, f.syncs)
+	secondBeat := asyncWriterResult(func() error { return w.WriteHeartbeat(t.Context()) })
+	awaitFlushEvent(t, f.writes)
+	done := asyncWriterResult(func() error { return w.Rollover(t.Context()) })
+	requirePending(t, firstBeat)
+	requirePending(t, secondBeat)
+	firstSync <- nil
+	secondSync := awaitFlushEvent(t, f.syncs)
+	if err := awaitFlushEvent(t, firstBeat); err != nil {
+		t.Fatal(err)
+	}
+	w.gate <- struct{}{}
+	confirmed := w.active.confirmed.Seq
+	w.release()
+	if confirmed != 4 {
+		t.Fatalf("first heartbeat confirmed through %d, want intent, intent, outcome, heartbeat", confirmed)
+	}
+	requirePending(t, secondBeat)
+	requirePending(t, done)
+	secondSync <- nil
+	seal := awaitFlushEvent(t, f.syncs)
+	if err := awaitFlushEvent(t, secondBeat); err != nil {
+		t.Fatal(err)
+	}
+	requirePending(t, done)
+	seal <- nil
+	if err := awaitFlushEvent(t, done); err != nil {
+		t.Fatal(err)
+	}
+	if err := inFlight.ConfirmDelivery(t.Context(), observedEffect); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	verified := verifyWritten(t, opts.Dir, opts.SigningKey.Public().(ed25519.PublicKey))
+	if got := writerTestCount(t, verified, "completed"); got != 2 {
+		t.Fatalf("verified observations = %d, want 2", got)
+	}
+	streams := verified.Histories[0].Streams
+	if len(streams) != 2 || streams[0].End != endedClosed || streams[1].End != endedClosed {
+		t.Fatalf("rollover did not link two sealed streams: %+v", streams)
+	}
+}

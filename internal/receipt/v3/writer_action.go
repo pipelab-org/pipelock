@@ -48,10 +48,10 @@ var ErrActionVisible = errors.New("receipt action visible before durability fail
 // return is the receipt barrier for an intent or a hold. Callers still own
 // the effect and report its observation as a separate phase.
 func (w *StreamWriter) WriteAction(ctx context.Context, action Action, policy PolicySnapshot) error {
-	return w.writeAction(ctx, action, policy, false)
+	return w.writeAction(ctx, action, policy, writeConfirmed)
 }
 
-func (w *StreamWriter) writeAction(ctx context.Context, action Action, policy PolicySnapshot, bestEffort bool) error {
+func (w *StreamWriter) writeAction(ctx context.Context, action Action, policy PolicySnapshot, mode actionWriteMode) error {
 	if w == nil {
 		return errors.New("receipt writer is unavailable")
 	}
@@ -63,59 +63,31 @@ func (w *StreamWriter) writeAction(ctx context.Context, action Action, policy Po
 	if !actionShape(action, w.open.Coverage.ReceiptsRequired) {
 		return errors.New("receipt action does not match its effect phase")
 	}
+	if err := w.prepareAppend(ctx); err != nil {
+		return err
+	}
 	if action.Phase == phaseResolution {
 		hold, ok := w.holds[action.ActionID]
 		if !ok || hold != action.Hold.ID {
 			return errors.New("receipt resolution requires a matching active hold")
 		}
 	}
-	if err := w.prepareAppend(ctx); err != nil {
+	pendingAction := action
+	if mode == writeObserved {
+		// The caller may reuse its data as soon as the observation is
+		// acknowledged. Retain only the fields needed by repair.
+		pendingAction = minimalRepairAction(action)
+		attempt := *action.Attempt
+		pendingAction.Attempt = &attempt
+	}
+	ticket := newWriteTicket(ctx, []Action{pendingAction}, mode)
+	if err := w.appendRecord(ctx, kindAction, action, ticket); err != nil {
 		return err
 	}
-	if bestEffort {
-		// A live optional denial may still be delivered after a failed append.
-		// Leave any unconfirmed intent as a gap instead of recording a refusal.
-		_, err := w.appendRecord(ctx, kindAction, action)
-		if err != nil {
-			return w.tryContinueAfterWriteError(ctx, err)
-		}
+	if mode == writeObserved {
 		return nil
 	}
-	started, err := w.appendAction(ctx, action)
-	if started && err != nil {
-		err = errors.Join(ErrActionPersistStarted, err)
-	}
-	return err
-}
-
-func (w *StreamWriter) appendAction(ctx context.Context, action Action) (persistStarted bool, err error) {
-	persistStarted, err = w.appendRecord(ctx, kindAction, action)
-	if err != nil {
-		if persistStarted {
-			withheld := w.queueActionRepair(action, false)
-			visible := errors.Is(err, errRecordVisible)
-			err = w.tryContinueAfterWriteError(ctx, err)
-			if visible {
-				err = errors.Join(ErrActionVisible, err)
-			}
-			return true, w.withheldAction(err, action, withheld)
-		}
-		return false, err
-	}
-	w.confirmAction(action)
-	if err := ctx.Err(); err != nil && actionGatesEffect(action) {
-		withheld := w.queueActionRepair(action, true)
-		return true, w.withheldAction(errors.Join(err, w.settleActionRepairs(ctx)), action, withheld)
-	}
-	return true, nil
-}
-
-func (w *StreamWriter) withheldAction(err error, action Action, withheld bool) error {
-	withheld = withheld && len(w.repairs) == 0
-	if withheld && action.Phase == phaseResolution {
-		err = errors.Join(ErrHoldBlockRecorded, err)
-	}
-	return withheldEffect(err, withheld)
+	return w.waitTicket(ticket)
 }
 
 // WriteAdmissionBatch reserves consecutive positions for the intents and
@@ -133,6 +105,7 @@ func (w *StreamWriter) WriteAdmissionBatch(ctx context.Context, actions []Action
 	defer w.release()
 
 	seen := make(map[string]struct{}, len(actions))
+	batch := make([]Action, 0, len(actions))
 	for _, action := range actions {
 		if action.Phase != phaseIntent || !actionShape(action, w.open.Coverage.ReceiptsRequired) {
 			return errors.New("receipt batch requires admission actions")
@@ -141,57 +114,55 @@ func (w *StreamWriter) WriteAdmissionBatch(ctx context.Context, actions []Action
 			return errors.New("receipt batch repeats an action ID")
 		}
 		seen[action.ActionID] = struct{}{}
+		action.Policy = policy.ActionPolicy()
+		batch = append(batch, action)
 	}
 	if err := w.prepareAppend(ctx); err != nil {
 		return err
 	}
-	if int64(len(actions)) > maxInteger-2-w.active.confirmed.Seq {
-		if err := w.rollover(ctx); err != nil {
-			return err
-		}
-	}
-	first := w.active.confirmed.Seq + 1
-	tip := w.active.confirmed
-	var batch []byte
-	for _, action := range actions {
-		action.Policy = policy.ActionPolicy()
-		tip.Seq++
-		line, pos, err := w.encode(ctx, w.common(kindAction, w.active.id, tip.Record, tip.Seq), action)
-		if err != nil {
-			return err
-		}
-		if len(line) > w.fileBytes-maxLineBytes-len(batch) {
-			return errors.New("receipt admission batch exceeds the segment limit")
-		}
-		batch = append(batch, line...)
-		tip.Record = pos
-	}
-	if err := ctx.Err(); err != nil {
+	ticket := newWriteTicket(ctx, batch, writeConfirmed)
+	if err := w.appendBatch(ctx, ticket); err != nil {
 		return err
 	}
-	if err := w.persist(kindAction, batch, first); err != nil {
-		w.durability.FsyncErrorsGated++
-		w.retire(endedWriteError)
-		for _, action := range actions {
-			action.Policy = policy.ActionPolicy()
-			w.queueActionRepair(action, false)
+	return w.waitTicket(ticket)
+}
+
+func (w *StreamWriter) appendBatch(ctx context.Context, ticket *writeTicket) error {
+	for {
+		before := w.active.appended
+		if int64(len(ticket.actions)) > maxInteger-2-before.Seq {
+			if err := w.rollover(ctx); err != nil {
+				return err
+			}
+			before = w.active.appended
 		}
-		err = w.tryContinueAfterWriteError(ctx, err)
-		return withheldEffect(err, len(w.repairs) == 0)
-	}
-	w.active.confirmed = tip
-	for _, action := range actions {
-		w.confirmAction(action)
-	}
-	if err := ctx.Err(); err != nil {
-		for _, action := range actions {
-			action.Policy = policy.ActionPolicy()
-			w.queueActionRepair(action, true)
+		tip := before
+		var batch []byte
+		for _, action := range ticket.actions {
+			tip.Seq++
+			line, pos, err := w.encode(ctx, w.common(kindAction, w.active.id, tip.Record, tip.Seq), action)
+			if err != nil {
+				return err
+			}
+			if len(line) > w.fileBytes-maxLineBytes-len(batch) {
+				return errors.New("receipt admission batch exceeds the segment limit")
+			}
+			batch = append(batch, line...)
+			tip.Record = pos
 		}
-		repairErr := w.settleActionRepairs(ctx)
-		return withheldEffect(errors.Join(err, repairErr), repairErr == nil)
+		if w.needsSegment(kindAction, len(batch)) && before != w.active.confirmed {
+			if err := w.drainSegment(ctx); err != nil {
+				return err
+			}
+			if before != w.active.appended {
+				continue
+			}
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return w.appendLines(kindAction, batch, before.Seq+1, tip, ticket)
 	}
-	return nil
 }
 
 func (w *StreamWriter) confirmAction(action Action) {
@@ -219,8 +190,23 @@ func actionGatesEffect(action Action) bool {
 		action.Phase == phaseResolution && action.Verdict == verdictAllow
 }
 
-// queueActionRepair reports whether the repair says the effect was not released.
-func (w *StreamWriter) queueActionRepair(action Action, confirmed bool) bool {
+type repairKey struct {
+	action, phase, hold, outcome, verdict, relation, boundary string
+	attempt                                                   int64
+	correction                                                bool
+}
+
+func (w *StreamWriter) addTicketRepair(ticket *writeTicket, action Action, confirmed bool) {
+	key, queued := w.queueActionRepair(action, confirmed)
+	if queued {
+		ticket.obligations = append(ticket.obligations, key)
+		ticket.withheld = ticket.withheld || actionGatesEffect(action) ||
+			action.Phase == phaseResolution && action.Verdict == verdictBlock ||
+			action.Phase == phaseOutcome && action.OutcomeClass == outcomeNotReleased
+	}
+}
+
+func (w *StreamWriter) queueActionRepair(action Action, confirmed bool) (repairKey, bool) {
 	if !confirmed && actionGatesEffect(action) && w.open.Coverage.ReceiptsRequired {
 		w.durability.DurabilityBlocks++
 	}
@@ -241,32 +227,43 @@ func (w *StreamWriter) queueActionRepair(action Action, confirmed bool) bool {
 			action.EffectRelation = relationNotAttempted
 		}
 	case phaseResolution:
-		if action.Verdict != verdictAllow {
-			// A correcting block supersedes an already confirmed allow.
-			// Preserve it across successor streams even though it cannot
-			// grant authority for an effect.
-			if action.Hold.Correction != nil && *action.Hold.Correction {
-				w.repairs = append(w.repairs, action)
-				return true
+		if action.Verdict == verdictAllow {
+			source := "durability_failure"
+			if confirmed {
+				source = "request_cancelled"
 			}
-			return false
+			action = blockingHoldResolution(action, source, relationAfter, confirmed)
 		}
-		source := "durability_failure"
-		if confirmed {
-			source = "request_cancelled"
-		}
-		action = blockingHoldResolution(action, source, relationAfter, confirmed)
 	case phaseOutcome:
-		if confirmed {
-			return false
-		}
-		w.repairs = append(w.repairs, minimalRepairAction(action))
-		return action.OutcomeClass == outcomeNotReleased
+		action = minimalRepairAction(action)
 	default:
-		return false
+		return repairKey{}, false
 	}
-	w.repairs = append(w.repairs, action)
-	return true
+	return w.enqueueRepair(action), true
+}
+
+func actionRepairKey(action Action) repairKey {
+	key := repairKey{
+		action: action.ActionID, phase: action.Phase, outcome: action.OutcomeClass,
+		verdict: action.Verdict, relation: action.EffectRelation, boundary: action.EffectBoundary,
+	}
+	if action.Hold != nil {
+		key.hold = action.Hold.ID
+		key.correction = action.Hold.Correction != nil && *action.Hold.Correction
+	}
+	if action.Attempt != nil {
+		key.attempt = *action.Attempt
+	}
+	return key
+}
+
+func (w *StreamWriter) enqueueRepair(action Action) repairKey {
+	key := actionRepairKey(action)
+	if _, pending := w.repairKeys[key]; !pending {
+		w.repairKeys[key] = struct{}{}
+		w.repairs = append(w.repairs, action)
+	}
+	return key
 }
 
 // Keep required wire members and identities used by lifecycle appraisal.
@@ -314,20 +311,27 @@ func blockingHoldResolution(action Action, source, relation string, correction b
 // Give each repair one retry on a new successor before requiring recovery.
 func (w *StreamWriter) replayActionRepairs(ctx context.Context, retryWriteErrors bool) error {
 	retried := false
-	for len(w.repairs) != 0 {
-		if err := w.ensureAppendSpace(ctx); err != nil {
+	for w.failed() || len(w.repairs) != 0 {
+		if err := w.ensureStream(ctx); err != nil {
 			return err
 		}
+		if len(w.repairs) == 0 {
+			break
+		}
 		action := w.repairs[0]
-		err := w.commit(ctx, kindAction, action)
+		err := w.appendRecord(ctx, kindAction, action, nil)
+		if err == nil && w.active.appended != w.active.confirmed {
+			err = w.flushActive()
+		}
 		if err != nil {
-			if retryWriteErrors && !retried && w.previous != nil && w.previous.Ended == endedWriteError {
+			if retryWriteErrors && !retried && w.failed() {
 				retried = true
 				continue
 			}
 			return fmt.Errorf("replay receipt action after durability interruption: %w", err)
 		}
 		w.confirmAction(action)
+		delete(w.repairKeys, actionRepairKey(action))
 		w.repairs[0] = Action{}
 		w.repairs = w.repairs[1:]
 		retried = false
