@@ -166,8 +166,8 @@ impl Document {
             _ => return false,
         };
         self.accepted
-            .iter()
-            .any(|a| a.kind == kind && &a.value == value)
+            .binary_search_by(|a| (a.kind, a.value.as_str()).cmp(&(kind, value.as_str())))
+            .is_ok()
     }
 
     pub(super) fn finish(
