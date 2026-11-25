@@ -764,6 +764,9 @@ func TestMCPV3ListenerLegacyMethodReceipts(t *testing.T) {
 				if _, err := io.Copy(io.Discard, resp.Body); err != nil {
 					t.Fatal(err)
 				}
+				// Both scenarios finish downstream delivery after the response
+				// body ends; wait for that terminal outcome before closing the writer.
+				waitForMCPV3DeliveryOutcome(t, client.dir)
 				actions := localMCPReceiptActions(t, writer, client.dir)
 				if scenario == "intent write fail" {
 					if resp.StatusCode != http.StatusServiceUnavailable || len(calls) != 0 {
