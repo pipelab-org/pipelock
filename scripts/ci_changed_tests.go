@@ -146,6 +146,9 @@ func isTest(fn *ast.FuncDecl) bool {
 
 func identifiers(node ast.Node) map[string]bool {
 	refs := make(map[string]bool)
+	if node == nil {
+		return refs
+	}
 	ast.Inspect(node, func(n ast.Node) bool {
 		if id, ok := n.(*ast.Ident); ok {
 			refs[id.Name] = true
@@ -179,6 +182,11 @@ func supportDecls(fset *token.FileSet, file string, parsed *ast.File, into map[p
 		if err != nil {
 			return err
 		}
+		// A variable and a constant with the same text are different
+		// declarations: record the kind in the compared value.
+		if kind == "var" || kind == "const" {
+			source = kind + " " + source
+		}
 		// Key by declaration, not file, so moving a helper between files is
 		// not a change. Mutually exclusive build-tagged files that declare the
 		// same helper differently are combined in a stable order. Package-level
@@ -186,14 +194,17 @@ func supportDecls(fset *token.FileSet, file string, parsed *ast.File, into map[p
 		// constant is keyed by name alone and a change of kind is a change.
 		// Methods are keyed by receiver type and name.
 		id := key
-		if kind == "method" {
+		switch kind {
+		case "method":
 			id = "method/" + key
+		case "import":
+			id = "import/" + key
 		}
 		item := support{name: name, source: source, refs: identifiers(refsNode)}
 		if prior, ok := decls[id]; ok {
-			sources := []string{prior.source, source}
-			sort.Strings(sources)
-			item.source = strings.Join(sources, "\x00")
+			// A set of variants: two files importing the same path, or
+			// identical build-tagged twins, are one binding, not a change.
+			item.source = strings.Join(uniqueSorted(append(strings.Split(prior.source, "\x00"), source)), "\x00")
 			for ref := range prior.refs {
 				item.refs[ref] = true
 			}
@@ -227,31 +238,68 @@ func supportDecls(fset *token.FileSet, file string, parsed *ast.File, into map[p
 			if d.Tok == token.IMPORT {
 				for _, spec := range d.Specs {
 					sp, ok := spec.(*ast.ImportSpec)
-					if !ok || sp.Name == nil || sp.Name.Name != "_" || sp.Path == nil {
+					if !ok || sp.Path == nil {
 						continue
 					}
 					importPath, err := strconv.Unquote(sp.Path.Value)
 					if err != nil {
 						return err
 					}
-					blanks[key] = append(blanks[key], importPath)
+					if sp.Name != nil && sp.Name.Name == "_" {
+						blanks[key] = append(blanks[key], importPath)
+						continue
+					}
+					if sp.Name != nil && sp.Name.Name == "." {
+						continue
+					}
+					// A file-local name bound to a different path calls
+					// different code from unchanged helpers that use it.
+					// Record the binding so only those helpers propagate.
+					local := importName(importPath)
+					if sp.Name != nil {
+						local = sp.Name.Name
+					}
+					binding := &ast.BasicLit{Kind: token.STRING, Value: strconv.Quote(importPath)}
+					if err := add("import", local, local, binding, nil); err != nil {
+						return err
+					}
 				}
 				continue
 			}
-			for _, spec := range d.Specs {
+			// In a constant group a spec without values repeats the previous
+			// expression, and iota counts specs: a change to an earlier spec
+			// changes later constants whose own text did not change.
+			var inheritedType ast.Expr
+			var inheritedValues []ast.Expr
+			for index, spec := range d.Specs {
 				switch sp := spec.(type) {
 				case *ast.TypeSpec:
 					if err := add("type", sp.Name.Name, sp.Name.Name, sp, sp); err != nil {
 						return err
 					}
 				case *ast.ValueSpec:
+					effective := sp
+					if d.Tok == token.CONST {
+						if len(sp.Values) > 0 {
+							inheritedType, inheritedValues = sp.Type, sp.Values
+						} else {
+							effective = &ast.ValueSpec{Names: sp.Names, Type: inheritedType, Values: inheritedValues}
+						}
+						if usesIota(effective) {
+							effective = &ast.ValueSpec{
+								Names: effective.Names, Type: effective.Type,
+								Values: append(append([]ast.Expr(nil), effective.Values...),
+									&ast.BasicLit{Kind: token.INT, Value: strconv.Itoa(index)}),
+							}
+						}
+					}
 					blank := false
 					for _, name := range sp.Names {
 						if name.Name == "_" {
 							blank = true
 							continue
 						}
-						if err := add(d.Tok.String(), name.Name, name.Name, sp, sp); err != nil {
+						if err := add(d.Tok.String(), name.Name, name.Name, effective, effective); err != nil {
 							return err
 						}
 					}
@@ -280,6 +328,32 @@ func supportDecls(fset *token.FileSet, file string, parsed *ast.File, into map[p
 		}
 	}
 	return nil
+}
+
+// importName is the default file-local name of an import path: its last
+// element, skipping a major-version suffix such as /v2.
+func importName(importPath string) string {
+	parts := strings.Split(importPath, "/")
+	name := parts[len(parts)-1]
+	if len(parts) > 1 && len(name) > 1 && name[0] == 'v' && strings.Trim(name[1:], "0123456789") == "" {
+		name = parts[len(parts)-2]
+	}
+	return name
+}
+
+// usesIota reports whether a constant spec's values mention iota, so its
+// value also depends on its position in the group.
+func usesIota(spec *ast.ValueSpec) bool {
+	found := false
+	for _, value := range spec.Values {
+		ast.Inspect(value, func(n ast.Node) bool {
+			if id, ok := n.(*ast.Ident); ok && id.Name == "iota" {
+				found = true
+			}
+			return !found
+		})
+	}
+	return found
 }
 
 // runnableName applies cmd/go's test-name rule: Test followed by a
@@ -349,8 +423,13 @@ func inventory(ref string, files []string) (map[string]test, map[packageKey]map[
 // and init are the exception, as is a blank import: each runs for every test,
 // whether or not the test names it. Init order is the sequence of bodies,
 // not a sorted merge, because the go command runs them in that order.
-func affectedNames(base, head map[string]support, baseInits, headInits, baseBlanks, headBlanks []string) (map[string]bool, bool) {
+func affectedNames(base, head map[string]support, baseInits, headInits, baseBlanks, headBlanks []string, seed map[string]bool) (map[string]bool, bool) {
 	affected := make(map[string]bool)
+	// An external test package reaches its internal package's changed
+	// declarations through its own helpers, so those names start affected.
+	for name := range seed {
+		affected[name] = true
+	}
 	whole := !sameSequence(baseInits, headInits) || !sameSet(baseBlanks, headBlanks)
 	for id, item := range head {
 		old, ok := base[id]
@@ -359,6 +438,13 @@ func affectedNames(base, head map[string]support, baseInits, headInits, baseBlan
 		}
 		if ok && old.source != item.source {
 			affected[item.name] = true
+		}
+		// A new method on a type that already existed can replace a method
+		// promoted from an embedded type, so calls through that type change.
+		if !ok && strings.HasPrefix(id, "method/") {
+			if _, existed := base[item.name]; existed {
+				affected[item.name] = true
+			}
 		}
 	}
 	for id := range base {
@@ -505,11 +591,32 @@ func selectTests(base, head string, includeSupport bool) ([]test, error) {
 				keys[key] = true
 			}
 		}
+		// Close internal packages first: an external test package's helpers
+		// can wrap an internal package's changed declarations, so its graph
+		// starts from the internal package's affected names.
+		ordered := make([]packageKey, 0, len(keys))
 		for key := range keys {
+			ordered = append(ordered, key)
+		}
+		sort.Slice(ordered, func(i, j int) bool {
+			ei, ej := strings.HasSuffix(ordered[i].name, "_test"), strings.HasSuffix(ordered[j].name, "_test")
+			if ei != ej {
+				return !ei
+			}
+			if ordered[i].dir != ordered[j].dir {
+				return ordered[i].dir < ordered[j].dir
+			}
+			return ordered[i].name < ordered[j].name
+		})
+		for _, key := range ordered {
+			var seed map[string]bool
+			if internal, external := strings.CutSuffix(key.name, "_test"); external {
+				seed = impacts[packageKey{key.dir, internal}].names
+			}
 			names, whole := affectedNames(
 				supportInventories[0][key], supportInventories[1][key],
 				initInventories[0][key], initInventories[1][key],
-				blankInventories[0][key], blankInventories[1][key],
+				blankInventories[0][key], blankInventories[1][key], seed,
 			)
 			impacts[key] = packageImpact{names: names, whole: whole}
 		}

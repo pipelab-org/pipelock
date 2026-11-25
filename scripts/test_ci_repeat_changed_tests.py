@@ -231,8 +231,67 @@ func TestOtherDone(t *testing.T) { <-context.Background().Done() }
             repo = FixtureRepo(Path(directory))
             uses = 'package fixture\nimport "testing"\nfunc TestUses(t *testing.T) { _ = limit }\n'
             base = repo.commit({"h_test.go": "package fixture\nvar limit = 1\n", "a_test.go": uses})
-            head = repo.commit({"h_test.go": "package fixture\nconst limit = 2\n"})
+            head = repo.commit({"h_test.go": "package fixture\nconst limit = 1\n"})
+            # Same literal: only the declaration kind changed.
             self.assertEqual(self.select(repo, base, head, support=True), {"TestUses"})
+
+    def test_grouped_constant_inherits_the_previous_expression(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = FixtureRepo(Path(directory))
+            uses = 'package fixture\nimport "testing"\nfunc TestLimit(t *testing.T) { _ = limit }\nfunc TestOther(t *testing.T) {}\n'
+            base = repo.commit({"h_test.go": "package fixture\nconst (\n\tseed = 1\n\tlimit\n)\n", "a_test.go": uses})
+            head = repo.commit({"h_test.go": "package fixture\nconst (\n\tseed = 2\n\tlimit\n)\n"})
+            self.assertEqual(self.select(repo, base, head, support=True), {"TestLimit"})
+
+    def test_iota_constant_position_change_is_a_change(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = FixtureRepo(Path(directory))
+            uses = 'package fixture\nimport "testing"\nfunc TestB(t *testing.T) { _ = b }\n'
+            base = repo.commit({"h_test.go": "package fixture\nconst (\n\ta = iota\n\tb\n)\n", "a_test.go": uses})
+            head = repo.commit({"h_test.go": "package fixture\nconst (\n\ta = iota\n\tinserted\n\tb\n)\n"})
+            self.assertEqual(self.select(repo, base, head, support=True), {"TestB"})
+
+    def test_new_method_shadowing_a_promoted_method_is_a_change(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = FixtureRepo(Path(directory))
+            types = 'package fixture\ntype leaf struct{}\nfunc (leaf) Step() int { return 1 }\ntype outer struct{ leaf }\ntype other struct{}\nfunc (other) Step() int { return 3 }\n'
+            uses = ('package fixture\nimport "testing"\nfunc TestOuter(t *testing.T) { _ = outer{}.Step() }\n'
+                    'func TestOther(t *testing.T) { _ = other{}.Step() }\n')
+            base = repo.commit({"types_test.go": types, "a_test.go": uses})
+            head = repo.commit({"types_test.go": types + "func (outer) Step() int { return 2 }\n"})
+            self.assertEqual(self.select(repo, base, head, support=True), {"TestOuter"})
+
+    def test_external_wrapper_of_a_changed_internal_helper(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = FixtureRepo(Path(directory))
+            export = "package fixture\nfunc Helper() int { return 1 }\n"
+            base = repo.commit({
+                "export_test.go": export,
+                "in_test.go": 'package fixture\nimport "testing"\nfunc TestInternal(t *testing.T) {}\n',
+                "x_test.go": ('package fixture_test\nimport ("testing"; fixture "example.test/fixture")\n'
+                              'func wrapper() int { return fixture.Helper() }\nfunc TestX(t *testing.T) { _ = wrapper() }\n'),
+            })
+            head = repo.commit({"export_test.go": export.replace("1", "2")})
+            # The wrapper reaches the changed helper; only an external hook
+            # would reach back to internal tests.
+            self.assertEqual(self.select(repo, base, head, support=True), {"TestX"})
+            hook = repo.commit({"export_test.go": export.replace("1", "3"),
+                                "hook_test.go": 'package fixture_test\nimport fixture "example.test/fixture"\nfunc init() { _ = fixture.Helper() }\n'})
+            self.assertEqual(self.select(repo, head, hook, support=True), {"TestX", "TestInternal"})
+
+    def test_rebound_import_selects_only_its_users(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = FixtureRepo(Path(directory))
+            helpers = ('package fixture\nimport codec "{path}"\nfunc encode() bool {{ return codec.ErrUnsupported != nil }}\n'
+                       'func plain() int {{ return 1 }}\n')
+            uses = ('package fixture\nimport "testing"\nfunc TestEncode(t *testing.T) { _ = encode() }\n'
+                    'func TestPlain(t *testing.T) { _ = plain() }\n')
+            base = repo.commit({"h_test.go": helpers.format(path="errors"), "a_test.go": uses})
+            head = repo.commit({"h_test.go": helpers.format(path="example.test/fixture/codec")})
+            self.assertEqual(self.select(repo, base, head, support=True), {"TestEncode"})
+            # Importing the same path from one more file is not a rebinding.
+            again = repo.commit({"b_test.go": 'package fixture\nimport codec "example.test/fixture/codec"\nfunc other() bool { return codec.ErrUnsupported != nil }\n'})
+            self.assertEqual(self.select(repo, head, again, support=True), set())
 
     def test_internal_helper_reaches_the_external_test_package(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -438,7 +497,7 @@ func TestFlaky(t *testing.T) {
             repo = FixtureRepo(Path(directory))
             base = repo.commit({})
             head = repo.commit({"stable_test.go": self.STABLE})
-            with self.assertRaisesRegex(ValueError, "repeat deadline reached"):
+            with self.assertRaisesRegex(ValueError, "deadline reached"):
                 self.gate(repo, base, head, deadline_seconds=0)
 
 
@@ -465,6 +524,11 @@ class RepeatResultsTest(unittest.TestCase):
         path = self.stream([{"Action": "pass", "Package": "p", "Test": "TestA", "Elapsed": -1}])
         with self.assertRaises(ValueError):
             planner.repeat_results(path, {"p": ["TestA"]})
+
+    def test_skip_time_counts_toward_calibration(self):
+        path = self.stream([{"Action": "skip", "Package": "p", "Test": "TestA", "Elapsed": 5.0}])
+        passes, failures, seconds = planner.repeat_results(path, {"p": ["TestA"]})
+        self.assertEqual((passes, failures, seconds), ({("p", "TestA"): 1}, {}, 5.0))
 
     def test_subtests_and_unselected_tests_are_ignored(self):
         path = self.stream([

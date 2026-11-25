@@ -797,17 +797,19 @@ def check_budget(
     return 0
 
 
-def changed_tests(base: str, head: str, tags: str = "", include_support: bool = False) -> list[dict[str, str]]:
+def changed_tests(base: str, head: str, tags: str = "", include_support: bool = False,
+                  timeout: float | None = None) -> list[dict[str, str]]:
     """Compare parsed declarations at Git refs, independent of the working tree."""
     command = ["go", "run", str(ROOT / "scripts/ci_changed_tests.go"), "--base", base, "--head", head, "--tags", tags]
     if include_support:
         command.append("--include-support")
-    result = subprocess.run(command, check=True, capture_output=True, text=True, cwd=ROOT)
+    result = subprocess.run(command, check=True, capture_output=True, text=True, cwd=ROOT, timeout=timeout)
     return json.loads(result.stdout)
 
 
 def runnable_changed_tests(
     tests: list[dict[str, str]], tags: str, import_paths: dict[str, str] | None = None,
+    remaining=None,
 ) -> dict[str, list[str]]:
     """Use Go's real build constraints, including race, OS and architecture.
 
@@ -816,7 +818,12 @@ def runnable_changed_tests(
     selected: dict[str, list[str]] = {}
     for package in sorted({test["package"] for test in tests}):
         command = ["go", "list", "-e", "-json", "-tags", ",".join(filter(None, ["race", tags])), package]
-        result = subprocess.run(command, check=True, capture_output=True, text=True, cwd=ROOT)
+        timeout = None
+        if remaining is not None:
+            timeout = remaining()
+            if timeout <= 0:
+                raise ValueError(f"deadline reached before classifying {package}")
+        result = subprocess.run(command, check=True, capture_output=True, text=True, cwd=ROOT, timeout=timeout)
         info = json.loads(result.stdout)
         if not isinstance(info, dict):
             raise ValueError(f"unknown go list classification for {package}")
@@ -1305,7 +1312,11 @@ def repeat_results(path: Path, selected: dict[str, list[str]]) -> tuple[dict[tup
             seconds += elapsed
         elif action == "skip":
             # An environment-gated test skips every run; that is a result.
+            # Time spent before the skip still costs every repeat.
             passes[key] = passes.get(key, 0) + 1
+            elapsed = event.get("Elapsed")
+            if isinstance(elapsed, (int, float)) and not isinstance(elapsed, bool) and math.isfinite(elapsed) and elapsed > 0:
+                seconds += elapsed
         elif action == "fail":
             failures[key] = failures.get(key, 0) + 1
     for package in package_failed:
@@ -1355,8 +1366,16 @@ def bounded_reached(
 def repeat_changed_tests(
     tests: list[dict[str, str]], tags: str, json_out: Path,
     deadline_seconds: float = REPEAT_DEADLINE_SECONDS, clock=time.monotonic,
-    budget: float = REPEAT_BUDGET_SECONDS,
+    budget: float = REPEAT_BUDGET_SECONDS, started: float | None = None,
 ) -> int:
+    """Repeat the selection under -race; started is when the deadline began.
+
+    The CLI starts the clock before running the selector, so selection, go
+    list classification, calibration and repeats share one deadline.
+    """
+    if started is None:
+        started = clock()
+    remaining = lambda: deadline_seconds - (clock() - started)  # noqa: E731
     for test in tests:
         if not isinstance(test, dict) or not all(isinstance(test.get(key), str) and test[key]
                                                 for key in ("package", "file", "name")) or type(test.get("new")) is not bool:
@@ -1365,8 +1384,8 @@ def repeat_changed_tests(
         if test.get("reason", "changed") not in ("changed", "support"):
             raise ValueError(f"unknown changed-test reason: {test}")
     edited = [test for test in tests if test.get("reason", "changed") == "changed"]
-    selected = runnable_changed_tests(edited, tags) if edited else {}
-    reached_all = runnable_changed_tests(tests, tags) if len(edited) != len(tests) else {}
+    selected = runnable_changed_tests(edited, tags, remaining=remaining) if edited else {}
+    reached_all = runnable_changed_tests(tests, tags, remaining=remaining) if len(edited) != len(tests) else {}
     reached = {pkg: sorted(set(names) - set(selected.get(pkg, [])))
                for pkg, names in reached_all.items()}
     reached = {pkg: names for pkg, names in reached.items() if names}
@@ -1381,8 +1400,6 @@ def repeat_changed_tests(
     if not selected:
         print(f"No added or changed runnable tests (tags={tags or 'none'}); nothing to repeat")
         return 0
-    started = clock()
-    remaining = lambda: deadline_seconds - (clock() - started)  # noqa: E731
     json_out.parent.mkdir(parents=True, exist_ok=True)
 
     def run(package: str, count: int, stream_path: Path) -> list[str]:
@@ -1425,8 +1442,9 @@ def repeat_changed_tests(
     total = sum(calibration.values())
     runs = repeat_runs(total, budget)
     print(f"Selected tests took {total:.1f}s per run; repeating {runs} runs in total "
-          f"(catches a 1-in-100 failure {detection(runs, 100):.0%} of the time, "
-          f"1-in-1000 {detection(runs, 1000):.0%})", flush=True)
+          f"(a test that fails independently 1 run in 100 is caught {detection(runs, 100):.0%} of the time, "
+          f"1 in 1000 {detection(runs, 1000):.0%}). These odds cover test functions, which -count reruns; "
+          "init and TestMain setup run once per process, so they get two chances, not one per run.", flush=True)
     for index, package in enumerate(sorted(selected)):
         if runs > 1:
             problems.extend(run(package, runs - 1, json_out.with_suffix(f".repeat.{index}.json")))
@@ -1503,10 +1521,12 @@ def main() -> int:
         if args.measure_changed_tests and args.repeat_changed_tests:
             parser.error("--measure-changed-tests and --repeat-changed-tests are separate jobs")
         if args.changed_tests_base:
+            started = time.monotonic()
             tests = changed_tests(args.changed_tests_base, args.changed_tests_head, args.tags,
-                                  include_support=args.repeat_changed_tests)
+                                  include_support=args.repeat_changed_tests,
+                                  timeout=REPEAT_DEADLINE_SECONDS if args.repeat_changed_tests else None)
             if args.repeat_changed_tests:
-                return repeat_changed_tests(tests, args.tags, args.json_out)
+                return repeat_changed_tests(tests, args.tags, args.json_out, started=started)
             if args.measure_changed_tests:
                 return measure_changed_tests(tests, args.tags, args.json_out, args.changed_tests_base)
             print(json.dumps(tests, indent=2))
@@ -1550,7 +1570,7 @@ def main() -> int:
             print(shard_selector(args.shard))
             return 0
         packages = select_packages(list_packages(args.tags), args.shard, load_package_durations())
-    except (subprocess.CalledProcessError, ValueError, OSError) as err:
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, ValueError, OSError) as err:
         print(f"ci_test_packages.py: {err}", file=sys.stderr)
         return 1
 
