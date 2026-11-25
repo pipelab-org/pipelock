@@ -430,6 +430,12 @@ jobs:
           test_status=$?
           python3 scripts/summarize_go_test_json.py --label "$TEST_LABEL" --max-test-seconds "$TEST_CEILING_SECONDS" < /tmp/go-test-oss.json
           summary_status=$?
+          if [ "$test_status" -ne 0 ]; then
+            # Diagnostic only: rerun the failed tests and label each flaky or
+            # deterministic. The shard keeps its failing status either way.
+            timeout 900 python3 scripts/ci_flake_report.py --label "$TEST_LABEL" < /tmp/go-test-oss.json \
+              || echo "::warning title=Failure classification incomplete::the rerun of failed tests did not finish"
+          fi
           if [ "$SECONDS" -gt "$SHARD_BUDGET_SECONDS" ]; then
             echo "::warning title=CI shard over time budget::${TEST_LABEL} took ${SECONDS}s, over the ${SHARD_BUDGET_SECONDS}s budget. Refresh scripts/ci_test_durations.json from the go-test-json artifacts or raise TEST_SPLITS for the tree."
           fi
@@ -852,6 +858,12 @@ jobs:
           test_status=$?
           python3 scripts/summarize_go_test_json.py --label "$TEST_LABEL" --max-test-seconds "$TEST_CEILING_SECONDS" < /tmp/go-test-enterprise.json
           summary_status=$?
+          if [ "$test_status" -ne 0 ]; then
+            # Diagnostic only: rerun the failed tests and label each flaky or
+            # deterministic. The shard keeps its failing status either way.
+            timeout 900 python3 scripts/ci_flake_report.py --tags enterprise --label "$TEST_LABEL" < /tmp/go-test-enterprise.json \
+              || echo "::warning title=Failure classification incomplete::the rerun of failed tests did not finish"
+          fi
           if [ "$SECONDS" -gt "$SHARD_BUDGET_SECONDS" ]; then
             echo "::warning title=CI shard over time budget::${TEST_LABEL} took ${SECONDS}s, over the ${SHARD_BUDGET_SECONDS}s budget. Refresh scripts/ci_test_durations.json from the go-test-json artifacts or raise TEST_SPLITS for the tree."
           fi
