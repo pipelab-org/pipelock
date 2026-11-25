@@ -234,7 +234,7 @@ func copyDeadlineAnalyzer(t *testing.T, root, testDir string) {
 		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
 			continue
 		}
-		body, err := os.ReadFile(filepath.Join(src, name))
+		body, err := os.ReadFile(filepath.Clean(filepath.Join(src, name)))
 		if err != nil {
 			t.Fatalf("read %s: %v", name, err)
 		}
