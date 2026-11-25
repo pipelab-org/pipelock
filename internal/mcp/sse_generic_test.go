@@ -1938,7 +1938,7 @@ func TestDropSelfMatchingSSETail_BoundedProbes(t *testing.T) {
 				probes++
 				return scanner.TextDLPResult{Clean: !everyPrefixDirty && len(text) != len(tail)}
 			}
-			got, err := dropSelfMatchingSSETailWithScan(t.Context(), tail, GenericSSEScanOptions{}, scan)
+			got, err := dropSelfMatchingSSETailWithScan(t.Context(), tail, scan)
 			if err != nil || probes > sseTailProbeLimit {
 				t.Fatalf("probes=%d err=%v; want at most %d scans", probes, err, sseTailProbeLimit)
 			}
@@ -1966,7 +1966,7 @@ func TestDropSelfMatchingSSETail_OffsetlessMatchPastEarlyPrefixes(t *testing.T) 
 		}
 		return scanner.TextDLPResult{Clean: true}
 	}
-	got, err := dropSelfMatchingSSETailWithScan(t.Context(), tail, GenericSSEScanOptions{}, scan)
+	got, err := dropSelfMatchingSSETailWithScan(t.Context(), tail, scan)
 	if err != nil || got != "zzz" || probes > sseTailProbeLimit {
 		t.Fatalf("tail=%q probes=%d err=%v; want only the suffix after the reported value", got, probes, err)
 	}
@@ -1983,7 +1983,7 @@ func TestDropSelfMatchingSSETail_CanceledDuringBisection(t *testing.T) {
 		}
 		return scanner.TextDLPResult{Matches: []scanner.TextDLPMatch{{PatternName: "test", Encoded: "base64"}}}
 	}
-	if _, err := dropSelfMatchingSSETailWithScan(ctx, strings.Repeat("x", 64), GenericSSEScanOptions{}, scan); !errors.Is(err, ErrSSEStreamScanError) {
+	if _, err := dropSelfMatchingSSETailWithScan(ctx, strings.Repeat("x", 64), scan); !errors.Is(err, ErrSSEStreamScanError) {
 		t.Fatalf("err = %v, want ErrSSEStreamScanError", err)
 	}
 }
@@ -2418,5 +2418,81 @@ func TestSSEDLPWarningIdentityKeepsDistinctValuesAndSnapshot(t *testing.T) {
 	unknown := scanner.TextDLPResult{Clean: true, InformationalMatches: []scanner.TextDLPMatch{{PatternName: "Custom token", Warn: true}}}
 	if got := keepNewSSEDLPFindings(unknown, unknown.Findings(), nil, "", ""); len(got.Findings()) != 1 {
 		t.Fatal("unlocated evidence must not be silently deduplicated")
+	}
+}
+
+func TestSSEFieldWarningsCompleteEvidence(t *testing.T) {
+	for _, a2a := range []bool{false, true} {
+		t.Run(fmt.Sprint("a2a=", a2a), func(t *testing.T) {
+			cfg := config.Defaults()
+			cfg.Internal = nil
+			cfg.DLP.ScanEnv = false
+			cfg.DLP.Patterns = []config.DLPPattern{
+				{Name: "Alpha warning", Regex: `ALPHA[0-9]{8}`, Severity: config.SeverityHigh, Action: config.ActionWarn},
+				{Name: "Beta warning", Regex: `BETA[0-9]{8}`, Severity: config.SeverityHigh, Action: config.ActionWarn},
+			}
+			sc := scanner.MustNew(cfg)
+			t.Cleanup(sc.Close)
+			// The duplicate Alpha field must not duplicate evidence; Beta is distinct.
+			body := "data: {\"a\":\"ALPHA1234\",\"b\":\"ALPHA1234\",\"z\":\"BETA1234\"}\n\n" +
+				"data: {\"a\":\"5678\",\"b\":\"5678\",\"z\":\"5678\"}\n\n" +
+				"data: {\"after\":\"safe\"}\n\n"
+			var out bytes.Buffer
+			var findings, confirmed []error
+			opts := GenericSSEScanOptions{
+				OnFinding:      func(e error) { findings = append(findings, e) },
+				ConfirmFinding: func(e error) error { confirmed = append(confirmed, e); return nil },
+			}
+			var err error
+			if a2a {
+				err = ScanA2AStreamWithOptions(t.Context(), strings.NewReader(body), &out, nil, sc, A2AStreamOptions{Config: enabledA2ACfg(), Warning: opts})
+			} else {
+				err = ScanGenericSSEStreamWithOptions(t.Context(), strings.NewReader(body), &out, nil, sc, enabledSSECfg(), opts)
+			}
+			if err != nil || out.String() != body || len(confirmed) != 1 {
+				t.Fatalf("delivery err=%v confirmed=%v out=%q", err, confirmed, out.String())
+			}
+			for _, name := range []string{"Alpha warning", "Beta warning"} {
+				count := 0
+				for _, finding := range findings {
+					count += strings.Count(finding.Error(), name)
+				}
+				if count != 1 || strings.Count(confirmed[0].Error(), name) != 1 {
+					t.Errorf("%s evidence count=%d findings=%v confirmed=%v", name, count, findings, confirmed)
+				}
+			}
+		})
+	}
+}
+
+func TestGenericSSEWarningSuffixWithSuppression(t *testing.T) {
+	for _, suppressWarning := range []bool{false, true} {
+		t.Run(fmt.Sprint("suppressWarning=", suppressWarning), func(t *testing.T) {
+			cfg := config.Defaults()
+			cfg.Internal = nil
+			cfg.DLP.ScanEnv = false
+			cfg.DLP.Patterns = []config.DLPPattern{{Name: "Custom warning", Regex: `TOKEN[0-9]{8}`, Severity: config.SeverityHigh, Action: config.ActionWarn}}
+			sc := scanner.MustNew(cfg)
+			t.Cleanup(sc.Close)
+			body := "data: {\"part\":\"TOKEN12345678 TOKEN8765\"}\n\n" +
+				"data: {\"part\":\"4321\"}\n\n" + "data: {\"part\":\"safe\"}\n\n"
+			rule := "Unrelated warning"
+			want := 2
+			if suppressWarning {
+				rule = "Custom warning"
+				want = 0
+			}
+			var out bytes.Buffer
+			var findings, confirmed []error
+			err := ScanGenericSSEStreamWithOptions(t.Context(), strings.NewReader(body), &out, nil, sc, enabledSSECfg(), GenericSSEScanOptions{
+				Target:         "/stream",
+				Suppress:       []config.SuppressEntry{{Rule: rule, Path: "/stream", Reason: "test"}},
+				OnFinding:      func(e error) { findings = append(findings, e) },
+				ConfirmFinding: func(e error) error { confirmed = append(confirmed, e); return nil },
+			})
+			if err != nil || out.String() != body || len(findings) != want || len(confirmed) != want {
+				t.Fatalf("suffix warning err=%v findings=%v confirmed=%v out=%q want=%d", err, findings, confirmed, out.String(), want)
+			}
+		})
 	}
 }

@@ -1398,18 +1398,23 @@ func ScanA2AStreamWithOptions(ctx context.Context, body io.Reader, w io.Writer, 
 		}
 
 		var warnedFinding error
+		var warnedMatches []scanner.TextDLPMatch
 		recordNumberOnly := func(matches []scanner.TextDLPMatch) bool {
 			if !scanner.OnlyInformational(matches) {
 				return false
 			}
-			if warnedFinding == nil {
-				warnedFinding = fmt.Errorf("%w: informational JSON card run (action=warn)", sseFindingCause(ErrA2AStreamFinding, session.FindingDLP))
+			fresh := keepNewSSEDLPFindings(scanner.TextDLPResult{InformationalMatches: matches}, warnedMatches, nil, "", "")
+			matches = fresh.Findings()
+			if len(matches) > 0 {
+				warnedMatches = append(warnedMatches, matches...)
+				findingErr := fmt.Errorf("%w: informational JSON card run (action=warn)", sseFindingCause(ErrA2AStreamFinding, session.FindingDLP))
 				if !scanner.OnlyNumberOnlyCardRuns(matches) {
-					warnedFinding = fmt.Errorf("%w: dlp (action=warn): %s", sseFindingCause(ErrA2AStreamFinding, session.FindingDLP), sseDLPMatchNames(matches))
+					findingErr = fmt.Errorf("%w: dlp (action=warn): %s", sseFindingCause(ErrA2AStreamFinding, session.FindingDLP), sseDLPMatchNames(matches))
 				}
+				warnedFinding = errors.Join(warnedFinding, findingErr)
 				sc.EmitTextDLPWarnMatches(ctx, matches)
 				if opts.Warning.OnFinding != nil {
-					opts.Warning.OnFinding(warnedFinding)
+					opts.Warning.OnFinding(findingErr)
 				}
 			}
 			return true

@@ -478,7 +478,7 @@ func ScanGenericSSEStreamWithOptions(
 		}
 
 		{
-			var warnErr error
+			var warnings []scanner.TextDLPMatch
 			for _, view := range fieldTail.Views(frame) {
 				result, droppedMatches := keepUnsuppressedDLP(sc.ScanTextForDLP(ctx, view.Joined), opts.Target, opts.Suppress)
 				if err := checkSSEDLPContext(ctx); err != nil {
@@ -497,15 +497,14 @@ func ScanGenericSSEStreamWithOptions(
 					if len(result.Findings()) > 0 && scanner.CardRunAction(result.Findings(), cfg.Action) != config.ActionWarn {
 						return sseDLPFindingError(result.Findings(), "cross-event dlp")
 					}
-					if len(result.Findings()) > 0 && warnErr == nil {
-						warnErr = sseDLPFindingError(result.Findings(), "cross-event dlp")
-					}
+					result = keepNewSSEDLPFindings(result, warnings, nil, "", "")
+					warnings = append(warnings, result.Findings()...)
 					continue
 				}
 				return sseDLPFindingError(result.Findings(), "cross-event dlp")
 			}
-			if warnErr != nil {
-				onFinding(warnErr)
+			if len(warnings) > 0 {
+				onFinding(sseDLPFindingError(warnings, "cross-event dlp"))
 			}
 		}
 
@@ -729,8 +728,8 @@ func scanNewSSEDLPWarnings(ctx context.Context, sc *scanner.Scanner, result scan
 	}
 	initial := result.Findings()
 	fresh := keepNewSSEDLPFindings(result, view.current, prior.Findings(), view.tail, view.tail+view.value)
-	suffix, err := dropSelfMatchingSSETailWithScan(ctx, view.tail, opts, func(ctx context.Context, text string) scanner.TextDLPResult {
-		r := sc.ScanTextForDLPQuiet(ctx, text)
+	suffix, err := dropSelfMatchingSSETailWithScan(ctx, view.tail, func(ctx context.Context, text string) scanner.TextDLPResult {
+		r, _ := keepUnsuppressedDLP(sc.ScanTextForDLPQuiet(ctx, text), opts.Target, opts.Suppress)
 		// This bookkeeping predicate includes warnings. A warning must not hide
 		// a distinct later value of the same rule in the scan-only suffix.
 		r.Clean = len(r.Findings()) == 0 && !r.Incomplete
@@ -825,7 +824,10 @@ func keepNewSSEDLPFindings(result scanner.TextDLPResult, current, prior []scanne
 // for the current event. That suffix may begin another credential. The quiet
 // scans keep this bookkeeping check out of warn telemetry.
 func dropSelfMatchingSSETail(ctx context.Context, sc *scanner.Scanner, tail string, opts GenericSSEScanOptions) (string, error) {
-	return dropSelfMatchingSSETailWithScan(ctx, tail, opts, sc.ScanTextForDLPQuiet)
+	return dropSelfMatchingSSETailWithScan(ctx, tail, func(ctx context.Context, text string) scanner.TextDLPResult {
+		result, _ := keepUnsuppressedDLP(sc.ScanTextForDLPQuiet(ctx, text), opts.Target, opts.Suppress)
+		return result
+	})
 }
 
 // A dirty normalized or decoded view has no safe raw match offset, so the end
@@ -834,13 +836,15 @@ func dropSelfMatchingSSETail(ctx context.Context, sc *scanner.Scanner, tail stri
 // such values; an exhausted budget keeps the unexamined remainder.
 const sseTailProbeLimit = 32
 
-func dropSelfMatchingSSETailWithScan(ctx context.Context, tail string, opts GenericSSEScanOptions, scan func(context.Context, string) scanner.TextDLPResult) (string, error) {
+// dropSelfMatchingSSETailWithScan uses the callback verdict after suppression.
+// The callback chooses whether Clean accounts for warnings or enforcement only.
+func dropSelfMatchingSSETailWithScan(ctx context.Context, tail string, scan func(context.Context, string) scanner.TextDLPResult) (string, error) {
 	probes := 0
 	for tail != "" {
 		if probes >= sseTailProbeLimit {
 			return tail, nil
 		}
-		result, _ := keepUnsuppressedDLP(scan(ctx, tail), opts.Target, opts.Suppress)
+		result := scan(ctx, tail)
 		probes++
 		if err := checkSSEDLPContext(ctx); err != nil {
 			return "", err
@@ -862,7 +866,7 @@ func dropSelfMatchingSSETailWithScan(ctx context.Context, tail string, opts Gene
 		}
 		if matchEnd == 0 {
 			end, err := sseBisectMatchEnd(tail, &probes, func(prefix string) (bool, error) {
-				result, _ := keepUnsuppressedDLP(scan(ctx, prefix), opts.Target, opts.Suppress)
+				result := scan(ctx, prefix)
 				if err := checkSSEDLPContext(ctx); err != nil {
 					return false, err
 				}
