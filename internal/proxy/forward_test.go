@@ -183,36 +183,16 @@ func setupForwardProxyWithLogger(t *testing.T, logger *audit.Logger, cfgMod func
 		t.Fatalf("listen: %v", err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-
-	go func() {
-		mux := http.NewServeMux()
-		mux.HandleFunc("/fetch", p.handleFetch)
-		mux.HandleFunc("/health", p.handleHealth)
-
-		handler := p.buildHandler(mux)
-
-		srv := &http.Server{
-			Handler:           handler,
-			ReadHeaderTimeout: 5 * time.Second,
-			BaseContext: func(_ net.Listener) context.Context {
-				return ctx
-			},
-		}
-
-		go func() {
-			<-ctx.Done()
-			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 2*time.Second)
-			defer shutdownCancel()
-			_ = srv.Shutdown(shutdownCtx)
-		}()
-
-		_ = srv.Serve(ln)
-	}()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fetch", p.handleFetch)
+	mux.HandleFunc("/health", p.handleHealth)
+	// Handlers append the terminal outcome after the client has the response.
+	// Receipt readers stop this server before they close the recorder.
+	stop := startTestProxyServer(t, ln, p.buildHandler(mux))
 
 	proxyAddr := ln.Addr().String()
 	return proxyAddr, p, func() {
-		cancel()
+		stop()
 		p.Close() // closes scanner, registry, session manager
 	}
 }
@@ -1979,7 +1959,6 @@ func TestForwardProxy_RequireReceiptsSuccessEmitsIntentOutcomePair(t *testing.T)
 		t.Fatalf("%s is empty", blockreason.HeaderRecordedReceipt)
 	}
 
-	waitForTransportOutcomeReceipt(t, rph.dir, TransportForward)
 	receipts := rph.findReceipts(t)
 	if len(receipts) != 2 {
 		t.Fatalf("receipt count = %d, want intent/outcome pair", len(receipts))
@@ -2094,7 +2073,6 @@ func TestForwardProxy_RequireReceiptsCompressedBlockOutcomeStatus(t *testing.T) 
 		t.Fatalf("status = %d, want 403", resp.StatusCode)
 	}
 
-	waitForTransportOutcomeReceipt(t, rph.dir, TransportForward)
 	receipts := rph.findReceipts(t)
 	var intent, outcome receipt.Receipt
 	for _, rcpt := range receipts {
@@ -2151,7 +2129,6 @@ func TestForwardProxy_RequireReceiptsA2ASSEWarnOutcomeStatus(t *testing.T) {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
 
-	waitForTransportOutcomeReceipt(t, rph.dir, TransportForward)
 	receipts := rph.findReceipts(t)
 	var intent, outcome receipt.Receipt
 	for _, rcpt := range receipts {
@@ -2220,22 +2197,14 @@ func TestForwardProxy_RequireReceiptsOutcomeEmitFailureDoesNotFailRequest(t *tes
 	if receipts[0].ActionRecord.DecisionPhase != receipt.DecisionPhaseIntent {
 		t.Fatalf("receipt phase = %q, want %q", receipts[0].ActionRecord.DecisionPhase, receipt.DecisionPhaseIntent)
 	}
-	// The response reaches the client before the outcome receipt is attempted,
-	// so the failure is logged after the body is read. Wait for it.
+	// The response reaches the client before the outcome receipt is attempted.
+	// Stop the handler before reading the audit line it writes on the way out.
+	drainProxyReceiptProducers(t)
 	wantAudit := []string{"event=receipt_channel_broken", "audit_gap=true", "phase=outcome", "layer=outcome"}
-	var auditLog []byte
-	testwait.For(t, waitForReceiptTimeout, func() bool {
-		auditLog, err = os.ReadFile(filepath.Clean(auditPath))
-		if err != nil {
-			return false
-		}
-		for _, want := range wantAudit {
-			if !strings.Contains(string(auditLog), want) {
-				return false
-			}
-		}
-		return true
-	}, "outcome receipt failure in audit log %s", auditPath)
+	auditLog, err := os.ReadFile(filepath.Clean(auditPath))
+	if err != nil {
+		t.Fatalf("read audit log: %v", err)
+	}
 	for _, want := range wantAudit {
 		if !strings.Contains(string(auditLog), want) {
 			t.Fatalf("audit log %q missing %q", string(auditLog), want)
@@ -5118,36 +5087,14 @@ func setupForwardProxyWithTLS(t *testing.T, cfgMod func(*config.Config), upstrea
 		t.Fatalf("listen: %v", listenErr)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-
-	go func() {
-		mux := http.NewServeMux()
-		mux.HandleFunc("/fetch", p.handleFetch)
-		mux.HandleFunc("/health", p.handleHealth)
-
-		handler := p.buildHandler(mux)
-
-		srv := &http.Server{
-			Handler:           handler,
-			ReadHeaderTimeout: 5 * time.Second,
-			BaseContext: func(_ net.Listener) context.Context {
-				return ctx
-			},
-		}
-
-		go func() {
-			<-ctx.Done()
-			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 2*time.Second)
-			defer shutdownCancel()
-			_ = srv.Shutdown(shutdownCtx)
-		}()
-
-		_ = srv.Serve(ln)
-	}()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fetch", p.handleFetch)
+	mux.HandleFunc("/health", p.handleHealth)
+	stop := startTestProxyServer(t, ln, p.buildHandler(mux))
 
 	proxyAddr := ln.Addr().String()
 	return proxyAddr, pool, func() {
-		cancel()
+		stop()
 		p.Close()
 	}
 }

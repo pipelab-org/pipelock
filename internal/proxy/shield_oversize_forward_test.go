@@ -88,6 +88,7 @@ func TestForwardProxy_ShieldOversize_BlocksWithTheExplainingReason(t *testing.T)
 
 	proxySrv := newIPv4Server(t, p.buildHandler(p.buildMux()))
 	t.Cleanup(proxySrv.Close)
+	registerHTTPServerDrain(t, proxySrv)
 
 	proxyURL, err := url.Parse(proxySrv.URL)
 	if err != nil {
@@ -120,12 +121,8 @@ func TestForwardProxy_ShieldOversize_BlocksWithTheExplainingReason(t *testing.T)
 	}
 
 	// The response reaches the client before the outcome receipt is written
-	// (required receipts flush first), so wait for that receipt before closing
-	// the recorder and reading the store.
-	waitForTransportOutcomeReceipt(t, dir, TransportForward)
-	if err := rec.Close(); err != nil {
-		t.Fatalf("recorder.Close: %v", err)
-	}
+	// (required receipts flush first). Stop the handler before closing.
+	closeTestReceiptRecorder(t, rec)
 
 	var found bool
 	trustedKey := hex.EncodeToString(pub)

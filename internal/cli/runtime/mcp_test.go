@@ -1183,18 +1183,28 @@ func TestStartDedicatedMetricsServerNoopAndNilCollector(t *testing.T) {
 }
 
 func TestMCPProxyCmdRejectsMetricsListenerCollision(t *testing.T) {
-	addr := testport.ListenAddrs(t, 1)[0]
-	configPath := filepath.Join(t.TempDir(), "pipelock.yaml")
-	configData := fmt.Sprintf("metrics_listen: %q\n", addr)
-	if err := os.WriteFile(configPath, []byte(configData), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cmd := mcpProxyCmd()
-	cmd.SetArgs([]string{"--config", configPath, "--listen", addr, "--upstream", "http://127.0.0.1:1"})
-	err := cmd.Execute()
-	if err == nil || !strings.Contains(err.Error(), "after reserving MCP --listen") || !strings.Contains(err.Error(), "metrics_listen bind") {
-		t.Fatalf("collision error = %v", err)
-	}
+	// Both listeners share one concrete port so metrics fails after MCP binds
+	// it. A stolen port fails the MCP bind itself; that collision is retried.
+	// The expected metrics collision is also "address already in use", so it
+	// must come back as success or WithRetry would treat it as another try.
+	testport.WithRetry(t, 1, func(addrs []string) error {
+		addr := addrs[0]
+		configPath := filepath.Join(t.TempDir(), "pipelock.yaml")
+		configData := fmt.Sprintf("metrics_listen: %q\n", addr)
+		if err := os.WriteFile(configPath, []byte(configData), 0o600); err != nil {
+			return err
+		}
+		cmd := mcpProxyCmd()
+		cmd.SetArgs([]string{"--config", configPath, "--listen", addr, "--upstream", "http://127.0.0.1:1"})
+		err := cmd.Execute()
+		if err == nil {
+			return errors.New("collision error = <nil>")
+		}
+		if strings.Contains(err.Error(), "after reserving MCP --listen") && strings.Contains(err.Error(), "metrics_listen bind") {
+			return nil
+		}
+		return fmt.Errorf("collision error = %w", err)
+	})
 }
 
 func TestResolvedMCPDoWAgentName(t *testing.T) {

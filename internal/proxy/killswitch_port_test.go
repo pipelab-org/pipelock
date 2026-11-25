@@ -221,7 +221,10 @@ func TestKillSwitchPortIsolation_DefaultBehavior(t *testing.T) {
 	cfg.ApplyDefaults()
 	cfg.KillSwitch.APIToken = "test-token-default" //nolint:gosec // test value
 
-	logger, _ := audit.New("json", "stdout", "", false, false)
+	logger, loggerErr := audit.New("json", "stdout", "", false, false)
+	if loggerErr != nil {
+		t.Fatalf("audit logger: %v", loggerErr)
+	}
 	defer logger.Close()
 	sc := scanner.MustNew(cfg)
 	defer sc.Close()
@@ -235,32 +238,56 @@ func TestKillSwitchPortIsolation_DefaultBehavior(t *testing.T) {
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
 	}
+	defer p.Close()
 
-	// Allocate a free port by binding and immediately closing.
-	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp4", "127.0.0.1:0")
+	// Bind an ephemeral listener directly and hand it to StartWithListener,
+	// eliminating the close-then-rebind TOCTOU window where another test could
+	// steal the port and answer /health.
+	ctx, cancel := context.WithCancel(context.Background())
+	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp4", "127.0.0.1:0")
 	if err != nil {
+		cancel()
 		t.Fatalf("bind: %v", err)
 	}
 	addr := ln.Addr().String()
-	_ = ln.Close()
 	cfg.FetchProxy.Listen = addr
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	go func() { _ = p.Start(ctx) }()
-	// Wait for the server to start by polling /health.
-	// Use raw client.Get (not doReq) because connection refused is expected during startup.
-	client := &http.Client{Timeout: 5 * time.Second}
-	testwait.For(t, 2*time.Second, func() bool {
-		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet,
-			fmt.Sprintf("http://%s/health", addr), nil)
-		resp, reqErr := client.Do(req)
-		if reqErr == nil {
-			resp.Body.Close() //nolint:errcheck,gosec // test
-			if resp.StatusCode == http.StatusOK {
-				return true
+	startErr := make(chan error, 1)
+	go func() { startErr <- p.StartWithListener(ctx, ln) }()
+	var consumedStart bool
+	defer func() {
+		cancel()
+		if consumedStart {
+			return
+		}
+		select {
+		case err := <-startErr:
+			if err != nil {
+				t.Errorf("proxy.StartWithListener: %v", err)
 			}
+		case <-time.After(testwait.Deadline(5 * time.Second)):
+			t.Error("proxy.StartWithListener did not exit within deadline")
+		}
+	}()
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	healthURL := fmt.Sprintf("http://%s/health", addr)
+	testwait.For(t, 2*time.Second, func() bool {
+		select {
+		case err := <-startErr:
+			consumedStart = true
+			t.Fatalf("proxy exited before /health: %v", err)
+		default:
+		}
+		req, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
+		if reqErr != nil {
+			t.Fatalf("health request: %v", reqErr)
+		}
+		resp, doErr := client.Do(req)
+		if doErr == nil {
+			code := resp.StatusCode
+			_ = resp.Body.Close()
+			return code == http.StatusOK
 		}
 		return false
 	}, "proxy health endpoint on %s", addr)
@@ -274,8 +301,6 @@ func TestKillSwitchPortIsolation_DefaultBehavior(t *testing.T) {
 	if resp.StatusCode == http.StatusNotFound {
 		t.Error("expected API route to be registered on main port when api_listen is empty")
 	}
-
-	cancel() // shut down
 }
 
 // TestKillSwitchHealthReportsActive verifies the /health endpoint includes

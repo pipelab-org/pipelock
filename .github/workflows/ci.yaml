@@ -361,8 +361,11 @@ jobs:
     if: ${{ github.event_name == 'push' }}
     runs-on: ubuntu-latest
     name: race-oss (1.26, ${{ matrix.shard }})
-    # Two 31-minute whole-command attempts, kill grace, plus setup and upload.
-    timeout-minutes: 68
+    # Two 31-minute whole-command attempts (62m), 15 minutes to classify a
+    # failure, and 6 minutes for setup, kill grace, and upload. The classifier
+    # runs only after a failure, and the step still has to reach its own exit:
+    # a job timeout cancels the shard before that exit and skips the timing upload.
+    timeout-minutes: 83
     strategy:
       fail-fast: false
       max-parallel: 6
@@ -430,6 +433,12 @@ jobs:
           test_status=$?
           python3 scripts/summarize_go_test_json.py --label "$TEST_LABEL" --max-test-seconds "$TEST_CEILING_SECONDS" < /tmp/go-test-oss.json
           summary_status=$?
+          if [ "$test_status" -ne 0 ]; then
+            # Diagnostic only: rerun the failed tests and label each flaky or
+            # deterministic. The shard keeps its failing status either way.
+            timeout --kill-after=10s 900 python3 scripts/ci_flake_report.py --label "$TEST_LABEL" < /tmp/go-test-oss.json \
+              || echo "::warning title=Failure classification incomplete::the rerun of failed tests did not finish"
+          fi
           if [ "$SECONDS" -gt "$SHARD_BUDGET_SECONDS" ]; then
             echo "::warning title=CI shard over time budget::${TEST_LABEL} took ${SECONDS}s, over the ${SHARD_BUDGET_SECONDS}s budget. Refresh scripts/ci_test_durations.json from the go-test-json artifacts or raise TEST_SPLITS for the tree."
           fi
@@ -783,8 +792,11 @@ jobs:
     if: ${{ github.event_name == 'push' }}
     runs-on: ubuntu-latest
     name: race-enterprise (1.26, ${{ matrix.shard }})
-    # Two 31-minute whole-command attempts, kill grace, plus setup and upload.
-    timeout-minutes: 68
+    # Two 31-minute whole-command attempts (62m), 15 minutes to classify a
+    # failure, and 6 minutes for setup, kill grace, and upload. The classifier
+    # runs only after a failure, and the step still has to reach its own exit:
+    # a job timeout cancels the shard before that exit and skips the timing upload.
+    timeout-minutes: 83
     strategy:
       fail-fast: false
       max-parallel: 6
@@ -852,6 +864,12 @@ jobs:
           test_status=$?
           python3 scripts/summarize_go_test_json.py --label "$TEST_LABEL" --max-test-seconds "$TEST_CEILING_SECONDS" < /tmp/go-test-enterprise.json
           summary_status=$?
+          if [ "$test_status" -ne 0 ]; then
+            # Diagnostic only: rerun the failed tests and label each flaky or
+            # deterministic. The shard keeps its failing status either way.
+            timeout --kill-after=10s 900 python3 scripts/ci_flake_report.py --tags enterprise --label "$TEST_LABEL" < /tmp/go-test-enterprise.json \
+              || echo "::warning title=Failure classification incomplete::the rerun of failed tests did not finish"
+          fi
           if [ "$SECONDS" -gt "$SHARD_BUDGET_SECONDS" ]; then
             echo "::warning title=CI shard over time budget::${TEST_LABEL} took ${SECONDS}s, over the ${SHARD_BUDGET_SECONDS}s budget. Refresh scripts/ci_test_durations.json from the go-test-json artifacts or raise TEST_SPLITS for the tree."
           fi

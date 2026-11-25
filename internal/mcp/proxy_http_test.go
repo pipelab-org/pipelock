@@ -2856,10 +2856,7 @@ func startListenerProxyWithStateMode(t *testing.T, testOpts listenerProxyTestOpt
 		})
 	}()
 
-	t.Cleanup(func() {
-		cancel()
-		waitForListenerProxyStop(t, done)
-	})
+	listenProxyDrain(t, cancel, done)
 
 	// Register cleanup before readiness can fail.
 	baseURL := "http://" + addr
@@ -2881,11 +2878,10 @@ func startListenerProxyWithOpts(t *testing.T, upstreamURL string, opts MCPProxyO
 		done <- RunHTTPListenerProxy(ctx, ln, upstreamURL, &logBuf, opts)
 	}()
 
-	t.Cleanup(func() {
+	listenProxyDrain(t, func() {
 		cancel()
 		ln.closeConnections()
-		waitForListenerProxyStop(t, done)
-	})
+	}, done)
 
 	baseURL := "http://" + addr
 	waitForHTTPHealth(t, baseURL)
@@ -5421,11 +5417,10 @@ func startListenerProxyFull(
 		})
 	}()
 
-	t.Cleanup(func() {
+	listenProxyDrain(t, func() {
 		cancel()
 		ln.closeConnections()
-		waitForListenerProxyStop(t, done)
-	})
+	}, done)
 
 	baseURL := "http://" + addr
 	waitForHTTPHealth(t, baseURL)

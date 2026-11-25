@@ -1386,19 +1386,7 @@ func TestMCPV3PolicyRedirectRefusal(t *testing.T) {
 					!strings.Contains(client.String(), "policy redirect is not available while v3 receipts are enabled") {
 					t.Errorf("client refusal missing: %s", client.String())
 				}
-				waitForMCPV3DeliveryOutcome(t, writerOpts.Dir)
-				if err := writer.Close(ctx, nil); err != nil {
-					t.Fatal(err)
-				}
-				key := writerOpts.SigningKey.Public().(ed25519.PublicKey)
-				verified, err := v3.VerifyPaths(ctx, []string{writerOpts.Dir}, v3.Options{Directory: true, Keys: []ed25519.PublicKey{key}})
-				if err != nil || verified.Integrity != "ok" {
-					t.Fatalf("verify: %+v (%v)", verified, err)
-				}
-				actions, err := readMCPMatrixActions(writerOpts.Dir)
-				if err != nil {
-					t.Fatal(err)
-				}
+				actions := verifiedMCPV3RegressionActions(t, writer, writerOpts)
 				if len(actions) != 3 || actions[0].EffectBoundary != mcpDownstreamDeliveryBoundary || actions[0].Verdict != config.ActionBlock {
 					t.Fatalf("expected one signed refusal and its delivery, got %+v", actions)
 				}
@@ -1460,7 +1448,6 @@ func exerciseMCPV3ListenerEarlyInputRefusal(t *testing.T, scenario string) {
 		}),
 	}.WithV3ReceiptWriter(writer)
 	got, _ := driveA2AHTTPDepth(t, upstream.URL, cleanToolsCallRequest, opts, "listener")
-	waitForMCPV3DeliveryOutcome(t, writerOpts.Dir)
 	if scenario == "intent write fail" {
 		if !bytes.Contains(got, []byte("receipt admission failed")) {
 			t.Fatalf("expected generic receipt admission error: %s", got)
@@ -1496,6 +1483,11 @@ func openMCPV3RegressionWriter(t *testing.T, surface string) (*v3.StreamWriter, 
 
 func verifiedMCPV3RegressionActions(t *testing.T, writer *v3.StreamWriter, opts v3.StreamWriterOptions) []v3.Action {
 	t.Helper()
+	// Same drain as localMCPReceiptActions: the listener's deferred outcome
+	// append is still running when the client returns. Close replays repairs
+	// afterwards, so a missing repair outcome still fails the assertions below
+	// rather than this wait.
+	drainMCPReceiptProducers(t)
 	if err := writer.Close(t.Context(), nil); err != nil {
 		t.Fatal(err)
 	}

@@ -75,6 +75,52 @@ jobs:
           fi
           exit "$status"
 
+      - name: Find tests nearing the per-test ceiling
+        # CI fails any top-level race test over 300s (TEST_CEILING_SECONDS in
+        # ci.yaml), and a test that crept past it turned main red. Flag one at
+        # 180s, 60% of the ceiling, while there is still room for runner
+        # variance, so it gets split before it reds main.
+        if: ${{ !cancelled() }}
+        env:
+          EARLY_CEILING_SECONDS: '180'
+        run: |
+          set -uo pipefail
+          status=0
+          if [ -z "$(find "$RUNNER_TEMP/timing" -name '*.json' -print -quit 2>/dev/null)" ]; then
+            echo "::error title=No timings::no go test timing files to check; this step must not pass on an empty scan"
+            exit 1
+          fi
+          while IFS= read -r -d '' file; do
+            # A zero-byte, header-only, or unparseable file passes the directory
+            # check and summarize_go_test_json.py prints "packages: 0" and exits 0.
+            # Refuse any timing file that recorded zero completed packages.
+            if [ ! -s "$file" ]; then
+              echo "::error title=Timing file empty::$file has no go test events; an empty scan must not pass"
+              status=1
+              continue
+            fi
+            # The step shell runs with errexit; capture the summarizer's exit
+            # code instead of letting a slow test end the step here.
+            rc=0
+            out="$(python3 scripts/summarize_go_test_json.py --top 1 --top-tests 1 \
+              --allow-failed-packages --max-test-seconds "$EARLY_CEILING_SECONDS" < "$file")" || rc=$?
+            if [ "$rc" -eq 3 ]; then
+              # Keep only the per-test annotations, which name each test.
+              printf '%s\n' "$out" | grep '^::error' || true
+              status=1
+            elif [ "$rc" -ne 0 ]; then
+              echo "::error title=Timing file unreadable::$file could not be summarized (exit $rc)"
+              status=1
+            elif ! printf '%s\n' "$out" | grep -Eq '^packages: [1-9][0-9]*;'; then
+              echo "::error title=Timing file empty::$file recorded zero completed packages; an empty scan must not pass"
+              status=1
+            fi
+          done < <(find "$RUNNER_TEMP/timing" -name '*.json' -print0)
+          if [ "$status" -ne 0 ]; then
+            echo "::error title=Tests nearing the ceiling::split or speed up the tests named above before they pass the 300s ceiling and red main"
+          fi
+          exit "$status"
+
       - name: Upload refreshed weights
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

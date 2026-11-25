@@ -93,6 +93,7 @@ func TestMCPV3SecondSSEEventRequiresItsOwnAdmission(t *testing.T) {
 					done := make(chan error, 1)
 					go func(l net.Listener) { done <- RunHTTPListenerProxy(ctx, l, server.URL, io.Discard, opts) }(listener)
 					stopListener := sync.OnceFunc(func() { stop(); waitForListenerProxyStop(t, done) })
+					registerMCPReceiptProducerStop(t, stopListener)
 					defer stopListener()
 					url := "http://" + ln.Addr().String()
 					waitForHTTPHealth(t, url)
@@ -185,6 +186,9 @@ func readReceiptSSEEvents(t *testing.T, data []byte) []string {
 
 func verifyMCPFailedStreamFixture(t *testing.T, writer *v3.StreamWriter, opts v3.StreamWriterOptions) []v3.Action {
 	t.Helper()
+	// The listener case stops above. Draining here covers a caller that
+	// reaches Close while the handler is still appending the outcome.
+	drainMCPReceiptProducers(t)
 	if err := writer.Close(t.Context(), nil); err != nil {
 		t.Fatal(err)
 	}

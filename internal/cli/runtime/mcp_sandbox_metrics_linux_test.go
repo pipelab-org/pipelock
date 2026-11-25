@@ -51,9 +51,16 @@ func TestMCPSandboxMetricsDialUsesBoundAddress(t *testing.T) {
 		return
 	}
 	skipChildWithoutSandboxLaunch(t)
-	_, port, err := net.SplitHostPort(testport.ListenAddrs(t, 1)[0])
+	testport.WithRetry(t, 1, func(addrs []string) error {
+		return runMCPSandboxMetricsDial(t, addrs[0])
+	})
+}
+
+func runMCPSandboxMetricsDial(t *testing.T, listenAddr string) error {
+	t.Helper()
+	_, port, err := net.SplitHostPort(listenAddr)
 	if err != nil {
-		t.Fatal(err)
+		return err
 	}
 	boundAddr := net.JoinHostPort("127.0.0.2", port)
 	// Answer the bound address until that listener is live, and a different
@@ -90,11 +97,22 @@ done
 	cmd.SetArgs(args)
 	runErr := cmd.ExecuteContext(ctx)
 	stderr := output.String()
+	if testport.IsBindCollision(runErr) {
+		return runErr
+	}
 	if !strings.Contains(stderr, "metrics listening on "+boundAddr) {
-		t.Fatalf("metrics listener did not bind %s: %v\nstderr:\n%s", boundAddr, runErr, stderr)
+		return fmt.Errorf("metrics listener did not bind %s: %w\nstderr:\n%s", boundAddr, runErr, stderr)
 	}
 	dialStatus, readErr := os.ReadFile(filepath.Clean(filepath.Join(workspace, "metrics-dial")))
 	if readErr != nil || string(dialStatus) != "403\n403\n" {
-		t.Fatalf("sandboxed metrics dial = %q, %v; run error: %v\nstderr:\n%s", dialStatus, readErr, runErr, stderr)
+		runDetail := "<nil>"
+		if runErr != nil {
+			runDetail = runErr.Error()
+		}
+		if readErr != nil {
+			return fmt.Errorf("sandboxed metrics dial = %q: %w; run error: %s\nstderr:\n%s", dialStatus, readErr, runDetail, stderr)
+		}
+		return fmt.Errorf("sandboxed metrics dial = %q; run error: %s\nstderr:\n%s", dialStatus, runDetail, stderr)
 	}
+	return nil
 }

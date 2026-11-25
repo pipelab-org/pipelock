@@ -109,6 +109,51 @@ func TestServer_ContainmentMetricsCleanupWaitsForStart(t *testing.T) {
 	}
 }
 
+// containmentProxyReady waits for s to bind its listeners before polling the
+// proxy health URL, and returns Start's error when the server exits first.
+// Waiting on startupNotified prevents a port thief already serving /health from
+// masking Start's EADDRINUSE inside testport.WithRetry.
+func containmentProxyReady(s *Server, client *http.Client, addr string, done <-chan error, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), testwait.Deadline(timeout))
+	defer cancel()
+	select {
+	case <-s.startupNotified():
+	case err := <-done:
+		return fmt.Errorf("Start returned before serving the proxy: %w", err)
+	case <-ctx.Done():
+		return fmt.Errorf("timed out waiting for contained proxy on %s: %w", addr, ctx.Err())
+	}
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	healthURL := "http://" + addr + "/health"
+	for {
+		select {
+		case err := <-done:
+			return fmt.Errorf("Start returned before serving the proxy: %w", err)
+		default:
+		}
+		req, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
+		if reqErr != nil {
+			return fmt.Errorf("health request: %w", reqErr)
+		}
+		resp, doErr := client.Do(req)
+		if doErr == nil {
+			code := resp.StatusCode
+			_ = resp.Body.Close()
+			if code == http.StatusOK {
+				return nil
+			}
+		}
+		select {
+		case err := <-done:
+			return fmt.Errorf("Start returned before serving the proxy: %w", err)
+		case <-ctx.Done():
+			return fmt.Errorf("timed out waiting for contained proxy on %s: %w", addr, ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
 func TestServer_StartContainmentUnsafeMetricsSkipsBlockedListener(t *testing.T) {
 	t.Setenv(config.ContainmentManagedEnvKey, config.ContainmentManagedEnvValue)
 	metricsBlocker, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp4", "127.0.0.1:0")
@@ -118,43 +163,32 @@ func TestServer_StartContainmentUnsafeMetricsSkipsBlockedListener(t *testing.T) 
 	defer func() { _ = metricsBlocker.Close() }()
 	metricsPort := metricsBlocker.Addr().(*net.TCPAddr).Port
 	metricsListen := net.JoinHostPort("0.0.0.0", strconv.Itoa(metricsPort))
-	fetchListen := testport.ListenAddrs(t, 1)[0]
-	s, _ := newContainmentMetricsTestServerWithFetch(t, metricsListen, "", fetchListen)
+	testport.WithRetry(t, 1, func(addrs []string) error {
+		fetchListen := addrs[0]
+		s, _ := newContainmentMetricsTestServerWithFetch(t, metricsListen, "", fetchListen)
 
-	done := startContainmentMetricsTestServer(t, s)
+		done := startContainmentMetricsTestServer(t, s)
 
-	client := &http.Client{Transport: &http.Transport{Proxy: nil}, Timeout: 200 * time.Millisecond}
-	t.Cleanup(client.CloseIdleConnections)
-	request, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://"+fetchListen+"/health", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	testwait.For(t, 2*time.Second, func() bool {
+		client := &http.Client{Transport: &http.Transport{Proxy: nil}, Timeout: 200 * time.Millisecond}
+		t.Cleanup(client.CloseIdleConnections)
+		if err := containmentProxyReady(s, client, fetchListen, done, 2*time.Second); err != nil {
+			return err
+		}
+
+		client.CloseIdleConnections()
+		if err := s.Shutdown(context.Background()); err != nil {
+			return fmt.Errorf("Shutdown: %w", err)
+		}
 		select {
 		case startErr := <-done:
-			t.Fatalf("Start returned before serving the proxy: %v", startErr)
-		default:
+			if startErr != nil {
+				return fmt.Errorf("Start: %w", startErr)
+			}
+		case <-time.After(testwait.Deadline(6 * time.Second)):
+			return fmt.Errorf("timed out waiting for contained proxy shutdown")
 		}
-		resp, requestErr := client.Do(request)
-		if requestErr != nil {
-			return false
-		}
-		_ = resp.Body.Close()
-		return resp.StatusCode == http.StatusOK
-	}, "contained proxy to start while unsafe metrics port is blocked")
-
-	client.CloseIdleConnections()
-	if err := s.Shutdown(context.Background()); err != nil {
-		t.Fatalf("Shutdown: %v", err)
-	}
-	select {
-	case startErr := <-done:
-		if startErr != nil {
-			t.Fatalf("Start: %v", startErr)
-		}
-	case <-time.After(testwait.Deadline(6 * time.Second)):
-		t.Fatal("timed out waiting for contained proxy shutdown")
-	}
+		return nil
+	})
 }
 
 func TestNewServer_ContainmentUnsafeMetricsDisablesListenerAndReportsCritical(t *testing.T) {
