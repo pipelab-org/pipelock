@@ -206,7 +206,23 @@ func decodeMCPMatrixActions(dir string) ([]v3.Action, error) {
 	return decodeMCPMatrixReceiptFiles(dir, false)
 }
 
+type mcpMatrixReadMode uint8
+
+const (
+	mcpMatrixConfirmed mcpMatrixReadMode = iota
+	mcpMatrixLive
+	mcpMatrixPhysical
+)
+
 func decodeMCPMatrixReceiptFiles(dir string, live bool) ([]v3.Action, error) {
+	mode := mcpMatrixConfirmed
+	if live {
+		mode = mcpMatrixLive
+	}
+	return readMCPMatrixFileActions(dir, mode)
+}
+
+func readMCPMatrixFileActions(dir string, mode mcpMatrixReadMode) ([]v3.Action, error) {
 	paths, err := filepath.Glob(filepath.Join(dir, "*.receipt-v3.jsonl"))
 	if err != nil {
 		return nil, err
@@ -224,7 +240,7 @@ func decodeMCPMatrixReceiptFiles(dir string, live bool) ([]v3.Action, error) {
 		if err != nil {
 			return nil, err
 		}
-		if live {
+		if mode == mcpMatrixLive {
 			// The peer can read the next append while observing the wire.
 			// Only the closed-history check requires the complete file.
 			data = data[:bytes.LastIndexByte(data, '\n')+1]
@@ -289,7 +305,7 @@ func decodeMCPMatrixReceiptFiles(dir string, live bool) ([]v3.Action, error) {
 	for _, r := range records {
 		// A repair may duplicate landed bytes beyond a failed stream's pin.
 		// Receipt appraisal uses only the predecessor's confirmed prefix.
-		if pin, failed := writeErrorPins[r.Stream]; failed && r.Seq > pin {
+		if pin, failed := writeErrorPins[r.Stream]; failed && mode != mcpMatrixPhysical && r.Seq > pin {
 			continue
 		}
 		actions = append(actions, r.Body)
@@ -580,6 +596,16 @@ func exerciseMCPV3Row(t *testing.T, row v3MCPMatrixRow) {
 		t.Fatal(err)
 	}
 
+	linkageActions := actions
+	if row.scenario == "intent sync fail" {
+		// Local denial attribution references the failed intent when its
+		// bytes landed. Keep the physical record for that assertion.
+		linkageActions, err = readMCPMatrixFileActions(writerOpts.Dir, mcpMatrixPhysical)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
 	upstream, readErr := os.ReadFile(filepath.Clean(seen))
 	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
 		t.Fatal(readErr)
@@ -629,7 +655,7 @@ func exerciseMCPV3Row(t *testing.T, row v3MCPMatrixRow) {
 			t.Fatal("no delivery intent before local reply")
 		}
 		if !stdioInvalidReply {
-			assertLocalMCPDeliveries(t, actions, "1")
+			assertLocalMCPDeliveries(t, linkageActions, "1")
 		}
 	} else if client.output.Len() != 0 {
 		t.Fatalf("unexpected reply: %s", client.output.String())
@@ -680,7 +706,7 @@ func exerciseMCPV3Row(t *testing.T, row v3MCPMatrixRow) {
 	} else if stdioInvalidReply {
 		scenario = "stdio invalid reply"
 	}
-	assertMCPMatrixTerminal(t, scenario, actions)
+	assertMCPMatrixTerminal(t, scenario, linkageActions)
 }
 
 func assertMCPMatrixTerminal(t *testing.T, scenario string, actions []v3.Action) {
