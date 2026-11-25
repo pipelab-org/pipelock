@@ -616,19 +616,19 @@ fn filename_claimed_missing_or_directory_inputs_are_input_errors() {
 fn claims_accepts_double_dash_separator() {
     use std::process::Command;
 
+    let dir = TestDirectory::new();
+    // Run inside the directory so the operand itself starts with a dash.
     let cli = |args: &[&str]| {
         Command::new(env!("CARGO_BIN_EXE_pipelock-verifier-rs"))
             .args(args)
+            .current_dir(&dir.0)
             .output()
             .unwrap()
     };
-    let dir = TestDirectory::new();
-    let v3_file = dir.0.join("-dash.receipt-v3.jsonl");
-    let plain = dir.0.join("plain.jsonl");
-    fs::write(&v3_file, b"{}\n").unwrap();
-    fs::write(&plain, b"{}\n").unwrap();
-    let v3_s = v3_file.to_str().unwrap();
-    let plain_s = plain.to_str().unwrap();
+    let v3_s = "-dash.receipt-v3.jsonl";
+    let plain_s = "plain.jsonl";
+    fs::write(dir.0.join(v3_s), b"{}\n").unwrap();
+    fs::write(dir.0.join(plain_s), b"{}\n").unwrap();
 
     for (args, want) in [
         (vec!["v3", "--claims", "--", v3_s], b"true\n".as_slice()),

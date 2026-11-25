@@ -310,12 +310,17 @@ def test_invalid_recovery_timestamp_is_a_finding(tmp_path):
     fixture = ROOT / "recovery-seals" / "valid"
     shutil.copytree(fixture / "evidence", tmp_path, dirs_exist_ok=True)
     path = next(tmp_path.glob("chain-link-*.json"))
+    keys = tuple((fixture / "signer.pub").read_text().split())
+    control = verify_base(tmp_path, "proxy", keys)
+    assert "invalid_recovery_seal" not in {row["kind"] for row in control["findings"]}
     seal = json.loads(path.read_bytes())
     seal["observed_at"] = "2026-13-01T00:00:00Z"
     path.write_bytes(chain_set._go_json(seal) + b"\n")
-    keys = tuple((fixture / "signer.pub").read_text().split())
     result = verify_base(tmp_path, "proxy", keys)
-    assert "invalid_recovery_seal" in {row["kind"] for row in result["findings"]}
+    invalid = [
+        row for row in result["findings"] if row["kind"] == "invalid_recovery_seal"
+    ]
+    assert [row["detail"] for row in invalid] == ["invalid recovery seal observed_at"]
 
 
 def test_excluded_optional_group_close_is_absent(tmp_path):
