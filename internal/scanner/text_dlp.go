@@ -642,6 +642,12 @@ func (s *Scanner) ScanRequestBodyTextPartsWithCardAtoms(ctx context.Context, par
 	if HasEnforcingMatch(result.Matches) {
 		result.Clean = false
 	}
+	// The supplemental card scans above share ctx. A cancel that lands after
+	// the first pass leaves them unfinished, so the merged result is unverified.
+	if ctx.Err() != nil {
+		result.Incomplete = true
+		result.Clean = false
+	}
 
 	for _, detection := range detections {
 		if detection.Expires <= sigV4LongExpiryThreshold {

@@ -254,3 +254,19 @@ func TestCardReceiptURLMemoPolicy(t *testing.T) {
 		t.Fatal("receipt policy lost by deferred URL memo")
 	}
 }
+
+// A request context that ends during the typed-atom card scans must leave the
+// merged result unverified, never clean.
+func TestCardTypedAtomsCanceledScanIsIncomplete(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	s := MustNew(cfg)
+	t.Cleanup(s.Close)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	atoms := []extract.DLPAtom{{Card: "note", Key: true}, {Text: "1.0", Card: "1", Number: true, ContextKey: "card"}}
+	result := s.ScanRequestBodyTextPartsWithCardAtoms(ctx, []string{"note", "1.0"}, atoms, " ")
+	if result.Clean || !result.Incomplete {
+		t.Fatalf("canceled typed-atom scan reported clean=%v incomplete=%v", result.Clean, result.Incomplete)
+	}
+}

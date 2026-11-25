@@ -165,4 +165,13 @@ func TestAllowedBareWarningRejectsCorroboratedKeysAndTrailing(t *testing.T) {
 	if AllowedBareWarning("json-body", `{"value":"`+pan+`"} `+pan[:4]+" "+pan[4:8]+" "+pan[8:12]+" "+pan[12:]) {
 		t.Fatal("trailing grouped card ignored")
 	}
+	if AllowedBareWarning("json-body", ` {"value":"`+pan+`"} {}`) {
+		t.Fatal("leading whitespace skipped the trailing-content check")
+	}
+	if AllowedBareWarning("json-body", `{"value":"`+pan+`","parts":["`+pan[:8]+`","`+pan[8:]+`"]}`) {
+		t.Fatal("card split across array members allowed beside a bare card")
+	}
+	if !AllowedBareWarning("json-body", `{"value":["`+pan+`"]}`) {
+		t.Fatal("single-member array card no longer eligible")
+	}
 }

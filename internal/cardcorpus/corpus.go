@@ -364,6 +364,8 @@ func AllowedLoss(surface, input string) string {
 type lossInput struct {
 	text        string
 	url, joined bool
+	// parts counts the non-joined array members a joined view concatenates.
+	parts int
 }
 
 func lossInputs(input string) []lossInput {
@@ -468,12 +470,14 @@ func lossJSONInputs(dec *json.Decoder) ([]lossInput, error) {
 		}
 		if v == '[' {
 			var joined strings.Builder
+			parts := 0
 			for _, field := range out {
 				if !field.joined {
 					joined.WriteString(field.text)
+					parts++
 				}
 			}
-			out = append(out, lossInput{text: joined.String(), joined: true})
+			out = append(out, lossInput{text: joined.String(), joined: true, parts: parts})
 		}
 		return out, nil
 	}
@@ -654,7 +658,7 @@ func AllowedBareWarning(surface, input string) bool {
 		return false
 	}
 	views := []lossInput{{text: input}}
-	if strings.HasPrefix(input, "{") || strings.HasPrefix(input, "[") || strings.HasPrefix(input, "\"") {
+	if trimmed := strings.TrimLeft(input, " \t\r\n"); strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") || strings.HasPrefix(trimmed, "\"") {
 		dec := json.NewDecoder(strings.NewReader(input))
 		dec.UseNumber()
 		var err error
@@ -668,6 +672,11 @@ func AllowedBareWarning(surface, input string) bool {
 	}
 	found := false
 	for _, view := range views {
+		// A card reconstructed from several array members is not a bare
+		// presentation, even when a sibling value is.
+		if view.joined && view.parts > 1 && joinedCard(view.text) {
+			return false
+		}
 		if view.url || view.joined {
 			continue
 		}
@@ -721,4 +730,19 @@ func AllowedBareWarning(surface, input string) bool {
 		}
 	}
 	return found
+}
+
+// joinedCard reports whether any digit window of a joined array view is a
+// complete card field.
+func joinedCard(text string) bool {
+	for _, group := range lossDigits.FindAllString(text, -1) {
+		for start := 0; start < len(group); start++ {
+			for end := start + 14; end <= len(group) && end-start <= 19; end++ {
+				if completeCardField(group[start:end]) {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
