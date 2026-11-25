@@ -105,3 +105,34 @@ func TestLearnCompileAgentRefusesV3SessionDir(t *testing.T) {
 	_, compileErr := resolveCompileInputs(cfg, compileFlags{agent: "agent-a", since: time.Hour})
 	testreceipt.RequiresV3Refusal(t, compileErr, "learn compile", "contract inference")
 }
+
+func TestLearnCompileAgentRefusesNestedAndRenamedV3(t *testing.T) {
+	for _, tc := range []struct {
+		name, session string
+		nested        bool
+	}{
+		{"nested exact session", "agent-a", true},
+		{"nested prefixed session", "agent-a|example", true},
+		{"renamed exact session", "agent-a", false},
+		{"renamed prefixed session", "agent-a|example", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			session := filepath.Join(root, tc.session)
+			if tc.nested {
+				session = filepath.Join(session, "child")
+			}
+			if err := os.MkdirAll(session, 0o750); err != nil {
+				t.Fatal(err)
+			}
+			path, _ := testreceipt.V3(t, session, false)
+			if !tc.nested {
+				if err := os.Rename(path, filepath.Join(session, "evidence-v3.jsonl")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			_, err := resolveAgentCaptureInputs(root, "agent-a")
+			testreceipt.RequiresV3Refusal(t, err, "learn compile", "contract inference")
+		})
+	}
+}

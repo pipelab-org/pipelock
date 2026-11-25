@@ -235,27 +235,10 @@ func resolveCompileInputs(cfg *config.Config, flags compileFlags) ([]string, err
 }
 
 func resolveAgentCaptureInputs(captureRoot, agent string) ([]string, error) {
-	var paths []string
-	seen := make(map[string]struct{})
-
-	exactDir := filepath.Join(captureRoot, agent)
-	if err := receiptinput.Refuse(exactDir, "learn compile", "contract inference"); errors.Is(err, receiptinput.ErrUnsupported) {
+	paths, err := compileCaptureSessionInputs(filepath.Join(captureRoot, agent), agent)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
-	if validateCaptureSessionDir(exactDir, agent) {
-		matches, err := filepath.Glob(filepath.Join(exactDir, "*.jsonl"))
-		if err != nil {
-			return nil, err
-		}
-		for _, path := range matches {
-			if _, ok := seen[path]; ok {
-				continue
-			}
-			seen[path] = struct{}{}
-			paths = append(paths, path)
-		}
-	}
-
 	entries, err := os.ReadDir(captureRoot)
 	if err != nil {
 		return nil, err
@@ -264,31 +247,36 @@ func resolveAgentCaptureInputs(captureRoot, agent string) ([]string, error) {
 		if !entry.IsDir() || !captureSessionNameMatchesAgent(entry.Name(), agent) || entry.Name() == agent {
 			continue
 		}
-		sessionDir := filepath.Join(captureRoot, entry.Name())
-		if err := receiptinput.Refuse(sessionDir, "learn compile", "contract inference"); errors.Is(err, receiptinput.ErrUnsupported) {
+		matches, err := compileCaptureSessionInputs(filepath.Join(captureRoot, entry.Name()), agent)
+		if err != nil {
 			return nil, err
 		}
-		// Defense in depth: a name-prefix match is not enough. Require the
-		// first capture entry's self-attested agent to match the requested
-		// agent so a planted sibling like "agent-a|poison/" cannot silently
-		// contribute training inputs without producing forged recorder JSONL.
-		if !validateCaptureSessionDir(sessionDir, agent) {
-			continue
-		}
-		matches, globErr := filepath.Glob(filepath.Join(sessionDir, "*.jsonl"))
-		if globErr != nil {
-			return nil, globErr
-		}
-		for _, path := range matches {
-			if _, ok := seen[path]; ok {
-				continue
-			}
-			seen[path] = struct{}{}
-			paths = append(paths, path)
-		}
+		paths = append(paths, matches...)
 	}
 	sort.Strings(paths)
 	return paths, nil
+}
+
+func compileCaptureSessionInputs(sessionDir, agent string) ([]string, error) {
+	const command, reader = "learn compile", "contract inference"
+	if err := receiptinput.RefuseTree(sessionDir, command, reader); err != nil {
+		return nil, err
+	}
+	matches, err := filepath.Glob(filepath.Join(sessionDir, "*.jsonl"))
+	if err != nil {
+		return nil, err
+	}
+	// The directory probe only considers recognized evidence names. Check
+	// every capture input before attribution or age filtering can hide it.
+	for _, path := range matches {
+		if err := receiptinput.Refuse(path, command, reader); err != nil {
+			return nil, err
+		}
+	}
+	if !validateCaptureSessionDir(sessionDir, agent) {
+		return nil, nil
+	}
+	return matches, nil
 }
 
 func captureSessionNameMatchesAgent(sessionName, agent string) bool {
