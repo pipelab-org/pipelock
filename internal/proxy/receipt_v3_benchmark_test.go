@@ -21,8 +21,10 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
 )
 
+const benchmarkNoReceipts = "no-receipts"
+
 func BenchmarkWebSocketFrameReceipts(b *testing.B) {
-	for _, format := range []string{config.ReceiptFormatLegacy, config.ReceiptFormatV3} {
+	for _, format := range []string{benchmarkNoReceipts, config.ReceiptFormatV3} {
 		b.Run(format, func(b *testing.B) {
 			cfg := config.Defaults()
 			p := &Proxy{}
@@ -73,7 +75,7 @@ func (f benchmarkWebSocketFile) Sync() error {
 
 func BenchmarkConcurrentWebSocketFrameReceipts(b *testing.B) {
 	for _, connections := range []int{1, 4, 16, 64} {
-		for _, format := range []string{config.ReceiptFormatLegacy, config.ReceiptFormatV3} {
+		for _, format := range []string{benchmarkNoReceipts, config.ReceiptFormatV3} {
 			b.Run(fmt.Sprintf("%s/connections=%d", format, connections), func(b *testing.B) {
 				benchmarkConcurrentWebSocketFrames(b, format, connections)
 			})
@@ -133,7 +135,7 @@ func benchmarkConcurrentWebSocketFrames(b *testing.B, format string, connections
 		if err := writer.CloseUnsealed(context.Background()); err != nil {
 			b.Fatal(err)
 		}
+		b.ReportMetric(float64(syncs.Load())/float64(b.N), "file-syncs/msg")
 	}
-	b.ReportMetric(float64(b.N)/b.Elapsed().Seconds(), "msgs/s")
-	b.ReportMetric(float64(syncs.Load())/float64(b.N), "file-syncs/msg")
+	b.ReportMetric(float64(b.N)/b.Elapsed().Seconds(), "frames/s")
 }
