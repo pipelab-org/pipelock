@@ -311,8 +311,11 @@ def _recovery(
     # examined. The signed offset must mark the start of a nonempty torn line.
     shard = shards[-1][1]
     with _open_evidence_file(shard) as source:
-        hasher = hashlib.file_digest(source, "sha256")
-        length = source.tell()
+        hasher = hashlib.sha256()
+        length = 0
+        while chunk := source.read(1 << 20):
+            hasher.update(chunk)
+            length += len(chunk)
         offset = seal["damage_offset"]
         if offset >= length:
             raise ValueError("recovery shard has no damaged tail")
@@ -320,6 +323,7 @@ def _recovery(
             source.seek(offset - 1)
             if source.read(1) != b"\n":
                 raise ValueError("recovery damage offset is not a line boundary")
+        source.seek(offset)
         while chunk := source.read(1 << 20):
             if b"\n" in chunk:
                 raise ValueError("recovery tail contains a complete line")

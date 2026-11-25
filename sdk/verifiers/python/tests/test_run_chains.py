@@ -289,3 +289,18 @@ def test_ambiguous_genesis_shard_has_no_healthy_verdict(tmp_path):
     result = verify_base(tmp_path, "proxy", (KEY,))
     assert not result["healthy"]
     assert any("ambiguous" in f["detail"] for f in result["findings"])
+
+
+def test_recovery_suffix_starts_at_zero(tmp_path):
+    shard = tmp_path / "evidence-proxy-0.jsonl"
+    shard.write_bytes(b"{}\n")
+    seal = {
+        "predecessor_session": "proxy",
+        "successor_session": "other",
+        "predecessor_signer_key": "key",
+        "successor_signer_key": "key",
+        "shard": shard.name,
+        "damage_offset": 0,
+    }
+    with pytest.raises(ValueError, match="tail contains a complete line"):
+        chain_set._recovery({"proxy": [(0, shard)]}, set(), seal, None)
