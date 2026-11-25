@@ -725,6 +725,76 @@ func TestParent(t *testing.T) {
                                               clock=lambda: next(readings, deadline - 30))
         self.assertEqual(commands, [])
 
+    def deadline_killed_run(self, new_second, kill_root):
+        """Like paired_deadline_run, but the second package's run on kill_root hits the deadline."""
+        first, second, tests, resolve, now, commands, run, _ = self.paired_deadline_run(new_second=new_second)
+
+        def killing(command, stream, root, remaining):
+            if command[-1] == second and root == kill_root:
+                commands.append((command[-1], root))
+                now[0] += remaining
+                raise planner.MeasurementDeadline("changed-test measurement timeout")
+            return run(command, stream, root, remaining)
+        return first, second, tests, resolve, now, commands, killing
+
+    def measure_with(self, tests, resolve, run, now, deadline, directory):
+        first, second = "example.test/internal/proxy", "example.test/internal/scanner"
+        with patch.object(planner, "measurement_base", return_value=nullcontext(Path("base"))), \
+             patch.object(planner, "runnable_changed_tests", side_effect=resolve), \
+             patch.object(planner, "prediction_plan", return_value={}), \
+             patch.object(planner, "list_packages", return_value=[first, second]), \
+             patch.object(planner, "exact_names_regex", side_effect=lambda names: "^(?:" + "|".join(names) + ")$"), \
+             patch.object(planner, "run_measurement", side_effect=run), \
+             patch.object(planner, "base_pair_needed", return_value=True), \
+             patch.object(planner, "check_budget", return_value=0) as budget, \
+             redirect_stdout(io.StringIO()) as out:
+            status = planner.measure_changed_tests(tests, "", Path(directory) / "changed.json", "base-sha",
+                                                   deadline_seconds=deadline, clock=lambda: now[0])
+        return status, budget, out.getvalue()
+
+    def test_deadline_mid_run_skips_an_edited_head_like_an_unstarted_one(self):
+        # The second package starts with time left and is still running at the
+        # deadline. It keeps its recorded weight with a warning instead of
+        # failing the whole gate.
+        first, second, tests, resolve, now, commands, run = self.deadline_killed_run(False, planner.ROOT)
+        with tempfile.TemporaryDirectory() as directory:
+            status, budget, out = self.measure_with(tests, resolve, run, now, 1000.0, directory)
+            target = Path(directory) / "changed.json"
+            selection = json.loads(target.with_suffix(".selection.json").read_text(encoding="utf-8"))
+        self.assertEqual(status, 0)
+        self.assertEqual(selection["skipped"], [second])
+        self.assertIn("Changed test not re-measured::" + second, out)
+        self.assertEqual(budget.call_args.args[2]["trees"].get("proxy"), {"TestFirst": 1})
+        self.assertNotIn("scanner", budget.call_args.args[2]["trees"])
+
+    def test_deadline_mid_run_still_fails_a_new_test_head(self):
+        # A new test has no recorded weight to fall back on.
+        first, second, tests, resolve, now, commands, run = self.deadline_killed_run(True, planner.ROOT)
+        with tempfile.TemporaryDirectory() as directory, \
+             self.assertRaisesRegex(ValueError, "changed-test measurement timeout"):
+            self.measure_with(tests, resolve, run, now, 1000.0, directory)
+
+    def test_deadline_mid_run_keeps_the_head_when_its_base_is_killed(self):
+        first, second, tests, resolve, now, commands, run = self.deadline_killed_run(False, Path("base"))
+        with tempfile.TemporaryDirectory() as directory:
+            status, budget, out = self.measure_with(tests, resolve, run, now, 1000.0, directory)
+            base = (Path(directory) / "changed.json").with_suffix(".base.json")
+            base_selection = json.loads(base.with_suffix(".selection.json").read_text(encoding="utf-8"))
+        self.assertEqual(status, 0)
+        self.assertIn(second, base_selection["skipped"])
+        self.assertIn("Changed test base not re-measured::" + second, out)
+        self.assertEqual(budget.call_args.args[2]["trees"].get("scanner"), {"TestSecond": 1})
+
+    def test_a_failing_measurement_still_fails_the_gate(self):
+        first, second, tests, resolve, now, commands, run, _ = self.paired_deadline_run(new_second=False)
+
+        def failing(command, stream, root, remaining):
+            run(command, stream, root, remaining)
+            return 1 if command[-1] == second else 0
+        with tempfile.TemporaryDirectory() as directory, \
+             self.assertRaisesRegex(ValueError, "changed-test race run failed"):
+            self.measure_with(tests, resolve, failing, now, 1000.0, directory)
+
     def test_deadline_keeps_a_measured_head_when_no_base_can_start(self):
         first, second, tests, resolve, now, commands, run, deadline = self.paired_deadline_run(
             new_second=False, step=50.0, deadline=105.0)

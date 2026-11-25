@@ -887,6 +887,10 @@ def measurement_base(base: str):
                 raise subprocess.CalledProcessError(removed.returncode, removed.args)
 
 
+class MeasurementDeadline(ValueError):
+    """A package's measurement was still running when the shared deadline hit."""
+
+
 def run_measurement(command: list[str], stream, root: Path, remaining: float) -> int:
     """Bound compilation as well as tests, and reap descendants on timeout."""
     with subprocess.Popen(command, stdout=stream, cwd=root, start_new_session=True) as process:
@@ -895,7 +899,7 @@ def run_measurement(command: list[str], stream, root: Path, remaining: float) ->
         except subprocess.TimeoutExpired:
             os.killpg(process.pid, signal.SIGKILL)
             process.wait()
-            raise ValueError("changed-test measurement timeout") from None
+            raise MeasurementDeadline("changed-test measurement timeout") from None
         except BaseException:
             os.killpg(process.pid, signal.SIGKILL)
             process.wait()
@@ -1127,7 +1131,14 @@ def measure_changed_tests(
             if remaining_seconds() < MEASURE_MIN_START_SECONDS:
                 skipped.append(package)
                 continue
-            head_results[package] = measure(package, base_side=False)
+            # A package can start with a minute left and still be running at
+            # the deadline. It is then no more measured than one that could not
+            # start, so it keeps its recorded weight the same way. A failing
+            # test is not a deadline and still fails the gate.
+            try:
+                head_results[package] = measure(package, base_side=False)
+            except MeasurementDeadline:
+                skipped.append(package)
         head_only: dict = {"trees": {}, "packages": {}}
         for result in head_results.values():
             merge_overrides(head_only, result)
@@ -1141,7 +1152,10 @@ def measure_changed_tests(
                 if remaining_seconds() < MEASURE_MIN_START_SECONDS:
                     base_skipped.append(package)
                     continue
-                merge_overrides(base_overrides, measure(package, base_side=True))
+                try:
+                    merge_overrides(base_overrides, measure(package, base_side=True))
+                except MeasurementDeadline:
+                    base_skipped.append(package)
             for package in edited_order:
                 if package not in head_results or package not in base_selected:
                     continue
@@ -1152,7 +1166,10 @@ def measure_changed_tests(
                     # base at its recorded weight.
                     base_skipped.append(package)
                     continue
-                merge_overrides(base_overrides, measure(package, base_side=True))
+                try:
+                    merge_overrides(base_overrides, measure(package, base_side=True))
+                except MeasurementDeadline:
+                    base_skipped.append(package)
         else:
             print("Every shard fits the budget at head; base measurement cannot change the verdict and was not run")
         for result in head_results.values():
