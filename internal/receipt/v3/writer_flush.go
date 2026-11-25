@@ -304,3 +304,16 @@ func (w *StreamWriter) busy(includeOutcomes bool) bool {
 	return w.waiters != 0 || len(w.ready) != 0 || len(w.repairs) != 0 || w.failed() ||
 		includeOutcomes && len(w.pending) != 0
 }
+
+func (w *StreamWriter) hasPendingAction(actionID string) bool {
+	for _, queue := range [][]*writeTicket{w.pending, w.ready} {
+		for _, ticket := range queue {
+			for _, action := range ticket.actions {
+				if action.ActionID == actionID {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}

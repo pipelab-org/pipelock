@@ -747,3 +747,54 @@ func TestSharedFlushReservesSequenceForCancellationBeforeRollover(t *testing.T) 
 		t.Fatalf("heartbeat did not move to a successor: %+v", w.active)
 	}
 }
+
+func TestSharedFlushSerializesResolutionBehindPendingAction(t *testing.T) {
+	for _, acrossSegment := range []bool{false, true} {
+		name := "same-segment"
+		if acrossSegment {
+			name = "across-segment"
+		}
+		t.Run(name, func(t *testing.T) {
+			opts := writerTestOptions(t.TempDir())
+			w := requireWriter(t, opts, localWriterStorage())
+			hold := writerTestHold("held-race")
+			if err := w.WriteAction(t.Context(), hold, PolicySnapshot{}); err != nil {
+				t.Fatal(err)
+			}
+			f := controlWriterFlushes(t, w)
+			blockRes := blockingHoldResolution(hold, "operator", relationAfter, false)
+			first := asyncWriterResult(func() error { return w.WriteAction(t.Context(), blockRes, PolicySnapshot{}) })
+			awaitFlushEvent(t, f.writes)
+			firstSync := awaitFlushEvent(t, f.syncs)
+			if acrossSegment {
+				w.gate <- struct{}{}
+				w.fileBytes = w.active.bytes + maxLineBytes
+				w.release()
+			}
+			allowRes := Action{
+				ActionID: hold.ActionID, ActionType: hold.ActionType, Actor: hold.Actor, Principal: hold.Principal,
+				Caller: hold.Caller, Data: hold.Data, Transport: hold.Transport, Method: hold.Method, Target: hold.Target,
+				Phase: phaseResolution, Verdict: verdictAllow, EffectBoundary: approvalBoundary, EffectRelation: relationAfter,
+				Hold: &Hold{ID: hold.Hold.ID, ResolutionPolicy: hold.Hold.Policy, ResolutionSource: "operator"},
+			}
+			second := asyncWriterResult(func() error { return w.WriteAction(t.Context(), allowRes, PolicySnapshot{}) })
+			requirePending(t, second)
+			firstSync <- nil
+			if err := awaitFlushEvent(t, first); err != nil {
+				t.Fatalf("first block resolution failed: %v", err)
+			}
+			if err := awaitFlushEvent(t, second); err == nil {
+				t.Fatal("second resolution succeeded after closing block resolution")
+			}
+			closing := asyncWriterResult(func() error { return w.Close(t.Context(), nil) })
+			awaitFlushEvent(t, f.syncs) <- nil
+			if err := awaitFlushEvent(t, closing); err != nil {
+				t.Fatal(err)
+			}
+			verified := verifyWritten(t, opts.Dir, opts.SigningKey.Public().(ed25519.PublicKey))
+			if got := writerTestCount(t, verified, "blocked"); got != 1 {
+				t.Fatalf("verified blocked decisions = %d, want 1", got)
+			}
+		})
+	}
+}

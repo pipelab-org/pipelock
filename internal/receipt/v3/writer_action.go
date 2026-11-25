@@ -67,9 +67,22 @@ func (w *StreamWriter) writeAction(ctx context.Context, action Action, policy Po
 		return err
 	}
 	if action.Phase == phaseResolution {
-		hold, ok := w.holds[action.ActionID]
-		if !ok || hold != action.Hold.ID {
-			return errors.New("receipt resolution requires a matching active hold")
+		for {
+			hold, ok := w.holds[action.ActionID]
+			if !ok || hold != action.Hold.ID {
+				return errors.New("receipt resolution requires a matching active hold")
+			}
+			if !w.hasPendingAction(action.ActionID) {
+				break
+			}
+			if err := w.waitState(ctx, func() bool {
+				return w.fatal == nil && (w.transition || w.failed() || len(w.repairs) != 0 || w.hasPendingAction(action.ActionID))
+			}); err != nil {
+				return err
+			}
+			if err := w.prepareAppend(ctx, 1); err != nil {
+				return err
+			}
 		}
 	}
 	pendingAction := action
