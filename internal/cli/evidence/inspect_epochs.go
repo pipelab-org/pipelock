@@ -80,6 +80,9 @@ func runInspectEpochs(cmd *cobra.Command, opts inspectEpochsOptions) error {
 	if err != nil {
 		return err
 	}
+	if err := receiptinput.Refuse(root, "evidence inspect-epochs", "the legacy evidence reader"); err != nil {
+		return err
+	}
 	location, err := recorder.ResolveEvidenceLocation(root, opts.locationID)
 	if err != nil {
 		return fmt.Errorf("resolve evidence location: %w", err)

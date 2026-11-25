@@ -302,7 +302,7 @@ func runEvidenceDoctorSnapshot(dir string, afterScan func()) (evidenceDoctorRepo
 		return evidenceDoctorReport{}, fmt.Errorf("%q is not a directory", dir)
 	}
 
-	if err := receiptinput.Refuse(cleanDir, "evidence doctor", "the evidence doctor"); errors.Is(err, receiptinput.ErrUnsupported) {
+	if err := receiptinput.RefuseTree(cleanDir, "evidence doctor", "the evidence doctor"); errors.Is(err, receiptinput.ErrUnsupported) {
 		return evidenceDoctorReport{}, err
 	}
 	locations, err := recorder.DiscoverEvidenceLocations(cleanDir)

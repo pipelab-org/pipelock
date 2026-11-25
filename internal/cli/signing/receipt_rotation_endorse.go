@@ -89,7 +89,7 @@ Example:
 			); err != nil {
 				return err
 			}
-			if err := receiptinput.Refuse(chainDir, "receipt rotation endorse", "legacy receipt rotation"); err != nil {
+			if err := receiptinput.RefuseLocation(chainDir, "receipt rotation endorse", "legacy receipt rotation"); err != nil {
 				return err
 			}
 			ceremonyLock, err := recorder.AcquireEvidenceCeremonyLock(filepath.Clean(chainDir))
@@ -97,7 +97,7 @@ Example:
 				return fmt.Errorf("lock stopped receipt chain: %w", err)
 			}
 			defer func() { _ = ceremonyLock.Close() }()
-			if err := receiptinput.Refuse(chainDir, "receipt rotation endorse", "legacy receipt rotation"); err != nil {
+			if err := receiptinput.RefuseLocation(chainDir, "receipt rotation endorse", "legacy receipt rotation"); err != nil {
 				return err
 			}
 			if !cmd.Flags().Changed("session") {

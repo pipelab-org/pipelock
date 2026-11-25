@@ -54,6 +54,9 @@ func runVerifyEpochPin(cmd *cobra.Command, opts verifyEpochPinOptions) error {
 	if err != nil {
 		return err
 	}
+	if err := receiptinput.Refuse(root, "evidence verify-epoch-pin", "the legacy evidence reader"); err != nil {
+		return err
+	}
 	location, err := recorder.ResolveEvidenceLocation(root, opts.locationID)
 	if err != nil {
 		return fmt.Errorf("resolve evidence location: %w", err)

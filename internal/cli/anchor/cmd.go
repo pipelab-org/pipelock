@@ -90,7 +90,7 @@ verify Rekor bundles with pipelock-verifier independent --rekor-log-key.`,
 }
 
 func runReceipts(out io.Writer, target string, opts receiptsOptions) error {
-	if err := receiptinput.Refuse(target, "anchor receipts", "the receipt anchor"); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := receiptinput.RefuseLocation(target, "anchor receipts", "the receipt anchor"); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	trustedKeys, err := resolveTrustedKeys(opts.keys)

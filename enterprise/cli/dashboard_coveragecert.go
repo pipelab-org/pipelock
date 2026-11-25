@@ -123,7 +123,7 @@ func runCoverageCertGenerate(cmd *cobra.Command, opts coverageCertGenerateOption
 	}
 
 	cleanDir := filepath.Clean(opts.receiptDir)
-	if err := receiptinput.Refuse(cleanDir, "dashboard coverage-cert generate", "coverage certificates"); err != nil {
+	if err := receiptinput.RefuseLocation(cleanDir, "dashboard coverage-cert generate", "coverage certificates"); err != nil {
 		return fmt.Errorf("--receipt-dir: %w", err)
 	}
 	protected := map[string]string{

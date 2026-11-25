@@ -149,6 +149,9 @@ func verifyLegacyEpochInventoryCmd() *cobra.Command {
 }
 
 func runInventoryLegacyEpochs(cmd *cobra.Command, opts legacyInventoryOptions) error {
+	if err := receiptinput.Refuse(opts.receiptDir, "evidence inventory-legacy-epochs", "the legacy evidence reader"); err != nil {
+		return err
+	}
 	location, err := resolveLegacyInventoryLocation(opts.receiptDir, opts.locationID, opts.sessionID)
 	if err != nil {
 		return err
@@ -210,6 +213,9 @@ func runInventoryLegacyEpochs(cmd *cobra.Command, opts legacyInventoryOptions) e
 }
 
 func runVerifyLegacyEpochInventory(cmd *cobra.Command, opts verifyLegacyInventoryOptions) error {
+	if err := receiptinput.Refuse(opts.receiptDir, "evidence verify-legacy-epoch-inventory", "the legacy evidence reader"); err != nil {
+		return err
+	}
 	location, err := resolveLegacyInventoryLocation(opts.receiptDir, opts.locationID, opts.sessionID)
 	if err != nil {
 		return err

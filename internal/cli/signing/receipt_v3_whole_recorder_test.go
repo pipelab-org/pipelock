@@ -49,3 +49,23 @@ func TestReceiptRotationEndorseRefusesV3(t *testing.T) {
 		}
 	})
 }
+
+func TestReceiptRotationEndorseRefusesV3InResolvedSubdir(t *testing.T) {
+	root := t.TempDir()
+	sub := filepath.Join(root, "location-a")
+	if err := os.Mkdir(sub, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	testreceipt.V3(t, sub, false)
+	if err := os.WriteFile(filepath.Join(sub, "evidence-proxy-0.jsonl"), []byte{}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	output := filepath.Join(t.TempDir(), "endorsement.json")
+	cmd := receiptRotationEndorseCmd(time.Now)
+	cmd.SetArgs([]string{
+		"--chain", root, "--session", "proxy",
+		"--prior-key-file", "prior.key", "--new-key-file", "new.key",
+		"--root-key", "root.pub", "--out", output,
+	})
+	testreceipt.RequiresV3Refusal(t, cmd.Execute(), "receipt rotation endorse", "legacy receipt rotation")
+}

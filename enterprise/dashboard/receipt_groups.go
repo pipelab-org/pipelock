@@ -21,7 +21,7 @@ var errReceiptGroupNeedsVerification = errors.New("receipt group evidence requir
 // a complete evidence view over a receipt group. Group verdicts are available
 // through the receipt verifier, which checks every shard and signed manifest.
 func (m *ReadModel) requireSingleSessionEvidence() error {
-	if err := receiptinput.Refuse(m.receiptDir, "dashboard", "the dashboard"); err != nil {
+	if err := receiptinput.RefuseLocation(m.receiptDir, "dashboard", "the dashboard"); err != nil {
 		return err
 	}
 	present, err := receipt.ReceiptGroupEvidencePresent(m.receiptDir, dashboardEvidenceDirectoryEntryLimit)

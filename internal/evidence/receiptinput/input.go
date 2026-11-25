@@ -8,9 +8,12 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
+	"path/filepath"
 
 	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
 
 // ErrUnsupported marks a refusal from a reader without v3 support.
@@ -71,4 +74,48 @@ func RefusePayload(payload []byte, command, reader string) error {
 		}
 	}
 	return nil
+}
+
+// RefuseLocation rejects v3 claims at dir or at the single legacy location
+// ResolveEvidenceLocation would select under dir.
+func RefuseLocation(dir, command, reader string) error {
+	if err := Refuse(dir, command, reader); err != nil {
+		return err
+	}
+	loc, err := recorder.ResolveEvidenceLocation(dir, "")
+	if err == nil && loc.Dir != "" && filepath.Clean(loc.Dir) != filepath.Clean(dir) {
+		if err := Refuse(loc.Dir, command, reader); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// RefuseTree rejects a directory when it or any non-symlink descendant
+// directory holds v3 evidence.
+func RefuseTree(dir, command, reader string) error {
+	claimed, directory, err := inspect(dir)
+	if err != nil {
+		return err
+	}
+	if claimed {
+		return unsupported(command, reader, directory)
+	}
+	if !directory {
+		return nil
+	}
+	root, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return err
+	}
+	return filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil || !entry.IsDir() || path == root {
+			return nil
+		}
+		claimed, checkErr := v3.ClaimsInput(path, true)
+		if checkErr == nil && claimed {
+			return unsupported(command, reader, true)
+		}
+		return nil
+	})
 }

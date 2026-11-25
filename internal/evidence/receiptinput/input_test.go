@@ -64,3 +64,18 @@ func TestReceiptInputRefusal(t *testing.T) {
 	testreceipt.RequiresV3Refusal(t, receiptinput.RefusePayload(append(append([]byte{}, legacy...), data...), command, reader), command, reader)
 	testreceipt.RequiresV3Refusal(t, receiptinput.UnsupportedDirectory(command, reader), command, reader)
 }
+
+func TestReceiptInputRefuseTreeAndLocation(t *testing.T) {
+	const command, reader = "example", "the example reader"
+	root := t.TempDir()
+	sub := filepath.Join(root, "nested")
+	if err := os.Mkdir(sub, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	testreceipt.V3(t, sub, false)
+	testreceipt.RequiresV3Refusal(t, receiptinput.RefuseTree(root, command, reader), command, reader)
+	if err := os.WriteFile(filepath.Join(sub, "evidence-proxy-0.jsonl"), []byte{}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	testreceipt.RequiresV3Refusal(t, receiptinput.RefuseLocation(root, command, reader), command, reader)
+}

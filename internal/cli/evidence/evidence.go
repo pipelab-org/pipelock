@@ -107,6 +107,9 @@ func runView(cmd *cobra.Command, opts viewOptions) error {
 	if err != nil {
 		return err
 	}
+	if err := receiptinput.Refuse(opts.receiptDir, "evidence view", "the evidence scorecard"); err != nil {
+		return err
+	}
 	location, locationErr := recorder.ResolveEvidenceLocation(opts.receiptDir, opts.locationID)
 	if locationErr != nil {
 		return fmt.Errorf("resolve evidence location: %w", locationErr)
@@ -259,6 +262,9 @@ func runServe(cmd *cobra.Command, opts serveOptions) error {
 	if err != nil {
 		return err
 	}
+	if err := receiptinput.Refuse(opts.receiptDir, "evidence serve", "the evidence scorecard"); err != nil {
+		return err
+	}
 	location, locationErr := recorder.ResolveEvidenceLocation(opts.receiptDir, opts.locationID)
 	if locationErr != nil {
 		return fmt.Errorf("resolve evidence location: %w", locationErr)
@@ -321,6 +327,12 @@ func evidenceServeHandler(location recorder.EvidenceLocation, sessionID string) 
 			w.Header().Set("Allow", http.MethodGet)
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
+		}
+		if location.Root != "" && location.Root != location.Dir {
+			if err := receiptinput.Refuse(location.Root, "evidence serve", "the evidence scorecard"); err != nil {
+				http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+				return
+			}
 		}
 		if err := receiptinput.Refuse(location.Dir, "evidence serve", "the evidence scorecard"); err != nil {
 			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
