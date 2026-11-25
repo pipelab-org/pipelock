@@ -121,10 +121,16 @@ func TestMCPOperatorAPIInstallsLiveTaskPermissionWithoutDefer(t *testing.T) {
 		}
 		return line
 	}
-	if reply := call(1, params); !strings.Contains(reply, "task_approval_unavailable") || delivered.Load() != 0 {
-		t.Fatalf("ungranted write delivered=%d response=%s", delivered.Load(), reply)
+	// The digest is keyed per process, so the operator copies it from the refusal.
+	refusal := call(1, params)
+	if !strings.Contains(refusal, "task_approval_unavailable") || delivered.Load() != 0 {
+		t.Fatalf("ungranted write delivered=%d response=%s", delivered.Load(), refusal)
 	}
-	action := session.TaskAction{Method: "tools/call", Destination: binding, Tool: "write_file", Digest: fmt.Sprintf("%x", sha256.Sum256([]byte(params)))}
+	_, digest, found := strings.Cut(refusal, "digest ")
+	if !found || len(digest) < sha256.Size*2 {
+		t.Fatalf("refusal carries no digest: %s", refusal)
+	}
+	action := session.TaskAction{Method: "tools/call", Destination: binding, Tool: "write_file", Digest: digest[:sha256.Size*2]}
 	grant := struct {
 		TaskID     string                 `json:"task_id"`
 		Permission session.TaskPermission `json:"permission"`
