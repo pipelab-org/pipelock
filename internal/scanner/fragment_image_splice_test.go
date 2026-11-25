@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/luckyPipewrench/pipelock/internal/cardtest"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
@@ -209,7 +210,7 @@ func TestImageSplicedFallbackKeepsJoinedFinding(t *testing.T) {
 	joined := []TextDLPMatch{{PatternName: "AWS Access ID"}}
 
 	t.Run("first rescan misses", func(t *testing.T) {
-		got := imageSplicedFragmentMatches(context.Background(), sc, excised, decoded, removed, ranges, joined)
+		got := imageSplicedFragmentMatches(context.Background(), sc, imageSpliceView{excised: excised, decoded: decoded, removed: removed, ranges: ranges, joined: joined, normalize: normalizeFragmentForDLP})
 		if !hasAWSKey(got) {
 			t.Fatalf("joined finding dropped when the rescan missed: %+v", got)
 		}
@@ -218,7 +219,7 @@ func TestImageSplicedFallbackKeepsJoinedFinding(t *testing.T) {
 	t.Run("cancelled scan", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
-		got := imageSplicedFragmentMatches(ctx, sc, excised, decoded, removed, ranges, joined)
+		got := imageSplicedFragmentMatches(ctx, sc, imageSpliceView{excised: excised, decoded: decoded, removed: removed, ranges: ranges, joined: joined, normalize: normalizeFragmentForDLP})
 		if !hasAWSKey(got) {
 			t.Fatalf("joined finding dropped on a cancelled scan: %+v", got)
 		}
@@ -249,6 +250,19 @@ func TestImageSpliceRescanWindowMatchesDLPInput(t *testing.T) {
 		}
 		if strings.Contains(window, image) {
 			t.Fatal("rescan window still holds the raw image data URL")
+		}
+	}
+}
+
+func TestImageSpliceCardWholeFragmentControl(t *testing.T) {
+	sc := imageSpliceScanner(t)
+	pan := cardtest.Issuer("4019", 16)
+	image := dataURLForPNGBytes(t, randomPNG(t, 21))
+	at := len(image) / 2
+	got := scanOneFragmentContinuityMemo(t.Context(), sc, imageSpliceFragments(pan+"\t "+image[:at], image[at:]+" end"), nil, "card-whole")
+	for _, m := range got {
+		if m.PatternName == "Credit Card Number" {
+			t.Fatalf("whole-fragment card attributed across fragments: %+v", got)
 		}
 	}
 }

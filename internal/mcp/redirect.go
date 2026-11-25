@@ -177,7 +177,7 @@ func executeRedirect(profile config.RedirectProfile, profileName string, request
 
 // mergeRedirectResponseDLP preserves scan failures before output attribution.
 func mergeRedirectResponseDLP(verdict jsonrpc.ScanVerdict, dlp scanner.TextDLPResult) jsonrpc.ScanVerdict {
-	verdict.DLPMatches = append(verdict.DLPMatches, dlp.Matches...)
+	verdict.DLPMatches = append(verdict.DLPMatches, dlp.Findings()...)
 	verdict.Clean = verdict.Clean && dlp.Clean
 	if err := dlp.Err(); err != nil && verdict.Error == "" {
 		verdict.Error = err.Error()

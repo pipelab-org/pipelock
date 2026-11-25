@@ -691,7 +691,7 @@
     {
       "id": "docs-configuration.md-5",
       "path": "docs/configuration.md",
-      "pattern": "^\\-\\ \\*\\*Credit\\ Card\\ Number\\*\\*\\ \\(`validator:\\ luhn`\\)\\ \u2014\\ Visa,\\ Mastercard\\ \\(including\\ 2\\-series\\),\\ Amex,\\ Discover,\\ JCB\\.\\ Luhn\\ checksum\\ rejects\\ \\~(?P<value>[0-9][0-9,]*(?:\\.[0-9]+)?\\+?)%",
+      "pattern": "^\\-\\ \\*\\*Credit\\ Card\\ Number\\*\\*\\ \\(`validator:\\ luhn`\\).*Luhn\\ checksum\\ rejects\\ ~(?P<value>[0-9][0-9,]*(?:\\.[0-9]+)?\\+?)%",
       "expected": "90",
       "count": 1,
       "reason": "Published policy, algorithm/example count or measured historical figure; not a current release-number claim."

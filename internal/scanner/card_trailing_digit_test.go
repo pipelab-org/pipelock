@@ -101,7 +101,7 @@ func TestTrailingDigitCardBooleanPath(t *testing.T) {
 // validator keeps whole-match semantics, so it still judges the greedy hit.
 func TestTrailingDigitRetryScopedToShippedRule(t *testing.T) {
 	custom := config.DLPPattern{Name: "Operator Card", Regex: `\b\d{4}(?:[- ]?\d){11,15}(?:\b)`, Severity: config.SeverityHigh, Validator: config.ValidatorLuhn}
-	exactCustom := config.DLPPattern{Name: "Operator exact card", Regex: jsonnumber.ShippedCardPattern, Severity: config.SeverityHigh, Validator: config.ValidatorLuhn}
+	exactCustom := config.DLPPattern{Name: "Operator exact card", Regex: jsonnumber.LegacyCardPattern, Severity: config.SeverityHigh, Validator: config.ValidatorLuhn}
 	if RetriesCardPrefixes(exactCustom) {
 		t.Fatal("operator pattern with the shipped regex gained prefix retry")
 	}
@@ -142,7 +142,7 @@ func TestTrailingDigitRetryDoesNotWidenCustomJSONCardRule(t *testing.T) {
 		want    bool
 	}{
 		{"built-in", config.DLPPattern{Name: cardPatternName, Regex: jsonnumber.ShippedCardPattern, Severity: config.SeverityMedium, Validator: config.ValidatorLuhn}, true},
-		{"operator exact regex", config.DLPPattern{Name: "Operator exact card", Regex: jsonnumber.ShippedCardPattern, Severity: config.SeverityHigh, Validator: config.ValidatorLuhn}, false},
+		{"operator exact regex", config.DLPPattern{Name: "Operator exact card", Regex: jsonnumber.LegacyCardPattern, Severity: config.SeverityHigh, Validator: config.ValidatorLuhn}, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := config.Defaults()

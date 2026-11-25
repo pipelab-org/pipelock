@@ -76,3 +76,20 @@ func TestRecordDroppedSSEDLP(t *testing.T) {
 		}
 	}
 }
+
+func TestKeepUnsuppressedDLPInformational(t *testing.T) {
+	const target = "https://api.vendor.example/sse"
+	suppress := []config.SuppressEntry{{Rule: "Custom token", Path: target}}
+	custom := scanner.TextDLPMatch{PatternName: "Custom token", Warn: true}
+	core := scanner.TextDLPMatch{PatternName: "AWS Access ID", Warn: true}
+	for _, enforced := range []bool{false, true} {
+		in := scanner.TextDLPResult{Clean: !enforced, InformationalMatches: []scanner.TextDLPMatch{custom, core}}
+		if enforced {
+			in.Matches = []scanner.TextDLPMatch{{PatternName: "Other token"}}
+		}
+		got, dropped := keepUnsuppressedDLP(in, target, suppress)
+		if len(got.InformationalMatches) != 1 || got.InformationalMatches[0].PatternName != core.PatternName || len(dropped) != 1 || dropped[0].PatternName != custom.PatternName || got.Clean == enforced {
+			t.Fatalf("incorrect suppression partition: %+v dropped=%+v", got, dropped)
+		}
+	}
+}

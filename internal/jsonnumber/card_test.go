@@ -68,7 +68,7 @@ func TestHasShippedCardCandidate(t *testing.T) {
 		{"4111-1111" + " 1111-1111", true},
 		{valid + "-7", true},
 		{valid[:15] + "2", false},
-		{"4111  1111 1111 1111", false},
+		{"4111  1111" + " 1111 1111", true},
 	} {
 		if got := HasShippedCardCandidate(tc.text, ValidCardNumber); got != tc.want {
 			t.Errorf("HasShippedCardCandidate(%q) = %t, want %t", tc.text, got, tc.want)

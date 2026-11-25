@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/luckyPipewrench/pipelock/internal/carddlp"
 	"github.com/luckyPipewrench/pipelock/internal/seedprotect"
 )
 
@@ -173,8 +174,20 @@ func (m *Matcher) scanViews(s, cardView string) []Match {
 		view := s
 		if cp.class == ClassCreditCard {
 			view = cardView
+			carddlp.VisitText(view, func(c carddlp.Candidate) bool {
+				if !c.PublicExample {
+					raw = append(raw, Match{Class: cp.class, Start: c.Start, End: c.End, Original: s[c.Start:c.End]})
+				}
+				return false
+			})
+			// Keep the legacy shape-only regex as a union with the validated
+			// candidates above. Redaction historically includes invalid Luhn
+			// values; detection precision must not narrow that contract.
 		}
 		for _, loc := range cp.pattern.FindAllStringIndex(view, -1) {
+			if cp.class == ClassCreditCard && carddlp.IsPublicTestPAN(view[loc[0]:loc[1]]) {
+				continue
+			}
 			// Reject matches whose surrounding context marks them as a protocol
 			// artifact rather than a leaked secret (e.g. an AWS access key ID
 			// that is the X-Amz-Credential of a SigV4 pre-signed URL). Both the

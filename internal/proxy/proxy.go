@@ -648,8 +648,11 @@ type Proxy struct {
 	issuerCookieRuntime  atomic.Pointer[issuerCookieRuntime]
 	scannerPtr           atomic.Pointer[scanner.Scanner]
 	editionPtr           atomic.Pointer[editionSnapshot]
-	sessionMgrPtr        atomic.Pointer[SessionManager]         // nil when taint and profiling are both disabled
-	taintRecorder        session.Recorder                       // optional invocation-owned state shared with an MCP sandbox
+	sessionMgrPtr        atomic.Pointer[SessionManager] // nil when taint and profiling are both disabled
+	taintRecorder        session.Recorder               // optional invocation-owned state shared with an MCP sandbox
+	tlsCRLMu             sync.Mutex
+	tlsCRLAddr           string
+	tlsCRLWarnOnce       sync.Once
 	certCachePtr         atomic.Pointer[certgen.CertCache]      // nil when TLS interception disabled
 	entropyTrackerPtr    atomic.Pointer[scanner.EntropyTracker] // nil when entropy budget disabled
 	fragmentBufferPtr    atomic.Pointer[scanner.FragmentBuffer] // nil when fragment reassembly disabled
@@ -3138,6 +3141,8 @@ func (p *Proxy) installScannerHeartbeat(sc *scanner.Scanner) {
 // LoadCertCache creates or replaces the cert cache based on current config.
 // Called at startup and on hot-reload when TLS interception config changes.
 func (p *Proxy) LoadCertCache(cfg *config.Config) error {
+	p.tlsCRLMu.Lock()
+	defer p.tlsCRLMu.Unlock()
 	if !cfg.TLSInterception.Enabled {
 		p.certCachePtr.Store(nil)
 		return nil
@@ -3151,10 +3156,14 @@ func (p *Proxy) LoadCertCache(cfg *config.Config) error {
 		return fmt.Errorf("load TLS CA: %w (run 'pipelock tls init' to generate)", err)
 	}
 	ttl, _ := time.ParseDuration(cfg.TLSInterception.CertTTL) // already validated
-	cache, err := certgen.NewCertCache(ca, caKey, ttl, cfg.TLSInterception.CertCacheSize)
+	cache := p.certCachePtr.Load()
+	if cache == nil || !cache.Matches(ca, ttl, cfg.TLSInterception.CertCacheSize) {
+		cache, err = certgen.NewCertCache(ca, caKey, ttl, cfg.TLSInterception.CertCacheSize)
+	}
 	if err != nil {
 		return fmt.Errorf("create TLS cert cache: %w", err)
 	}
+	p.configureTLSCRLLocked(cache, cfg)
 	p.certCachePtr.Store(cache)
 	return nil
 }
@@ -5388,6 +5397,10 @@ func (p *Proxy) buildHandler(mux *http.ServeMux) http.Handler {
 			return
 		}
 		if r.URL.IsAbs() && r.URL.Host != "" {
+			if p.isSelfCRLRequest(r) {
+				p.handleTLSCRL(w, r)
+				return
+			}
 			if !p.cfgPtr.Load().ForwardProxy.Enabled {
 				http.Error(w, "forward proxy not enabled", http.StatusMethodNotAllowed)
 				return
@@ -5433,6 +5446,7 @@ func (p *Proxy) buildMux() *http.ServeMux {
 	mux.HandleFunc("/fetch", p.handleFetch)
 	mux.HandleFunc("/ws", p.handleWebSocket)
 	mux.HandleFunc("/health", p.handleHealth)
+	mux.HandleFunc(tlsCRLPath, p.handleTLSCRL)
 	mux.HandleFunc(envelope.WellKnownPath, p.handleEnvelopeDirectory)
 	// Metrics and stats belong exclusively to an explicitly configured dedicated
 	// listener. The agent-facing listener never publishes enforcement counters.
@@ -5536,10 +5550,17 @@ func (p *Proxy) start(ctx context.Context, ln net.Listener) error {
 		writeTimeout = 0
 	}
 
-	listenAddr := cfg.FetchProxy.Listen
-	if ln != nil {
-		listenAddr = ln.Addr().String()
+	if ln == nil {
+		var err error
+		var lc net.ListenConfig
+		ln, err = lc.Listen(ctx, "tcp", cfg.FetchProxy.Listen)
+		if err != nil {
+			return err
+		}
 	}
+	defer func() { _ = ln.Close() }()
+	listenAddr := ln.Addr().String()
+	p.SetTLSCRLBoundAddress(listenAddr)
 
 	mainGate := &httpstream.Gate{}
 	p.server = &http.Server{
@@ -5561,10 +5582,7 @@ func (p *Proxy) start(ctx context.Context, ln net.Listener) error {
 	p.logger.LogStartup(listenAddr, cfg.Mode, Version, cfg.Hash())
 
 	err := serveUntilShutdown(ctx, func() error {
-		if ln != nil {
-			return p.server.Serve(ln)
-		}
-		return p.server.ListenAndServe()
+		return p.server.Serve(ln)
 	}, func() error {
 		shutdownCtx, cancel := httpstream.DrainContext(p.shutdownGraceOrDefault(), p.receiptEmitterPtr.Load().NativeCapacity().Stopped())
 		defer cancel()

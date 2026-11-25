@@ -226,7 +226,7 @@ func TestHookMaskIncompleteInspection(t *testing.T) {
 	text := "AKIA" + "IOSFODNN7EXAMPLE" + " &" + strings.Repeat("amp;", 100) + "#65;"
 	partial := sc.ScanTextForDLPInbound(t.Context(), text)
 	found := false
-	for _, match := range partial.Matches {
+	for _, match := range partial.Findings() {
 		found = found || match.PatternName == scanner.PartialEncodedContentPattern
 	}
 	if !found {
@@ -558,7 +558,7 @@ func TestHookTransformCapabilityKeepsCleanOutcome(t *testing.T) {
 	t.Cleanup(sc.Close)
 	partial := "report &" + strings.Repeat("amp;", 100) + "#65;"
 	found := false
-	for _, match := range sc.ScanTextForDLPInbound(t.Context(), partial).Matches {
+	for _, match := range sc.ScanTextForDLPInbound(t.Context(), partial).Findings() {
 		found = found || match.PatternName == scanner.PartialEncodedContentPattern
 	}
 	if !found {

@@ -122,6 +122,7 @@ type assembledPayloadOperation uint8
 const (
 	assembledPayloadLiteral assembledPayloadOperation = iota
 	assembledPayloadNormalize
+	assembledPayloadCardNormalize
 	assembledPayloadHTML
 	assembledPayloadWhitespace
 	assembledPayloadSegment
@@ -224,6 +225,8 @@ func (p *assembledPayload) materialize() (string, bool) {
 
 func (p *assembledPayload) transform(source string) (string, bool) {
 	switch p.operation {
+	case assembledPayloadCardNormalize:
+		return normalize.ForCardText(source), true
 	case assembledPayloadNormalize:
 		return normalize.ForDLP(source), true
 	case assembledPayloadHTML:

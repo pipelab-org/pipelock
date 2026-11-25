@@ -317,8 +317,8 @@ func TestRewriteJSON_NumericScalarBypassBlocked(t *testing.T) {
 		body string
 	}{
 		{"visa-16", `{"cc": ` + "4111111111" + "111111}"},
-		{"mastercard-16", `{"cc": ` + "5555555555" + "554444}"},
-		{"amex-15", `{"cc": ` + "37828224" + "6310005}"},
+		{"mastercard-16", `{"cc": ` + "5100000000" + "000008}"},
+		{"amex-15", `{"cc": ` + "34000000" + "0000009}"},
 		{"ssn-shaped-would-not-match", `{"ssn_numeric": 123456789}`}, // SSN needs dashes, won't match - sanity check
 	}
 	for _, tc := range cases {

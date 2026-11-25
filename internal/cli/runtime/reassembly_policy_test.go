@@ -83,7 +83,7 @@ func assertInboundPartialAuditReceipt(t *testing.T, body string) {
 	})
 	ctx := scanner.WithDLPWarnContext(t.Context(), scanner.DLPWarnContext{Transport: "mcp_http", Resource: "tools/call", RequestID: "partial-scan", Agent: "test-agent", PolicyHash: runtimeTestPolicyHash})
 	r := sc.ScanTextForDLPInbound(ctx, body)
-	if !r.Clean || r.Incomplete || !scanner.OnlyInformational(r.Matches) || scanner.HasInspectionLimit(r.Matches) {
+	if !r.Clean || r.Incomplete || len(r.Matches) != 0 || !scanner.OnlyInformational(r.InformationalMatches) || scanner.HasInspectionLimit(r.Matches) {
 		t.Fatal("partial inbound became refusal or silent success", r)
 	}
 	entries, err := recorder.QuerySession(dir, "proxy", &recorder.QueryFilter{Type: "action_receipt"})

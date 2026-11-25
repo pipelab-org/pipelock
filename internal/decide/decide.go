@@ -530,7 +530,7 @@ func evidenceFromJSONDLP(sc *scanner.Scanner, text, raw string, values []string)
 
 func evidenceFromDLP(result scanner.TextDLPResult) []Evidence {
 	var ev []Evidence
-	for _, m := range result.Matches {
+	for _, m := range result.Findings() {
 		action := config.ActionBlock
 		if m.IsInformational() {
 			action = config.ActionWarn

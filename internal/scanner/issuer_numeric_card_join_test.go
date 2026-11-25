@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/luckyPipewrench/pipelock/internal/cardtest"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/jsonnumber"
 )
@@ -25,7 +26,8 @@ func numericJoinTestCard16A() (string, string) {
 }
 
 func numericJoinTestCard16B() (string, string) {
-	return "5105" + "1051", "0510" + "5100"
+	pan := cardtest.Issuer("5191", 16)
+	return pan[:8], pan[8:]
 }
 
 func newNumericJoinTestScanner(t *testing.T, mutate func(*config.Config)) *Scanner {

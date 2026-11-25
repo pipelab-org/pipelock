@@ -100,8 +100,8 @@ func TestDefaultMatcher_StructuredClasses(t *testing.T) {
 		{"ad-user", "CONTOSO\\jsmith logged in", ClassADUser},
 		{"ssn", "SSN " + "123-45-" + "6789 on file", ClassSSN},
 		{"credit-card-visa", "card " + "4111 1111 " + "1111 1111", ClassCreditCard},
-		{"credit-card-amex-15digit", "card " + "3782 822463 " + "10005", ClassCreditCard},
-		{"credit-card-amex-dashed", "card " + "3714-496353-" + "98431", ClassCreditCard},
+		{"credit-card-amex-15digit", "card " + "3400 000000 " + "00009", ClassCreditCard},
+		{"credit-card-amex-dashed", "card " + "3700-000000-" + "00002", ClassCreditCard},
 		// Hash classes now require a contextual keyword prefix (sha256/
 		// md5/etc.) so bare 64-hex strings like SaaS-style OAuth
 		// client_secret values do not trigger the matcher. See
