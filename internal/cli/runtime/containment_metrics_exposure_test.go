@@ -62,7 +62,7 @@ func TestServer_ContainmentDeletedMetricsKeyDoesNotExposeMetricsOnTheProxyPort(t
 			return resp.StatusCode, true
 		}
 
-		if err := containmentProxyReady(client, fetchListen, done, 3*time.Second); err != nil {
+		if err := containmentProxyReady(s, client, fetchListen, done, 3*time.Second); err != nil {
 			return err
 		}
 

@@ -109,12 +109,20 @@ func TestServer_ContainmentMetricsCleanupWaitsForStart(t *testing.T) {
 	}
 }
 
-// containmentProxyReady polls the proxy health URL and returns Start's error
-// when the server exits first. Callers inside testport.WithRetry return that
-// error so a stolen port is retried instead of waiting out the dial timeout.
-func containmentProxyReady(client *http.Client, addr string, done <-chan error, timeout time.Duration) error {
+// containmentProxyReady waits for s to bind its listeners before polling the
+// proxy health URL, and returns Start's error when the server exits first.
+// Waiting on startupNotified prevents a port thief already serving /health from
+// masking Start's EADDRINUSE inside testport.WithRetry.
+func containmentProxyReady(s *Server, client *http.Client, addr string, done <-chan error, timeout time.Duration) error {
 	ctx, cancel := context.WithTimeout(context.Background(), testwait.Deadline(timeout))
 	defer cancel()
+	select {
+	case <-s.startupNotified():
+	case err := <-done:
+		return fmt.Errorf("Start returned before serving the proxy: %w", err)
+	case <-ctx.Done():
+		return fmt.Errorf("timed out waiting for contained proxy on %s: %w", addr, ctx.Err())
+	}
 	ticker := time.NewTicker(5 * time.Millisecond)
 	defer ticker.Stop()
 	healthURL := "http://" + addr + "/health"
@@ -163,7 +171,7 @@ func TestServer_StartContainmentUnsafeMetricsSkipsBlockedListener(t *testing.T) 
 
 		client := &http.Client{Transport: &http.Transport{Proxy: nil}, Timeout: 200 * time.Millisecond}
 		t.Cleanup(client.CloseIdleConnections)
-		if err := containmentProxyReady(client, fetchListen, done, 2*time.Second); err != nil {
+		if err := containmentProxyReady(s, client, fetchListen, done, 2*time.Second); err != nil {
 			return err
 		}
 
