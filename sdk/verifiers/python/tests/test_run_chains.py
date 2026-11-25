@@ -422,3 +422,42 @@ def test_direct_rotation_endorsement_requires_supported_version(tmp_path):
     verify_base(tmp_path, "example", (key,), endorsements=(endorsement(1),))
     with pytest.raises(ValueError, match="version"):
         verify_base(tmp_path, "example", (key,), endorsements=(endorsement(2),))
+
+
+def _gate_shard(directory, session):
+    entry = {
+        "v": 1,
+        "seq": 0,
+        "type": "receipt_group_v1",
+        "session_id": session,
+        "detail": {},
+    }
+    (directory / f"evidence-{session}-0.jsonl").write_text(json.dumps(entry) + "\n")
+
+
+def _verify_with_group_opened_during_reads(tmp_path, monkeypatch, session):
+    directory = tmp_path / "evidence"
+    shutil.copytree(RUNS / "valid", directory)
+    read = chain_set.read_run
+
+    def publish(*args, **kwargs):
+        if not (directory / f"evidence-{session}-0.jsonl").exists():
+            _gate_shard(directory, session)
+        return read(*args, **kwargs)
+
+    monkeypatch.setattr(chain_set, "read_run", publish)
+    return verify_base(directory, "proxy", (KEY,), exclude_groups=True)
+
+
+def test_unrelated_group_opened_during_verification_is_not_a_change(
+    tmp_path, monkeypatch
+):
+    session = "other.run." + "0123456789abcdef" * 2
+    report = _verify_with_group_opened_during_reads(tmp_path, monkeypatch, session)
+    assert report["healthy"], report["findings"]
+
+
+def test_own_group_opened_during_verification_voids_the_report(tmp_path, monkeypatch):
+    session = "proxy.run." + "0123456789abcdef" * 2
+    report = _verify_with_group_opened_during_reads(tmp_path, monkeypatch, session)
+    assert not report["healthy"]

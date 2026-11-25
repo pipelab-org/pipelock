@@ -467,6 +467,7 @@ func VerifyBase(dir, base string, opts BaseVerifyOptions) (report BaseReport, re
 		return report, fmt.Errorf("listing sessions: %w", err)
 	}
 	sessions := baseSessions(ix, base)
+	var links []chainLinkRecord
 	if !opts.LinksOnly {
 		before, err := fingerprintBaseShards(ix, sessions)
 		if err != nil {
@@ -481,7 +482,7 @@ func VerifyBase(dir, base string, opts BaseVerifyOptions) (report BaseReport, re
 			final, scanErr := opts.recorderIndex(dir, finalGroups)
 			after, checkErr := fingerprintBaseShards(final, baseSessions(final, base))
 			endRoot, rootErr := os.Lstat(dir)
-			if scanErr != nil || checkErr != nil || after != before || !maps.Equal(groupSessions, finalGroups) || rootErr != nil || !os.SameFile(root, endRoot) {
+			if scanErr != nil || checkErr != nil || after != before || groupMembershipChanged(base, links, groupSessions, finalGroups) || rootErr != nil || !os.SameFile(root, endRoot) {
 				detail := "evidence changed during verification; no verdict reached"
 				// Conclusions drawn from the changed inventory are void, but a
 				// per-read change finding already names what changed, and a
@@ -510,7 +511,7 @@ func VerifyBase(dir, base string, opts BaseVerifyOptions) (report BaseReport, re
 			}
 		}()
 	}
-	links, err := readChainLinkFiles(dir)
+	links, err = readChainLinkFiles(dir)
 	if err != nil {
 		return report, err
 	}
@@ -715,6 +716,32 @@ func VerifyBase(dir, base string, opts BaseVerifyOptions) (report BaseReport, re
 		report.Chains = append(report.Chains, data[s].chain)
 	}
 	return report, nil
+}
+
+// groupMembershipChanged reports whether a session this verification relied
+// on gained or lost its receipt-group gate. Only the base's own sessions and
+// the predecessors named by link files count: a recovery seal is skipped only
+// when its named predecessor and successor are both gated. A group another
+// base opens changes nothing this report read.
+func groupMembershipChanged(base string, links []chainLinkRecord, before, after map[string]bool) bool {
+	named := map[string]bool{}
+	for _, lf := range links {
+		named[lf.namePred] = true
+	}
+	relevant := func(session string) bool {
+		return named[session] || isBaseChain(session, base)
+	}
+	for session := range before {
+		if relevant(session) && !after[session] {
+			return true
+		}
+	}
+	for session := range after {
+		if relevant(session) && !before[session] {
+			return true
+		}
+	}
+	return false
 }
 
 // fingerprintBaseShards binds even failed reads to their starting inventory.

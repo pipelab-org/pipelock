@@ -10,6 +10,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -467,5 +468,68 @@ test("report snapshot binds a verified base to later session reads and error exi
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  }
+});
+
+const gateLine = (session: string): string =>
+  JSON.stringify({
+    v: 1,
+    seq: 0,
+    type: "receipt_group_v1",
+    session_id: session,
+    detail: {},
+  }) + "\n";
+
+test("a group another base opens during verification is not a change", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pipelock-ts-unrelated-group-"));
+  try {
+    cpSync(join(FIXTURES, "valid"), dir, { recursive: true });
+    const opts = { trustedKeys: [KEY], endorsements: [], excludeReceiptGroupSessions: true };
+    const other = "other.run." + "0123456789abcdef".repeat(2);
+    const pending = verifyBase(dir, "proxy", opts);
+    writeFileSync(join(dir, `evidence-${other}-0.jsonl`), gateLine(other));
+    assert.ok(baseHealthy(await pending), "an unrelated group does not alter the proxy report");
+    const own = "proxy.run." + "0123456789abcdef".repeat(2);
+    const changed = verifyBase(dir, "proxy", opts);
+    writeFileSync(join(dir, `evidence-${own}-0.jsonl`), gateLine(own));
+    await assert.rejects(changed, noVerdict, "a group of the base itself does");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a gate that flickers between listings cannot reach a healthy report", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "pipelock-ts-flicker-gate-"));
+  const fs = createRequire(import.meta.url)("node:fs") as typeof import("node:fs");
+  const original = fs.readdirSync;
+  try {
+    cpSync(join(FIXTURES, "valid"), dir, { recursive: true });
+    const name = readdirSync(dir).find(
+      (file) => file.startsWith("evidence-proxy.run.") && file.endsWith("-0.jsonl"),
+    )!;
+    const shard = join(dir, name);
+    const ordinary = readFileSync(shard);
+    const session = name.slice("evidence-".length, -"-0.jsonl".length);
+    const gated = Buffer.concat([Buffer.from(gateLine(session)), ordinary]);
+    const set = (bytes: Buffer): void => writeFileSync(shard, bytes);
+    set(gated);
+    let listings = 0;
+    t.mock.method(fs, "readdirSync", (...args: unknown[]) => {
+      const listing = Reflect.apply(original, fs, args);
+      // Only classifying listings carry file types. The second one shows the
+      // shard as an ordinary run, and every later one restores the gate.
+      if ((args[1] as { withFileTypes?: boolean } | undefined)?.withFileTypes) {
+        listings++;
+        set(listings === 2 ? ordinary : gated);
+      }
+      return listing;
+    });
+    syncBuiltinESMExports();
+    const opts = { trustedKeys: [KEY], endorsements: [], excludeReceiptGroupSessions: true };
+    await assert.rejects(verifyBase(dir, "proxy", opts), noVerdict);
+  } finally {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+    rmSync(dir, { recursive: true, force: true });
   }
 });

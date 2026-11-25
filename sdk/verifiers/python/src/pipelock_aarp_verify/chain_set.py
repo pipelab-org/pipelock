@@ -400,11 +400,13 @@ def _snapshot(
     }
     links = sorted(p for p in directory.iterdir() if _LINK_FILE.fullmatch(p.name))
     paths = [
-        directory,
         *links,
         *(path for shards in index.values() for _, path in shards),
     ]
-    stamps = []
+    root = directory.lstat()
+    # The directory counts by identity only: an entry another base adds or
+    # removes changes its size and times without changing this base's inputs.
+    stamps = [(directory.name, root.st_dev, root.st_ino)]
     for path in paths:
         info = path.lstat()
         stamps.append(
@@ -417,7 +419,12 @@ def _snapshot(
                 info.st_ctime_ns,
             )
         )
-    return index, links, (tuple(stamps), frozenset(groups)), groups
+    # Group membership matters only for this base's sessions and the
+    # predecessors its link files name; a group another base opens changes
+    # nothing this report read.
+    named = {_LINK_FILE.fullmatch(p.name)[1] for p in links}
+    relevant = frozenset(s for s in groups if s in named or _in_base(s, base))
+    return index, links, (tuple(stamps), relevant), groups
 
 
 def verify_base(

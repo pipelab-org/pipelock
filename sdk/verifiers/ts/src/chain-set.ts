@@ -1190,25 +1190,32 @@ export async function verifyBase(
   return withBaseHistorySnapshot(
     dir,
     base,
-    () => verifyBaseInner(dir, base, opts),
+    (ix) => verifyBaseInner(dir, base, opts, ix),
     opts.excludeReceiptGroupSessions,
   );
 }
 
 // Defer publication until all reads used to assemble a base report finish.
+// The index that classified the sessions is the one the report consumes, so a
+// gate that flickers between two separate listings cannot hide in a snapshot
+// that was taken from another listing.
 export async function withBaseHistorySnapshot<T>(
   dir: string,
   base: string,
-  consume: () => Promise<T>,
+  consume: (ix: EvidenceIndex) => Promise<T>,
   excludeGroups = false,
 ): Promise<T> {
-  const before = baseInventory(dir, base, true, excludeGroups);
+  const used = indexRecorderFiles(dir, excludeGroups);
+  const before = baseInventory(dir, base, true, excludeGroups ? used : undefined);
   try {
-    return await consume();
+    return await consume(used);
   } finally {
     let changed = true;
     try {
-      changed = baseInventory(dir, base, true, excludeGroups) !== before;
+      const final = excludeGroups ? indexRecorderFiles(dir, true) : undefined;
+      changed =
+        baseInventory(dir, base, true, final) !== before ||
+        (final !== undefined && groupMembershipChanged(dir, base, used.groups, final.groups));
     } catch {
       // Unavailable final inventory cannot support either verdict.
     }
@@ -1216,11 +1223,33 @@ export async function withBaseHistorySnapshot<T>(
   }
 }
 
-function baseInventory(dir: string, base: string, baseMode = true, excludeGroups = false): string {
-  const ordinary = excludeGroups ? indexRecorderFiles(dir, true) : undefined;
+// Only this base's sessions and the predecessors its link files name can change
+// how this report reads the directory; a group another base opens cannot.
+function groupMembershipChanged(
+  dir: string,
+  base: string,
+  before: ReadonlySet<string>,
+  after: ReadonlySet<string>,
+): boolean {
+  const named = new Set<string>();
+  for (const name of readdirSync(dir)) {
+    const predecessor = chainLinkFilePredecessor(name);
+    if (predecessor !== undefined) named.add(predecessor);
+  }
+  const relevant = (session: string): boolean => named.has(session) || isBaseChain(session, base);
+  for (const session of before) if (relevant(session) && !after.has(session)) return true;
+  for (const session of after) if (relevant(session) && !before.has(session)) return true;
+  return false;
+}
+
+function baseInventory(
+  dir: string,
+  base: string,
+  baseMode = true,
+  ordinary?: EvidenceIndex,
+): string {
   const root = statSync(dir, { bigint: true });
   const items: unknown[] = [[root.dev.toString(), root.ino.toString()]];
-  if (ordinary) items.push([...ordinary.groups].sort(compareStrings));
   for (const name of readdirSync(dir).sort()) {
     const parsed = parseEvidenceFilename(name);
     if (
@@ -1244,9 +1273,9 @@ async function verifyBaseInner(
   dir: string,
   base: string,
   opts: BaseVerifyOptions,
+  ix: EvidenceIndex,
 ): Promise<BaseReport> {
   const report: BaseReport = { base, chains: [], findings: [] };
-  const ix = indexRecorderFiles(dir, opts.excludeReceiptGroupSessions);
   const sessions = sortedSessions(ix).filter((s) => isBaseChain(s, base));
   const links = await readChainLinkFiles(dir);
   const add = (kind: string, session: string, detail: string): void => {
