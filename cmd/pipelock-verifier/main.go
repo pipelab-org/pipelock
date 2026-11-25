@@ -31,6 +31,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -59,7 +60,8 @@ func execute(args []string, stdout, stderr io.Writer) int {
 	root.SetOut(stdout)
 	root.SetErr(stderr)
 	err := root.Execute()
-	if err != nil {
+	var status *cliutil.ExitError
+	if err != nil && (!errors.As(err, &status) || status.Err != nil) {
 		reason := strings.ReplaceAll(strings.TrimSpace(err.Error()), "\n", "; ")
 		_, _ = fmt.Fprintf(stderr, "pipelock-verifier: %s\n", reason)
 	}
@@ -94,6 +96,7 @@ CI runner, an auditor's laptop, or an isolated environment.`,
 	root.AddCommand(newReplayCmd())
 	root.AddCommand(newAARPCmd())
 	root.AddCommand(newVerifyRunCmd())
+	root.AddCommand(newV3Cmd())
 
 	return root
 }

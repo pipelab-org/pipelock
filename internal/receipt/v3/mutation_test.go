@@ -38,6 +38,7 @@ func TestImplementedFindingTargets(t *testing.T) {
 	targets := map[string]bool{
 		codeDecisionIndexFull:     t.Run(codeDecisionIndexFull, testDecisionIndexFinding),
 		codeLegacyGroupIncomplete: t.Run(codeLegacyGroupIncomplete, testIncompleteLegacyGroup),
+		codeUseHostVerifier:       t.Run(codeUseHostVerifier, testUseHostVerifierFinding),
 	}
 	for _, entry := range corpus {
 		if entry.IsDir() && strings.HasPrefix(entry.Name(), "g") {
@@ -81,6 +82,20 @@ func TestImplementedFindingTargets(t *testing.T) {
 	}
 }
 
+func testUseHostVerifierFinding(t *testing.T) {
+	t.Helper()
+	opts := Options{AllowUnpinned: true, AllowPrefix: true}
+	result := UseHostVerifier(opts)
+	if result.Verdict != "UNSUPPORTED" || result.ExitCode != 3 ||
+		!slices.Equal(result.Findings, []Finding{{Code: codeUseHostVerifier, Class: unsupported}}) {
+		t.Fatalf("browser bounds must produce an unsupported result: %+v", result)
+	}
+	projection, err := result.ResultBytes("projection")
+	if err != nil || !strings.Contains(string(projection), codeUseHostVerifier) {
+		t.Fatalf("browser bounds finding missing from projection: %s (%v)", projection, err)
+	}
+}
+
 func findingCodeForIdentifier(name string) string {
 	for code := range findingClasses {
 		if strings.EqualFold(strings.ReplaceAll(code, "_", ""), name) {
@@ -111,6 +126,7 @@ func TestCorpusCheckMutations(t *testing.T) {
 		"g09-legacy-extended",
 		"g09-legacy-head-mismatch",
 		"g09-legacy-truncated",
+		"g09-rotation-boundary-truncation",
 		"g09-unknown-membership",
 		"g09-unlisted-legacy",
 		"g06-unknown-action-type",

@@ -51,10 +51,7 @@ func (v *verification) checkPin(parent, child *verifiedStream) error {
 	if v.skip != codeLineageMismatch && !sameLineage && parent.body.Lineage != "" {
 		v.add(child.open.finding(codeLineageMismatch))
 	}
-	var id, kind string
-	err := v.store.QueryRowContext(v.ctx,
-		"SELECT id, json_extract(payload, '$.kind') FROM records WHERE stream=? AND seq=? AND seq<=?",
-		pin.Stream, pin.Seq, parent.limit).Scan(&id, &kind)
+	id, kind, err := v.store.pin(v.ctx, pin.Stream, pin.Seq, parent.limit)
 	if err != nil {
 		// The pin was physically absent or beyond the verified shared prefix.
 		if errors.Is(err, sql.ErrNoRows) {
@@ -86,7 +83,7 @@ func (v *verification) checkPin(parent, child *verifiedStream) error {
 	}
 	parent.limit = pin.Seq
 	if parent.last.Seq > pin.Seq {
-		if err := walkRecords(v.ctx, v.store, pin.Stream, parent.last.Seq, func(record stagedRecord) error {
+		if err := v.store.walk(v.ctx, pin.Stream, parent.last.Seq, func(record stagedRecord) error {
 			if record.Seq > pin.Seq {
 				v.add(record.finding(codeUnconfirmed))
 			}

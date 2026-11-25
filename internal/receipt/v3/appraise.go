@@ -20,6 +20,8 @@ type decisionIndex struct {
 	disk                                                        bool
 	skipLimit                                                   bool
 	maxIDs                                                      int
+	holds                                                       map[string]string
+	badShapes                                                   map[int]map[string]bool
 	full                                                        bool
 	rememberID, readOpaque, readPiece, writePiece, readBadShape *sql.Stmt
 }
@@ -51,10 +53,14 @@ func (d *decisionIndex) prepare() error {
 }
 
 func (d *decisionIndex) reset() error {
-	const resetIndex = "DELETE FROM decision_ids; DELETE FROM decision_pieces; DELETE FROM hold_owners; DELETE FROM bad_shapes"
-	_, err := d.tx.ExecContext(d.ctx, resetIndex)
-	if err != nil {
-		return fmt.Errorf("reset decision index: %w", err)
+	if d.tx == nil {
+		d.holds = make(map[string]string)
+		d.badShapes = make(map[int]map[string]bool)
+	} else {
+		const resetIndex = "DELETE FROM decision_ids; DELETE FROM decision_pieces; DELETE FROM hold_owners; DELETE FROM bad_shapes"
+		if _, err := d.tx.ExecContext(d.ctx, resetIndex); err != nil {
+			return fmt.Errorf("reset decision index: %w", err)
+		}
 	}
 	d.full = false
 	if !d.disk {
@@ -168,7 +174,25 @@ func (d *decisionIndex) eachPiece(apply func(pieceEntry)) error {
 	return nil
 }
 
+func (d *decisionIndex) rememberBadShape(segment int, id string) error {
+	if d.tx == nil {
+		if d.badShapes[segment] == nil {
+			d.badShapes[segment] = make(map[string]bool)
+		}
+		d.badShapes[segment][id] = true
+		return nil
+	}
+	const query = "INSERT OR IGNORE INTO bad_shapes VALUES (?,?)"
+	if _, err := d.tx.ExecContext(d.ctx, query, segment, id); err != nil {
+		return fmt.Errorf("index malformed decision piece: %w", err)
+	}
+	return nil
+}
+
 func (d *decisionIndex) badShape(segment int, id string) (bool, error) {
+	if d.tx == nil {
+		return d.badShapes[segment][id], nil
+	}
 	var bad bool
 	if err := d.readBadShape.QueryRowContext(context.Background(), segment, id).Scan(&bad); err != nil {
 		return false, fmt.Errorf("look up decision shape: %w", err)
@@ -177,6 +201,14 @@ func (d *decisionIndex) badShape(segment int, id string) (bool, error) {
 }
 
 func (d *decisionIndex) holdOwner(hold, action string) (string, error) {
+	if d.tx == nil {
+		owner, exists := d.holds[hold]
+		if !exists {
+			d.holds[hold] = action
+			return action, nil
+		}
+		return owner, nil
+	}
 	if _, err := d.tx.ExecContext(d.ctx, "INSERT OR IGNORE INTO hold_owners VALUES (?,?)", hold, action); err != nil {
 		return "", fmt.Errorf("index hold identifier: %w", err)
 	}
@@ -195,19 +227,23 @@ type appraisal struct {
 }
 
 func (v *verification) appraiseDecisions() error {
-	// Streams and bulk operations remain cancellable. The transaction and its
-	// bounded index lookups don't each need a cancellation goroutine.
-	tx, err := v.store.BeginTx(context.Background(), nil)
+	tx, err := v.store.beginAppraisal()
 	if err != nil {
 		return fmt.Errorf("start decision appraisal: %w", err)
 	}
-	defer func() { _ = tx.Rollback() }()
+	if tx != nil {
+		defer func() { _ = tx.Rollback() }()
+	} else if v.opts.DiskIndex {
+		return errors.New("disk-backed appraisal is unavailable in the browser")
+	}
 	a := appraisal{
 		index:     decisionIndex{ctx: v.ctx, tx: tx, disk: v.opts.DiskIndex, maxIDs: maxDecisions, skipLimit: v.skip == codeDecisionIndexFull},
 		decisions: map[string]int64{}, uninterpreted: map[string]int64{}, fullHistory: true,
 	}
-	if err := a.index.prepare(); err != nil {
-		return err
+	if tx != nil {
+		if err := a.index.prepare(); err != nil {
+			return err
+		}
 	}
 	for _, lineage := range sortedKeys(v.histories) {
 		members := v.histories[lineage]
@@ -229,7 +265,7 @@ func (v *verification) appraiseHistory(a *appraisal, pieces []segment, first *ve
 	future := false
 	for _, piece := range pieces {
 		for _, stream := range piece.streams {
-			err := walkRecords(v.ctx, a.index.tx, stream.open.Stream, stream.limit, func(r stagedRecord) error {
+			err := v.store.walkAppraisal(v.ctx, a.index.tx, stream.open.Stream, stream.limit, func(r stagedRecord) error {
 				if r.bodyCode != "" {
 					return nil
 				}
@@ -300,10 +336,7 @@ func (v *verification) inspectAction(a *appraisal, stream *verifiedStream, r sta
 		v.add(r.finding(codeActionUninterpreted))
 	case !actionShape(body, stream.body.Coverage.ReceiptsRequired):
 		v.add(r.finding(codeDecisionInconsistent))
-		const query = "INSERT OR IGNORE INTO bad_shapes VALUES (?,?)"
-		if _, err := a.index.tx.ExecContext(v.ctx, query, stream.segment, body.ActionID); err != nil {
-			return fmt.Errorf("index malformed decision piece: %w", err)
-		}
+		return a.index.rememberBadShape(stream.segment, body.ActionID)
 	}
 	return nil
 }
@@ -313,7 +346,7 @@ func (v *verification) appraiseSegment(a *appraisal, piece segment) error {
 		return err
 	}
 	for _, stream := range piece.streams {
-		err := walkRecords(v.ctx, a.index.tx, stream.open.Stream, stream.limit, func(r stagedRecord) error {
+		err := v.store.walkAppraisal(v.ctx, a.index.tx, stream.open.Stream, stream.limit, func(r stagedRecord) error {
 			if r.Kind != kindAction || r.bodyCode != "" {
 				return nil
 			}

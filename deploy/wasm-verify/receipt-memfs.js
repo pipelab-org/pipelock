@@ -246,7 +246,7 @@
 				continue;
 			}
 			ensureParents(parent(target));
-			const bytes = value instanceof Uint8Array ? value.slice() : new Uint8Array(value);
+			const bytes = new Uint8Array(value);
 			files.set(target, { bytes, inode: nextInode++, mtime: now });
 		}
 		return root;

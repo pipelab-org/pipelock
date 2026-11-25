@@ -499,25 +499,33 @@ func TestMixedDirectoryEndorsedRotation(t *testing.T) {
 	}
 }
 
-func TestLegacyPresentationContainsEarlierAction(t *testing.T) {
-	item := legacyPresentation{
-		InventoryChain:  InventoryChain{Record: "sha256:tail"},
-		actionPositions: map[int64]string{0: "first", 1: "middle", 2: "tail"},
-	}
+func TestLegacyPresentationCutoverPosition(t *testing.T) {
 	for _, tc := range []struct {
-		name, digest string
-		forked, want bool
+		name, format, digest string
+		seq                  int64
+		forked               bool
+		want                 int
 	}{
-		{"earlier record", "sha256:middle", false, true},
-		{"current tail", "sha256:tail", false, false},
-		{"unknown record", "sha256:other", false, false},
-		{"forked chain", "sha256:middle", true, false},
+		{"earlier action record after rotation", legacyAction, "sha256:middle", 1, false, 1},
+		{"current action tail", legacyAction, "sha256:tail", 0, false, 0},
+		{"unknown action record at same sequence", legacyAction, "sha256:other", 2, false, 0},
+		{"fork without an earlier record", legacyAction, "sha256:middle", 2, true, 0},
+		{"missing rotation boundary", legacyAction, "sha256:other", 0, false, -1},
+		{"earlier evidence record", legacyEvidence, "sha256:middle", 1, false, 1},
+		{"missing evidence genesis digest", legacyEvidence, "sha256:other", 0, false, 1},
+		{"later evidence sequence", legacyEvidence, "sha256:other", 3, false, -1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			p := item
-			p.forked = tc.forked
-			if got := p.containsEarlierAction(tc.digest); got != tc.want {
-				t.Fatalf("containsEarlierAction(%q) = %v, want %v", tc.digest, got, tc.want)
+			p := legacyPresentation{
+				InventoryChain: InventoryChain{Format: tc.format, Record: "sha256:tail", Seq: 2},
+				position:       2, positions: map[int64]string{0: "first", 1: "middle", 2: "tail"},
+				forked: tc.forked,
+			}
+			if tc.name == "current action tail" || tc.name == "earlier action record after rotation" {
+				p.Seq = 0
+			}
+			if got := p.compareCutoverPosition(InventoryChain{Record: tc.digest, Seq: tc.seq}); got != tc.want {
+				t.Fatalf("cutover position = %d, want %d", got, tc.want)
 			}
 		})
 	}

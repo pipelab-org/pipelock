@@ -6,7 +6,6 @@ package v3
 import (
 	"bufio"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -197,22 +196,16 @@ func (v *verification) discoverKey(input inputFile) error {
 }
 
 func (v *verification) stageFiles(files []inputFile) error {
-	tx, err := v.store.BeginTx(v.ctx, nil)
-	if err != nil {
-		return fmt.Errorf("start record staging: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-	const insert = `INSERT INTO records (stream,seq,id,payload,unknown,body_code,after_damage) VALUES (?,?,?,?,?,?,?)
-ON CONFLICT (stream,seq,id) DO UPDATE SET after_damage = min(after_damage,excluded.after_damage)`
-	stmt, err := tx.PrepareContext(v.ctx, insert)
-	if err != nil {
-		return fmt.Errorf("prepare record staging: %w", err)
-	}
-	defer func() { _ = stmt.Close() }()
+	return v.store.stage(v.ctx, func(write recordWriter) error {
+		return v.stageInputFiles(files, write)
+	})
+}
+
+func (v *verification) stageInputFiles(files []inputFile, write recordWriter) error {
 	maxStarts := map[string]int64{}
 	var tails []tornFile
 	for _, file := range files {
-		state, err := v.stageFile(file, stmt)
+		state, err := v.stageFile(file, write)
 		if err != nil {
 			return err
 		}
@@ -237,13 +230,10 @@ ON CONFLICT (stream,seq,id) DO UPDATE SET after_damage = min(after_damage,exclud
 			v.add(tail.last.finding(codeTornTail))
 		}
 	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit staged records: %w", err)
-	}
 	return nil
 }
 
-func (v *verification) stageFile(input inputFile, stmt *sql.Stmt) (fileState, error) {
+func (v *verification) stageFile(input inputFile, write recordWriter) (fileState, error) {
 	state := fileState{stream: input.stream, start: input.start}
 	if v.skip == codeFileLayout && input.code == "" {
 		state = fileState{start: -1}
@@ -278,7 +268,7 @@ func (v *verification) stageFile(input inputFile, stmt *sql.Stmt) (fileState, er
 			}
 			return state, nil
 		}
-		if !v.stageLine(line, &state, offset, stmt, &err) {
+		if !v.stageLine(line, &state, offset, write, &err) {
 			state.broken = true
 			state.afterDamage = true
 			if err != nil {
@@ -288,7 +278,7 @@ func (v *verification) stageFile(input inputFile, stmt *sql.Stmt) (fileState, er
 	}
 }
 
-func (v *verification) stageLine(line []byte, state *fileState, offset int64, stmt *sql.Stmt, outErr *error) bool {
+func (v *verification) stageLine(line []byte, state *fileState, offset int64, write recordWriter, outErr *error) bool {
 	record, code := parseLine(line, v.skip)
 	if code != "" {
 		v.addCode(code, state.stream)
@@ -325,7 +315,8 @@ func (v *verification) stageLine(line []byte, state *fileState, offset int64, st
 	unknown, code := checkBody(record, v.skip)
 	state.last = item
 	v.addStream(state.stream)
-	if _, err := stmt.ExecContext(v.ctx, record.Stream, record.Seq, record.ID, record.Payload, unknown, code, state.afterDamage); err != nil {
+	item.unknown, item.bodyCode, item.afterDamage = unknown, code, state.afterDamage
+	if err := write(v.ctx, item, record.Payload); err != nil {
 		*outErr = fmt.Errorf("stage verified record: %w", err)
 		return false
 	}
@@ -530,7 +521,7 @@ func (v *verification) verifyStream(id string, s *verifiedStream) error {
 		s.summary.Records++
 		return nil
 	}
-	err := walkRecords(v.ctx, v.store, id, maxInteger, func(current stagedRecord) error {
+	err := v.store.walk(v.ctx, id, maxInteger, func(current stagedRecord) error {
 		if len(s.contenders) != 0 {
 			if current.Seq == s.contenders[0].Seq {
 				s.contenders = append(s.contenders, current)

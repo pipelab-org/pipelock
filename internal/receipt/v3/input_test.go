@@ -19,6 +19,16 @@ import (
 	contract "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
 )
 
+func TestCallerOptionsAndResultFormat(t *testing.T) {
+	_, err := (CallerOptions{Format: "unknown"}).Parse(1)
+	if err == nil {
+		t.Fatal("accepted unknown receipt format")
+	}
+	if _, err := UseHostVerifier(Options{}).ResultBytes("unknown"); err == nil {
+		t.Fatal("accepted unknown result format")
+	}
+}
+
 func TestCallerPins(t *testing.T) {
 	stream := strings.Repeat("1", 32)
 	head := Digest(nil)
@@ -177,7 +187,7 @@ func TestVerifierRefusesScratchDatabaseFailures(t *testing.T) {
 	if err := stmt.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := v.stageFile(file, stmt); err == nil || !strings.Contains(err.Error(), "stage verified record") {
+	if _, err := v.stageFile(file, sqlRecordWriter(stmt)); err == nil || !strings.Contains(err.Error(), "stage verified record") {
 		t.Fatalf("staging did not propagate the write failure: %v", err)
 	}
 	if err := store.Close(); err != nil {

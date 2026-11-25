@@ -896,6 +896,90 @@ with zipfile.ZipFile(sys.argv[1], "w", zipfile.ZIP_DEFLATED) as archive:
     }
   });
 
+  test("receipt v3 corpus matches canonical documents and claims", async (t) => {
+    const corpus = path.join(testdata, "v3");
+    const vectors = readdirSync(corpus).sort().filter((name) =>
+      existsSync(path.join(corpus, name, "request.json")),
+    );
+    assert.ok(vectors.length > 0, "no receipt v3 corpus vectors");
+    let projections = 0;
+    let claims = 0;
+    let ordered = 0;
+    let equal = 0;
+    for (const name of vectors) {
+      await t.test(name, async () => {
+        const base = path.join(corpus, name);
+        const request = JSON.parse(readFileSync(path.join(base, "request.json"), "utf8"));
+        const entries = request.inputs.map((name) =>
+          [name, Uint8Array.from(readFileSync(path.join(base, name)))],
+        );
+        if (request.legacy) {
+          for (const entry of entries) {
+            assert.equal(await verifyV3([entry], null, "claims"), false);
+          }
+          claims++;
+          return;
+        }
+        const expected = readFileSync(path.join(base, "projection.json"), "utf8");
+        assert.equal(await verifyV3(entries, request, "projection"), expected);
+        projections++;
+        const full = await verifyV3(entries, request, "result");
+        const go = readFileSync(path.join(base, "expect.json"), "utf8");
+        if (full === go) equal++;
+        if (!request.directory && entries.length >= 2) {
+          assert.equal(await verifyV3([...entries].reverse(), request, "result"), full);
+          assert.equal(await verifyV3([...entries.slice(1), entries[0]], request, "result"), full);
+          ordered++;
+        }
+      });
+    }
+    t.diagnostic(`${projections} projections, ${claims} legacy claims, ${ordered} order checks, ${equal}/${projections} full documents equal to Go`);
+  });
+
+  test("receipt v3 browser bounds return the registry unsupported result", async () => {
+    const maxFiles = 4096;
+    const maxBytes = 32 << 20;
+    const atCount = Array.from({ length: maxFiles }, (_, i) => [`ignored-${i}`, new Uint8Array()]);
+    assert.equal(JSON.parse(await verifyV3(atCount, { directory: true })).ignored_files, maxFiles);
+    const atBytes = [["ignored", new Uint8Array(maxBytes)]];
+    assert.equal(JSON.parse(await verifyV3(atBytes, { directory: true })).ignored_files, 1);
+    for (const entries of [
+      [...atCount, ["one-more", new Uint8Array()]],
+      [["oversized", new Uint8Array(maxBytes + 1)]],
+      [...atBytes, ["one-more", new Uint8Array(1)]],
+    ]) {
+      const result = JSON.parse(await verifyV3(entries, { directory: true }));
+      assert.equal(result.kind, "verify_result");
+      assert.equal(result.verdict, "UNSUPPORTED");
+      assert.equal(result.exit_code, 3);
+      assert.deepEqual(result.findings, [{ class: "unsupported", code: "USE_HOST_VERIFIER" }]);
+    }
+  });
+
+  test("receipt v3 named files reject bad arguments and unsafe mounts", async () => {
+    const bytes = new Uint8Array();
+    for (const [entries, options, output, reason] of [
+      [[["../outside", bytes]], {}, "result", /unsafe named evidence/],
+      [[["top", bytes], ["top/child", bytes]], {}, "result", /parent directory/],
+      [[["text", "not bytes"]], {}, "result", /Uint8Array/],
+      [[["empty", bytes]], 123, "result", /decode receipt options/],
+      [[["empty", bytes]], { format: "bad" }, "result", /format must be v3/],
+      [[["empty", bytes]], {}, "bad", /output must be/],
+      [[], {}, "claims", /expected one named file/],
+    ]) {
+      assert.match((await verifyV3(entries, options, output)).error, reason);
+    }
+  });
+
+  function verifyV3(entries, options, output = "result") {
+    const id = nextID++;
+    const result = new Promise((resolve, reject) => {
+      pending.set(id, { resolve, reject });
+    });
+    worker.postMessage({ id, operation: "v3", entries, options, output });
+    return result;
+  }
+
   async function verifyFixture(name, mode) {
     const tc = cases.find((candidate) => candidate.name === name);
     assert.ok(tc, `missing test case ${name}`);
@@ -941,6 +1025,14 @@ async function runWasmWorker() {
   });
   parentPort.on("message", (message) => {
     try {
+      if (message.operation === "v3") {
+        const files = Object.fromEntries(message.entries);
+        const result = message.output === "claims"
+          ? globalThis.pipelockClaimsReceiptV3(files)
+          : globalThis.pipelockVerifyReceiptV3(files, message.options, message.output);
+        parentPort.postMessage({ id: message.id, result });
+        return;
+      }
       const bytes = new Uint8Array(message.bytes);
       const result =
         message.operation === "group"

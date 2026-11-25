@@ -26,6 +26,7 @@ on:
       - 'docs/specs/**'
       - 'sdk/verifiers/**'
       - 'sdk/audit-packet/**'
+      - 'sdk/receipt-v3/**'
       - 'sdk/conformance/**'
       - 'release/verifier-installers.json'
       - 'scripts/release-verifier-install-gate.sh'
@@ -45,6 +46,7 @@ on:
       - 'docs/specs/**'
       - 'sdk/verifiers/**'
       - 'sdk/audit-packet/**'
+      - 'sdk/receipt-v3/**'
       - 'sdk/conformance/**'
       - 'release/verifier-installers.json'
       - 'scripts/release-verifier-install-gate.sh'
@@ -334,6 +336,81 @@ jobs:
           RUST_PROVENANCE: ${{ github.workspace }}/sdk/verifiers/rust/target/release/pipelock-verifier-rs provenance
           PY_PROVENANCE: python -P -m pipelock_aarp_verify provenance
         run: bash sdk/conformance/corpus-gate.sh
+
+  receipt-v3:
+    name: Receipt v3 installed-verifier conformance
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: '1.27'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: sdk/verifiers/ts/package-lock.json
+
+      - name: Set up Rust 1.95.0
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal
+          rustup default 1.95.0
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Build Go and browser verifiers
+        run: |
+          go build -o "$RUNNER_TEMP/pipelock-verifier" ./cmd/pipelock-verifier
+          bash deploy/wasm-verify/build.sh "$RUNNER_TEMP/receipt-v3-wasm"
+
+      - name: Install TypeScript verifier from its tarball
+        working-directory: sdk/verifiers/ts
+        run: |
+          npm ci
+          npm pack --pack-destination "$RUNNER_TEMP"
+          npm install --ignore-scripts --no-audit --no-fund \
+            --prefix "$RUNNER_TEMP/receipt-v3-npm" "$RUNNER_TEMP"/pipelock-verifier-ts-*.tgz
+
+      - name: Install Rust verifier
+        run: cargo install --locked --path sdk/verifiers/rust --root "$RUNNER_TEMP/receipt-v3-cargo"
+
+      - name: Build and install Python verifier wheel
+        run: |
+          python -m venv "$RUNNER_TEMP/receipt-v3-venv"
+          python="$RUNNER_TEMP/receipt-v3-venv/bin/python"
+          "$python" -m pip install --require-hashes -r sdk/conformance/pyverify-requirements.txt
+          "$python" -m pip wheel --no-deps --no-build-isolation \
+            --wheel-dir "$RUNNER_TEMP/receipt-v3-wheels" ./sdk/verifiers/python
+          wheels=("$RUNNER_TEMP"/receipt-v3-wheels/pipelock_aarp_verifier_py-*.whl)
+          test "${#wheels[@]}" -eq 1
+          digest="$(sha256sum "${wheels[0]}")"
+          printf '%s --hash=sha256:%s\n' "${wheels[0]}" "${digest%% *}" > "$RUNNER_TEMP/receipt-v3-wheel.txt"
+          "$python" -m pip install --no-deps --require-hashes -r "$RUNNER_TEMP/receipt-v3-wheel.txt"
+          "$python" -m pip check
+
+      - name: Test receipt v3 gate mechanics
+        run: python3 -m unittest discover -s sdk/conformance -p 'test_receipt_v3_gate.py'
+
+      - name: Verify receipt v3 projections and document order
+        env:
+          GO_V3: ${{ runner.temp }}/pipelock-verifier
+          WASM_V3: node deploy/wasm-verify/v3-cli.js ${{ runner.temp }}/receipt-v3-wasm
+          TS_V3: ${{ runner.temp }}/receipt-v3-npm/node_modules/.bin/pipelock-verifier-ts
+          RUST_V3: ${{ runner.temp }}/receipt-v3-cargo/bin/pipelock-verifier-rs
+          PY_V3: ${{ runner.temp }}/receipt-v3-venv/bin/python -I -m pipelock_aarp_verify
+          REQUIRE_ALL_LANES: '1'
+        run: bash sdk/conformance/receipt-v3-gate.sh
 
   # Cross-language AARP gate: builds all four AARP reference verifiers (Go,
   # TypeScript, Rust, Python) and runs them over the AARP assurance-envelope

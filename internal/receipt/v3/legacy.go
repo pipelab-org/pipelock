@@ -535,9 +535,7 @@ func (v *verification) saveLegacy(presented map[legacyIdentity]legacyPresentatio
 	item.position = int64(seq)
 	item.Seq = int64(item.cliSeq)
 	key := legacyIdentity{item.Format, item.Chain}
-	if item.Format == legacyAction {
-		item.actionPositions = positions[key]
-	}
+	item.positions = positions[key]
 	previous, exists := presented[key]
 	wasInvalid := previous.verdict == legacyInvalid
 	if !exists || item.position > previous.position {

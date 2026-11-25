@@ -8,9 +8,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
-	"database/sql"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -20,8 +18,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-
-	_ "modernc.org/sqlite"
 
 	contract "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
 )
@@ -287,57 +283,6 @@ func discover(paths []string, opts Options, skip string) (files []inputFile, leg
 	return files, legacy, inventory, ignored, nil
 }
 
-type recordStore struct {
-	*sql.DB
-	dir string
-}
-
-func newStore(ctx context.Context) (*recordStore, error) {
-	return newStoreIn(ctx, "")
-}
-
-func newStoreIn(ctx context.Context, parent string) (*recordStore, error) {
-	dir, err := os.MkdirTemp(parent, "pipelock-v3-verify-")
-	if err != nil {
-		return nil, fmt.Errorf("create verification scratch directory: %w", err)
-	}
-	db, err := sql.Open("sqlite", filepath.Join(dir, "verify.db"))
-	if err != nil {
-		_ = os.RemoveAll(dir)
-		return nil, fmt.Errorf("open verification scratch database: %w", err)
-	}
-	s := &recordStore{db, dir}
-	const schema = `
-PRAGMA journal_mode=OFF;
-CREATE TABLE records (
-	stream TEXT NOT NULL, seq INTEGER NOT NULL, id TEXT NOT NULL,
-	payload BLOB NOT NULL, unknown INTEGER NOT NULL, body_code TEXT NOT NULL, after_damage INTEGER NOT NULL DEFAULT 0,
-	PRIMARY KEY (stream, seq, id)
-) WITHOUT ROWID;
-CREATE TABLE decision_ids (
-	id TEXT PRIMARY KEY, opaque INTEGER NOT NULL
-) WITHOUT ROWID;
-CREATE TABLE decision_pieces (
-	id TEXT PRIMARY KEY, state BLOB NOT NULL
-) WITHOUT ROWID;
-CREATE TABLE bad_shapes (
-	segment INTEGER NOT NULL, id TEXT NOT NULL, PRIMARY KEY (segment,id)
-) WITHOUT ROWID;
-CREATE TABLE hold_owners (
-	id TEXT PRIMARY KEY, action_id TEXT NOT NULL
-) WITHOUT ROWID;`
-	if _, err := s.ExecContext(ctx, schema); err != nil {
-		s.close()
-		return nil, fmt.Errorf("initialize verification scratch database: %w", err)
-	}
-	return s, nil
-}
-
-func (s *recordStore) close() {
-	_ = s.Close()
-	_ = os.RemoveAll(s.dir)
-}
-
 func readBounded(ctx context.Context, r *bufio.Reader) (line []byte, complete bool, err error) {
 	// ReadSlice returns at most the configured buffer size. Drain an overlong
 	// line without allocating its attacker-controlled length.
@@ -379,31 +324,5 @@ func (r stagedRecord) finding(code string) Finding {
 	return Finding{Class: findingClasses[code], Code: code, Stream: r.Stream, Seq: &r.Seq, Record: r.id}
 }
 
-type recordQuery interface {
-	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
-}
-
-func walkRecords(ctx context.Context, source recordQuery, stream string, end int64, apply func(stagedRecord) error) error {
-	rows, err := source.QueryContext(ctx, "SELECT id, payload, unknown, body_code, after_damage FROM records WHERE stream=? AND seq<=? ORDER BY seq,id", stream, end)
-	if err != nil {
-		return fmt.Errorf("query verified stream records: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-	for rows.Next() {
-		var record stagedRecord
-		var payload []byte
-		if err := rows.Scan(&record.id, &payload, &record.unknown, &record.bodyCode, &record.afterDamage); err != nil {
-			return fmt.Errorf("read verified stream record: %w", err)
-		}
-		if err := json.Unmarshal(payload, &record.Common); err != nil {
-			return fmt.Errorf("decode verified stream record: %w", err)
-		}
-		if err := apply(record); err != nil {
-			return err
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("iterate verified stream records: %w", err)
-	}
-	return nil
-}
+// recordWriter stages the parsed record and its original canonical payload.
+type recordWriter func(context.Context, stagedRecord, []byte) error

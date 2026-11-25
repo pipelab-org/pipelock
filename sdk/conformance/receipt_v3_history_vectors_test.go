@@ -308,7 +308,7 @@ func v3RotatedCutoverRecipes(t *testing.T) []v3Recipe {
 	var heads [priorCount + 2]string
 	var sequences [len(heads)]int64
 	var chain []actionreceipt.Receipt
-	var prefixBytes int
+	var prefixBytes, rotationBytes int
 	prev := actionreceipt.GenesisHash
 	for i := range heads {
 		key, seq := before, uint64(i)
@@ -322,6 +322,7 @@ func v3RotatedCutoverRecipes(t *testing.T) []v3Recipe {
 			prefixBytes = legacy.Len()
 		}
 		if i == priorCount {
+			rotationBytes = legacy.Len()
 			transition = &actionreceipt.KeyTransition{PriorSignerKey: priorSigner, PriorChainSeq: priorCount - 1, PriorChainHash: prev}
 		}
 		record := actionreceipt.ActionRecord{
@@ -365,6 +366,7 @@ func v3RotatedCutoverRecipes(t *testing.T) []v3Recipe {
 		{"rotation-match", len(heads) - 1, legacy.Bytes(), "VALID PREFIX, END UNPROVEN", "LEGACY_END_UNPROVEN"},
 		{"rotation-extension", priorCount - 1, legacy.Bytes(), "INVALID", "LEGACY_EXTENDED_AFTER_CUTOVER"},
 		{"rotation-truncation", len(heads) - 1, legacy.Bytes()[:prefixBytes], "INVALID", "LEGACY_CHAIN_TRUNCATED"},
+		{"rotation-boundary-truncation", priorCount, legacy.Bytes()[:rotationBytes], "INVALID", "LEGACY_CHAIN_TRUNCATED"},
 	} {
 		s := v3New(t)
 		s.records = nil
