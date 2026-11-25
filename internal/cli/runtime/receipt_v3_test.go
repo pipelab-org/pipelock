@@ -408,11 +408,14 @@ func openReceiptWithWriteFault(ctx context.Context, cfg *config.Config, key ed25
 		Dir: cfg.FlightRecorder.Dir, SigningKey: key, PolicyHash: v3.Digest(nil),
 		Identity:  v3.Writer{Instance: "example", Product: "Pipelock", Version: "3"},
 		Coverage:  v3.Coverage{ReceiptsRequired: true, Surfaces: opts.surfaces, RedactionRuleset: v3.Ruleset{ID: "example", Version: "1", Hash: v3.Digest(nil)}},
-		Heartbeat: heartbeat, OnHeartbeatError: opts.onHeartbeatError,
+		Heartbeat: heartbeat, OnFatalError: opts.onFatalError, OnDelayedSyncError: opts.onDelayedSyncError,
 		CreateTempFile: func(dir, pattern string) (v3.StreamFile, error) {
+			if !first {
+				return nil, errReceiptFixtureWrite
+			}
 			file, err := os.CreateTemp(dir, pattern)
-			if err != nil || !first {
-				return file, err
+			if err != nil {
+				return nil, err
 			}
 			first = false
 			return &heartbeatFaultFile{File: file}, nil
@@ -420,7 +423,7 @@ func openReceiptWithWriteFault(ctx context.Context, cfg *config.Config, key ed25
 	})
 }
 
-func TestStandaloneMCPV3RequiredHeartbeatFailure(t *testing.T) {
+func TestStandaloneMCPV3RequiredSuccessorFailure(t *testing.T) {
 	evidence := t.TempDir()
 	keyPath := filepath.Join(t.TempDir(), "signer.key")
 	_, key, err := signing.GenerateKeyPair()
@@ -441,8 +444,8 @@ func TestStandaloneMCPV3RequiredHeartbeatFailure(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(4*time.Second))
 	defer cancel()
 	err = cmd.ExecuteContext(ctx)
-	if err == nil || !strings.Contains(err.Error(), "receipt heartbeat emission failed") {
-		t.Fatalf("standalone command returned %v, want required heartbeat failure", err)
+	if err == nil || !strings.Contains(err.Error(), "receipt stream recovery failed") {
+		t.Fatalf("standalone command returned %v, want required successor failure", err)
 	}
 }
 
@@ -480,7 +483,7 @@ func TestStandaloneMCPV3RequiresWriter(t *testing.T) {
 				if !slices.Equal(opts.surfaces, want) {
 					t.Fatalf("receipt surfaces = %v, want %v", opts.surfaces, want)
 				}
-				opts.onHeartbeatError(nil)
+				opts.onFatalError(nil)
 				if ctx.Err() != nil {
 					t.Fatal("nil heartbeat error cancelled startup")
 				}
@@ -635,5 +638,127 @@ func TestRuntimeV3CloseReportsStorageFailure(t *testing.T) {
 	}
 	if s.receiptWriter != nil {
 		t.Fatal("server retained a closed receipt writer")
+	}
+}
+
+type observedOutcomeFaultFile struct {
+	*os.File
+	syncs int
+}
+
+func (f *observedOutcomeFaultFile) Sync() error {
+	f.syncs++
+	if f.syncs == 3 { // Opening and intent are both already confirmed.
+		return errReceiptFixtureWrite
+	}
+	return f.File.Sync()
+}
+
+func TestStandaloneMCPV3DelayedOutcomeFailureWithoutHeartbeat(t *testing.T) {
+	for _, fatal := range []bool{false, true} {
+		name := "recoverable"
+		if fatal {
+			name = "fatal"
+		}
+		t.Run(name, func(t *testing.T) {
+			evidence := t.TempDir()
+			keyPath := filepath.Join(t.TempDir(), "signer.key")
+			_, key, err := signing.GenerateKeyPair()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := signing.SavePrivateKey(key, keyPath); err != nil {
+				t.Fatal(err)
+			}
+			body := fmt.Sprintf("defer:\n  enabled: false\nflight_recorder:\n  enabled: true\n  dir: %q\n  signing_key_path: %q\n  receipt_format: v3\n  require_receipts: true\n", evidence, keyPath)
+			writers := make(chan *v3.StreamWriter, 1)
+			delayed := make(chan error, 1)
+			open := func(ctx context.Context, cfg *config.Config, key ed25519.PrivateKey, _ *recorder.Recorder, _ posturebinding.Result, opts runtimeReceiptStreamOptions) (*v3.StreamWriter, error) {
+				first := true
+				writer, err := v3.OpenStreamWriter(ctx, v3.StreamWriterOptions{
+					Dir: cfg.FlightRecorder.Dir, SigningKey: key, PolicyHash: v3.Digest(nil),
+					Identity:     v3.Writer{Instance: "example", Product: "Pipelock", Version: "3"},
+					Coverage:     v3.Coverage{ReceiptsRequired: true, Surfaces: opts.surfaces, RedactionRuleset: v3.Ruleset{ID: "example", Version: "1", Hash: v3.Digest(nil)}},
+					OnFatalError: opts.onFatalError,
+					OnDelayedSyncError: func(err error) {
+						opts.onDelayedSyncError(err)
+						delayed <- err
+					},
+					CreateTempFile: func(dir, pattern string) (v3.StreamFile, error) {
+						if !first && fatal {
+							return nil, errReceiptFixtureWrite
+						}
+						file, err := os.CreateTemp(dir, pattern)
+						if err != nil || !first {
+							return file, err
+						}
+						first = false
+						return &observedOutcomeFaultFile{File: file}, nil
+					},
+				})
+				if err == nil {
+					writers <- writer
+				}
+				return writer, err
+			}
+			cmd := mcpProxyCmdWithReceiptWriter(audit.NewWithStream, 0, open)
+			cmd.SetArgs([]string{"--config", writeServerTestConfig(t, body), "--listen", serverTestEphemeralListen, "--upstream", serverTestUpstreamURL})
+			cmd.SetOut(io.Discard)
+			cmd.SetErr(io.Discard)
+			ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(5*time.Second))
+			defer cancel()
+			done := runJoined(t, ctx, cmd.ExecuteContext, nil)
+			var writer *v3.StreamWriter
+			select {
+			case writer = <-writers:
+			case err := <-done:
+				t.Fatalf("receipt runtime exited before writer opened: %v", err)
+			case <-ctx.Done():
+				t.Fatal("receipt writer did not open")
+			}
+			action := v3.Action{
+				ActionID: "test-action", ActionType: "unclassified", Actor: "actor", Principal: "principal",
+				Caller: v3.Caller{Authn: "none"}, Data: v3.Data{Reversibility: "unknown", SideEffectClass: "unknown"},
+				Transport: "mcp", Method: "tools/call", Target: "https://api.vendor.example/mcp",
+				EffectBoundary: "upstream_send", Verdict: "allow",
+			}
+			token, err := v3.NewEffectGate(writer).Admit(ctx, action, v3.CapturePolicy(v3.Digest(nil)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := token.ConfirmDelivery(ctx, func() (bool, error) { return true, nil }); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case err := <-delayed:
+				if !errors.Is(err, errReceiptFixtureWrite) {
+					t.Fatalf("delayed error = %v", err)
+				}
+			case <-ctx.Done():
+				t.Fatal("idle flush error was not reported")
+			}
+			if !fatal {
+				if err := writer.WriteHeartbeat(ctx); err != nil {
+					t.Fatalf("runtime did not continue on a usable successor: %v", err)
+				}
+				cancel()
+			}
+			select {
+			case err := <-done:
+				if fatal && (err == nil || !strings.Contains(err.Error(), "receipt stream recovery failed")) {
+					t.Fatalf("fatal outcome recovery returned %v", err)
+				}
+				if !fatal && err != nil && !errors.Is(err, context.Canceled) {
+					t.Fatalf("recoverable outcome error shut down the runtime: %v", err)
+				}
+			case <-ctx.Done():
+				if fatal {
+					t.Fatal("fatal outcome recovery did not shut down the runtime")
+				}
+				if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
+					t.Fatalf("runtime shutdown after cancellation: %v", err)
+				}
+			}
+		})
 	}
 }

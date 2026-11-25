@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	wireReceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
@@ -55,8 +56,9 @@ func refuseUnwiredReceiptV3(cfg *config.Config) error {
 const receiptOperationalDirectory = "operational"
 
 type runtimeReceiptStreamOptions struct {
-	surfaces         []string
-	onHeartbeatError func(error)
+	surfaces           []string
+	onFatalError       func(error)
+	onDelayedSyncError func(error)
 }
 
 type runtimeReceiptV3Opener func(context.Context, *config.Config, ed25519.PrivateKey, *recorder.Recorder, posturebinding.Result, runtimeReceiptStreamOptions) (*v3.StreamWriter, error)
@@ -88,13 +90,19 @@ func openRuntimeReceiptV3(ctx context.Context, cfg *config.Config, key ed25519.P
 		Identity:   v3.Writer{Instance: receipt.NewActionID(), Product: "Pipelock", Version: cliutil.Version},
 		PolicyHash: "sha256:" + strings.TrimPrefix(cfg.CanonicalPolicyHash(), "sha256:"),
 		Posture:    binding, RecorderSession: rec.SessionID(), Detector: rec.ReceiptDetector(),
-		Heartbeat:        time.Duration(fr.HeartbeatIntervalSecondsForReceipt()) * time.Second,
-		OnHeartbeatError: opts.onHeartbeatError,
+		Heartbeat:    time.Duration(fr.HeartbeatIntervalSecondsForReceipt()) * time.Second,
+		OnFatalError: opts.onFatalError, OnDelayedSyncError: opts.onDelayedSyncError,
 		Coverage: v3.Coverage{
 			ReceiptsRequired: fr.RequireReceipts, ContentScan: fr.Redact, Surfaces: opts.surfaces,
 			RedactionRuleset: v3.Ruleset{ID: rules.RedactionRulesetID, Version: rules.RedactionRulesetVersion, Hash: rules.RedactionRulesetHash},
 		},
 	})
+}
+
+func logDelayedReceiptSync(logger *audit.Logger, err error) {
+	if logger != nil {
+		logger.LogError(audit.NewMethodLogContext("RECEIPT"), fmt.Errorf("flush acknowledged receipt outcome: %w", err))
+	}
 }
 
 func serverReceiptSurfaces(cfg *config.Config, hasMCPListener, reverseFlag bool) []string {

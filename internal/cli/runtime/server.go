@@ -663,7 +663,11 @@ func NewServer(opts ServerOpts) (*Server, error) {
 				openCtx = context.Background()
 			}
 			writer, openErr := openRuntimeReceiptV3(openCtx, cfg, recPrivKey, rec, postureResult,
-				runtimeReceiptStreamOptions{surfaces: serverReceiptSurfaces(cfg, hasMCPListen, opts.ReverseProxy), onHeartbeatError: s.failRequiredReceiptGroup})
+				runtimeReceiptStreamOptions{
+					surfaces:           serverReceiptSurfaces(cfg, hasMCPListen, opts.ReverseProxy),
+					onFatalError:       s.failRequiredReceiptGroup,
+					onDelayedSyncError: func(err error) { logDelayedReceiptSync(s.logger, err) },
+				})
 			if openErr != nil {
 				s.cleanup()
 				return nil, fmt.Errorf("open v3 receipt writer: %w", openErr)
@@ -894,7 +898,7 @@ func (s *Server) failRequiredReceiptGroup(err error) {
 func (s *Server) requiredReceiptGroupError() error {
 	if failure := s.receiptGroupFailure.Load(); failure != nil {
 		if s.receiptWriter != nil {
-			return fmt.Errorf("flight_recorder.require_receipts is enabled but receipt heartbeat emission failed: %w", *failure)
+			return fmt.Errorf("flight_recorder.require_receipts is enabled but receipt stream recovery failed: %w", *failure)
 		}
 		return fmt.Errorf("flight_recorder.require_receipts is enabled but receipt group emission failed: %w", *failure)
 	}
