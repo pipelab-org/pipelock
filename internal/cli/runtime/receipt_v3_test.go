@@ -882,6 +882,45 @@ func TestServerV3DelayedOutcomeFailureWithoutHeartbeat(t *testing.T) {
 	}
 }
 
+func TestServerV3RequiredFailureBeforeConfigPublication(t *testing.T) {
+	keyPath := filepath.Join(t.TempDir(), "signer.key")
+	_, key, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := signing.SavePrivateKey(key, keyPath); err != nil {
+		t.Fatal(err)
+	}
+	body := fmt.Sprintf("defer:\n  enabled: false\nflight_recorder:\n  enabled: true\n  dir: %q\n  signing_key_path: %q\n  receipt_format: v3\n  require_receipts: true\n", t.TempDir(), keyPath)
+	open := func(ctx context.Context, cfg *config.Config, key ed25519.PrivateKey, rec *recorder.Recorder, binding posturebinding.Result, opts runtimeReceiptStreamOptions) (*v3.StreamWriter, error) {
+		writer, err := openRuntimeReceiptV3(ctx, cfg, key, rec, binding, opts)
+		if err == nil {
+			opts.onFatalError(errReceiptFixtureWrite)
+		}
+		return writer, err
+	}
+	s, err := NewServer(ServerOpts{
+		ConfigFile:                        writeServerTestConfig(t, body),
+		Listen:                            serverTestEphemeralListen,
+		ListenChanged:                     true,
+		allowEphemeralListenersForTesting: true,
+		openReceiptV3ForTesting:           open,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(time.Second))
+	defer cancel()
+	if err := s.Start(ctx); !errors.Is(err, errReceiptFixtureWrite) {
+		t.Fatalf("startup returned %v, want %v", err, errReceiptFixtureWrite)
+	}
+	select {
+	case <-s.startupNotified():
+		t.Fatal("server advertised readiness after a required receipt failure")
+	default:
+	}
+}
+
 func TestServerDelayedSyncCallbackDoesNotRaceCleanup(t *testing.T) {
 	evidence := t.TempDir()
 	keyPath := filepath.Join(t.TempDir(), "signer.key")

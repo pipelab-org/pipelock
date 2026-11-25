@@ -179,6 +179,7 @@ type Server struct {
 	receiptWriter          *v3.StreamWriter
 	receiptShardSet        *receipt.ReceiptShardSet
 	receiptGroupFailure    atomic.Pointer[error]
+	startupRequireReceipts bool
 	envelopeEmitter        *envelope.Emitter
 	captureWriter          *capture.Writer
 	mcpListenerBearerToken string
@@ -407,6 +408,7 @@ func NewServer(opts ServerOpts) (*Server, error) {
 
 	s := &Server{
 		opts:                      opts,
+		startupRequireReceipts:    cfg.FlightRecorder.RequireReceipts,
 		hasMCPListen:              hasMCPListen,
 		containmentManaged:        containmentManagedRuntime(),
 		containmentMetricsDenyLog: rate.NewLimiter(rate.Every(time.Second), 5),
@@ -890,8 +892,11 @@ func (s *Server) failRequiredReceiptGroup(err error) {
 	if err == nil {
 		return
 	}
-	live := s.currentConfig()
-	if live == nil || !live.FlightRecorder.RequireReceipts {
+	required := s.startupRequireReceipts
+	if live := s.currentConfig(); live != nil {
+		required = live.FlightRecorder.RequireReceipts
+	}
+	if !required {
 		return
 	}
 	if s.receiptGroupFailure.CompareAndSwap(nil, &err) {
