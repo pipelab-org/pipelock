@@ -304,3 +304,15 @@ def test_recovery_suffix_starts_at_zero(tmp_path):
     }
     with pytest.raises(ValueError, match="tail contains a complete line"):
         chain_set._recovery({"proxy": [(0, shard)]}, set(), seal, None)
+
+
+def test_invalid_recovery_timestamp_is_a_finding(tmp_path):
+    fixture = ROOT / "recovery-seals" / "valid"
+    shutil.copytree(fixture / "evidence", tmp_path, dirs_exist_ok=True)
+    path = next(tmp_path.glob("chain-link-*.json"))
+    seal = json.loads(path.read_bytes())
+    seal["observed_at"] = "2026-13-01T00:00:00Z"
+    path.write_bytes(chain_set._go_json(seal) + b"\n")
+    keys = tuple((fixture / "signer.pub").read_text().split())
+    result = verify_base(tmp_path, "proxy", keys)
+    assert "invalid_recovery_seal" in {row["kind"] for row in result["findings"]}

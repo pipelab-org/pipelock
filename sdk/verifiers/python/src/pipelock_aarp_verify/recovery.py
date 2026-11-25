@@ -17,6 +17,7 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from .number import (
+    BadGrammarError,
     StrictParseError,
     UnsafeNumberError,
     enforce_cross_language_number_range,
@@ -182,7 +183,7 @@ def _validate(
     timestamp = seal["observed_at"]
     try:
         validate_timestamp(timestamp)
-    except (TypeError, ValueError) as exc:
+    except (BadGrammarError, TypeError, ValueError) as exc:
         raise RecoverySealError("invalid recovery seal observed_at") from exc
     if (
         not isinstance(timestamp, str)
