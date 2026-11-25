@@ -157,7 +157,7 @@ func TestAllowedBareWarningRejectsMixedEncoding(t *testing.T) {
 
 func TestAllowedBareWarningRejectsCorroboratedKeysAndTrailing(t *testing.T) {
 	pan := number("4019", 16, 0)
-	for _, key := range []string{"card_number", "card-no", "cardnumber"} {
+	for _, key := range []string{"card_number", "card-no", "cardnumber", "cardholder", "card_holder"} {
 		if AllowedBareWarning("json-body", `{"`+key+`":"`+pan+`"}`) {
 			t.Errorf("corroborated key allowed: %s", key)
 		}
