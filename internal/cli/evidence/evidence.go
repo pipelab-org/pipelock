@@ -229,7 +229,7 @@ func runExpire(cmd *cobra.Command, opts expireOptions, retentionChanged bool) er
 		removed = n
 		return nil
 	}
-	if _, statErr := os.Stat(filepath.Clean(dir)); statErr == nil {
+	if statInfo, statErr := os.Stat(filepath.Clean(dir)); statErr == nil && statInfo.IsDir() {
 		err := recorder.WithEvidenceWriterCeremonyLock(filepath.Clean(dir), func() error {
 			if err := receiptinput.Refuse(dir, "evidence expire", "the legacy evidence reader"); err != nil {
 				return err
