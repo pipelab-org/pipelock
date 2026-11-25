@@ -4,9 +4,11 @@
 package diag
 
 import (
+	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -14,17 +16,30 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/testreceipt"
 )
 
-func TestDoctorFlightRecorderRefusesV3(t *testing.T) {
-	testreceipt.EachV3(t, func(t *testing.T, dir, _ string) {
-		cfg := config.Defaults()
-		cfg.FlightRecorder.Enabled = true
-		cfg.FlightRecorder.Dir = dir
-		check := checkDoctorFlightRecorder(cfg)
-		if check.Status != doctorStatusFail {
-			t.Fatalf("unexpected doctor check: %+v", check)
-		}
-		testreceipt.RequiresV3Refusal(t, errors.New(check.Detail), "doctor", "flight recorder evidence health")
-	})
+func TestDoctorFlightRecorderVerifiesV3(t *testing.T) {
+	for _, tc := range []struct {
+		name, status, verdict string
+		damaged, pinned       bool
+	}{
+		{"pinned", doctorStatusOK, "VALID", false, true},
+		{"damaged", doctorStatusFail, "INVALID", true, true},
+		{"unpinned", doctorStatusWarn, "SELF-CONSISTENT ONLY", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			_, pub := testreceipt.V3(t, dir, tc.damaged)
+			cfg := config.Defaults()
+			cfg.FlightRecorder.Enabled = true
+			cfg.FlightRecorder.Dir = dir
+			if tc.pinned {
+				cfg.FlightRecorder.ReceiptGroupPriorSignerKeys = []string{hex.EncodeToString(pub)}
+			}
+			check := checkDoctorFlightRecorder(t.Context(), cfg)
+			if check.Status != tc.status || !strings.Contains(check.Detail, tc.verdict) {
+				t.Fatalf("doctor check = %+v, want %s with %q", check, tc.status, tc.verdict)
+			}
+		})
+	}
 }
 
 func TestDoctorFlightRecorderRefusesSingleDashV3EvidenceFile(t *testing.T) {
@@ -40,20 +55,14 @@ func TestDoctorFlightRecorderRefusesSingleDashV3EvidenceFile(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FlightRecorder.Enabled = true
 	cfg.FlightRecorder.Dir = dir
-	check := checkDoctorFlightRecorder(cfg)
-	if check.Status != doctorStatusFail {
+	check := checkDoctorFlightRecorder(t.Context(), cfg)
+	if check.Status != doctorStatusWarn {
 		t.Fatalf("unexpected doctor check on single-dash v3 file: %+v", check)
 	}
 	testreceipt.RequiresV3Refusal(t, errors.New(check.Detail), "doctor", "flight recorder evidence health")
 }
 
-// TestDoctorFlightRecorderRefusesConfiguredV3BeforeAndAfterFirstWrite holds the
-// check to one answer for a host configured to write v3: doctor cannot
-// understand v3 evidence, so it refuses whether the directory is missing, empty,
-// holds only legacy shards, or already holds v3. Reporting ok before the first
-// write and fail after it taught operators that the host went bad at the first
-// receipt.
-func TestDoctorFlightRecorderRefusesConfiguredV3BeforeAndAfterFirstWrite(t *testing.T) {
+func TestDoctorFlightRecorderConfiguredV3WithoutVerifiedEvidenceWarns(t *testing.T) {
 	legacyShard := func(t *testing.T, dir string) {
 		t.Helper()
 		if err := os.WriteFile(filepath.Join(dir, "evidence-proxy-0.jsonl"), []byte("{}\n"), 0o600); err != nil {
@@ -82,11 +91,10 @@ func TestDoctorFlightRecorderRefusesConfiguredV3BeforeAndAfterFirstWrite(t *test
 			cfg.FlightRecorder.Enabled = true
 			cfg.FlightRecorder.Dir = tc.setup(t)
 			cfg.FlightRecorder.ReceiptFormat = config.ReceiptFormatV3
-			check := checkDoctorFlightRecorder(cfg)
-			if check.Status != doctorStatusFail {
+			check := checkDoctorFlightRecorder(t.Context(), cfg)
+			if check.Status != doctorStatusWarn || !strings.Contains(check.Next, "pipelock verify-receipt") {
 				t.Fatalf("unexpected doctor check: %+v", check)
 			}
-			testreceipt.RequiresV3Refusal(t, errors.New(check.Detail), "doctor", "flight recorder evidence health")
 		})
 	}
 
@@ -95,7 +103,7 @@ func TestDoctorFlightRecorderRefusesConfiguredV3BeforeAndAfterFirstWrite(t *test
 		cfg.FlightRecorder.Enabled = true
 		cfg.FlightRecorder.Dir = t.TempDir()
 		cfg.FlightRecorder.ReceiptFormat = format
-		if check := checkDoctorFlightRecorder(cfg); check.Status != doctorStatusOK {
+		if check := checkDoctorFlightRecorder(t.Context(), cfg); check.Status != doctorStatusOK {
 			t.Fatalf("receipt_format %q on an empty directory: %+v", format, check)
 		}
 	}

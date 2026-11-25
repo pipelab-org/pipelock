@@ -15,6 +15,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contract"
+	"github.com/luckyPipewrench/pipelock/internal/evidence/receiptinput"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"golang.org/x/crypto/curve25519"
@@ -80,6 +81,9 @@ func LoadAndReplayWithOptions(cfg *config.Config, sessionsDir string, opts Repla
 		return nil, 0, 0, "", err
 	}
 
+	if err := receiptinput.RefuseTree(sessionsDir, "policy replay", "capture replay"); err != nil {
+		return nil, 0, 0, "", fmt.Errorf("reading sessions directory: %w", err)
+	}
 	dirEntries, err := os.ReadDir(sessionsDir)
 	if err != nil {
 		return nil, 0, 0, "", fmt.Errorf("reading sessions directory: %w", err)

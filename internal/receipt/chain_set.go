@@ -166,6 +166,9 @@ func (r BaseReport) Unlinked() []string {
 // Enumeration is uncapped, like the recorder's resume scan: a continuity
 // verdict over a partial session list would present missing chains as absent.
 func ResolveBaseSessions(dir, base string) ([]string, error) {
+	if err := recorder.RefuseReceiptDirectory(dir); err != nil {
+		return nil, err
+	}
 	ix, err := indexRecorderFiles(dir)
 	if err != nil {
 		return nil, fmt.Errorf("listing sessions: %w", err)
@@ -203,6 +206,9 @@ func baseSessions(ix evidenceIndex, base string) []string {
 // ContinuityBases lists every base in dir that has restart continuity to
 // report: a base with at least one run chain, or one named by a link file.
 func ContinuityBases(dir string) ([]string, error) {
+	if err := recorder.RefuseReceiptDirectory(dir); err != nil {
+		return nil, err
+	}
 	ix, err := indexRecorderFiles(dir)
 	if err != nil {
 		return nil, fmt.Errorf("listing sessions: %w", err)
@@ -459,7 +465,7 @@ func readClaimFile(path string) ([]byte, os.FileInfo, error) {
 //
 // A healthy report does NOT prove continuity: a deleted link file leaves its
 // successor listed in Unlinked, which is not a finding (see Unlinked).
-func VerifyBase(dir, base string, opts BaseVerifyOptions) (report BaseReport, retErr error) {
+func VerifyBase(dir, base string, opts BaseVerifyOptions, modes ...recorder.EvidenceReadMode) (report BaseReport, retErr error) {
 	report = BaseReport{Base: base}
 	groupSessions := map[string]bool{}
 	ix, err := opts.recorderIndex(dir, groupSessions)

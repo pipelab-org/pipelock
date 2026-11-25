@@ -329,7 +329,7 @@ func VerifyArchivedReplay(dir, orchestratorPubHex string) (VerifyReport, error) 
 
 func verifyRun(dir, orchestratorPubHex string, archive bool) (VerifyReport, error) {
 	cleanDir := filepath.Clean(dir)
-	if err := receiptinput.Refuse(cleanDir, "verify-run", "the playground"); errors.Is(err, receiptinput.ErrUnsupported) {
+	if err := receiptinput.RefuseTree(cleanDir, "verify-run", "the playground"); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return VerifyReport{OrchestratorKey: orchestratorPubHex}, err
 	}
 	root, err := os.OpenRoot(cleanDir)

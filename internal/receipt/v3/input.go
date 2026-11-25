@@ -102,7 +102,7 @@ type inputFile struct {
 	code   string
 }
 
-var streamName = regexp.MustCompile(`^([0-9a-f]{32})-([0-9]{16})\.receipt-v3\.jsonl$`)
+var streamName = regexp.MustCompile(`^([0-9a-f]{32})-([0-9]{16})$`)
 
 // ParseHead parses the v3 command-line form stream:seq:sha256:digest.
 func ParseHead(value string) (Head, error) {
@@ -154,7 +154,7 @@ func identify(path string) (inputFile, bool) {
 		file.code = codeUnknownProfile
 		return file, true
 	}
-	fields := streamName.FindStringSubmatch(name)
+	fields := streamName.FindStringSubmatch(strings.TrimSuffix(name, layoutFileSuffix))
 	if fields == nil {
 		file.code = codeFileLayout
 		return file, true
@@ -171,27 +171,31 @@ func ClaimsInput(path string, directory bool) (bool, error) {
 		if err != nil {
 			return false, err
 		}
-		var probeErr error
-		for _, entry := range entries {
-			if _, known := identify(entry.Name()); known {
-				return true, nil
-			}
-			if !entry.IsDir() && legacyCandidate(entry.Name()) && entry.Type().IsRegular() {
-				claimed, err := startsWithProfile(filepath.Join(dir, entry.Name()))
-				if claimed {
-					return true, nil
-				}
-				if probeErr == nil {
-					probeErr = err
-				}
-			}
-		}
-		return false, probeErr
+		return claimsDirectory(dir, entries)
 	}
-	if _, known := identify(path); known {
+	if evidencename.ClaimsReceiptName(filepath.Base(path)) {
 		return true, nil
 	}
 	return startsWithProfile(path)
+}
+
+func claimsDirectory(dir string, entries []os.DirEntry) (bool, error) {
+	if evidencename.ReceiptProfileEntry(entries) != "" {
+		return true, nil
+	}
+	var probeErr error
+	for _, entry := range entries {
+		if !entry.IsDir() && legacyCandidate(entry.Name()) && entry.Type().IsRegular() {
+			claimed, err := startsWithProfile(filepath.Join(dir, entry.Name()))
+			if claimed {
+				return true, nil
+			}
+			if probeErr == nil {
+				probeErr = err
+			}
+		}
+	}
+	return false, probeErr
 }
 
 // ClaimsContent identifies the receipt profile prefix on a byte-oriented input
@@ -206,11 +210,7 @@ func startsWithProfile(path string) (bool, error) {
 		return false, fmt.Errorf("open evidence file: %w", err)
 	}
 	defer func() { _ = f.Close() }()
-	claimed, err := contract.HasProfileEnvelope(f)
-	if err != nil {
-		return false, fmt.Errorf("read evidence prefix: %w", err)
-	}
-	return claimed, nil
+	return evidencename.ProbeReceiptContent(f)
 }
 
 func readInputDirectory(path string) (string, []os.DirEntry, error) {
@@ -238,9 +238,7 @@ func discover(paths []string, opts Options, skip string) (files []inputFile, leg
 		paths = nil
 		for _, entry := range entries {
 			path := filepath.Join(dir, entry.Name())
-			_, v3 := identify(path)
-			_, isInventory := inventoryID(entry.Name())
-			if v3 || isInventory || legacyCandidate(entry.Name()) {
+			if evidencename.ClaimsReceiptName(entry.Name()) || legacyCandidate(entry.Name()) {
 				if !entry.Type().IsRegular() {
 					return nil, nil, nil, 0, fmt.Errorf("evidence path is not a regular file: %s", path)
 				}
@@ -259,6 +257,11 @@ func discover(paths []string, opts Options, skip string) (files []inputFile, leg
 			continue
 		}
 		file, identified := identify(path)
+		if !identified && evidencename.ClaimsReceiptName(base) {
+			file.code = codeFileLayout
+			files = append(files, file)
+			continue
+		}
 		if opts.ExplicitV3 && !identified {
 			identified = true
 		}

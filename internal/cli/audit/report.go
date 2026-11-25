@@ -17,6 +17,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/atomicfile"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
+	"github.com/luckyPipewrench/pipelock/internal/evidencename"
 	"github.com/luckyPipewrench/pipelock/internal/report"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
@@ -93,6 +94,9 @@ Examples:
 			if input == "-" {
 				reader = cmd.InOrStdin()
 			} else {
+				if err := evidencename.RefuseReceiptName(input); err != nil {
+					return err
+				}
 				f, err := os.Open(filepath.Clean(input))
 				if err != nil {
 					return fmt.Errorf("opening input: %w", err)

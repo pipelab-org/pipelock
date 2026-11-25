@@ -24,7 +24,7 @@ func TestDoctorMCPTaintDiagnostics_NoLiveCoverageClaim(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			report := buildDoctorReport(cfg, "test")
+			report := buildDoctorReport(t.Context(), cfg, "test")
 			for _, d := range cfg.MCPTaintDiagnostics() {
 				found := false
 				for _, c := range report.Checks {
@@ -66,7 +66,7 @@ func TestDoctorMCPTaintDiagnostics_AllInformational(t *testing.T) {
 			cfg := config.Defaults()
 			cfg.Taint.Enabled = tc.taint
 			cfg.SessionProfiling.Enabled = tc.profiling
-			for _, c := range buildDoctorReport(cfg, "test").Checks {
+			for _, c := range buildDoctorReport(t.Context(), cfg, "test").Checks {
 				if !strings.HasPrefix(c.Name, "taint.mcp_") {
 					continue
 				}
@@ -137,7 +137,7 @@ func TestDoctorMCPTaintDiagnostics_DefaultsRetainBaseWarningsAndExit(t *testing.
 		name   string
 		report doctorReport
 	}{
-		{"Defaults", buildDoctorReport(cfg, configLabelDefaults)}, {"command", commandReport},
+		{"Defaults", buildDoctorReport(t.Context(), cfg, configLabelDefaults)}, {"command", commandReport},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var warnings []string
@@ -156,7 +156,7 @@ func TestDoctorMCPTaintDiagnostics_DefaultsRetainBaseWarningsAndExit(t *testing.
 }
 
 func TestDoctorMCPTaintDiagnostics_RecorderNamesHTTPAndMCP(t *testing.T) {
-	for _, c := range buildDoctorReport(config.Defaults(), configLabelDefaults).Checks {
+	for _, c := range buildDoctorReport(t.Context(), config.Defaults(), configLabelDefaults).Checks {
 		if c.Name != "taint.mcp_recorder" {
 			continue
 		}

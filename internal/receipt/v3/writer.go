@@ -16,10 +16,10 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"sync"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/evidencename"
 	"github.com/luckyPipewrench/pipelock/internal/receiptcontent"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
@@ -228,25 +228,27 @@ func openStreamWriter(ctx context.Context, opts StreamWriterOptions, storage wri
 	return w, nil
 }
 
-// DirectoryHasV3 reports whether a v3 filename has committed the directory
-// to this format. A damaged file with the suffix also requires v3 handling.
+// DirectoryHasV3 reports whether the verifier claims an existing evidence
+// directory. A directory the runtime has yet to create is unclaimed.
 func DirectoryHasV3(dir string) (bool, error) {
 	if dir == "" {
 		return false, nil
 	}
-	entries, err := os.ReadDir(dir)
+	resolved, entries, err := readInputDirectory(dir)
 	if errors.Is(err, fs.ErrNotExist) {
 		return false, nil
 	}
 	if err != nil {
 		return false, fmt.Errorf("read receipt evidence directory: %w", err)
 	}
-	return hasV3Entry(entries), nil
+	return claimsDirectory(resolved, entries)
 }
 
+// hasV3Entry identifies the restart case. A prepared cutover inventory
+// without a stream must still pass the writer's cutover recovery checks.
 func hasV3Entry(entries []os.DirEntry) bool {
 	for _, entry := range entries {
-		if strings.HasSuffix(entry.Name(), layoutFileSuffix) {
+		if version, claimed := evidencename.ReceiptProfileVersion(entry.Name()); claimed && version == "3" && !entry.IsDir() {
 			return true
 		}
 	}

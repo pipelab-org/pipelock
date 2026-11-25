@@ -26,10 +26,10 @@ func TestReceiptProfileVersion(t *testing.T) {
 }
 
 func TestClaimsReceiptContent(t *testing.T) {
-	if !ClaimsReceiptContent([]byte(ReceiptProfilePrefix + "v3+json\"}")) {
+	if !ClaimsReceiptContent([]byte(" \t\n" + ReceiptProfilePrefix + "v3+json\"}")) {
 		t.Error("profile prefix not claimed")
 	}
-	for _, data := range []string{"", " " + ReceiptProfilePrefix, "{\"v\":1}"} {
+	for _, data := range []string{"", "{\"v\":1}"} {
 		if ClaimsReceiptContent([]byte(data)) {
 			t.Errorf("ClaimsReceiptContent(%q) = true", data)
 		}

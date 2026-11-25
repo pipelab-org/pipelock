@@ -10,6 +10,8 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+
+	"github.com/luckyPipewrench/pipelock/internal/evidencename"
 )
 
 // ErrEvidenceFileChanged reports that an evidence file grew, shrank or was
@@ -57,25 +59,39 @@ func OpenEvidenceFile(path string) (*os.File, os.FileInfo, error) {
 	return openEvidenceLocationFile(EvidenceLocation{Root: dir, Dir: dir}, filepath.Base(clean))
 }
 
+func openLegacyEvidenceLocationFile(location EvidenceLocation, name string) (*os.File, os.FileInfo, error) {
+	if err := evidencename.RefuseReceiptName(filepath.Join(location.Dir, name)); err != nil {
+		return nil, nil, err
+	}
+	return openEvidenceLocationFile(location, name)
+}
+
 func readEvidenceLocationDirectoryEntries(location EvidenceLocation, maxEntries int) ([]os.DirEntry, bool, error) {
 	directory, err := openEvidenceLocationDirectory(location)
 	if err != nil {
 		return nil, false, err
 	}
 	defer func() { _ = directory.Close() }()
-	if maxEntries <= 0 {
-		entries, readErr := directory.ReadDir(-1)
-		return entries, false, readErr
-	}
-	readLimit := maxEntries
-	if readLimit < math.MaxInt {
-		readLimit++
+	readLimit := -1
+	if maxEntries > 0 {
+		readLimit = maxEntries
+		if readLimit < math.MaxInt {
+			readLimit++
+		}
 	}
 	entries, readErr := directory.ReadDir(readLimit)
 	if readErr != nil && !errors.Is(readErr, io.EOF) {
 		return nil, false, readErr
 	}
-	if len(entries) > maxEntries {
+	if err := refuseReceiptDirectoryEntries(location.Dir, entries, location.ReadMode); err != nil {
+		return nil, false, err
+	}
+	if maxEntries > 0 && len(entries) > maxEntries {
+		if !location.ReadMode.allowsMixedReceiptProfiles() {
+			if err := refuseRemainingReceiptNames(directory, location.Dir); err != nil {
+				return nil, false, err
+			}
+		}
 		return entries[:maxEntries], true, nil
 	}
 	return entries, false, nil
@@ -89,6 +105,7 @@ func ReadEvidenceLocationEntries(location EvidenceLocation) ([]os.DirEntry, erro
 
 // ReadEvidenceLocationEntriesBounded lists at most maxEntries and reports
 // whether another entry exists without retaining an unbounded directory.
+// All names are screened for receipt profiles before a listing is returned.
 func ReadEvidenceLocationEntriesBounded(location EvidenceLocation, maxEntries int) ([]os.DirEntry, bool, error) {
 	return readEvidenceLocationDirectoryEntries(location, maxEntries)
 }
@@ -110,7 +127,7 @@ func readEntriesAtEvidenceLocation(location EvidenceLocation, name string, limit
 // number of entries delivered. A shard that changed while it was read is an
 // error even though its entries were already delivered.
 func walkBoundedEntriesAtEvidenceLocation(location EvidenceLocation, name string, limits entryReadLimits, consume func(Entry) error) (int, bool, int64, error) {
-	file, before, err := openEvidenceLocationFile(location, name)
+	file, before, err := openLegacyEvidenceLocationFile(location, name)
 	if err != nil {
 		return 0, false, 0, fmt.Errorf("opening evidence file: %w", err)
 	}
@@ -139,7 +156,7 @@ func ReadEvidenceLocationFileBounded(location EvidenceLocation, name string, max
 	if maxBytes <= 0 {
 		maxBytes = MaxEvidenceReadFileBytes
 	}
-	file, before, err := openEvidenceLocationFile(location, name)
+	file, before, err := openLegacyEvidenceLocationFile(location, name)
 	if err != nil {
 		return nil, err
 	}
@@ -188,7 +205,7 @@ func StreamEvidenceLocationFileForOfflineCompaction(location EvidenceLocation, n
 	if consume == nil {
 		return errors.New("offline compaction stream consumer is required")
 	}
-	file, before, err := openEvidenceLocationFile(location, name)
+	file, before, err := openLegacyEvidenceLocationFile(location, name)
 	if err != nil {
 		return err
 	}
@@ -222,7 +239,7 @@ func ReadEvidenceLocationAppendTail(location EvidenceLocation, name string, maxB
 	if maxBytes <= 0 {
 		return nil, false, errors.New("evidence tail limit must be positive")
 	}
-	file, before, err := openEvidenceLocationFile(location, name)
+	file, before, err := openLegacyEvidenceLocationFile(location, name)
 	if err != nil {
 		return nil, false, err
 	}
@@ -250,7 +267,7 @@ func ReadEvidenceLocationFileTail(location EvidenceLocation, name string, maxByt
 	if maxBytes <= 0 {
 		return nil, false, errors.New("evidence tail limit must be positive")
 	}
-	file, before, err := openEvidenceLocationFile(location, name)
+	file, before, err := openLegacyEvidenceLocationFile(location, name)
 	if err != nil {
 		return nil, false, err
 	}
@@ -314,7 +331,7 @@ func ReadEvidenceLocationFilePrefixTail(location EvidenceLocation, name string, 
 	if maxBytes <= 0 || end < 0 {
 		return nil, false, errors.New("evidence prefix tail bounds are invalid")
 	}
-	file, before, err := openEvidenceLocationFile(location, name)
+	file, before, err := openLegacyEvidenceLocationFile(location, name)
 	if err != nil {
 		return nil, false, err
 	}

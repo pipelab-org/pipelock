@@ -6,7 +6,6 @@ package recorder
 import (
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -14,8 +13,13 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/evidencename"
 )
 
-// ErrLegacyEvidenceFormat indicates the directory has switched to v3.
-var ErrLegacyEvidenceFormat = errors.New("legacy receipts require a new evidence directory after a v3 switch")
+// ErrLegacyEvidenceFormat indicates that a legacy evidence path contains
+// evidence claimed by the receipt-profile verifier.
+var ErrLegacyEvidenceFormat = evidencename.ErrReceiptProfile
+
+func legacyEvidenceFormatError(path string) error {
+	return &fs.PathError{Op: "check evidence format", Path: path, Err: evidencename.UnsupportedReceiptProfile(true)}
+}
 
 var tryAcquireEvidenceCeremonyLock = tryLockEvidenceFileForExpiry
 
@@ -98,18 +102,18 @@ func checkLegacyEvidenceFormat(dir string) error {
 	if err != nil {
 		return fmt.Errorf("checking legacy evidence directory format: %w", err)
 	}
+	if err := refuseReceiptDirectoryEntries(resolved, entries, 0); err != nil {
+		return err
+	}
 	var probeErr error
 	for _, entry := range entries {
 		name := entry.Name()
-		if _, claimed := evidencename.ReceiptProfileVersion(name); claimed {
-			return ErrLegacyEvidenceFormat
-		}
 		if entry.IsDir() || !entry.Type().IsRegular() || !evidencename.IsLegacyReceiptCandidate(name) {
 			continue
 		}
 		claimed, err := fileClaimsReceiptProfile(filepath.Join(resolved, name))
 		if claimed {
-			return ErrLegacyEvidenceFormat
+			return legacyEvidenceFormatError(filepath.Join(resolved, name))
 		}
 		if probeErr == nil {
 			probeErr = err
@@ -127,13 +131,7 @@ func fileClaimsReceiptProfile(path string) (bool, error) {
 		return false, err
 	}
 	defer func() { _ = file.Close() }()
-	prefix := make([]byte, len(evidencename.ReceiptProfilePrefix))
-	if _, err := io.ReadFull(file, prefix); errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-		return false, nil
-	} else if err != nil {
-		return false, fmt.Errorf("read evidence prefix: %w", err)
-	}
-	return evidencename.ClaimsReceiptContent(prefix), nil
+	return evidencename.ProbeReceiptContent(file)
 }
 
 // WithEvidenceWriterCeremonyLock runs one non-recorder evidence write under

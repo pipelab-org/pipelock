@@ -68,8 +68,9 @@
   },
   {
     "package": "internal/capture",
-    "role": "writer",
-    "reason": "Writes bounded capture evidence and reads only its own capture log format."
+    "role": "refuses-v3",
+    "reason": "Capture replay refuses receipt profiles before selecting recorder files.",
+    "test": "internal/cli:TestReceiptCommandTreeOracle"
   },
   {
     "package": "internal/cli",
@@ -90,9 +91,9 @@
   },
   {
     "package": "internal/cli/diag",
-    "role": "refuses-v3",
-    "reason": "Doctor only measures legacy recorder evidence health.",
-    "test": "TestDoctorFlightRecorderRefusesV3"
+    "role": "v3-verifier",
+    "reason": "Doctor verifies v3 flight-recorder evidence and logs refuse receipt-profile input.",
+    "test": "TestDoctorFlightRecorderVerifiesV3"
   },
   {
     "package": "internal/cli/evidence",
@@ -235,8 +236,9 @@
   },
   {
     "package": "internal/recorder",
-    "role": "writer",
-    "reason": "Writes the operational log and supplies low-level legacy entry readers."
+    "role": "refuses-v3",
+    "reason": "Legacy evidence discovery and entry readers refuse receipt-profile evidence by name or content.",
+    "test": "internal/evidence/receiptinput:TestLegacyEvidenceChokePoints"
   },
   {
     "package": "internal/replaycapture",
@@ -246,8 +248,9 @@
   },
   {
     "package": "internal/report",
-    "role": "not-a-reader",
-    "reason": "Formats appraised inputs and verdicts."
+    "role": "refuses-v3",
+    "reason": "The audit event parser refuses profile records before aggregation.",
+    "test": "internal/cli:TestAuditCommandsRefuseReceiptProfiles"
   },
   {
     "package": "internal/signingflag",

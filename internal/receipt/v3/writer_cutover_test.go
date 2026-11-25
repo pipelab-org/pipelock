@@ -341,8 +341,9 @@ func requireCutoverRefusal(t *testing.T, opts StreamWriterOptions, storage write
 	if cause != nil && !errors.Is(err, cause) || !strings.Contains(err.Error(), diagnostic) {
 		t.Fatalf("cutover error = %v, want %v %q", err, cause, diagnostic)
 	}
-	if committed, inspectErr := DirectoryHasV3(opts.Dir); committed || inspectErr != nil {
-		t.Fatalf("refused cutover left v3 evidence: %t, %v", committed, inspectErr)
+	entries, inspectErr := os.ReadDir(opts.Dir)
+	if inspectErr != nil || hasV3Entry(entries) {
+		t.Fatalf("refused cutover left a committed stream: %v", inspectErr)
 	}
 }
 

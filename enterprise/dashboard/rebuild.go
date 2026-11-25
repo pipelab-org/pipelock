@@ -71,7 +71,7 @@ type StalenessMarker struct {
 }
 
 func refuseReadModelSources(sourceDir, command, reader string) error {
-	if err := receiptinput.Refuse(sourceDir, command, reader); err != nil {
+	if err := receiptinput.RefuseTree(sourceDir, command, reader); err != nil {
 		return err
 	}
 	paths, err := boundedEvidencePaths(sourceDir)

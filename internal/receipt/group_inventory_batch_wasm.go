@@ -12,6 +12,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/ael"
 	"github.com/luckyPipewrench/pipelock/internal/evidencename"
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
 
 type wasmGroupAELBatchIndex struct {
@@ -47,7 +48,10 @@ func newGroupAELBatchIndexScoped(dir string, trusted []string, excluded map[stri
 		if !ok || seq != 0 {
 			return nil
 		}
-		return indexAELClaimsForSessionBatch(dir, session, "", "", trusted, func(run, session, groupID, signer string, completed bool) error {
+		walk := func(visit func(recorder.Entry) error) error {
+			return recorder.WalkSessionHistory(dir, session, visit, modes...)
+		}
+		return indexAELClaimsForSessionWithWalk(dir, session, "", "", trusted, func(run, session, groupID, signer string, completed bool) error {
 			if _, exists := index.claims[run]; exists {
 				return fmt.Errorf("duplicate signed native AEL run %q", run)
 			}

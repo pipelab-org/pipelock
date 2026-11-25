@@ -201,7 +201,7 @@ func runExpire(cmd *cobra.Command, opts expireOptions, retentionChanged bool) er
 	if retentionDays < 0 {
 		return errors.New("--retention-days must be non-negative")
 	}
-	if err := receiptinput.Refuse(dir, "evidence expire", "the legacy evidence reader"); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := receiptinput.RefuseTree(dir, "evidence expire", "the legacy evidence reader"); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	if retentionDays == 0 {
@@ -231,7 +231,7 @@ func runExpire(cmd *cobra.Command, opts expireOptions, retentionChanged bool) er
 	}
 	if statInfo, statErr := os.Stat(filepath.Clean(dir)); statErr == nil && statInfo.IsDir() {
 		err := recorder.WithEvidenceWriterCeremonyLock(filepath.Clean(dir), func() error {
-			if err := receiptinput.Refuse(dir, "evidence expire", "the legacy evidence reader"); err != nil {
+			if err := receiptinput.RefuseTree(dir, "evidence expire", "the legacy evidence reader"); err != nil {
 				return err
 			}
 			return expire()

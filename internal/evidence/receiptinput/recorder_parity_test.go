@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/luckyPipewrench/pipelock/internal/evidence/receiptinput"
 	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
@@ -36,6 +37,8 @@ func TestRecorderClaimMatchesV3ClaimsInput(t *testing.T) {
 		{"malformed v3 name", map[string]string{"stream.receipt-v3.jsonl": ""}},
 		{"uppercase stream", map[string]string{strings.ToUpper(stream) + "-0000000000000000.receipt-v3.jsonl": ""}},
 		{"v3 under shard name", map[string]string{"evidence-proxy-0.jsonl": v3Line}},
+		{"whitespace before profile", map[string]string{"evidence-proxy-0.jsonl": "\n \t" + v3Line}},
+		{"damaged cutover inventory", map[string]string{"receipt-v3-cutover-damaged.json": ""}},
 		{"v3 under single dash shard name", map[string]string{"evidence-v3.jsonl": v3Line}},
 		{"v3 under group artifact", map[string]string{"receipt-group-a.json": v3Line}},
 		{"v3 under activation", map[string]string{"activation-receipts.jsonl": v3Line}},
@@ -58,6 +61,12 @@ func TestRecorderClaimMatchesV3ClaimsInput(t *testing.T) {
 				t.Fatal(err)
 			}
 			ran := false
+			inputClaims, inputErr := receiptinput.Claims(dir)
+			runtimeClaims, runtimeErr := v3.DirectoryHasV3(dir)
+			if inputErr != nil || runtimeErr != nil || want != inputClaims || want != runtimeClaims {
+				t.Fatalf("verifier claims %t, input claims %t (%v), runtime claims %t (%v)", want, inputClaims, inputErr, runtimeClaims, runtimeErr)
+			}
+
 			err = recorder.WithEvidenceWriterCeremonyLock(dir, func() error {
 				ran = true
 				return nil

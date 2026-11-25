@@ -72,7 +72,7 @@ and verifies the recorded SET, signed checkpoint, and inclusion proof offline.`,
 }
 
 func runIndependent(stdout, stderr io.Writer, target string, opts independentOptions) error {
-	if err := receiptinput.Refuse(target, "independent", "the independent anchor verifier"); err != nil {
+	if err := receiptinput.RefuseTree(target, "independent", "the independent anchor verifier"); err != nil {
 		return cliutil.ExitCodeError(cliutil.ExitConfig, err)
 	}
 	if strings.TrimSpace(opts.bundlePath) == "" {

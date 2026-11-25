@@ -24,7 +24,7 @@ func withLegacyReceiptOutput(command, output, fallback string, write func() erro
 
 func withLegacyReceiptDirectory(command, dir string, write func() error) error {
 	const reader = "learn lifecycle receipts"
-	check := func() error { return receiptinput.Refuse(dir, command, reader) }
+	check := func() error { return receiptinput.RefuseTree(dir, command, reader) }
 	if err := check(); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return write()
@@ -36,7 +36,7 @@ func withLegacyReceiptDirectory(command, dir string, write func() error) error {
 		return err
 	}
 	err = recorder.WithEvidenceWriterCeremonyLock(resolved, func() error {
-		if err := receiptinput.Refuse(resolved, command, reader); err != nil {
+		if err := receiptinput.RefuseTree(resolved, command, reader); err != nil {
 			return err
 		}
 		return write()

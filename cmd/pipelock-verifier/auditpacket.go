@@ -150,7 +150,7 @@ type runPeek struct {
 }
 
 func runAuditPacket(stdout, stderr io.Writer, target string, opts auditPacketOptions) error {
-	if err := receiptinput.Refuse(target, "audit-packet", "the audit packet verifier"); err != nil {
+	if err := receiptinput.RefuseTree(target, "audit-packet", "the audit packet verifier"); err != nil {
 		return cliutil.ExitCodeError(cliutil.ExitConfig, err)
 	}
 	packetPath, baseDir, err := resolvePacketPath(target)

@@ -12,6 +12,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+
+	"github.com/luckyPipewrench/pipelock/internal/evidencename"
 )
 
 const (
@@ -67,6 +69,9 @@ var ErrEvidenceRefused = errors.New("evidence refused")
 func openRegularEvidenceFile(path string, accessErr error) (*os.File, os.FileInfo, error) {
 	if accessErr != nil {
 		return nil, nil, accessErr
+	}
+	if err := evidencename.RefuseReceiptName(path); err != nil {
+		return nil, nil, err
 	}
 	cleanPath := filepath.Clean(path)
 	before, err := os.Lstat(cleanPath)

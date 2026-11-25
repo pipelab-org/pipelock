@@ -14,7 +14,7 @@ func TestDoctorMetricsInformational(t *testing.T) {
 	for _, address := range []string{"", "127.0.0.1:9091"} {
 		cfg := config.Defaults()
 		cfg.MetricsListen = address
-		report := buildDoctorReport(cfg, configLabelDefaults)
+		report := buildDoctorReport(t.Context(), cfg, configLabelDefaults)
 		found := false
 		for _, check := range report.Checks {
 			if check.Name != "metrics" {

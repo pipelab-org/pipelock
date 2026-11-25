@@ -21,8 +21,7 @@ func V3(t *testing.T, dir string, damaged bool, actions ...v3.Action) (string, e
 	if runtime.GOOS != "linux" {
 		t.Skip("receipt v3 writer fixtures require Linux directory locking")
 	}
-	seed := sha256.Sum256([]byte("receipt reader test fixture"))
-	key := ed25519.NewKeyFromSeed(seed[:])
+	key := v3FixtureKey()
 	policyHash := v3.Digest([]byte("fixture policy"))
 	writer, err := v3.OpenStreamWriter(t.Context(), v3.StreamWriterOptions{
 		Dir: dir, SigningKey: key,
@@ -74,4 +73,9 @@ func RequiresV3Refusal(t *testing.T, err error, command, reader string) {
 	if err == nil || (!strings.Contains(err.Error(), want+"<path>'") && !strings.Contains(err.Error(), want+"--chain <path>'")) {
 		t.Fatalf("got %v, want %q", err, want)
 	}
+}
+
+func v3FixtureKey() ed25519.PrivateKey {
+	seed := sha256.Sum256([]byte("receipt reader test fixture"))
+	return ed25519.NewKeyFromSeed(seed[:])
 }

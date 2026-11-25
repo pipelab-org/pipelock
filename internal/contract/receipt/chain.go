@@ -490,6 +490,7 @@ func extractEvidenceReceiptsFromBytes(data []byte, label string) ([]EvidenceRece
 // delivers each v2 evidence receipt, so a caller retains only receipts.
 func walkEvidenceReceiptLines(input io.Reader, label string, deliver func(EvidenceReceipt)) error {
 	scanner := bufio.NewScanner(input)
+	scanner.Split(evidencename.SplitLegacyJSONLines)
 	scanner.Buffer(make([]byte, 0, 64<<10), maxChainLineBytes)
 	line := 0
 	for scanner.Scan() {

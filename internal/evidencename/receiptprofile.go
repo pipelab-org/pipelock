@@ -4,9 +4,16 @@
 package evidencename
 
 import (
+	"bufio"
 	"bytes"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"path/filepath"
 	"regexp"
 	"strings"
+	"unicode"
 )
 
 // ReceiptProfilePrefix opens every receipt-profile record. A file or payload
@@ -36,7 +43,95 @@ func ReceiptProfileVersion(name string) (version string, ok bool) {
 // ClaimsReceiptContent reports whether data begins with the receipt-profile
 // prefix.
 func ClaimsReceiptContent(data []byte) bool {
-	return bytes.HasPrefix(data, []byte(ReceiptProfilePrefix))
+	return bytes.HasPrefix(bytes.TrimLeftFunc(data, unicode.IsSpace), []byte(ReceiptProfilePrefix))
+}
+
+// ErrReceiptProfile marks evidence that requires the receipt-profile verifier.
+var ErrReceiptProfile = errors.New("receipt v3 evidence is not supported")
+
+// UnsupportedReceiptProfile adds verifier guidance for the input scope.
+func UnsupportedReceiptProfile(directory bool) error {
+	verify := "pipelock verify-receipt <path>"
+	if directory {
+		verify = "pipelock verify-receipt --chain <path>"
+	}
+	return fmt.Errorf("%w by this reader; use '%s'", ErrReceiptProfile, verify)
+}
+
+// ClaimsReceiptName reserves profile streams and cutover inventory names,
+// including damaged inventories whose digest cannot be parsed.
+func ClaimsReceiptName(name string) bool {
+	_, stream := ReceiptProfileVersion(name)
+	return stream || strings.HasPrefix(name, cutoverPrefix) && strings.HasSuffix(name, cutoverSuffix)
+}
+
+// ReceiptProfileEntry finds the first claimed filename in a directory listing.
+func ReceiptProfileEntry(entries []fs.DirEntry) string {
+	for _, entry := range entries {
+		if ClaimsReceiptName(entry.Name()) {
+			return entry.Name()
+		}
+	}
+	return ""
+}
+
+// RefuseReceiptName checks the name of a file a legacy reader would open.
+func RefuseReceiptName(path string) error {
+	if ClaimsReceiptName(filepath.Base(path)) {
+		return fmt.Errorf("%q: %w", path, UnsupportedReceiptProfile(false))
+	}
+	return nil
+}
+
+// RefuseReceiptContent checks a record before a legacy decoder interprets it.
+func RefuseReceiptContent(data []byte) error {
+	if ClaimsReceiptContent(data) {
+		return UnsupportedReceiptProfile(false)
+	}
+	return nil
+}
+
+// SplitLegacyJSONLines detects receipt profiles even when a record exceeds the
+// scanner buffer, as soon as its identifying prefix is available.
+func SplitLegacyJSONLines(data []byte, atEOF bool) (int, []byte, error) {
+	advance, line, err := bufio.ScanLines(data, atEOF)
+	probe := line
+	if probe == nil {
+		probe = data
+	}
+	if claimErr := RefuseReceiptContent(probe); claimErr != nil {
+		return 0, nil, claimErr
+	}
+	return advance, line, err
+}
+
+// ProbeReceiptContent reads only leading whitespace and the identifying prefix.
+// It does not read the rest of a legacy entry or consume an entire JSONL line.
+func ProbeReceiptContent(r io.Reader) (bool, error) {
+	input := bufio.NewReader(r)
+	for {
+		ch, _, err := input.ReadRune()
+		if errors.Is(err, io.EOF) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		if unicode.IsSpace(ch) {
+			continue
+		}
+		if err := input.UnreadRune(); err != nil {
+			return false, err
+		}
+		break
+	}
+	var prefix [len(ReceiptProfilePrefix)]byte
+	if _, err := io.ReadFull(input, prefix[:]); errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return false, nil
+	} else if err != nil {
+		return false, err
+	}
+	return ClaimsReceiptContent(prefix[:]), nil
 }
 
 // CutoverInventoryHash returns the 64-digit lowercase hash of a

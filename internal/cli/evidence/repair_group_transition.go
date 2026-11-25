@@ -24,7 +24,7 @@ func repairGroupTransitionCmd() *cobra.Command {
 		Short: "Complete a missing transition for a stopped receipt group",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if err := receiptinput.Refuse(dir, "evidence repair-group-transition", "the legacy evidence reader"); err != nil {
+			if err := receiptinput.RefuseTree(dir, "evidence repair-group-transition", "the legacy evidence reader"); err != nil {
 				return err
 			}
 			key, err := signing.LoadPrivateKeyFileForPurpose(keyFile, signing.PurposeReceiptSigning)
@@ -35,7 +35,7 @@ func repairGroupTransitionCmd() *cobra.Command {
 				filepath.Clean(dir), groupID, key, priorKeys,
 				verification.Options{Context: cmd.Context()},
 				func(lockedDir string) error {
-					return receiptinput.Refuse(lockedDir, "evidence repair-group-transition", "the legacy evidence reader")
+					return receiptinput.RefuseTree(lockedDir, "evidence repair-group-transition", "the legacy evidence reader")
 				},
 			)
 			if err != nil {

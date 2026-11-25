@@ -14,6 +14,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/evidencename"
+
 	"github.com/spf13/cobra"
 )
 
@@ -39,6 +41,9 @@ Examples:
 				return errLogFileRequired
 			}
 
+			if err := evidencename.RefuseReceiptName(logFile); err != nil {
+				return err
+			}
 			f, err := os.Open(filepath.Clean(logFile))
 			if err != nil {
 				return fmt.Errorf("opening log file: %w", err)
@@ -47,6 +52,7 @@ Examples:
 
 			var lines []string
 			sc := bufio.NewScanner(f)
+			sc.Split(evidencename.SplitLegacyJSONLines)
 			for sc.Scan() {
 				line := sc.Text()
 				if filter != "" && !matchFilter(line, filter) {
@@ -55,6 +61,9 @@ Examples:
 				lines = append(lines, line)
 			}
 			if err := sc.Err(); err != nil {
+				if errors.Is(err, bufio.ErrTooLong) {
+					return fmt.Errorf("logs cannot inspect an oversized line; for receipt evidence use 'pipelock verify-receipt <path>': %w", err)
+				}
 				return fmt.Errorf("reading log file: %w", err)
 			}
 
@@ -70,13 +79,21 @@ Examples:
 			if follow {
 				cmd.PrintErrln("--- following (Ctrl+C to stop) ---")
 				reader := bufio.NewReader(f)
+				var pending string
 				for {
 					select {
 					case <-cmd.Context().Done():
 						return nil
 					default:
 					}
-					line, err := reader.ReadString('\n')
+					fragment, err := reader.ReadString('\n')
+					pending += fragment
+					if claimErr := evidencename.RefuseReceiptContent([]byte(pending)); claimErr != nil {
+						return fmt.Errorf("reading log file %q: %w", logFile, claimErr)
+					}
+					if len(pending) > bufio.MaxScanTokenSize {
+						return fmt.Errorf("logs cannot inspect an oversized line; for receipt evidence use 'pipelock verify-receipt <path>'")
+					}
 					if err != nil {
 						if err == io.EOF {
 							time.Sleep(250 * time.Millisecond)
@@ -84,7 +101,8 @@ Examples:
 						}
 						return err
 					}
-					line = strings.TrimRight(line, "\n")
+					line := strings.TrimRight(pending, "\n")
+					pending = ""
 					if filter != "" && !matchFilter(line, filter) {
 						continue
 					}

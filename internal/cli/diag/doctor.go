@@ -16,19 +16,20 @@ import (
 	"strings"
 	"time"
 
-	"github.com/luckyPipewrench/pipelock/internal/evidence/receiptinput"
-
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/certgen"
 	"github.com/luckyPipewrench/pipelock/internal/cli/runtimeconfig"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/evidence/receiptinput"
 	"github.com/luckyPipewrench/pipelock/internal/filesentry"
 	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
+	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
 const (
@@ -99,7 +100,7 @@ this" report.`,
 			if err != nil {
 				return cliutil.ExitCodeError(2, err)
 			}
-			report := buildDoctorReport(cfg, cfgLabel)
+			report := buildDoctorReport(cmd.Context(), cfg, cfgLabel)
 			if startup {
 				report.Checks = append(report.Checks, checkDoctorStartup(cfg)...)
 				report.Summary = retallyDoctorSummary(report.Checks)
@@ -141,7 +142,7 @@ this" report.`,
 	return cmd
 }
 
-func buildDoctorReport(cfg *config.Config, cfgLabel string) doctorReport {
+func buildDoctorReport(ctx context.Context, cfg *config.Config, cfgLabel string) doctorReport {
 	report := doctorReport{
 		ConfigFile: cfgLabel,
 		Mode:       cfg.Mode,
@@ -160,7 +161,7 @@ func buildDoctorReport(cfg *config.Config, cfgLabel string) doctorReport {
 		checkDoctorMCPToolProvenance(cfg),
 		checkDoctorMCPIdentities(cfg, currentDoctorGOOS()),
 		checkDoctorFileSentry(cfg),
-		checkDoctorFlightRecorder(cfg),
+		checkDoctorFlightRecorder(ctx, cfg),
 		checkDoctorLicense(cfg),
 		checkDoctorSentry(cfg),
 		checkDoctorDeploymentBoundary(cfg),
@@ -791,7 +792,7 @@ func formatFileSentryCoverageFailures(coverage filesentry.CoverageReport) string
 	return strings.Join(parts, "; ")
 }
 
-func checkDoctorFlightRecorder(cfg *config.Config) doctorReportCheck {
+func checkDoctorFlightRecorder(ctx context.Context, cfg *config.Config) doctorReportCheck {
 	if !cfg.FlightRecorder.Enabled {
 		return doctorReportCheck{
 			Name:    "flight_recorder",
@@ -802,12 +803,7 @@ func checkDoctorFlightRecorder(cfg *config.Config) doctorReportCheck {
 		}
 	}
 	if cfg.FlightRecorder.EffectiveReceiptFormat() == config.ReceiptFormatV3 {
-		// doctor cannot read v3 evidence. Refuse on the configuration itself so
-		// the answer does not flip from ok to fail when the first receipt lands.
-		return doctorReportCheck{
-			Name: "flight_recorder", Surface: doctorSurfaceConfig, Status: doctorStatusFail,
-			Configured: true, Detail: receiptinput.UnsupportedDirectory(doctorReceiptCommand, doctorReceiptReader).Error(),
-		}
+		return verifyDoctorFlightRecorderV3(ctx, cfg.FlightRecorder)
 	}
 	if cfg.FlightRecorder.Dir == "" {
 		return doctorReportCheck{
@@ -844,9 +840,20 @@ func checkDoctorFlightRecorder(cfg *config.Config) doctorReportCheck {
 			Next:       next,
 		}
 	}
-	if err := refuseDoctorFlightRecorderV3(cfg.FlightRecorder.Dir); err != nil {
+	claimed, err := receiptinput.Claims(cfg.FlightRecorder.Dir)
+	if err == nil && claimed {
+		return verifyDoctorFlightRecorderV3(ctx, cfg.FlightRecorder)
+	}
+	if err == nil {
+		err = refuseDoctorFlightRecorderV3(cfg.FlightRecorder.Dir)
+	}
+	if err != nil {
+		status := doctorStatusFail
+		if errors.Is(err, receiptinput.ErrUnsupported) {
+			status = doctorStatusWarn
+		}
 		return doctorReportCheck{
-			Name: "flight_recorder", Surface: doctorSurfaceConfig, Status: doctorStatusFail,
+			Name: "flight_recorder", Surface: doctorSurfaceConfig, Status: status,
 			Configured: true, Reachable: true, Detail: err.Error(),
 		}
 	}
@@ -897,6 +904,61 @@ func checkDoctorFlightRecorder(cfg *config.Config) doctorReportCheck {
 	}
 }
 
+// verifyDoctorFlightRecorderV3 reports the verifier verdict in doctor's status
+// model. It does not enable trust-on-first-use when no signer key is configured.
+func verifyDoctorFlightRecorderV3(ctx context.Context, fr config.FlightRecorder) doctorReportCheck {
+	check := doctorReportCheck{
+		Name: "flight_recorder", Surface: doctorSurfaceConfig, Status: doctorStatusWarn,
+		Configured: true, Next: "run 'pipelock verify-receipt --chain <path>' with the trusted receipt signer key",
+	}
+	if fr.Dir == "" {
+		check.Detail = "receipt v3 is configured but flight_recorder.dir is unset"
+		return check
+	}
+	claimed, err := receiptinput.Claims(fr.Dir)
+	if errors.Is(err, os.ErrNotExist) || err == nil && !claimed {
+		check.Detail = "receipt v3 is configured but the configured directory has no directly verifiable profile evidence"
+		return check
+	}
+	if err != nil {
+		check.Status = doctorStatusFail
+		check.Detail = "could not inspect receipt v3 evidence: " + err.Error()
+		return check
+	}
+	check.Reachable = true
+	keys, err := doctorReceiptKeys(fr)
+	if err != nil {
+		check.Detail = "could not load configured receipt signer key: " + err.Error()
+		return check
+	}
+	result, err := v3.VerifyPaths(ctx, []string{fr.Dir}, v3.Options{Directory: true, Keys: keys})
+	if err != nil {
+		check.Detail = "could not verify receipt v3 evidence: " + err.Error()
+		return check
+	}
+	check.Detail = "receipt v3 evidence: " + result.Verdict
+	switch {
+	case result.Verdict == "VALID":
+		check.Status, check.Enforcing, check.Next = doctorStatusOK, true, ""
+	case result.Integrity == "failed":
+		check.Status = doctorStatusFail
+	}
+	return check
+}
+
+func doctorReceiptKeys(fr config.FlightRecorder) ([]ed25519.PublicKey, error) {
+	keys, err := v3.DecodeKeys(fr.ReceiptGroupPriorSignerKeys)
+	if err != nil || fr.SigningKeyPath == "" {
+		return keys, err
+	}
+	key, err := signing.LoadPrivateKeyFile(fr.SigningKeyPath)
+	if err != nil {
+		return nil, err
+	}
+	defer clear(key)
+	return append(keys, key.Public().(ed25519.PublicKey)), nil
+}
+
 const (
 	doctorReceiptCommand = "doctor"
 	doctorReceiptReader  = "flight recorder evidence health"
@@ -904,12 +966,12 @@ const (
 
 func refuseDoctorFlightRecorderV3(dir string) error {
 	const command, reader = doctorReceiptCommand, doctorReceiptReader
-	if err := receiptinput.Refuse(dir, command, reader); err != nil {
+	if err := receiptinput.RefuseTree(dir, command, reader); err != nil {
 		return err
 	}
 	entries, err := os.ReadDir(filepath.Clean(dir))
 	if err != nil {
-		return nil
+		return err
 	}
 	for _, entry := range entries {
 		name := entry.Name()

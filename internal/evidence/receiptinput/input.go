@@ -12,12 +12,13 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/luckyPipewrench/pipelock/internal/evidencename"
 	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
 
 // ErrUnsupported marks a refusal from a reader without v3 support.
-var ErrUnsupported = errors.New("receipt v3 evidence is not supported")
+var ErrUnsupported = evidencename.ErrReceiptProfile
 
 // Claims reports whether path is a file or directory claimed by the v3 verifier.
 func Claims(path string) (bool, error) {
@@ -69,7 +70,7 @@ func RefusePayload(payload []byte, command, reader string) error {
 		} else {
 			remaining = nil
 		}
-		if v3.ClaimsContent(line) {
+		if evidencename.ClaimsReceiptContent(line) {
 			return unsupported(command, reader, false)
 		}
 	}
@@ -83,6 +84,13 @@ func RefuseLocation(dir, command, reader string) error {
 		return err
 	}
 	loc, err := recorder.ResolveEvidenceLocation(dir, "")
+	if errors.Is(err, recorder.ErrLegacyEvidenceFormat) {
+		var claimed *fs.PathError
+		if errors.As(err, &claimed) {
+			return fmt.Errorf("%w (found %q)", unsupported(command, reader, true), claimed.Path)
+		}
+		return unsupported(command, reader, true)
+	}
 	if err == nil && loc.Dir != "" && filepath.Clean(loc.Dir) != filepath.Clean(dir) {
 		if err := Refuse(loc.Dir, command, reader); err != nil {
 			return err
@@ -109,11 +117,17 @@ func RefuseTree(dir, command, reader string) error {
 		return err
 	}
 	return filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil || !entry.IsDir() || path == root {
+		if walkErr != nil {
+			return walkErr
+		}
+		if !entry.IsDir() || path == root {
 			return nil
 		}
 		claimed, checkErr := v3.ClaimsInput(path, true)
-		if checkErr == nil && claimed {
+		if checkErr != nil {
+			return checkErr
+		}
+		if claimed {
 			return unsupported(command, reader, true)
 		}
 		return nil

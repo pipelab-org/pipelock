@@ -91,8 +91,13 @@ provide --agent and configure learn.capture_dir; the command reads
 func runShadow(cmd *cobra.Command, flags shadowFlags) error {
 	const command = "learn shadow"
 	if filepath.IsAbs(flags.recorderDir) {
-		if err := receiptinput.Refuse(flags.recorderDir, command, "learn lifecycle receipts"); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := receiptinput.RefuseTree(flags.recorderDir, command, "learn lifecycle receipts"); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
+		}
+	}
+	if flags.sessionsDir != "" {
+		if err := receiptinput.RefuseTree(flags.sessionsDir, command, "shadow replay"); err != nil {
+			return fmt.Errorf("inspect sessions dir: %w", err)
 		}
 	}
 	if flags.duration <= 0 {

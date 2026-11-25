@@ -68,6 +68,11 @@ func (r ReceiptGroupResult) predecessorError() error {
 // closed shard with bounded per-shard memory. It returns a verdict rather than
 // making an incomplete group look like a valid single session.
 func VerifyReceiptGroup(dir, groupID string, trusted []string) ReceiptGroupResult {
+	if err := recorder.RefuseReceiptDirectory(dir); err != nil {
+		result := ReceiptGroupResult{GroupID: groupID, Verdict: GroupInvalid}
+		result.setReadError(err)
+		return result
+	}
 	return verifyReceiptGroupWithIndex(dir, groupID, trusted, nil)
 }
 
@@ -88,8 +93,8 @@ func verifyGroupAELWithIndex(dir string, open ReceiptGroupOpen, trusted []string
 	return verifyGroupAELInventoryMode(dir, open, trusted, incomplete)
 }
 
-func verifyReceiptGroupWithIndex(dir, groupID string, trusted []string, index groupAELBatchIndex) ReceiptGroupResult {
-	return verifyReceiptGroupWithContext(dir, groupID, trusted, index, nil)
+func verifyReceiptGroupWithIndex(dir, groupID string, trusted []string, index groupAELBatchIndex, modes ...recorder.EvidenceReadMode) ReceiptGroupResult {
+	return verifyReceiptGroupWithContext(dir, groupID, trusted, index, nil, modes...)
 }
 
 func verifyReceiptGroupWithContext(dir, groupID string, trusted []string, index groupAELBatchIndex, ceremony *startupGroupVerification) ReceiptGroupResult {

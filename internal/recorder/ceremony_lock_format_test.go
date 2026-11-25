@@ -31,7 +31,7 @@ func TestCheckLegacyEvidenceFormat(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := checkLegacyEvidenceFormat(tc.dir)
-			if refused := err != nil && strings.Contains(err.Error(), "new evidence directory after a v3 switch"); refused != tc.refused {
+			if refused := errors.Is(err, ErrLegacyEvidenceFormat); refused != tc.refused {
 				t.Fatalf("checkLegacyEvidenceFormat(%s) = %v, want refused %v", tc.name, err, tc.refused)
 			}
 			if !tc.refused && err != nil {

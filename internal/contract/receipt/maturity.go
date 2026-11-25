@@ -39,19 +39,19 @@ var payloadMaturity = map[PayloadKind]payloadMaturityDeclaration{
 	PayloadProxyDecisionWithSpans: {maturity: PayloadMaturityFixtureOnly},
 	PayloadSecretEgressDecisionV1: {maturity: PayloadMaturityFixtureOnly},
 	PayloadContractRatified: {maturity: PayloadMaturityLive, producer: &payloadProducerReference{
-		packagePath: "github.com/luckyPipewrench/pipelock/internal/cli/learn", function: "runRatify",
+		packagePath: "github.com/luckyPipewrench/pipelock/internal/cli/learn", function: "runRatifyLegacy",
 	}},
 	PayloadContractPromoteIntent: {maturity: PayloadMaturityLive, producer: &payloadProducerReference{
-		packagePath: "github.com/luckyPipewrench/pipelock/internal/cli/learn", function: "runPromote",
+		packagePath: "github.com/luckyPipewrench/pipelock/internal/cli/learn", function: "runPromoteLegacy",
 	}},
 	PayloadContractPromoteCommitted: {maturity: PayloadMaturityLive, producer: &payloadProducerReference{
-		packagePath: "github.com/luckyPipewrench/pipelock/internal/cli/learn", function: "runPromote",
+		packagePath: "github.com/luckyPipewrench/pipelock/internal/cli/learn", function: "runPromoteLegacy",
 	}},
 	PayloadContractRollbackAuthorized: {maturity: PayloadMaturityLive, producer: &payloadProducerReference{
-		packagePath: "github.com/luckyPipewrench/pipelock/internal/cli/learn", function: "runRollback",
+		packagePath: "github.com/luckyPipewrench/pipelock/internal/cli/learn", function: "runRollbackLegacy",
 	}},
 	PayloadContractRollbackCommitted: {maturity: PayloadMaturityLive, producer: &payloadProducerReference{
-		packagePath: "github.com/luckyPipewrench/pipelock/internal/cli/learn", function: "runRollback",
+		packagePath: "github.com/luckyPipewrench/pipelock/internal/cli/learn", function: "runRollbackLegacy",
 	}},
 	PayloadContractDemoted: {maturity: PayloadMaturityFixtureOnly},
 	PayloadContractExpired: {maturity: PayloadMaturityFixtureOnly},
@@ -62,7 +62,7 @@ var payloadMaturity = map[PayloadKind]payloadMaturityDeclaration{
 	PayloadOpportunityMissing: {maturity: PayloadMaturityFixtureOnly},
 	PayloadKeyRotation:        {maturity: PayloadMaturityFixtureOnly},
 	PayloadContractRedactionRequest: {maturity: PayloadMaturityLive, producer: &payloadProducerReference{
-		packagePath: "github.com/luckyPipewrench/pipelock/internal/cli/learn", function: "runForget",
+		packagePath: "github.com/luckyPipewrench/pipelock/internal/cli/learn", function: "runForgetLegacy",
 	}},
 	PayloadDeferOpened:   {maturity: PayloadMaturityReserved},
 	PayloadDeferResolved: {maturity: PayloadMaturityReserved},

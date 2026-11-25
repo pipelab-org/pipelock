@@ -7,9 +7,12 @@ import (
 	"bufio"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"sort"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/evidencename"
 )
 
 // ParseOptions controls which events to include.
@@ -30,6 +33,7 @@ type ParseResult struct {
 func ParseEvents(r io.Reader, opts ParseOptions) (ParseResult, error) {
 	var result ParseResult
 	scanner := bufio.NewScanner(r)
+	scanner.Split(evidencename.SplitLegacyJSONLines)
 
 	// 1 MiB max line size to handle verbose audit entries safely.
 	const maxLineSize = 1 << 20
@@ -59,12 +63,10 @@ func ParseEvents(r io.Reader, opts ParseOptions) (ParseResult, error) {
 	}
 
 	if err := scanner.Err(); err != nil {
-		// bufio.ErrTooLong means a single line exceeded the buffer.
-		// Count it as a skipped line rather than aborting the whole report.
-		if !errors.Is(err, bufio.ErrTooLong) {
-			return ParseResult{}, err
+		if errors.Is(err, bufio.ErrTooLong) {
+			return ParseResult{}, fmt.Errorf("audit report cannot inspect the rest of an oversized log; for receipt evidence use 'pipelock verify-receipt <path>': %w", err)
 		}
-		result.SkippedLines++
+		return ParseResult{}, err
 	}
 
 	sort.Slice(result.Events, func(i, j int) bool {

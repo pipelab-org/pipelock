@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/evidencename"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
 
@@ -1005,7 +1006,7 @@ func ExtractReceipts(path string) ([]Receipt, error) {
 		// compatibility path: that path would return the receipts it managed
 		// to parse as though they were the whole chain. Mirrors
 		// ExtractReceiptsBytes.
-		if errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) || recorder.IsEvidenceUnavailable(err) {
+		if errors.Is(err, evidencename.ErrReceiptProfile) || errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) || recorder.IsEvidenceUnavailable(err) {
 			return nil, fmt.Errorf("reading entries: %w", err)
 		}
 		rawReceipts, rawErr := extractRawReceiptsJSONLFile(clean)
@@ -1041,7 +1042,7 @@ func ExtractReceiptsBytes(data []byte) ([]Receipt, error) {
 func ExtractReceiptsFromReader(input io.ReadSeeker) ([]Receipt, error) {
 	entries, err := recorder.ReadHistoryEntriesFromReader(input)
 	if err != nil {
-		if errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) || recorder.IsEvidenceUnavailable(err) {
+		if errors.Is(err, evidencename.ErrReceiptProfile) || errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) || recorder.IsEvidenceUnavailable(err) {
 			return nil, fmt.Errorf("reading entries: %w", err)
 		}
 		rawReceipts, rawErr := extractRawReceiptsJSONLFrom(input)
@@ -1313,6 +1314,7 @@ func extractRawReceiptsJSONLFile(path string) ([]Receipt, error) {
 
 func extractRawReceiptsJSONLReader(input io.Reader) ([]Receipt, error) {
 	scanner := bufio.NewScanner(input)
+	scanner.Split(evidencename.SplitLegacyJSONLines)
 	scanner.Buffer(make([]byte, 0, 64<<10), 10<<20)
 	var receipts []Receipt
 	line := 0

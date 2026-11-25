@@ -181,8 +181,9 @@ type SessionListResult struct {
 	Truncated bool
 }
 
-// ListSessionsBounded returns unique session IDs while enforcing a hard ceiling
-// on directory entries read. Zero means unbounded.
+// ListSessionsBounded returns unique session IDs with a ceiling on selected
+// directory entries. All names are screened for receipt profiles. Zero means
+// an unbounded result.
 func ListSessionsBounded(dir string, maxEntries int) ([]string, error) {
 	result, err := ListSessionsBoundedResult(dir, maxEntries)
 	if err != nil {
@@ -316,10 +317,7 @@ func IsRecorderOwnedFile(name string) bool {
 	if _, _, ok := ParseEvidenceFilename(name); ok {
 		return true
 	}
-	if _, ok := evidencename.ReceiptProfileVersion(name); ok {
-		return true
-	}
-	if _, ok := evidencename.CutoverInventoryHash(name); ok {
+	if evidencename.ClaimsReceiptName(name) {
 		return true
 	}
 	switch {
