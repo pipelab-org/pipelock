@@ -16,6 +16,7 @@ import (
 	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/evidence/receiptinput"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	v3 "github.com/luckyPipewrench/pipelock/internal/receipt/v3"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/report"
 	"github.com/luckyPipewrench/pipelock/internal/testreceipt"
@@ -173,5 +174,56 @@ func TestRefuseTreeReportsUnreadableDescendant(t *testing.T) {
 				t.Fatalf("expected a permission error for the descendant, got %v", err)
 			}
 		})
+	}
+}
+
+func TestLegacyDirectoryWithLeftoverCutoverInventoryAllowed(t *testing.T) {
+	dir := t.TempDir()
+	// Simulate a legacy directory after a cutover attempt that wrote an inventory
+	// file and failed before publishing the first .receipt-v3.jsonl stream.
+	inventoryName := v3.InventoryFilename(v3.Digest([]byte(`{"chains":[],"v":1}`)))
+	if err := os.WriteFile(filepath.Join(dir, inventoryName), []byte(`{"chains":[],"v":1}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "receipt-v3-cutover-notes.json"), []byte(`{}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "notes-receipt-v3.txt"), []byte("operator notes\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".receipt-v3.tmp"), []byte("temp"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "evidence-proxy-0.jsonl"), []byte(`{"v":1}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if claimed, err := v3.ClaimsInput(dir, true); err != nil || claimed {
+		t.Fatalf("v3.ClaimsInput = %t, %v; want false, nil", claimed, err)
+	}
+	if hasV3, err := v3.DirectoryHasV3(dir); err != nil || hasV3 {
+		t.Fatalf("v3.DirectoryHasV3 = %t, %v; want false, nil", hasV3, err)
+	}
+	if err := receiptinput.RefuseTree(dir, "legacy reader", "legacy evidence"); err != nil {
+		t.Fatalf("RefuseTree refused legacy directory with leftover cutover inventory: %v", err)
+	}
+	if err := recorder.RefuseReceiptDirectory(dir); err != nil {
+		t.Fatalf("RefuseReceiptDirectory refused legacy directory: %v", err)
+	}
+	if _, err := recorder.DiscoverEvidenceLocations(dir); err != nil {
+		t.Fatalf("DiscoverEvidenceLocations failed: %v", err)
+	}
+	if _, err := recorder.ListSessions(dir); err != nil {
+		t.Fatalf("ListSessions failed: %v", err)
+	}
+	if _, err := recorder.EvidenceDirectoryHealthForDir(dir, 0); err != nil {
+		t.Fatalf("EvidenceDirectoryHealthForDir failed: %v", err)
+	}
+	ran := false
+	if err := recorder.WithEvidenceWriterCeremonyLock(dir, func() error {
+		ran = true
+		return nil
+	}); err != nil || !ran {
+		t.Fatalf("WithEvidenceWriterCeremonyLock failed: ran=%t err=%v", ran, err)
 	}
 }

@@ -58,11 +58,12 @@ func UnsupportedReceiptProfile(directory bool) error {
 	return fmt.Errorf("%w by this reader; use '%s'", ErrReceiptProfile, verify)
 }
 
-// ClaimsReceiptName reserves profile streams and cutover inventory names,
-// including damaged inventories whose digest cannot be parsed.
+// ClaimsReceiptName reserves profile stream names ("*.receipt-vN.jsonl").
+// Cutover inventories are not claimed on their own because the cutover only
+// commits when the first v3 stream file is published.
 func ClaimsReceiptName(name string) bool {
 	_, stream := ReceiptProfileVersion(name)
-	return stream || strings.HasPrefix(name, cutoverPrefix) && strings.HasSuffix(name, cutoverSuffix)
+	return stream
 }
 
 // ReceiptProfileEntry finds the first claimed filename in a directory listing.

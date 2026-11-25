@@ -88,3 +88,28 @@ func TestVerifyReceiptCmd_RelativeMixedDirectory(t *testing.T) {
 	}
 	t.Fatalf("missing session did not fail its expectation: %+v", result.Findings)
 }
+
+func TestVerifyReceiptCmd_LegacyDirWithLeftoverCutoverInventory(t *testing.T) {
+	source := filepath.Join("..", "..", "..", "sdk", "conformance", "testdata", "frozen", "v1", "action-receipt-v1-chain.jsonl")
+	raw, err := os.ReadFile(filepath.Clean(source))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "evidence-conformance-session-0.jsonl"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	inventoryName := v3.InventoryFilename(v3.Digest([]byte(`{"chains":[],"v":1}`)))
+	if err := os.WriteFile(filepath.Join(dir, inventoryName), []byte(`{"chains":[],"v":1}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := VerifyReceiptCmd()
+	cmd.SetArgs([]string{"--chain", dir, "--session", "conformance-session", "--allow-unpinned", "--allow-prefix"})
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	if err := cmd.ExecuteContext(t.Context()); err != nil {
+		t.Fatalf("legacy chain with leftover cutover inventory should verify on legacy path, got %v\n%s", err, out.String())
+	}
+}

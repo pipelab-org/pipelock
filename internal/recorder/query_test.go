@@ -1061,7 +1061,7 @@ func TestIsRecorderOwnedFile(t *testing.T) {
 		{"11111111111111111111111111111111-0000000000000000.receipt-v4.jsonl", true},
 		{"stream.receipt-v3.jsonl", true},
 		{"receipt-v3-cutover-" + strings.Repeat("ab", 32) + ".json", true},
-		{"receipt-v3-cutover-notes.json", true},
+		{"receipt-v3-cutover-notes.json", false},
 		{"x.receipt-v3.jsonl.bak", false},
 		// Operator outputs that happen to sit beside evidence are not owned.
 		{"bundle.json", false},

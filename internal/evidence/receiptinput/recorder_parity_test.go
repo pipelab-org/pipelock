@@ -25,29 +25,30 @@ func TestRecorderClaimMatchesV3ClaimsInput(t *testing.T) {
 	legacyLine := `{"v":1,"type":"action_receipt"}` + "\n"
 	hash := strings.Repeat("ab", 32)
 	for _, tc := range []struct {
-		name  string
-		files map[string]string
+		name      string
+		files     map[string]string
+		wantClaim bool
 	}{
-		{"empty", nil},
-		{"legacy shard", map[string]string{"evidence-proxy-0.jsonl": legacyLine}},
-		{"v3 stream", map[string]string{stream + "-0000000000000000.receipt-v3.jsonl": v3Line}},
-		{"empty v3 stream", map[string]string{stream + "-0000000000000000.receipt-v3.jsonl": ""}},
-		{"future profile", map[string]string{stream + "-0000000000000000.receipt-v4.jsonl": ""}},
-		{"long profile number", map[string]string{"s.receipt-v99999999999999999999.jsonl": ""}},
-		{"malformed v3 name", map[string]string{"stream.receipt-v3.jsonl": ""}},
-		{"uppercase stream", map[string]string{strings.ToUpper(stream) + "-0000000000000000.receipt-v3.jsonl": ""}},
-		{"v3 under shard name", map[string]string{"evidence-proxy-0.jsonl": v3Line}},
-		{"whitespace before profile", map[string]string{"evidence-proxy-0.jsonl": "\n \t" + v3Line}},
-		{"damaged cutover inventory", map[string]string{"receipt-v3-cutover-damaged.json": ""}},
-		{"v3 under single dash shard name", map[string]string{"evidence-v3.jsonl": v3Line}},
-		{"v3 under group artifact", map[string]string{"receipt-group-a.json": v3Line}},
-		{"v3 under activation", map[string]string{"activation-receipts.jsonl": v3Line}},
-		{"v3 under redaction", map[string]string{"redaction-receipts.jsonl": v3Line}},
-		{"v3 under ratification", map[string]string{"ratification-receipts.jsonl": v3Line}},
-		{"v3 under unrelated name", map[string]string{"notes.txt": v3Line}},
-		{"cutover inventory only", map[string]string{"receipt-v3-cutover-" + hash + ".json": "{}"}},
-		{"profile suffix only as a prefix", map[string]string{"x.receipt-v3.jsonl.bak": ""}},
-		{"mixed", map[string]string{"evidence-proxy-0.jsonl": legacyLine, stream + "-0000000000000000.receipt-v3.jsonl": v3Line}},
+		{"empty", nil, false},
+		{"legacy shard", map[string]string{"evidence-proxy-0.jsonl": legacyLine}, false},
+		{"v3 stream", map[string]string{stream + "-0000000000000000.receipt-v3.jsonl": v3Line}, true},
+		{"empty v3 stream", map[string]string{stream + "-0000000000000000.receipt-v3.jsonl": ""}, true},
+		{"future profile", map[string]string{stream + "-0000000000000000.receipt-v4.jsonl": ""}, true},
+		{"long profile number", map[string]string{"s.receipt-v99999999999999999999.jsonl": ""}, true},
+		{"malformed v3 name", map[string]string{"stream.receipt-v3.jsonl": ""}, true},
+		{"uppercase stream", map[string]string{strings.ToUpper(stream) + "-0000000000000000.receipt-v3.jsonl": ""}, true},
+		{"v3 under shard name", map[string]string{"evidence-proxy-0.jsonl": v3Line}, true},
+		{"whitespace before profile", map[string]string{"evidence-proxy-0.jsonl": "\n \t" + v3Line}, true},
+		{"damaged cutover inventory", map[string]string{"receipt-v3-cutover-damaged.json": ""}, false},
+		{"v3 under single dash shard name", map[string]string{"evidence-v3.jsonl": v3Line}, false},
+		{"v3 under group artifact", map[string]string{"receipt-group-a.json": v3Line}, true},
+		{"v3 under activation", map[string]string{"activation-receipts.jsonl": v3Line}, true},
+		{"v3 under redaction", map[string]string{"redaction-receipts.jsonl": v3Line}, true},
+		{"v3 under ratification", map[string]string{"ratification-receipts.jsonl": v3Line}, true},
+		{"v3 under unrelated name", map[string]string{"notes.txt": v3Line}, false},
+		{"cutover inventory only", map[string]string{"receipt-v3-cutover-" + hash + ".json": "{}"}, false},
+		{"profile suffix only as a prefix", map[string]string{"x.receipt-v3.jsonl.bak": ""}, false},
+		{"mixed", map[string]string{"evidence-proxy-0.jsonl": legacyLine, stream + "-0000000000000000.receipt-v3.jsonl": v3Line}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -59,6 +60,9 @@ func TestRecorderClaimMatchesV3ClaimsInput(t *testing.T) {
 			want, err := v3.ClaimsInput(dir, true)
 			if err != nil {
 				t.Fatal(err)
+			}
+			if want != tc.wantClaim {
+				t.Fatalf("v3.ClaimsInput = %t, want %t", want, tc.wantClaim)
 			}
 			ran := false
 			inputClaims, inputErr := receiptinput.Claims(dir)

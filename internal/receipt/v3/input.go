@@ -238,7 +238,8 @@ func discover(paths []string, opts Options, skip string) (files []inputFile, leg
 		paths = nil
 		for _, entry := range entries {
 			path := filepath.Join(dir, entry.Name())
-			if evidencename.ClaimsReceiptName(entry.Name()) || legacyCandidate(entry.Name()) {
+			_, isInventory := inventoryID(entry.Name())
+			if evidencename.ClaimsReceiptName(entry.Name()) || isInventory || legacyCandidate(entry.Name()) {
 				if !entry.Type().IsRegular() {
 					return nil, nil, nil, 0, fmt.Errorf("evidence path is not a regular file: %s", path)
 				}
@@ -257,11 +258,6 @@ func discover(paths []string, opts Options, skip string) (files []inputFile, leg
 			continue
 		}
 		file, identified := identify(path)
-		if !identified && evidencename.ClaimsReceiptName(base) {
-			file.code = codeFileLayout
-			files = append(files, file)
-			continue
-		}
 		if opts.ExplicitV3 && !identified {
 			identified = true
 		}

@@ -87,6 +87,9 @@ func TestStreamWriterCutoverCommitsAtFirstStream(t *testing.T) {
 	if inventoryPin == "" || hasV3Entry(entries) {
 		t.Fatalf("expected inventory without a v3 stream: %v", entries)
 	}
+	if claimed, checkErr := DirectoryHasV3(dir); checkErr != nil || claimed {
+		t.Fatalf("uncommitted cutover inventory claimed directory: %t, %v", claimed, checkErr)
+	}
 	inventoryPath := filepath.Join(dir, InventoryFilename(inventoryPin))
 	body, err := os.ReadFile(filepath.Clean(inventoryPath))
 	if err != nil {
@@ -341,9 +344,8 @@ func requireCutoverRefusal(t *testing.T, opts StreamWriterOptions, storage write
 	if cause != nil && !errors.Is(err, cause) || !strings.Contains(err.Error(), diagnostic) {
 		t.Fatalf("cutover error = %v, want %v %q", err, cause, diagnostic)
 	}
-	entries, inspectErr := os.ReadDir(opts.Dir)
-	if inspectErr != nil || hasV3Entry(entries) {
-		t.Fatalf("refused cutover left a committed stream: %v", inspectErr)
+	if committed, inspectErr := DirectoryHasV3(opts.Dir); committed || inspectErr != nil {
+		t.Fatalf("refused cutover left v3 evidence: %t, %v", committed, inspectErr)
 	}
 }
 

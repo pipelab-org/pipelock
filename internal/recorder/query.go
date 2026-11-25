@@ -320,6 +320,9 @@ func IsRecorderOwnedFile(name string) bool {
 	if evidencename.ClaimsReceiptName(name) {
 		return true
 	}
+	if _, ok := evidencename.CutoverInventoryHash(name); ok {
+		return true
+	}
 	switch {
 	case strings.HasPrefix(name, rawEscrowNamePrefix) && strings.Contains(name, rawEscrowNameMarker) && strings.HasSuffix(name, rawEscrowSuffix):
 		return true
