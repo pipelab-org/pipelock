@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/evidence/receiptinput"
 	"github.com/luckyPipewrench/pipelock/internal/evidencename"
 	"github.com/luckyPipewrench/pipelock/internal/receiptcontent"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
@@ -241,7 +242,7 @@ func DirectoryHasV3(dir string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("read receipt evidence directory: %w", err)
 	}
-	return claimsDirectory(resolved, entries)
+	return receiptinput.ClaimsDirectory(resolved, entries)
 }
 
 // hasV3Entry identifies the restart case. A prepared cutover inventory

@@ -14,7 +14,6 @@ import (
 	"slices"
 
 	"github.com/luckyPipewrench/pipelock/internal/evidencename"
-	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
 
@@ -32,7 +31,7 @@ func inspect(path string) (claimed, directory bool, err error) {
 	if err != nil {
 		return false, false, err
 	}
-	claimed, err = v3.ClaimsInput(path, info.IsDir())
+	claimed, err = ClaimsInput(path, info.IsDir())
 	return claimed, info.IsDir(), err
 }
 
@@ -128,7 +127,7 @@ func RefuseTree(dir, command, reader string, extraCandidates ...func(string) boo
 		if path == root {
 			return nil
 		}
-		claimed, checkErr := v3.ClaimsInput(path, true)
+		claimed, checkErr := ClaimsInput(path, true)
 		if checkErr != nil {
 			return checkErr
 		}

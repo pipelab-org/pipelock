@@ -138,3 +138,20 @@ func isReceiptEvidenceImport(path string) bool {
 	}
 	return strings.HasPrefix(rel, "internal/receipt/") || strings.HasPrefix(rel, "internal/evidence/")
 }
+
+// The browser verifier is built for js/wasm, which cannot link the receipt v3
+// verifier's SQLite driver. A reader refusal helper that imports v3 breaks that
+// artifact at build time.
+func TestBrowserVerifierBuildsForWasm(t *testing.T) {
+	root := filepath.Join("..", "..", "..")
+	cmd := exec.CommandContext(t.Context(), "go", "list", "-deps", "./cmd/pipelock-verifier-wasm") // #nosec G204 -- Go tool, fixed arguments.
+	cmd.Dir = root
+	cmd.Env = append(os.Environ(), "GOOS=js", "GOARCH=wasm")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("browser verifier dependency graph does not resolve for js/wasm: %v\n%s", err, output)
+	}
+	if strings.Contains(string(output), "pipelock/internal/receipt/v3\n") {
+		t.Fatal("browser verifier imports internal/receipt/v3, which needs SQLite")
+	}
+}

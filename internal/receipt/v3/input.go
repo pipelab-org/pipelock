@@ -19,6 +19,7 @@ import (
 	"strings"
 
 	contract "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/evidence/receiptinput"
 	"github.com/luckyPipewrench/pipelock/internal/evidencename"
 )
 
@@ -166,36 +167,7 @@ func identify(path string) (inputFile, bool) {
 
 // ClaimsInput identifies a v3 or later receipt claim before legacy dispatch.
 func ClaimsInput(path string, directory bool) (bool, error) {
-	if directory {
-		dir, entries, err := readInputDirectory(path)
-		if err != nil {
-			return false, err
-		}
-		return claimsDirectory(dir, entries)
-	}
-	if evidencename.ClaimsReceiptName(filepath.Base(path)) {
-		return true, nil
-	}
-	return startsWithProfile(path)
-}
-
-func claimsDirectory(dir string, entries []os.DirEntry) (bool, error) {
-	if evidencename.ReceiptProfileEntry(entries) != "" {
-		return true, nil
-	}
-	var probeErr error
-	for _, entry := range entries {
-		if !entry.IsDir() && legacyCandidate(entry.Name()) && entry.Type().IsRegular() {
-			claimed, err := startsWithProfile(filepath.Join(dir, entry.Name()))
-			if claimed {
-				return true, nil
-			}
-			if probeErr == nil {
-				probeErr = err
-			}
-		}
-	}
-	return false, probeErr
+	return receiptinput.ClaimsInput(path, directory)
 }
 
 // ClaimsContent identifies the receipt profile prefix on a byte-oriented input
