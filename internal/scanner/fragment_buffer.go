@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/carddlp"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/identitykey"
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
@@ -944,7 +945,37 @@ func scanOneFragmentContinuityMemo(ctx context.Context, sc *Scanner, fragments [
 	return matches
 }
 
+type fragmentScanView struct {
+	memo           *fragmentCleanMemo
+	stream         string
+	tagView, cards bool
+}
+
 func scanOneFragmentContinuityView(ctx context.Context, sc *Scanner, fragments []fragment, memo *fragmentCleanMemo, stream string, tagView bool) []DLPMatch {
+	matches := scanFragmentView(ctx, sc, fragments, fragmentScanView{memo: memo, stream: stream, tagView: tagView})
+	cards := scanFragmentView(ctx, sc, fragments, fragmentScanView{memo: memo, stream: stream, tagView: tagView, cards: true})
+	return append(matches, cards...)
+}
+
+func scanFragmentView(ctx context.Context, sc *Scanner, fragments []fragment, view fragmentScanView) []DLPMatch {
+	memo, stream, tagView := view.memo, view.stream, view.tagView
+	normalizeView := normalizeFragmentForDLP
+	if view.cards {
+		normalizeView = normalizeFragmentForCardText
+	}
+	seenWarning := false
+	scan := func(text string, quiet bool) TextDLPResult {
+		result := sc.ScanTextForDLPQuiet(ctx, text)
+		seenWarning = seenWarning || len(result.InformationalMatches) > 0
+		result.Matches = slices.DeleteFunc(result.Matches, func(m TextDLPMatch) bool { return m.genericCard != view.cards })
+		result.InformationalMatches = slices.DeleteFunc(result.InformationalMatches, func(m TextDLPMatch) bool { return m.genericCard != view.cards })
+		result.Clean = len(result.Matches) == 0 && !result.Incomplete
+		if !quiet {
+			sc.EmitTextDLPWarnMatches(ctx, result.InformationalMatches)
+		}
+		return result
+	}
+
 	if len(fragments) < minFragmentsForMatch {
 		return nil
 	}
@@ -956,7 +987,7 @@ func scanOneFragmentContinuityView(ctx context.Context, sc *Scanner, fragments [
 	}
 	buf.Grow(size)
 	for _, f := range fragments {
-		normalized, stable := normalizeFragmentForDLP(f.data)
+		normalized, stable := normalizeView(f.data)
 		if !stable {
 			// Scanner spans index another normalization pass. If the bounded
 			// pipeline does not reach a fixed point, no fragment boundary can be
@@ -967,12 +998,12 @@ func scanOneFragmentContinuityView(ctx context.Context, sc *Scanner, fragments [
 	}
 
 	text := buf.String()
-	key := fragmentCleanKey{scanner: sc, stream: stream, continuity: string(fragments[0].continuity), unicodeTags: tagView}
+	key := fragmentCleanKey{scanner: sc, stream: stream, continuity: string(fragments[0].continuity), unicodeTags: tagView, cardText: view.cards}
 	if memo != nil && memo.lookup(key, text) {
 		return nil
 	}
-	result := sc.ScanTextForDLP(ctx, text)
-	if result.Clean && len(result.Matches) == 0 && len(result.InformationalMatches) == 0 {
+	result := scan(text, false)
+	if result.Clean && len(result.Matches) == 0 && len(result.InformationalMatches) == 0 && !seenWarning {
 		if memo != nil {
 			memo.store(key, text)
 		}
@@ -990,7 +1021,7 @@ func scanOneFragmentContinuityView(ctx context.Context, sc *Scanner, fragments [
 	ranges := make([]fragmentRange, 0, len(fragments))
 	position := 0
 	for _, f := range fragments {
-		normalized, _ := normalizeFragmentForDLP(f.data) // Checked above; data is immutable.
+		normalized, _ := normalizeView(f.data) // Checked above; data is immutable.
 		end := position + len(normalized)
 		ranges = append(ranges, fragmentRange{start: position, end: end, normalized: normalized, fragment: f})
 		position = end
@@ -1006,7 +1037,7 @@ func scanOneFragmentContinuityView(ctx context.Context, sc *Scanner, fragments [
 	// offsets no longer line up with fragment ranges. Map positions back
 	// through the removed image spans instead.
 	if excised, decoded, removed := stripVerifiedImageDataURLSpans(text, true); len(removed) > 0 {
-		return imageSplicedFragmentMatches(ctx, sc, excised, decoded, removed, ranges, result.Matches)
+		return imageSplicedFragmentMatches(ctx, sc, imageSpliceView{excised: excised, decoded: decoded, removed: removed, ranges: ranges, joined: result.Matches, normalize: normalizeView})
 	}
 	complete := completeFragmentOccurrences(ctx, sc, ranges)
 	patternSet := make(map[string]struct{}, len(result.Matches))
@@ -1020,6 +1051,10 @@ func scanOneFragmentContinuityView(ctx context.Context, sc *Scanner, fragments [
 	}
 	sort.Strings(patternNames)
 	for _, patternName := range patternNames {
+		if match, found := crossFragmentCardCandidate(sc, text, patternName, ranges, nil); found {
+			matches = append(matches, match)
+			continue
+		}
 		masked := []byte(text)
 		for _, occurrence := range complete[patternName] {
 			_ = maskFragmentOccurrence(masked, occurrence.start, occurrence.end)
@@ -1030,7 +1065,7 @@ func scanOneFragmentContinuityView(ctx context.Context, sc *Scanner, fragments [
 		// complete occurrences until the next one crosses a request boundary or
 		// the rule disappears.
 		for {
-			maskedResult := sc.ScanTextForDLPQuiet(ctx, string(masked))
+			maskedResult := scan(string(masked), true)
 			remasked := false
 			crossed := false
 			var rawTargets []TextDLPMatch
@@ -1086,13 +1121,21 @@ func scanOneFragmentContinuityView(ctx context.Context, sc *Scanner, fragments [
 }
 
 func normalizeFragmentForDLP(payload []byte) ([]byte, bool) {
+	return normalizeFragmentWith(payload, normalize.ForDLP)
+}
+
+func normalizeFragmentForCardText(payload []byte) ([]byte, bool) {
+	return normalizeFragmentWith(payload, normalize.ForCardText)
+}
+
+func normalizeFragmentWith(payload []byte, fold func(string) string) ([]byte, bool) {
 	current := string(payload)
 	// ForDLP has two stages that can expose input to a later stage: NFKC and
 	// the trailing NFD used to remove combining marks. Two changing passes plus
 	// one equality check therefore cover the current pipeline. A future change
 	// that needs more passes fails closed instead of reviving coordinate drift.
 	for range maxFragmentDLPNormalizationPasses {
-		next := normalize.ForDLP(current)
+		next := fold(current)
 		if next == current {
 			return []byte(next), true
 		}
@@ -1117,6 +1160,14 @@ type fragmentOccurrence struct {
 	end   int
 }
 
+type imageSpliceView struct {
+	excised, decoded string
+	removed          []textByteSpan
+	ranges           []fragmentRange
+	joined           []TextDLPMatch
+	normalize        func([]byte) ([]byte, bool)
+}
+
 // imageSplicedFragmentMatches attributes joined-window findings after image
 // excision has rewritten the text. Excision only removes byte ranges and
 // appends decoded image bytes after the surrounding text, so a position in the
@@ -1124,11 +1175,13 @@ type fragmentOccurrence struct {
 // that maps inside one fragment is blanked in place and the window rescanned,
 // so a whole copy cannot hide a split copy. A match in the decoded image bytes,
 // or one without a raw position, has no original location and is reported.
-func imageSplicedFragmentMatches(ctx context.Context, sc *Scanner, excised, decoded string, removed []textByteSpan, ranges []fragmentRange, joined []TextDLPMatch) []DLPMatch {
+func imageSplicedFragmentMatches(ctx context.Context, sc *Scanner, view imageSpliceView) []DLPMatch {
+	excised, decoded, removed, ranges, joined := view.excised, view.decoded, view.removed, view.ranges, view.joined
+	normalizeView := view.normalize
 	// Scanner spans are in DLP-normalized coordinates. If normalizing the
 	// surrounding text would move bytes, positions cannot be trusted, so
 	// every joined rule is reported without attribution.
-	if normalized, stable := normalizeFragmentForDLP([]byte(excised)); !stable || string(normalized) != excised {
+	if normalized, stable := normalizeView([]byte(excised)); !stable || string(normalized) != excised {
 		return unattributedFragmentMatches(joined)
 	}
 	window := excised
@@ -1156,6 +1209,10 @@ func imageSplicedFragmentMatches(ctx context.Context, sc *Scanner, excised, deco
 			continue
 		}
 		reported[name] = struct{}{}
+		if match, found := crossFragmentCardCandidate(sc, excised, name, ranges, toOriginal); found {
+			matches = append(matches, match)
+			continue
+		}
 		masked := []byte(window)
 		for attempt := 0; ; attempt++ {
 			// Each single-request copy costs a full rescan. Bound the work and
@@ -1626,6 +1683,7 @@ func (fb *FragmentBuffer) cleanupLocked(now time.Time) {
 // A memo entry certifies only a warning-free full scan of identical normalized
 // text within one buffer, stream, continuity and immutable scanner generation.
 type fragmentCleanKey struct {
+	cardText           bool
 	scanner            *Scanner
 	stream, continuity string
 	unicodeTags        bool
@@ -1688,4 +1746,32 @@ func (fb *FragmentBuffer) scanBatchWithCleanMemo(ctx context.Context, sc *Scanne
 		matches = append(matches, scanOneFragmentContinuityMemo(ctx, sc, group, &fb.cleanMemo, stream)...)
 	}
 	return matches
+}
+
+// Enumerate raw card spans before masking whole occurrences. A shorter card
+// and a longer cross-fragment card may share every byte, including their start.
+// Encoded findings still use the existing rescan path when no raw span crosses.
+func crossFragmentCardCandidate(sc *Scanner, text, name string, ranges []fragmentRange, toOriginal func(int, bool) int) (DLPMatch, bool) {
+	for _, pattern := range sc.dlpPatterns {
+		if pattern.name != name || !pattern.cardPrefixRetry {
+			continue
+		}
+		var match DLPMatch
+		found := carddlp.Visit(text, false, func(c carddlp.Candidate) bool {
+			if c.PublicExample || !pattern.accepts(text, c.Start, c.End) {
+				return false
+			}
+			start, end := c.Start, c.End
+			if toOriginal != nil {
+				start, end = toOriginal(start, false), toOriginal(end, true)
+			}
+			if spanIsWithinOneFragment(ranges, start, end) {
+				return false
+			}
+			match = DLPMatch{PatternName: name, Contributors: contributorsForSpan(ranges, start, end)}
+			return true
+		})
+		return match, found
+	}
+	return DLPMatch{}, false
 }

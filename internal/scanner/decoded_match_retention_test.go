@@ -60,6 +60,7 @@ func TestDecodedMatchCacheKeyFields(t *testing.T) {
 		{scanner: a, text: base.text, encoding: base.encoding, core: true},
 		{scanner: a, text: base.text, encoding: base.encoding, core: true, normalizedCore: true},
 		{scanner: a, text: base.text, encoding: base.encoding, cardOnly: true},
+		{scanner: a, text: base.text, encoding: base.encoding, cardSource: true},
 	}
 	seen := make(map[decodedMatchCacheKey]int)
 	for i, key := range variants {

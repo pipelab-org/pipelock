@@ -13,6 +13,7 @@ import (
 	"testing"
 	"unicode"
 
+	"github.com/luckyPipewrench/pipelock/internal/cardtest"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
 )
@@ -171,8 +172,10 @@ func TestRequiredASCIIDigitCompiledDefaults(t *testing.T) {
 	cfg.DLP.ScanEnv = false
 	sc := MustNew(cfg)
 	t.Cleanup(sc.Close)
+	// Diners admits 14 digits; the necessary-count filter must not retain
+	// the older 15-digit floor and skip that newly supported family.
 	wanted := map[string]uint8{
-		"Social Security Number": 9, "Credit Card Number": 15, "IBAN": 2, "Ethereum Private Key": 1,
+		"Social Security Number": 9, "Credit Card Number": 14, "IBAN": 2, "Ethereum Private Key": 1,
 		"Discord Bot Token": 0, "Twilio API Key": 0, "Bitcoin WIF Private Key": 0,
 		"Credential in URL": 0, "Environment Variable Secret": 0,
 	}
@@ -185,6 +188,14 @@ func TestRequiredASCIIDigitCompiledDefaults(t *testing.T) {
 			seen++
 			if p.minASCIIDigits != want {
 				t.Fatalf("%s digit minimum = %d, want %d", p.name, p.minASCIIDigits, want)
+			}
+		}
+	}
+	for _, prefix := range []string{"3000", "3059", "3095", "36", "38", "39"} {
+		pan := cardtest.Issuer(prefix, 14)
+		for _, value := range []string{pan, cardtest.Grouped(pan, " "), cardtest.Grouped(pan, "-")} {
+			if r := sc.ScanTextForDLP(t.Context(), value); r.Clean || !HasEnforcingMatch(r.Matches) {
+				t.Fatalf("14-digit card skipped by default filters for prefix %s: %+v", prefix, r)
 			}
 		}
 	}

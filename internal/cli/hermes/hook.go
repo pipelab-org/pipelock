@@ -498,7 +498,7 @@ func scanCombinedViews(ctx context.Context, sc *scanner.Scanner, views hookScanV
 			refuse(fmt.Sprintf("pipelock scan failed on %s: %s", surface, err))
 		}
 		var enforceable []scanner.TextDLPMatch
-		for _, match := range dlp.Matches {
+		for _, match := range dlp.Findings() {
 			if match.IsInformational() {
 				if match.PatternName == scanner.PartialEncodedContentPattern {
 					partialEncoded = true
@@ -791,7 +791,7 @@ func keptHasEnforceableAWSAccessID(ctx context.Context, sc *scanner.Scanner, tex
 		return true
 	}
 	matches := make([]scanner.TextDLPMatch, 0, len(dlp.Matches))
-	for _, match := range dlp.Matches {
+	for _, match := range dlp.Findings() {
 		if !match.IsInformational() {
 			matches = append(matches, match)
 		}

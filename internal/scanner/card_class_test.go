@@ -37,24 +37,24 @@ func TestCardRunClassification(t *testing.T) {
 				s.ScanTextForDLPQuietWithTypedCardView(t.Context(), text, view),
 				s.ScanRequestBodyTextPartsWithCardAtoms(t.Context(), extracted.Strings, extracted.Atoms, "\n"))
 			for _, result := range results {
-				if result.Clean != (tt.Clean || tt.Warn) || OnlyInformational(result.Matches) != tt.Warn {
-					t.Fatalf("clean=%v number-only=%v; want clean=%v warn=%v", result.Clean, OnlyInformational(result.Matches), tt.Clean, tt.Warn)
+				if result.Clean != (tt.Clean || tt.Warn) || OnlyInformational(result.Findings()) != tt.Warn {
+					t.Fatalf("clean=%v number-only=%v; want clean=%v warn=%v", result.Clean, OnlyInformational(result.Findings()), tt.Clean, tt.Warn)
 				}
 				wantAction := config.ActionBlock
 				if tt.Warn {
 					wantAction = config.ActionWarn
 				}
-				if CardRunAction(result.Matches, config.ActionBlock) != wantAction {
+				if CardRunAction(result.Findings(), config.ActionBlock) != wantAction {
 					t.Fatal("card class changed an unrelated action")
 				}
-				for _, m := range result.Matches {
+				for _, m := range result.Findings() {
 					if tt.Warn && !m.IsInformational() {
 						t.Fatal("card match lost scalar provenance")
 					}
 				}
 				if tt.Warn {
-					for _, m := range result.Matches {
-						if !m.Warn || !strings.HasPrefix(m.Span().ViewLabel, "json_number_run") {
+					for _, m := range result.Findings() {
+						if !m.Warn || !tt.Literal && !strings.HasPrefix(m.Span().ViewLabel, "json_number_run") {
 							t.Fatal("warning metadata missing")
 						}
 					}
@@ -81,7 +81,7 @@ func TestCardJSONDirectRunPolicy(t *testing.T) {
 			}
 			continue
 		}
-		if tt.Clean || tt.Name == "string card" {
+		if tt.Clean || tt.Name == "string card" || tt.Literal {
 			if len(matches) != 0 {
 				t.Fatal("non-run input produced a typed card run")
 			}
@@ -108,13 +108,13 @@ func TestCardRunBoundaryTextCannotClaimNumberType(t *testing.T) {
 	for _, separator := range []string{jsonnumber.NumberBoundary, jsonnumber.StringNumberBoundary, jsonnumber.NumberStringBoundary} {
 		text := strings.Join([]string{"4111", "1111", "1111", "1111"}, separator)
 		for _, result := range []TextDLPResult{s.ScanTextForDLP(t.Context(), text), s.ScanTextForDLPWithCardView(t.Context(), text, text)} {
-			if result.Clean || OnlyInformational(result.Matches) {
+			if result.Clean || OnlyInformational(result.Findings()) {
 				t.Fatal("input marker received numeric warning policy")
 			}
 		}
 		atoms := []extract.DLPAtom{{Text: text, Card: text}}
 		result := s.ScanTextForDLPWithTypedCardView(t.Context(), text, extract.JoinCardAtoms(atoms, " "))
-		if result.Clean || OnlyInformational(result.Matches) {
+		if result.Clean || OnlyInformational(result.Findings()) {
 			t.Fatal("string atom manufactured typed numeric evidence")
 		}
 	}
@@ -135,21 +135,21 @@ func TestCardRunBudgetRefusesOnlyStructuredText(t *testing.T) {
 			s.ScanTextForDLPInboundWithCardView(t.Context(), text, text),
 		} {
 			if !result.Clean {
-				t.Fatalf("scalar text %.12q was refused: %+v", text, result.Matches)
+				t.Fatalf("scalar text %.12q was refused: %+v", text, result.Findings())
 			}
 		}
 	}
 	for _, text := range []string{`[1e10001]`, ` {"n":` + strings.Repeat("7", 4097) + `}`, strings.Repeat("[", 65) + "1" + strings.Repeat("]", 65)} {
 		result := s.ScanTextForDLP(t.Context(), text)
-		if result.Clean || result.Matches[0].PatternName != UninspectableJSONNumberPattern {
+		if result.Clean || result.Findings()[0].PatternName != UninspectableJSONNumberPattern {
 			t.Fatalf("structured over-budget text %.12q was not refused", text)
 		}
 	}
 	// A scalar still contributes its integer component, in or over budget.
 	card := "4111" + "1111" + "1111" + "1111"
 	for _, text := range []string{card + "e-2", card + "e10001", " -" + card + ".5E-10001", card + "." + strings.Repeat("7", 4097)} {
-		if result := s.ScanTextForDLP(t.Context(), text); result.Clean || OnlyInformational(result.Matches) || result.Matches[0].PatternName == UninspectableJSONNumberPattern {
-			t.Fatalf("scalar card %.24q lost enforcement: %+v", text, result.Matches)
+		if result := s.ScanTextForDLP(t.Context(), text); result.Clean || OnlyInformational(result.Findings()) || result.Findings()[0].PatternName == UninspectableJSONNumberPattern {
+			t.Fatalf("scalar card %.24q lost enforcement: %+v", text, result.Findings())
 		}
 	}
 }
@@ -174,7 +174,7 @@ func TestCardRunInformationalDoesNotHideProtectedValues(t *testing.T) {
 	s.envSecrets = nil
 	value := "whsec_" + strings.Repeat("a", 24)
 	body := `["` + strings.Join(pieces, `","`) + `","` + value + `"]`
-	if result := s.ScanTextForDLP(t.Context(), body); result.Clean || OnlyInformational(result.Matches) {
+	if result := s.ScanTextForDLP(t.Context(), body); result.Clean || OnlyInformational(result.Findings()) {
 		t.Fatal("other credential lost to informational card")
 	}
 }
@@ -189,7 +189,7 @@ func TestCardRunUntrustedStringMarkersKeepOrdinaryPolicy(t *testing.T) {
 	for _, separator := range []string{jsonnumber.NumberBoundary, jsonnumber.NumberStringBoundary, jsonnumber.StringNumberBoundary, jsonnumber.StringBoundary} {
 		text := strings.Join([]string{card[:2], card[2:9], card[9:]}, separator)
 		result := s.ScanTextForDLPWithTypedCardView(t.Context(), text, extract.JoinCardAtoms([]extract.DLPAtom{{Text: text, Card: text}}, " "))
-		if result.Clean || OnlyInformational(result.Matches) {
+		if result.Clean || OnlyInformational(result.Findings()) {
 			t.Fatal("untrusted marker manufactured informational scalar pieces")
 		}
 	}
@@ -220,7 +220,7 @@ func TestCardRunFragmentWarningsRemainInformational(t *testing.T) {
 	t.Cleanup(s.Close)
 	card := cardtest.Number()
 	text := `["` + card[:2] + `","` + card[2:9] + `","` + card[9:] + `","fixturewarn-alpha"]`
-	if result := s.ScanTextForDLP(t.Context(), text); !result.Clean || !OnlyInformational(result.Matches) || len(result.InformationalMatches) == 0 {
+	if result := s.ScanTextForDLP(t.Context(), text); !result.Clean || !OnlyInformational(result.Findings()) || len(result.InformationalMatches) == 0 {
 		t.Fatal("fixture lost its two warning classes")
 	}
 	if matches := scanFragmentsForSecrets(t.Context(), s, []fragment{{data: []byte(text[:7])}, {data: []byte(text[7:])}}); len(matches) != 0 {
@@ -237,8 +237,8 @@ func TestCardRunSingleScalarNotRepeated(t *testing.T) {
 	card := cardtest.Number()
 	atoms := []extract.DLPAtom{{Text: card, Card: card, Number: true}, {Text: "stop", Card: "stop"}}
 	result := s.ScanTextForDLPWithTypedCardView(t.Context(), card+" stop", extract.JoinCardAtoms(atoms, " "))
-	if result.Clean || len(result.Matches) != 1 {
-		t.Fatalf("standalone card count=%d clean=%v", len(result.Matches), result.Clean)
+	if result.Clean || len(result.Findings()) != 1 {
+		t.Fatalf("standalone card count=%d clean=%v", len(result.Findings()), result.Clean)
 	}
 }
 
@@ -300,7 +300,7 @@ func TestCardRunFragmentMaskedWarningsRemainInformational(t *testing.T) {
 				t.Fatal("complete occurrence did not enforce")
 			}
 			masked := s.ScanTextForDLP(t.Context(), `["",`+tail)
-			if len(masked.Matches) == 0 || OnlyInformational(masked.Matches) == tt.enforce {
+			if len(masked.Findings()) == 0 || OnlyInformational(masked.Findings()) == tt.enforce {
 				t.Fatal("tail lost its expected evidence class")
 			}
 			for _, image := range []string{"", dataURLForPNGBytes(t, randomPNG(t, 21))} {
@@ -327,7 +327,7 @@ func TestCardUnionUsesShippedReconstructionRule(t *testing.T) {
 	// This configured rule finds the same digit values but excludes separators.
 	// Typed reconstruction still follows the shared shipped-rule UNION, but
 	// candidates found only by the shipped rule's retry stay with that rule.
-	cfg.DLP.Patterns = []config.DLPPattern{{Name: "Card fixture", Regex: strings.ReplaceAll(jsonnumber.ShippedCardPattern, "[- ]?", ""), Validator: "luhn", Severity: config.SeverityHigh}}
+	cfg.DLP.Patterns = []config.DLPPattern{{Name: "Card fixture", Regex: strings.ReplaceAll(jsonnumber.LegacyCardPattern, "[- ]?", ""), Validator: "luhn", Severity: config.SeverityHigh}}
 	s := MustNew(cfg)
 	t.Cleanup(s.Close)
 	for _, tt := range cardtest.UnionCases() {
@@ -359,7 +359,7 @@ func TestCardTypedViewOwnsReconstruction(t *testing.T) {
 		if result := s.ScanTextForDLPWithTypedCardView(t.Context(), tt.Body, ""); !result.Clean {
 			t.Fatal("text join fabricated typed card evidence")
 		}
-		if result := s.ScanTextForDLPWithTypedCardView(t.Context(), tt.Body+" credential-marker", ""); result.Clean || !slices.ContainsFunc(result.Matches, func(m TextDLPMatch) bool { return m.PatternName == "Other credential fixture" }) {
+		if result := s.ScanTextForDLPWithTypedCardView(t.Context(), tt.Body+" credential-marker", ""); result.Clean || !slices.ContainsFunc(result.Findings(), func(m TextDLPMatch) bool { return m.PatternName == "Other credential fixture" }) {
 			t.Fatal("non-card credentials lost reconstruction")
 		}
 	}

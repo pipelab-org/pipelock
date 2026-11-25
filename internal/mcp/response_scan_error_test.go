@@ -546,7 +546,7 @@ func TestTextDLPIncompleteWrappers(t *testing.T) {
 	}
 	for _, at := range []int{1, 2} {
 		calls := 0
-		_, err := dropSelfMatchingSSETailWithScan(t.Context(), "ordinary text", GenericSSEScanOptions{}, func(context.Context, string) scanner.TextDLPResult {
+		_, err := dropSelfMatchingSSETailWithScan(t.Context(), "ordinary text", func(context.Context, string) scanner.TextDLPResult {
 			calls++
 			if calls == at {
 				return incomplete

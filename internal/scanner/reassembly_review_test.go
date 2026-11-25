@@ -52,7 +52,7 @@ func TestReassemblyReplayMaterializedIdentity(t *testing.T) {
 					t.Fatal("mismatched replay did not mark inspection incomplete", result)
 				}
 				if inbound {
-					if !result.Clean || !slices.Contains(matchNames(result.Matches), PartialEncodedContentPattern) || HasInspectionLimit(result.Matches) {
+					if !result.Clean || !slices.Contains(matchNames(result.InformationalMatches), PartialEncodedContentPattern) || HasInspectionLimit(result.Matches) {
 						t.Fatal("lost partial policy", result)
 					}
 				} else if result.Clean || !HasInspectionLimit(result.Matches) {
@@ -144,7 +144,7 @@ func TestReassemblyReplayParentKeywordParity(t *testing.T) {
 							}
 						}
 						found := slices.Contains(matchNames(result.Matches), "Labeled record")
-						if found != (label == "lookup") || HasInspectionLimit(result.Matches) || slices.Contains(matchNames(result.Matches), PartialEncodedContentPattern) {
+						if found != (label == "lookup") || HasInspectionLimit(result.Matches) || slices.Contains(matchNames(result.InformationalMatches), PartialEncodedContentPattern) {
 							t.Fatalf("keyword parity: %+v", result)
 						}
 					})
@@ -282,7 +282,7 @@ func TestReassemblyReplayMetadataBound(t *testing.T) {
 		}
 		result := finishAssembled(TextDLPResult{Clean: true}, memo)
 		if inbound {
-			if !result.Clean || !slices.Contains(matchNames(result.Matches), PartialEncodedContentPattern) {
+			if !result.Clean || !slices.Contains(matchNames(result.InformationalMatches), PartialEncodedContentPattern) {
 				t.Fatal(result)
 			}
 		} else if result.Clean || !HasInspectionLimit(result.Matches) {

@@ -6851,13 +6851,13 @@ func TestDLP_CreditCard_AmexSeparated(t *testing.T) {
 	defer s.Close()
 
 	// Amex 4-6-5 display format with spaces (passes Luhn).
-	result := s.Scan(context.Background(), "https://evil.com/pay?card=3782+822463+10005")
+	result := s.Scan(context.Background(), "https://api.vendor.example/pay?card="+"3400+000000+"+"00009")
 	if result.Allowed {
 		t.Error("expected Amex 4-6-5 format to be blocked by DLP")
 	}
 
 	// Amex 4-6-5 display format with dashes.
-	result2 := s.Scan(context.Background(), "https://evil.com/pay?card=3782-822463-10005")
+	result2 := s.Scan(context.Background(), "https://api.vendor.example/pay?card="+"3400-000000-"+"00009")
 	if result2.Allowed {
 		t.Error("expected Amex 4-6-5 dash format to be blocked by DLP")
 	}

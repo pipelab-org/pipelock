@@ -1080,6 +1080,7 @@ type ForwardProxy struct {
 
 // TLSInterception configures CONNECT tunnel decryption for body/header scanning.
 type TLSInterception struct {
+	CRLURL             string   `yaml:"crl_url" json:"CRLURL,omitempty"`
 	Enabled            bool     `yaml:"enabled"`
 	CACertPath         string   `yaml:"ca_cert"`
 	CAKeyPath          string   `yaml:"ca_key"`

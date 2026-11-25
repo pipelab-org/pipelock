@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/json"
 
+	"github.com/luckyPipewrench/pipelock/internal/carddlp"
 	"github.com/luckyPipewrench/pipelock/internal/jsonnumber"
 )
 
@@ -104,7 +105,7 @@ func RewriteJSON(body []byte, m *Matcher, r *Redactor, lim Limits) ([]byte, *Rep
 				return nil, nil, newBlock(ReasonSecretInNumericScalar, r.Total(), "known value matched JSON scalar values")
 			}
 		}
-		if cardEnabled && run.EnforcesShippedRule() {
+		if cardEnabled && run.EnforcesShippedRule() && !carddlp.IsPublicTestPAN(run.Digits) {
 			return nil, nil, newBlock(ReasonSecretInNumericScalar, r.Total(), "card pattern matched JSON scalar values")
 		}
 	}

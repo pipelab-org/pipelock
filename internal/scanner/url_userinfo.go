@@ -121,7 +121,8 @@ func (s *Scanner) textURLUserinfoMatches(ctx context.Context, text string, decod
 	opts.emitWarns = false
 	kind := decodes.reassemblyDerivedKind(text)
 	seen := make(map[string]struct{})
-	for _, token := range textURLTokenRe.FindAllString(text, -1) {
+	for _, loc := range textURLTokens(text) {
+		token := text[loc.start:loc.end]
 		if ctx.Err() != nil {
 			return matches
 		}

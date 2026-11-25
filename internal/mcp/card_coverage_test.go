@@ -60,7 +60,7 @@ func TestCardSplitEvidenceKeepsOtherCredentials(t *testing.T) {
 	prior := sc.ScanTextForDLP(t.Context(), `[`+card[:8]+`,`+card[8:]+`]`)
 	for _, raw := range []string{`["fixture","credential"]`, `["fixture","other","credential"]`, `["credential","other","fixture"]`} {
 		result := scanSplitSecret(t.Context(), json.RawMessage(raw), "ordinary separated view", sc, prior)
-		if result.Clean || !scanner.HasEnforcingMatch(result.Matches) || len(result.Matches) < 2 {
+		if result.Clean || !scanner.HasEnforcingMatch(result.Matches) || len(result.Findings()) < 2 {
 			t.Fatal("warning hid cross-field credential")
 		}
 	}

@@ -36,6 +36,11 @@ type decodingMemoKey struct {
 // stopped at a depth or work bound with decodable work left. It is a property of the
 // scan, not of one view, so it survives cache hits and unretained decodes.
 type decodingMemo struct {
+	urlCardDecodes      *decodingMemo // deferred card-only views finalize after the parent
+	minimumDecodedBytes int           // necessary output width for a restricted pattern partition
+	urlCardWork         uint64        // scan-local URL work makes a decoded result ineligible for caching
+	cardSource          bool          // match cards on their boundary-preserving source in a shared pass
+	cardText            bool          // preserve table and line boundaries for card-only scans
 	// urlAccounting marks a URL scan's memo. URL checks keep the inbound
 	// decode accounting for their direction, but their verdicts depend on
 	// whether a rescan finished cleanly, so a work-budget stop there is not
@@ -147,6 +152,9 @@ func textDecodingMemo(shared *sharedDecodes, inbound bool, allowance *assembledA
 
 func (m *decodingMemo) releaseTextDecodingMemo() {
 	m.releaseProjection()
+	if m.urlCardDecodes != nil {
+		m.urlCardDecodes.releaseTextDecodingMemo()
+	}
 	*m = decodingMemo{}
 	textDecodingMemoPool.Put(m)
 }
@@ -216,7 +224,8 @@ type decodedMatchKey struct {
 	// Normalized core keys cannot alias source-context lookup keys.
 	normalizedCore bool
 	// cardOnly marks a configured-pattern result restricted to card rules.
-	cardOnly bool
+	cardOnly   bool
+	cardSource bool
 }
 
 // decodedMatchCacheKey stores a decodedMatchKey without its candidate text.
@@ -231,6 +240,7 @@ type decodedMatchCacheKey struct {
 	core           bool
 	normalizedCore bool
 	cardOnly       bool
+	cardSource     bool
 }
 
 // decodedMatchEntrySize is one retained entry's fixed storage: its key and
@@ -238,7 +248,7 @@ type decodedMatchCacheKey struct {
 var decodedMatchEntrySize = int(reflect.TypeFor[decodedMatchCacheKey]().Size() + reflect.TypeFor[[]TextDLPMatch]().Size())
 
 func (k decodedMatchKey) cacheKey() decodedMatchCacheKey {
-	return decodedMatchCacheKey{scanner: k.scanner, digest: sum256String(k.text), length: len(k.text), encoding: k.encoding, core: k.core, normalizedCore: k.normalizedCore, cardOnly: k.cardOnly}
+	return decodedMatchCacheKey{scanner: k.scanner, digest: sum256String(k.text), length: len(k.text), encoding: k.encoding, core: k.core, normalizedCore: k.normalizedCore, cardOnly: k.cardOnly, cardSource: k.cardSource}
 }
 
 func (k decodedMatchKey) match(normalized string, lowered *dlpLoweredBytes, memo *decodingMemo) []TextDLPMatch {
@@ -408,8 +418,12 @@ func (s *sharedDecodes) matchDecoded(key decodedMatchKey, memo *decodingMemo) []
 	if s.work != nil {
 		s.work.matchBytes.Add(uint64(len(normalized)))
 	}
+	var urlWork uint64
+	if memo != nil {
+		urlWork = memo.urlCardWork
+	}
 	matches := key.match(normalized, &lowered, memo)
-	if memo.terminalCanceled() {
+	if memo.terminalCanceled() || memo != nil && memo.urlCardWork != urlWork {
 		return slices.Clone(matches)
 	}
 	s.mu.Lock()
@@ -526,6 +540,9 @@ func (m *decodingMemo) decodeHTML(text string) string {
 }
 
 func (m *decodingMemo) decode(text string, includeURL bool) []decodedResult {
+	if m != nil && m.minimumDecodedBytes > 0 && !cardDecodeMayFit(text, m.minimumDecodedBytes) {
+		return nil
+	}
 	return m.decodeMode(text, includeURL, 0)
 }
 
@@ -784,8 +801,12 @@ func (m *decodingMemo) normalizeWithRun(text string, run *normalizationRun) stri
 		}
 	}
 	if m != nil {
-		if !m.normalizedRetained(text) {
-			m.replayTransformUnretained(text, normalized, assembledPayloadNormalize)
+		if m.cardText || !m.normalizedRetained(text) {
+			operation := assembledPayloadNormalize
+			if m.cardText {
+				operation = assembledPayloadCardNormalize
+			}
+			m.replayTransformUnretained(text, normalized, operation)
 		}
 		m.reassemblyDerive(text, normalized)
 	}
@@ -796,6 +817,9 @@ func (m *decodingMemo) normalizeWithRun(text string, run *normalizationRun) stri
 // set only after its decode completes; deriving before then would give a
 // decoder view's normalization the text kind.
 func (m *decodingMemo) normalizeUntracked(text string) string {
+	if m != nil && m.cardText {
+		return normalize.ForCardText(text)
+	}
 	if m == nil {
 		return normalize.ForDLP(text)
 	}
@@ -847,11 +871,11 @@ func (m *decodingMemo) matchDecodedFor(sc *Scanner, text, encoding string, patte
 }
 
 func (m *decodingMemo) matchDecodedForWithNormalization(sc *Scanner, text, encoding string, patterns textDLPPatternSet, run *normalizationRun) []TextDLPMatch {
-	full := decodedMatchKey{scanner: sc, text: text, encoding: encoding}
+	full := decodedMatchKey{scanner: sc, text: text, encoding: encoding, cardSource: m != nil && m.cardSource}
 	if patterns != textDLPCardPatterns {
 		return patterns.selectMatches(m.matchDecodedKeyWithNormalization(full, run))
 	}
-	if cached, ok := m.cachedDecodedMatches(full); ok && !m.keywordMode {
+	if cached, ok := m.cachedDecodedMatches(full); ok && !m.keywordMode && !m.cardText {
 		return patterns.selectMatches(cached)
 	}
 	card := full
@@ -884,6 +908,19 @@ func (m *decodingMemo) matchDecodedKey(key decodedMatchKey) []TextDLPMatch {
 }
 
 func (m *decodingMemo) matchDecodedKeyWithNormalization(key decodedMatchKey, run *normalizationRun) []TextDLPMatch {
+	key.cardSource = !key.core && m != nil && m.cardSource
+	if key.cardOnly {
+		var normalized string
+		if m != nil && m.cardText {
+			normalized = m.normalizeWithRun(key.text, nil)
+		} else {
+			normalized = normalize.ForCardText(key.text)
+		}
+		var lowered dlpLoweredBytes
+		lowered.add(normalized)
+		return key.match(normalized, &lowered, m)
+	}
+
 	if m != nil && m.keywordMode && !key.core {
 		normalized := m.normalizeWithRun(key.text, run)
 		var lowered dlpLoweredBytes
@@ -919,8 +956,9 @@ func (m *decodingMemo) matchDecodedKeyWithNormalization(key decodedMatchKey, run
 	} else {
 		lowered.add(normalized)
 	}
+	urlWork := m.urlCardWork
 	matches := key.match(normalized, &lowered, m)
-	if m.terminalCanceled() {
+	if m.terminalCanceled() || m.urlCardWork != urlWork {
 		return matches
 	}
 	m.retainDecodedMatchesAt(cacheKey, matches)
@@ -983,4 +1021,20 @@ func (m *decodingMemo) keywordBudgetForScan() *keywordWorkBudget {
 		m.keywordBudget = &keywordWorkBudget{}
 	}
 	return m.keywordBudget
+}
+
+// Binary codecs in the text fixpoint emit at most six bits per source byte
+// (RFC 4648). Textual escapes and Unicode transformations retain their normal
+// walk; this screen applies only to short ASCII binary carriers. Raw card
+// matching runs separately, before any decoding.
+func cardDecodeMayFit(text string, minimum int) bool {
+	if len(text) >= (minimum*8+5)/6 || strings.ContainsAny(text, "%+&\\=") {
+		return true
+	}
+	for i := range len(text) {
+		if text[i] >= 0x80 {
+			return true
+		}
+	}
+	return false
 }

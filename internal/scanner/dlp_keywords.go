@@ -1071,7 +1071,8 @@ func (p *compiledPattern) matchSpanWithDecodesFiltered(view, source string, memo
 		return p.matchSpanWithDecodes(view, source, memo)
 	}
 	pattern := *p
-	pattern.skipSpan = skipSpan
+	prior := p.skipSpan
+	pattern.skipSpan = func(start, end int) bool { return prior != nil && prior(start, end) || skipSpan(start, end) }
 	return pattern.matchSpanWithDecodes(view, source, memo)
 }
 

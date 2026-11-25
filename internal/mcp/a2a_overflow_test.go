@@ -591,3 +591,16 @@ func TestA2AOverflowRepeatedKeyBudget(t *testing.T) {
 		t.Fatalf("repeated copies of one key view must cost one scan: limited=%v limit=%d", limited, limit)
 	}
 }
+
+func TestA2AKeyCardMatchesKeepsWarnings(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.DLP.ScanEnv = false
+	cfg.DLP.Patterns = []config.DLPPattern{{Name: "Custom token", Regex: `TOKEN[0-9]{8}`, Severity: config.SeverityHigh, Action: config.ActionWarn}}
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	matches, limited := a2aKeyCardMatches(t.Context(), sc, []extract.DLPAtom{{Text: "TOKEN12345678", Card: "TOKEN12345678", Key: true}}, nil)
+	if limited || len(matches) != 1 || matches[0].PatternName != "Custom token" || !matches[0].IsInformational() {
+		t.Fatalf("key warning lost: %+v limited=%v", matches, limited)
+	}
+}

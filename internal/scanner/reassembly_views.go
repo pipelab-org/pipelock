@@ -350,6 +350,17 @@ func (s *reassemblyPlan) emptyTerminal(key assembledEmptyKey, remember bool) boo
 // counts. Exact value identities enter the terminal producer before scanning,
 // so one matched value cannot create the same finding twice.
 func finishAssembled(result TextDLPResult, memos ...*decodingMemo) TextDLPResult {
+	// Additional URL-card views cannot consume terminal allowance before the
+	// original views. Each parent owns at most one such deferred memo.
+	parents := memos
+	for _, m := range parents {
+		if m != nil && m.urlCardDecodes != nil {
+			if len(memos) == len(parents) {
+				memos = slices.Clone(memos)
+			}
+			memos = append(memos, m.urlCardDecodes)
+		}
+	}
 	// Held replay bytes serve one inspection only; none outlive it.
 	defer func() {
 		for _, m := range memos {
@@ -441,6 +452,7 @@ func finishAssembled(result TextDLPResult, memos ...*decodingMemo) TextDLPResult
 			result.Matches = append(result.Matches, uninspectableEncodedContentMatch())
 		}
 	}
-	result.Clean = !result.Incomplete && !HasEnforcingMatch(result.Matches)
+	result.Matches, result.InformationalMatches = partitionTextDLPMatches(result.Matches, result.InformationalMatches)
+	result.Clean = !result.Incomplete && len(result.Matches) == 0
 	return result
 }

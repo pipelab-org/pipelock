@@ -11,6 +11,7 @@ import (
 	"unicode"
 
 	"github.com/luckyPipewrench/pipelock/internal/addressprotect"
+	"github.com/luckyPipewrench/pipelock/internal/carddlp"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/jsonnumber"
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
@@ -192,8 +193,7 @@ func AcceptsMatch(match string, validate func(string) bool, cardPrefixRetry bool
 	if !cardPrefixRetry {
 		return validate(match)
 	}
-	_, ok := jsonnumber.AcceptedCardEnd(match, func(end int) bool { return validate(match[:end]) })
-	return ok
+	return carddlp.Visit(match, false, func(c carddlp.Candidate) bool { return !c.PublicExample && validate(match[c.Start:c.End]) })
 }
 
 // validateLuhn preserves the scanner validator contract while the shared
@@ -443,9 +443,16 @@ func ContextualPatternMatches(text string, re *regexp.Regexp, validate func(stri
 	if re == nil {
 		return false
 	}
+	if cardPrefixRetry {
+		return carddlp.VisitText(text, func(c carddlp.Candidate) bool {
+			return !c.PublicExample && (validate == nil || validate(c.Digits)) &&
+				(keywords == nil || keywords.Matches(text, c.Start, c.End))
+		})
+	}
 	p := compiledPattern{re: re, validate: validate, cardPrefixRetry: cardPrefixRetry, wifOverlapRetry: wifOverlapRetry, keywords: keywords}
 	if keywords != nil {
-		_, _, matched := p.matchSpanWithDecodes(normalize.ForDLP(text), text, nil)
+		normalized := normalize.ForDLP(text)
+		_, _, matched := p.matchSpanWithDecodes(normalized, text, nil)
 		return matched
 	}
 	return p.matches(text)

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/luckyPipewrench/pipelock/internal/cardtest"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
@@ -222,7 +223,7 @@ func TestReassemblyKeywordUnknownSource(t *testing.T) {
 		if !inbound && !HasInspectionLimit(result.Matches) {
 			t.Fatal("unknown outbound context did not refuse")
 		}
-		if inbound && (len(result.Matches) == 0 || result.Matches[0].PatternName != PartialEncodedContentPattern || HasInspectionLimit(result.Matches)) {
+		if inbound && (len(result.InformationalMatches) == 0 || result.InformationalMatches[0].PatternName != PartialEncodedContentPattern || HasInspectionLimit(result.Matches)) {
 			t.Fatalf("unknown inbound context lost partial warning: %+v", result)
 		}
 	}
@@ -320,5 +321,47 @@ func TestReassemblyKeywordHTMLWrappedUnlabeledValue(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("labeled HTML-wrapped value was not detected: %+v", labeled.Matches)
+	}
+}
+
+func TestReassemblyCardKeywordSourceContext(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.DLP.ScanEnv = false
+	sc := MustNew(cfg)
+	t.Cleanup(sc.Close)
+	// Public configuration forbids keywords on built-ins. Bind a test-local
+	// terminal plan to exercise keyword/retry composition without changing it.
+	keywords, err := (config.DLPPattern{Name: "Labeled card", Regex: `[0-9]{16}`, Keywords: []string{"lookup"}}).CompileKeywords()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var card compiledPattern
+	for _, p := range sc.dlpPatterns {
+		if p.cardPrefixRetry {
+			card = *p
+			break
+		}
+	}
+	card.keywords = keywords
+	plan, err := newReassemblyPlan([]*compiledPattern{&card})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pan := cardtest.Issuer("4019", 16)
+	for _, keyword := range []bool{false, true} {
+		body := reassemblyBang(hex.EncodeToString([]byte(strings.Repeat("x", 5000)+" "))) + " "
+		if keyword {
+			body += "lookup "
+		}
+		body += reassemblyBang(hex.EncodeToString([]byte(pan)))
+		got := reassemblyTerminal(plan, body, &assembledBudget{memo: &decodingMemo{keywordMode: true, keywordUnit: body, keywordInput: body}})
+		found := false
+		for _, m := range got.findings {
+			found = found || m.PatternName == "Credit Card Number"
+		}
+		if found != keyword || got.incomplete {
+			t.Fatalf("keyword=%v card=%v incomplete=%v", keyword, found, got.incomplete)
+		}
 	}
 }

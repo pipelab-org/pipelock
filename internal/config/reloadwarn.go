@@ -1962,17 +1962,20 @@ func removedOrWeakenedPatterns[T any](old, updated []T, nameOf, regexOf func(T) 
 }
 
 func removedOrWeakenedDLPPatterns(old, updated []DLPPattern) []string {
-	changed := removedOrWeakenedPatterns(old, updated,
-		func(p DLPPattern) string { return p.Name },
-		func(p DLPPattern) string { return p.Regex })
 	updatedByName := make(map[string]DLPPattern, len(updated))
 	for _, p := range updated {
 		updatedByName[p.Name] = p
 	}
+	var changed []string
 	for _, p := range old {
 		next, ok := updatedByName[p.Name]
-		if !ok || next.Regex != p.Regex {
-			continue // already covered by removedOrWeakenedPatterns
+		if !ok {
+			changed = append(changed, p.Name)
+			continue
+		}
+		if next.Regex != p.Regex && !sameBuiltInCardPattern(p, next) {
+			changed = append(changed, p.Name+" (regex changed)")
+			continue
 		}
 		if KeywordCoverageReduced(p, next) {
 			changed = append(changed, p.Name+" (keywords narrowed)")
@@ -1980,7 +1983,7 @@ func removedOrWeakenedDLPPatterns(old, updated []DLPPattern) []string {
 		// Adding or swapping a validator can filter previously detected
 		// candidates without changing the regex. Removing one restores
 		// shape-only detection, so it cannot reduce that pattern's coverage.
-		// Regex changes already have a warning from the shared diff above.
+		// Regex changes already have a warning from the check above.
 		if next.Validator != "" && next.Validator != p.Validator {
 			changed = append(changed, p.Name+" (validator changed)")
 		}

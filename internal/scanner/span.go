@@ -7,6 +7,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/luckyPipewrench/pipelock/internal/carddlp"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
@@ -125,6 +126,9 @@ func (p *compiledPattern) matchSpanInPositionedView(text, source string, view *m
 		logical := config.DLPKeywordContext(source)
 		pattern.keywordContext = &keywordCandidateContext{logical: logical}
 		return pattern.matchSpanInPositionedView(text, source, view)
+	}
+	if p.cardPrefixRetry {
+		return p.firstAcceptedPositionedSpan(text, nil, view)
 	}
 	if !p.admitsView(text) {
 		return 0, 0, false
@@ -491,6 +495,21 @@ func (p *compiledPattern) firstAcceptedSpan(text string, joined func(int, int) b
 }
 
 func (p *compiledPattern) firstAcceptedPositionedSpan(text string, joined func(int, int) bool, view *matchingView) (int, int, bool) {
+	if p.cardPrefixRetry {
+		var start, end int
+		found := carddlp.Visit(text, p.cardURL, func(c carddlp.Candidate) bool {
+			if c.PublicExample && p.skipSpan == nil {
+				return false
+			}
+			if p.accepts(text, c.Start, c.End) && (joined == nil || joined(c.Start, c.End)) {
+				start, end = c.Start, c.End
+				return true
+			}
+			return false
+		})
+		return start, end, found
+	}
+
 	if !p.wifOverlapRetry {
 		return p.firstAcceptedLocations(text, p.regexpWindows.findAllWithPositions(p.re, p.re, text, text, view), joined)
 	}
