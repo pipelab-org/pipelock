@@ -80,115 +80,127 @@ func TestSandboxMetricsListenerAndAgentRoutes(t *testing.T) {
 	skipChildWithoutSandboxLaunch(t)
 	for _, mode := range []string{"off", "numeric", "hostname-drift"} {
 		t.Run(mode, func(t *testing.T) {
-			configured := mode != "off"
-			workspace := t.TempDir()
-			metricsAddr := ""
-			body := "ssrf:\n  ip_allowlist: ['127.0.0.0/8']\n"
-			if configured {
-				metricsAddr = testport.ListenAddrs(t, 1)[0]
-				configuredAddr := metricsAddr
-				if mode == "hostname-drift" {
-					_, port, splitErr := net.SplitHostPort(metricsAddr)
-					if splitErr != nil {
-						t.Fatal(splitErr)
-					}
-					metricsAddr = net.JoinHostPort("127.0.0.2", port)
-					configuredAddr = net.JoinHostPort("metrics.vendor.example", port)
-					var lookups atomic.Int32
-					useMetricsTestDNS(t, func() [4]byte {
-						if lookups.Add(1) == 1 {
-							return [4]byte{127, 0, 0, 1}
+			run := func(reserved string) error {
+				configured := mode != "off"
+				workspace := t.TempDir()
+				metricsAddr := ""
+				body := "ssrf:\n  ip_allowlist: ['127.0.0.0/8']\n"
+				if configured {
+					metricsAddr = reserved
+					configuredAddr := metricsAddr
+					if mode == "hostname-drift" {
+						_, port, splitErr := net.SplitHostPort(metricsAddr)
+						if splitErr != nil {
+							t.Fatal(splitErr)
 						}
-						return [4]byte{127, 0, 0, 2}
-					})
+						metricsAddr = net.JoinHostPort("127.0.0.2", port)
+						configuredAddr = net.JoinHostPort("metrics.vendor.example", port)
+						var lookups atomic.Int32
+						useMetricsTestDNS(t, func() [4]byte {
+							if lookups.Add(1) == 1 {
+								return [4]byte{127, 0, 0, 1}
+							}
+							return [4]byte{127, 0, 0, 2}
+						})
+					}
+					body += fmt.Sprintf("metrics_listen: %q\n", configuredAddr)
 				}
-				body += fmt.Sprintf("metrics_listen: %q\n", configuredAddr)
-			}
-			// The workload reaches this origin through its actual proxy bridge. The
-			// parent observes the dedicated listener while the workload is still live.
-			observed := make(chan error, 1)
-			origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				client := &http.Client{Transport: &http.Transport{Proxy: nil}, Timeout: time.Second}
-				defer client.CloseIdleConnections()
-				for _, route := range []string{"/metrics", "/stats"} {
-					if metricsAddr == "" {
-						break
+				// The workload reaches this origin through its actual proxy bridge. The
+				// parent observes the dedicated listener while the workload is still live.
+				observed := make(chan error, 1)
+				origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					client := &http.Client{Transport: &http.Transport{Proxy: nil}, Timeout: time.Second}
+					defer client.CloseIdleConnections()
+					for _, route := range []string{"/metrics", "/stats"} {
+						if metricsAddr == "" {
+							break
+						}
+						req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, "http://"+metricsAddr+route, nil)
+						if err != nil {
+							observed <- err
+							return
+						}
+						resp, err := client.Do(req)
+						if err != nil {
+							observed <- err
+							return
+						}
+						data, readErr := io.ReadAll(resp.Body)
+						_ = resp.Body.Close()
+						if readErr != nil {
+							observed <- fmt.Errorf("read dedicated %s: %w", route, readErr)
+							return
+						}
+						if resp.StatusCode != http.StatusOK || len(data) == 0 {
+							observed <- fmt.Errorf("dedicated %s returned %d, bytes=%d", route, resp.StatusCode, len(data))
+							return
+						}
 					}
-					req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, "http://"+metricsAddr+route, nil)
-					if err != nil {
-						observed <- err
-						return
-					}
-					resp, err := client.Do(req)
-					if err != nil {
-						observed <- err
-						return
-					}
-					data, readErr := io.ReadAll(resp.Body)
-					_ = resp.Body.Close()
-					if readErr != nil {
-						observed <- fmt.Errorf("read dedicated %s: %w", route, readErr)
-						return
-					}
-					if resp.StatusCode != http.StatusOK || len(data) == 0 {
-						observed <- fmt.Errorf("dedicated %s returned %d, bytes=%d", route, resp.StatusCode, len(data))
-						return
-					}
-				}
-				observed <- nil
-				_, _ = io.WriteString(w, "sandbox-origin-ok")
-			}))
-			defer origin.Close()
-			path := writeServerTestConfig(t, body)
-			script := `set -eu
+					observed <- nil
+					_, _ = io.WriteString(w, "sandbox-origin-ok")
+				}))
+				defer origin.Close()
+				path := writeServerTestConfig(t, body)
+				script := `set -eu
 for route in health metrics stats; do
  curl --max-time 5 --noproxy '*' -s -o /dev/null -w '%{http_code}\n' "$HTTP_PROXY/$route" >> routes
  done
 curl --max-time 5 --noproxy '*' --fail -s "$HTTP_PROXY/fetch?url=$1" > origin-result
 `
-			cmd := SandboxCmd()
-			if configured {
-				script += `curl --max-time 5 --noproxy '*' -s -o /dev/null -w '%{http_code}\n' "$HTTP_PROXY/fetch?url=http://$2/stats" > metrics-dial
+				cmd := SandboxCmd()
+				if configured {
+					script += `curl --max-time 5 --noproxy '*' -s -o /dev/null -w '%{http_code}\n' "$HTTP_PROXY/fetch?url=http://$2/stats" > metrics-dial
 `
+				}
+				cmd.SetArgs([]string{"--config", path, "--workspace", workspace, "--best-effort", "--best-effort-reason", "test host isolation", "--best-effort-expiry", "1m", "--", "/bin/sh", "-c", script, "metrics-test", origin.URL, metricsAddr})
+				var output bytes.Buffer
+				cmd.SetOut(&output)
+				cmd.SetErr(&output)
+				if err := cmd.Execute(); err != nil {
+					return fmt.Errorf("sandbox: %w; output=%s", err, output.String())
+				}
+				routes, err := os.ReadFile(filepath.Clean(filepath.Join(workspace, "routes")))
+				if err != nil || string(routes) != "200\n404\n404\n" {
+					t.Fatalf("agent routes = %q, %v; output=%s", routes, err, output.String())
+				}
+				select {
+				case err := <-observed:
+					if err != nil {
+						t.Fatal(err)
+					}
+				default:
+					t.Fatal("workload never reached the controlled origin")
+				}
+				result, err := os.ReadFile(filepath.Clean(filepath.Join(workspace, "origin-result")))
+				if err != nil || !bytes.Contains(result, []byte("sandbox-origin-ok")) {
+					t.Fatalf("origin result = %q, %v", result, err)
+				}
+				if !configured {
+					if strings.Contains(output.String(), "metrics listening on") || !strings.Contains(output.String(), "metrics not exposed; set metrics_listen") {
+						t.Fatal("unexpected metrics notice: " + output.String())
+					}
+				} else {
+					dialStatus, readErr := os.ReadFile(filepath.Clean(filepath.Join(workspace, "metrics-dial")))
+					if readErr != nil || string(dialStatus) != "403\n" {
+						t.Fatalf("agent metrics dial = %q, %v; output=%s", dialStatus, readErr, output.String())
+					}
+					rebound, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", metricsAddr)
+					if err != nil {
+						t.Fatalf("metrics listener leaked after workload exit: %v", err)
+					}
+					_ = rebound.Close()
+				}
+				return nil
 			}
-			cmd.SetArgs([]string{"--config", path, "--workspace", workspace, "--best-effort", "--best-effort-reason", "test host isolation", "--best-effort-expiry", "1m", "--", "/bin/sh", "-c", script, "metrics-test", origin.URL, metricsAddr})
-			var output bytes.Buffer
-			cmd.SetOut(&output)
-			cmd.SetErr(&output)
-			if err := cmd.Execute(); err != nil {
-				t.Fatalf("sandbox: %v; output=%s", err, output.String())
-			}
-			routes, err := os.ReadFile(filepath.Clean(filepath.Join(workspace, "routes")))
-			if err != nil || string(routes) != "200\n404\n404\n" {
-				t.Fatalf("agent routes = %q, %v; output=%s", routes, err, output.String())
-			}
-			select {
-			case err := <-observed:
-				if err != nil {
+			if mode == "off" {
+				if err := run(""); err != nil {
 					t.Fatal(err)
 				}
-			default:
-				t.Fatal("workload never reached the controlled origin")
+				return
 			}
-			result, err := os.ReadFile(filepath.Clean(filepath.Join(workspace, "origin-result")))
-			if err != nil || !bytes.Contains(result, []byte("sandbox-origin-ok")) {
-				t.Fatalf("origin result = %q, %v", result, err)
-			}
-			if !configured {
-				if strings.Contains(output.String(), "metrics listening on") || !strings.Contains(output.String(), "metrics not exposed; set metrics_listen") {
-					t.Fatal("unexpected metrics notice: " + output.String())
-				}
-			} else {
-				dialStatus, readErr := os.ReadFile(filepath.Clean(filepath.Join(workspace, "metrics-dial")))
-				if readErr != nil || string(dialStatus) != "403\n" {
-					t.Fatalf("agent metrics dial = %q, %v; output=%s", dialStatus, readErr, output.String())
-				}
-				rebound, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", metricsAddr)
-				if err != nil {
-					t.Fatalf("metrics listener leaked after workload exit: %v", err)
-				}
-				_ = rebound.Close()
-			}
+			testport.WithRetry(t, 1, func(addrs []string) error {
+				return run(addrs[0])
+			})
 		})
 	}
 }

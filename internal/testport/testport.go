@@ -31,10 +31,14 @@ import (
 // exhausted) should surface quickly rather than spin, so the ceiling stays low.
 const maxAttempts = 5
 
-// ListenAddrs returns count distinct free loopback TCP addresses. All listeners
+// listenAddrs returns count distinct free loopback TCP addresses. All listeners
 // are opened simultaneously so the returned addresses are guaranteed distinct
 // from each other, then closed before returning so the caller can rebind them.
-func ListenAddrs(t testing.TB, count int) []string {
+//
+// It stays unexported so a test cannot reserve a port and hand it to a server
+// without WithRetry. A listener the test never dials should use "127.0.0.1:0"
+// and let the server bind an ephemeral port itself.
+func listenAddrs(t testing.TB, count int) []string {
 	t.Helper()
 	if count < 0 {
 		t.Fatalf("listen address count must be non-negative, got %d", count)
@@ -76,7 +80,7 @@ func IsBindCollision(err error) bool {
 // also fails the test.
 func WithRetry(t testing.TB, portCount int, fn func(addrs []string) error) {
 	t.Helper()
-	if err := retry(func() []string { return ListenAddrs(t, portCount) }, fn); err != nil {
+	if err := retry(func() []string { return listenAddrs(t, portCount) }, fn); err != nil {
 		t.Fatalf("%v", err)
 	}
 }

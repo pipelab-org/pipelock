@@ -24,7 +24,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/edition"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
-	"github.com/luckyPipewrench/pipelock/internal/testwait"
+	"github.com/luckyPipewrench/pipelock/internal/testport"
 
 	_ "github.com/luckyPipewrench/pipelock/enterprise/testinit"
 )
@@ -798,35 +798,26 @@ func TestAgentListenerBinding(t *testing.T) {
 	}))
 	t.Cleanup(func() { backend.Close() })
 
-	// Bind free ports for the agent and main listeners.
-	lc := net.ListenConfig{}
-	agentLn, listenErr := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
-	if listenErr != nil {
-		t.Fatalf("failed to get free port: %v", listenErr)
+	// WithRetry holds both ports at once, so the agent and main listeners
+	// cannot be handed the same port, then closes them for the proxy to bind.
+	testport.WithRetry(t, 2, func(addrs []string) error {
+		return runAgentListenerBinding(t, backend, testListenerAgent, addrs[0], addrs[1])
+	})
+}
+
+func runAgentListenerBinding(t *testing.T, backend *httptest.Server, testListenerAgent, agentAddr, mainAddr string) error {
+	t.Helper()
+	if agentAddr == mainAddr {
+		return fmt.Errorf("premise: agent and main listeners share %s", agentAddr)
 	}
-	agentAddr := agentLn.Addr().String()
 
 	enforceFalse := false
-
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	cfg.FetchProxy.TimeoutSeconds = 5
-	mainLn, mainErr := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
-	if mainErr != nil {
-		t.Fatalf("failed to get free port for main: %v", mainErr)
-	}
-	cfg.FetchProxy.Listen = mainLn.Addr().String()
-	// Both probe listeners stay open until both ports are chosen: closing the
-	// agent probe first let the kernel hand the same port to the main probe,
-	// so the proxy then tried to bind one address twice.
-	if agentAddr == cfg.FetchProxy.Listen {
-		t.Fatalf("premise: agent and main listeners share %s", agentAddr)
-	}
-	_ = agentLn.Close() // free the ports for the proxy to bind
-	_ = mainLn.Close()
-
+	cfg.FetchProxy.Listen = mainAddr
 	cfg.Agents = map[string]config.AgentProfile{
 		testListenerAgent: {
 			Mode:      config.ModeAudit,
@@ -837,24 +828,32 @@ func TestAgentListenerBinding(t *testing.T) {
 
 	logger := audit.NewNop()
 	sc := scanner.MustNew(cfg)
-	t.Cleanup(func() { sc.Close() })
+	defer sc.Close()
 	p, err := New(cfg, logger, sc, metrics.New())
 	if err != nil {
-		t.Fatalf("proxy.New: %v", err)
+		return fmt.Errorf("proxy.New: %w", err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	t.Cleanup(func() { p.Close() })
+	var agentSrv *http.Server
+	defer func() {
+		cancel()
+		if agentSrv != nil {
+			shutCtx, shutCancel := context.WithTimeout(context.Background(), time.Second)
+			_ = agentSrv.Shutdown(shutCtx)
+			shutCancel()
+		}
+		p.Close()
+	}()
 
 	// Start agent listener manually (proxy.Start() no longer manages these;
 	// the CLI layer owns agent listener lifecycle).
 	handler := p.Handler()
 	agentLn2, agentLnErr := (&net.ListenConfig{}).Listen(ctx, "tcp", agentAddr)
 	if agentLnErr != nil {
-		t.Fatalf("bind agent listener: %v", agentLnErr)
+		return fmt.Errorf("bind agent listener: %w", agentLnErr)
 	}
-	agentSrv := &http.Server{
+	agentSrv = &http.Server{
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			r = r.WithContext(edition.WithAgentOverride(r.Context(), testListenerAgent))
 			handler.ServeHTTP(w, r)
@@ -872,9 +871,14 @@ func TestAgentListenerBinding(t *testing.T) {
 	startErr := make(chan error, 1)
 	go func() { startErr <- p.Start(ctx) }()
 
-	// Wait for both listeners to be ready.
-	waitForListener(t, cfg.FetchProxy.Listen)
-	waitForListener(t, agentAddr)
+	// A stolen port comes back as Start's or the agent bind error, which
+	// WithRetry reruns. A hang still fails this attempt.
+	if err := waitForListenerOrStart(cfg.FetchProxy.Listen, startErr); err != nil {
+		return err
+	}
+	if err := waitForListenerOrStart(agentAddr, startErr); err != nil {
+		return err
+	}
 
 	// Request to the agent listener: should get listener-agent identity
 	// even without X-Pipelock-Agent header. The agent is in audit mode
@@ -950,23 +954,37 @@ func TestAgentListenerBinding(t *testing.T) {
 	select {
 	case err := <-startErr:
 		if err != nil {
-			t.Errorf("proxy.Start returned error: %v", err)
+			return fmt.Errorf("proxy.Start returned error: %w", err)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("proxy.Start did not exit within 5s")
+		return errors.New("proxy.Start did not exit within 5s")
 	}
+	return nil
 }
 
-// waitForListener polls a TCP address until it accepts connections.
-func waitForListener(t *testing.T, addr string) {
-	t.Helper()
+// waitForListenerOrStart polls addr until it accepts a connection. When
+// proxy.Start exits first, its error is returned so a bind collision retries.
+func waitForListenerOrStart(addr string, startErr <-chan error) error {
+	deadline := time.NewTimer(3 * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
 	d := net.Dialer{Timeout: 100 * time.Millisecond}
-	testwait.For(t, 3*time.Second, func() bool {
-		conn, err := d.DialContext(context.Background(), "tcp", addr)
-		if err == nil {
-			_ = conn.Close()
-			return true
+	for {
+		select {
+		case err := <-startErr:
+			if err == nil {
+				return fmt.Errorf("proxy.Start returned before %s accepted", addr)
+			}
+			return err
+		case <-deadline.C:
+			return fmt.Errorf("listener %s did not start", addr)
+		case <-ticker.C:
+			conn, err := d.DialContext(context.Background(), "tcp", addr)
+			if err == nil {
+				_ = conn.Close()
+				return nil
+			}
 		}
-		return false
-	}, "listener %s starts", addr)
+	}
 }
