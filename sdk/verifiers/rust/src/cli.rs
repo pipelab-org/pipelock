@@ -984,7 +984,7 @@ fn usage(command: Option<&str>) -> String {
         Some("provenance") => {
             "Usage: pipelock-verifier-rs provenance PATH [--allow-incomplete]".to_string()
         }
-        _ => "Usage: pipelock-verifier-rs {aarp|audit-packet|chain|group|provenance|receipt} PATH [flags]"
+        _ => "Usage: pipelock-verifier-rs {aarp|audit-packet|chain|group|provenance|receipt|v3} PATH [flags]"
             .to_string(),
     }
 }

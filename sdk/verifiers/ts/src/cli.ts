@@ -90,7 +90,7 @@ function usage(command?: string): string {
   if (command === "provenance") {
     return "Usage: pipelock-verifier-ts provenance PATH [--allow-incomplete]";
   }
-  return "Usage: pipelock-verifier-ts {audit-packet|chain|receipt|aarp|provenance} PATH [flags]";
+  return "Usage: pipelock-verifier-ts {audit-packet|chain|receipt|aarp|provenance|v3} PATH [flags]";
 }
 
 function requireOneArg(positionals: string[], command: string): string {
