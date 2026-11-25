@@ -70,3 +70,28 @@ func TestIsLegacyReceiptCandidate(t *testing.T) {
 		}
 	}
 }
+
+func TestProbeReceiptContentWhitespaceLimit(t *testing.T) {
+	const limit = 64 << 10
+	for _, tc := range []struct {
+		name, whitespace string
+		want             bool
+	}{
+		{"at limit", strings.Repeat(" ", limit), true},
+		{"past limit", strings.Repeat(" ", limit+1), false},
+		{"unicode past byte limit", strings.Repeat("\u2002", limit/3+1), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			claimed, err := ProbeReceiptContent(strings.NewReader(tc.whitespace + ReceiptProfilePrefix))
+			if err != nil || claimed != tc.want {
+				t.Fatalf("claimed=%t, err=%v, want %t", claimed, err, tc.want)
+			}
+		})
+	}
+	const size = 1 << 20
+	r := strings.NewReader(strings.Repeat(" ", size))
+	claimed, err := ProbeReceiptContent(r)
+	if err != nil || claimed || size-r.Len() > limit+len(ReceiptProfilePrefix) {
+		t.Fatalf("claimed=%t, err=%v, read %d bytes; want a bounded negative probe", claimed, err, size-r.Len())
+	}
+}

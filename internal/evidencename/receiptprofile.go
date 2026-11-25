@@ -106,12 +106,14 @@ func SplitLegacyJSONLines(data []byte, atEOF bool) (int, []byte, error) {
 	return advance, line, err
 }
 
-// ProbeReceiptContent reads only leading whitespace and the identifying prefix.
-// It does not read the rest of a legacy entry or consume an entire JSONL line.
+// ProbeReceiptContent reads the identifying prefix after at most 64 KiB of
+// leading whitespace. Record size and content still belong to the decoder.
 func ProbeReceiptContent(r io.Reader) (bool, error) {
-	input := bufio.NewReader(r)
+	const maxLeadingWhitespace = 64 << 10
+	input := bufio.NewReader(io.LimitReader(r, int64(maxLeadingWhitespace+len(ReceiptProfilePrefix))))
+	leadingWhitespace := 0
 	for {
-		ch, _, err := input.ReadRune()
+		ch, size, err := input.ReadRune()
 		if errors.Is(err, io.EOF) {
 			return false, nil
 		}
@@ -119,6 +121,10 @@ func ProbeReceiptContent(r io.Reader) (bool, error) {
 			return false, err
 		}
 		if unicode.IsSpace(ch) {
+			leadingWhitespace += size
+			if leadingWhitespace > maxLeadingWhitespace {
+				return false, nil
+			}
 			continue
 		}
 		if err := input.UnreadRune(); err != nil {

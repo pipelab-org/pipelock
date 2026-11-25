@@ -227,3 +227,17 @@ func TestLegacyDirectoryWithLeftoverCutoverInventoryAllowed(t *testing.T) {
 		t.Fatalf("WithEvidenceWriterCeremonyLock failed: ran=%t err=%v", ran, err)
 	}
 }
+
+func TestOversizedWhitespaceRejectedByLegacyDecoder(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "evidence-proxy-0.jsonl")
+	data := strings.Repeat(" ", recorder.MaxEntryLineBytes+1) + "\n"
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if claimed, err := receiptinput.Claims(path); claimed || err != nil {
+		t.Fatalf("profile probe = %t, %v; want an unclaimed legacy input", claimed, err)
+	}
+	if _, _, err := recorder.ReadHeadEntriesBounded(path, 1, int64(len(data))); err == nil || !strings.Contains(err.Error(), "recorder entry limit") {
+		t.Fatalf("legacy decoder error = %v, want line limit refusal", err)
+	}
+}
