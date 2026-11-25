@@ -271,6 +271,16 @@ func TestOtherDone(t *testing.T) { <-context.Background().Done() }
             head = repo.commit({"types_test.go": types})
             self.assertEqual(self.select(repo, base, head, support=True), {"TestOuter"})
 
+    def test_removed_alias_method_reaches_the_target_type(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = FixtureRepo(Path(directory))
+            types = ('package fixture\ntype leaf struct{}\nfunc (leaf) Step() int { return 1 }\n'
+                     'type outer struct{ leaf }\ntype alias = outer\n')
+            uses = 'package fixture\nimport "testing"\nfunc TestOuter(t *testing.T) { _ = outer{}.Step() }\nfunc TestOther(t *testing.T) {}\n'
+            base = repo.commit({"types_test.go": types + "func (alias) Step() int { return 2 }\n", "a_test.go": uses})
+            head = repo.commit({"types_test.go": types})
+            self.assertEqual(self.select(repo, base, head, support=True), {"TestOuter"})
+
     def test_external_wrapper_of_a_changed_internal_helper(self):
         with tempfile.TemporaryDirectory() as directory:
             repo = FixtureRepo(Path(directory))

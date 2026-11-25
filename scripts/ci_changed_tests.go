@@ -69,6 +69,9 @@ type support struct {
 	name   string
 	source string
 	refs   map[string]bool
+	// alias is the local type an alias declaration names, so a method
+	// change recorded on the alias also reaches tests using the target.
+	alias string
 }
 
 // receiverType returns the base type name of a method receiver.
@@ -276,6 +279,11 @@ func supportDecls(fset *token.FileSet, file string, parsed *ast.File, into map[p
 				case *ast.TypeSpec:
 					if err := add("type", sp.Name.Name, sp.Name.Name, sp, sp); err != nil {
 						return err
+					}
+					if target, ok := sp.Type.(*ast.Ident); ok && sp.Assign.IsValid() {
+						item := decls[sp.Name.Name]
+						item.alias = target.Name
+						decls[sp.Name.Name] = item
 					}
 				case *ast.ValueSpec:
 					effective := sp
@@ -517,6 +525,21 @@ func affectedNames(base, head map[string]support, baseInits, headInits, baseBlan
 					grew = true
 					break
 				}
+			}
+		}
+		// A type alias and its target are the same type: an impact on
+		// either reaches tests that spell the other.
+		for _, item := range head {
+			if item.alias == "" {
+				continue
+			}
+			if affected[item.name] && !affected[item.alias] {
+				affected[item.alias] = true
+				grew = true
+			}
+			if affected[item.alias] && !affected[item.name] {
+				affected[item.name] = true
+				grew = true
 			}
 		}
 		if !grew {
