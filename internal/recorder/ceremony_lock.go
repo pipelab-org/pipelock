@@ -6,10 +6,12 @@ package recorder
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
-	"strings"
+
+	"github.com/luckyPipewrench/pipelock/internal/evidencename"
 )
 
 // ErrLegacyEvidenceFormat indicates the directory has switched to v3.
@@ -74,23 +76,64 @@ func acquireEvidenceWriterCeremonyLock(dir string) (*os.File, os.FileInfo, error
 	return file, info, nil
 }
 
-// checkLegacyEvidenceFormat refuses a legacy write into a directory that a v3
-// writer has committed to. A directory that does not exist yet holds no v3
-// files; the caller's own open or create reports whether it can be used.
+// checkLegacyEvidenceFormat refuses a legacy write into a directory that the
+// receipt-profile verifier claims. It applies the claim rule of v3.ClaimsInput,
+// which this package cannot import: any "*.receipt-vN.jsonl" name, and receipt
+// content under a legacy candidate name. The rules live in evidencename so the
+// two cannot drift; a parity test in receiptinput fails if the loops disagree.
+//
+// A directory that does not exist yet holds no v3 files; the caller's own open
+// or create reports whether it can be used. A candidate file that cannot be read
+// leaves the directory unclassified, which refuses the write rather than risk
+// splitting one directory across formats.
 func checkLegacyEvidenceFormat(dir string) error {
-	entries, err := os.ReadDir(dir)
+	resolved, err := filepath.EvalSymlinks(dir)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
 	if err != nil {
 		return fmt.Errorf("checking legacy evidence directory format: %w", err)
 	}
+	entries, err := os.ReadDir(resolved)
+	if err != nil {
+		return fmt.Errorf("checking legacy evidence directory format: %w", err)
+	}
+	var probeErr error
 	for _, entry := range entries {
-		if strings.HasSuffix(entry.Name(), ".receipt-v3.jsonl") {
+		name := entry.Name()
+		if _, claimed := evidencename.ReceiptProfileVersion(name); claimed {
 			return ErrLegacyEvidenceFormat
 		}
+		if entry.IsDir() || !entry.Type().IsRegular() || !evidencename.IsLegacyReceiptCandidate(name) {
+			continue
+		}
+		claimed, err := fileClaimsReceiptProfile(filepath.Join(resolved, name))
+		if claimed {
+			return ErrLegacyEvidenceFormat
+		}
+		if probeErr == nil {
+			probeErr = err
+		}
+	}
+	if probeErr != nil {
+		return fmt.Errorf("checking legacy evidence directory format: %w", probeErr)
 	}
 	return nil
+}
+
+func fileClaimsReceiptProfile(path string) (bool, error) {
+	file, _, err := OpenEvidenceFile(path)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = file.Close() }()
+	prefix := make([]byte, len(evidencename.ReceiptProfilePrefix))
+	if _, err := io.ReadFull(file, prefix); errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return false, nil
+	} else if err != nil {
+		return false, fmt.Errorf("read evidence prefix: %w", err)
+	}
+	return evidencename.ClaimsReceiptContent(prefix), nil
 }
 
 // WithEvidenceWriterCeremonyLock runs one non-recorder evidence write under

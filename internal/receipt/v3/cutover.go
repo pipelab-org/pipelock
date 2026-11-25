@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+
+	"github.com/luckyPipewrench/pipelock/internal/evidencename"
 )
 
 const emptyInventory = "{\"chains\":[],\"v\":1}"
@@ -43,9 +45,8 @@ func InventoryFilename(id string) string {
 }
 
 func inventoryID(name string) (string, bool) {
-	tail, prefix := strings.CutPrefix(name, "receipt-v3-cutover-")
-	hash, suffix := strings.CutSuffix(tail, ".json")
-	return "sha256:" + hash, prefix && suffix && isLowerHex(hash, 64)
+	hash, ok := evidencename.CutoverInventoryHash(name)
+	return "sha256:" + hash, ok
 }
 
 type legacyIdentity struct {

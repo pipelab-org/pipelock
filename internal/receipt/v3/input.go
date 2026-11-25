@@ -4,7 +4,6 @@
 package v3
 
 import (
-	"bytes"
 	"bufio"
 	"context"
 	"crypto/ed25519"
@@ -20,6 +19,7 @@ import (
 	"strings"
 
 	contract "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/evidencename"
 )
 
 type Head struct {
@@ -146,8 +146,8 @@ func DecodeKeys(keys []string) ([]ed25519.PublicKey, error) {
 func identify(path string) (inputFile, bool) {
 	file := inputFile{path: path, start: -1}
 	name := filepath.Base(path)
-	version := contract.ProfileFilenameVersion(name)
-	if version == "" {
+	version, profile := evidencename.ReceiptProfileVersion(name)
+	if !profile {
 		return file, false
 	}
 	if version != "3" {
@@ -197,7 +197,7 @@ func ClaimsInput(path string, directory bool) (bool, error) {
 // ClaimsContent identifies the receipt profile prefix on a byte-oriented input
 // that has no filename, such as a fleet audit payload.
 func ClaimsContent(data []byte) bool {
-	return bytes.HasPrefix(data, []byte(contract.ProfileEnvelopePrefix))
+	return evidencename.ClaimsReceiptContent(data)
 }
 
 func startsWithProfile(path string) (bool, error) {

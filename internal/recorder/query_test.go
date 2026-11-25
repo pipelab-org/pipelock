@@ -1055,6 +1055,14 @@ func TestIsRecorderOwnedFile(t *testing.T) {
 		{"chain-link-proxy.run.00112233445566778899aabbccddeeff.json", true},
 		{recorder.RunWriterLockPrefix + "proxy.run.00112233445566778899aabbccddeeff" + recorder.RunWriterLockSuffix, true},
 		{"anchor-state.json", true},
+		// A v3 stream shard, any later receipt profile, and the cutover inventory
+		// are receipt-chain files an atomic replace must not destroy.
+		{"11111111111111111111111111111111-0000000000000000.receipt-v3.jsonl", true},
+		{"11111111111111111111111111111111-0000000000000000.receipt-v4.jsonl", true},
+		{"stream.receipt-v3.jsonl", true},
+		{"receipt-v3-cutover-" + strings.Repeat("ab", 32) + ".json", true},
+		{"receipt-v3-cutover-notes.json", false},
+		{"x.receipt-v3.jsonl.bak", false},
 		// Operator outputs that happen to sit beside evidence are not owned.
 		{"bundle.json", false},
 		{"report.md", false},
