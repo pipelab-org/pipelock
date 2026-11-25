@@ -10,6 +10,8 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // Serve returning on cancellation must not end the call before shutdown
@@ -57,7 +59,7 @@ func TestServeUntilShutdown(t *testing.T) {
 			var err error
 			select {
 			case err = <-done:
-			case <-time.After(10 * time.Second):
+			case <-time.After(testwait.Deadline(10 * time.Second)):
 				t.Fatal("ServeUntilShutdown did not return")
 			}
 			if !shutdownRan {

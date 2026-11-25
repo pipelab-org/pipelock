@@ -2721,7 +2721,7 @@ func checkMCPV3StdioReportsDenialFailureAfterForwarding(t *testing.T, sandboxed 
 			close(entered)
 			select {
 			case <-forwarded:
-			case <-time.After(grace / 2):
+			case <-time.After(testwait.Deadline(grace / 2)):
 				t.Error("forwarding did not finish before the receipt sync deadline")
 			case <-ctx.Done():
 			}

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/emit"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestDropURLContentSegmentsRejectsInvalidDestinations(t *testing.T) {
@@ -495,7 +496,7 @@ func TestAuditErrorTreeNaNIdentity(t *testing.T) {
 		if valid {
 			t.Fatal("self-wrapping NaN error accepted")
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("collectURLErrors did not terminate on a NaN self-cycle")
 	}
 }
@@ -518,7 +519,7 @@ func TestAuditErrorTreeSharedSubtreeLinear(t *testing.T) {
 		if len(found) != 1 {
 			t.Fatalf("URL errors=%d, want 1", len(found))
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("shared subtrees were revisited")
 	}
 }

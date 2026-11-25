@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/playground"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 type failingContainmentVerifier struct{}
@@ -394,7 +395,7 @@ func TestServer_FullFlow_StreamsSignedDecisions(t *testing.T) {
 	select {
 	case <-gotBlock:
 		// success: a signed BLOCKED decision streamed for the visitor's request.
-	case <-time.After(15 * time.Second):
+	case <-time.After(testwait.Deadline(15 * time.Second)):
 		t.Fatal("did not receive a BLOCKED decision on the stream")
 	}
 }

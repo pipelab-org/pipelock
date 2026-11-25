@@ -21,6 +21,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // Behaviours of the mock pipelock.checker/v1 service.
@@ -359,7 +360,7 @@ func TestExternalCheckerWatch(t *testing.T) {
 		if v.Clean {
 			t.Fatal("built-in decision changed by the watch checker")
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("a hung watch checker delayed delivery")
 	}
 	// Saturate the watch slots; further calls are dropped and counted.

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestManagerResolutionPreservesAdmissionShard(t *testing.T) {
@@ -63,7 +64,7 @@ func TestManagerTimeoutResolvesBlockOnce(t *testing.T) {
 		if got.FinalDecision != "block" || got.ResolutionSource != SourceTimeout {
 			t.Fatalf("resolution = (%q,%q), want block timeout", got.FinalDecision, got.ResolutionSource)
 		}
-	case <-time.After(250 * time.Millisecond):
+	case <-time.After(testwait.Deadline(250 * time.Millisecond)):
 		t.Fatal("timeout did not resolve")
 	}
 	if err := m.Resolve("d1", "allow", SourceContext); !errors.Is(err, ErrNotFound) {
@@ -1619,7 +1620,7 @@ func TestManagerTimerRace(t *testing.T) {
 	}()
 	select {
 	case <-done:
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("timer resolutions did not complete")
 	}
 }
@@ -1629,7 +1630,7 @@ func waitResolution(t *testing.T, ch <-chan Resolution) Resolution {
 	select {
 	case res := <-ch:
 		return res
-	case <-time.After(250 * time.Millisecond):
+	case <-time.After(testwait.Deadline(250 * time.Millisecond)):
 		t.Fatal("timed out waiting for deferred resolution")
 	}
 	return Resolution{}

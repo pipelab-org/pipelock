@@ -260,7 +260,7 @@ func TestDashboardServe_RawTokenElevatesAndAudits(t *testing.T) {
 		if err != nil {
 			t.Fatalf("serve shutdown error: %v", err)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(testwait.Deadline(10 * time.Second)):
 		t.Fatal("serve did not shut down")
 	}
 }
@@ -489,7 +489,7 @@ func TestDashboardServe_InspectionConfigIgnoresUnreadableReferencedFile(t *testi
 	select {
 	case err := <-done:
 		t.Logf("goroutine result: %v", err)
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("serve did not shut down after context cancel")
 	}
 }
@@ -592,7 +592,7 @@ func TestDashboardServe_RefusesUnauthenticatedRequest(t *testing.T) {
 		if err != nil {
 			t.Fatalf("runDashboardServe returned an error on context-cancel shutdown: %v", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("serve did not shut down after context cancel")
 	}
 }
@@ -760,7 +760,7 @@ func TestDashboardServe_EndToEnd(t *testing.T) {
 		if err != nil {
 			t.Fatalf("serve returned error on shutdown: %v", err)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(testwait.Deadline(10 * time.Second)):
 		t.Fatal("serve did not shut down after context cancel")
 	}
 }
@@ -950,7 +950,7 @@ func TestDashboardAuthDeniedEmitsAuthenticationEvent(t *testing.T) {
 				if strings.Contains(string(serialized), "wrong-token") || strings.Contains(string(serialized), "not-a-token") {
 					t.Fatalf("serialized event leaked token data: %s", serialized)
 				}
-			case <-time.After(time.Second):
+			case <-time.After(testwait.Deadline(time.Second)):
 				t.Fatal("timed out waiting for audit event")
 			}
 			select {
@@ -1086,7 +1086,7 @@ func TestDashboardAuthDeniedDoesNotWaitForBlockedEventEmitter(t *testing.T) {
 	}()
 	select {
 	case <-done:
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("blocked event emitter delayed authentication response")
 	}
 }
@@ -1113,7 +1113,7 @@ func TestRecordDashboardAuthFailure_SkipsWithoutModeOrEmitter(t *testing.T) {
 		if ev.Type != emit.EventDashboardAuthFailed {
 			t.Fatalf("event type = %q, want %q", ev.Type, emit.EventDashboardAuthFailed)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("expected an auth-failure event for a classified failure")
 	}
 }
@@ -1149,7 +1149,7 @@ func TestRecordDashboardAuthFailure_BoundsInflightEmits(t *testing.T) {
 		if ev.Type != emit.EventDashboardAuthFailed {
 			t.Fatalf("event type = %q, want %q", ev.Type, emit.EventDashboardAuthFailed)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("expected the event once a slot was free")
 	}
 
@@ -1159,7 +1159,7 @@ func TestRecordDashboardAuthFailure_BoundsInflightEmits(t *testing.T) {
 	select {
 	case dashboardAuthEventSlots <- struct{}{}:
 		<-dashboardAuthEventSlots
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("expected the emit goroutine to release its slot")
 	}
 }
@@ -1300,7 +1300,7 @@ func TestDashboardServe_TLSEndToEnd(t *testing.T) {
 		if err != nil {
 			t.Fatalf("serve returned error on shutdown: %v", err)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(testwait.Deadline(10 * time.Second)):
 		t.Fatal("serve did not shut down after context cancel")
 	}
 }

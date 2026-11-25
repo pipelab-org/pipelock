@@ -40,6 +40,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 const (
@@ -242,7 +243,7 @@ func waitWarnContext(t *testing.T, hookCh <-chan scanner.DLPWarnContext, scope s
 	select {
 	case got := <-hookCh:
 		return got
-	case <-time.After(testWarnContextTimeout):
+	case <-time.After(testwait.Deadline(testWarnContextTimeout)):
 		t.Fatalf("timed out waiting for DLP warn hook to capture %s context", scope)
 		return scanner.DLPWarnContext{}
 	}
@@ -2426,7 +2427,7 @@ func TestForwardScannedInput_PolicyRedirectOutputDLP(t *testing.T) {
 	var captureRecord capture.ResponseVerdictRecord
 	select {
 	case captureRecord = <-obs.got:
-	case <-time.After(testWarnContextTimeout):
+	case <-time.After(testwait.Deadline(testWarnContextTimeout)):
 		t.Fatal("expected redirect-output DLP capture")
 	}
 	if err := rec.Close(); err != nil {

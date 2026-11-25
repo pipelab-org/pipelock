@@ -952,7 +952,7 @@ func TestAgentListenerBinding(t *testing.T) {
 		if err != nil {
 			t.Errorf("proxy.Start returned error: %v", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("proxy.Start did not exit within 5s")
 	}
 }

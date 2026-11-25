@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestStreamWriterStartsConfiguredHeartbeats(t *testing.T) {
@@ -39,7 +40,7 @@ func TestStreamWriterStartsConfiguredHeartbeats(t *testing.T) {
 	// Observe the first append after the opening sync.
 	select {
 	case <-heartbeatFlushed:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("scheduled heartbeat did not flush")
 	}
 	if err := w.Close(t.Context(), nil); err != nil {

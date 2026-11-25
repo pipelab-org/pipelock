@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/edition/internal/clockhook"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestSetLicenseClock(t *testing.T) {
@@ -76,7 +77,7 @@ func TestDefaultLicenseClockIsWallClock(t *testing.T) {
 		if elapsed := at.Sub(start); elapsed < delay {
 			t.Fatalf("default AfterFunc fired after %s, before its %s delay", elapsed, delay)
 		}
-	case <-time.After(delay + time.Second):
+	case <-time.After(testwait.Deadline(delay + time.Second)):
 		t.Fatalf("default AfterFunc did not fire within 1s of its %s delay", delay)
 	}
 }

@@ -87,7 +87,7 @@ func TestSessionExit_WSStopsBridge(t *testing.T) {
 
 	select {
 	case <-connected:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("WebSocket bridge never connected to its upstream")
 	}
 	parentDied.Store(true)
@@ -97,7 +97,7 @@ func TestSessionExit_WSStopsBridge(t *testing.T) {
 		if err != nil {
 			t.Fatalf("RunWSProxy after session exit = %v, want clean teardown", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("WebSocket bridge stayed alive after the spawning session exited")
 	}
 
@@ -142,7 +142,7 @@ func TestSessionExit_WSCancellationDuringDialIsClean(t *testing.T) {
 
 	select {
 	case <-dialStarted:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("WebSocket dial never started")
 	}
 	parentDied.Store(true)
@@ -152,7 +152,7 @@ func TestSessionExit_WSCancellationDuringDialIsClean(t *testing.T) {
 		if err != nil {
 			t.Fatalf("RunWSProxy after session exit during dial = %v, want clean teardown", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("WebSocket dial stayed alive after the spawning session exited")
 	}
 	testwait.For(t, 5*time.Second, func() bool {
@@ -193,7 +193,7 @@ func TestSessionExit_WSAuthorityDialCancellationIsClean(t *testing.T) {
 
 	select {
 	case <-dialStarted:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("authority-delayed WebSocket dial never started")
 	}
 	parentDied.Store(true)
@@ -203,7 +203,7 @@ func TestSessionExit_WSAuthorityDialCancellationIsClean(t *testing.T) {
 		if err != nil {
 			t.Fatalf("RunWSProxy after session exit during authority-delayed dial = %v, want clean teardown", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("authority-delayed WebSocket dial stayed alive after the spawning session exited")
 	}
 	testwait.For(t, 5*time.Second, func() bool {
@@ -227,7 +227,7 @@ func TestSessionExit_WSLiveSessionIsNotTornDown(t *testing.T) {
 
 	select {
 	case <-connected:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("WebSocket bridge never connected to its upstream")
 	}
 	select {
@@ -246,7 +246,7 @@ func TestSessionExit_WSLiveSessionIsNotTornDown(t *testing.T) {
 		if err != nil {
 			t.Fatalf("RunWSProxy after input close = %v", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("WebSocket bridge did not stop after its input closed")
 	}
 }

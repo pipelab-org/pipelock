@@ -93,7 +93,7 @@ func startHeldRotation(t *testing.T, syncErr error) *heldRotation {
 	}
 	select {
 	case <-syncStarted:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("old file sync never started")
 	}
 	go func() { h.rotating <- rec.RecordDurable(big()) }()
@@ -130,7 +130,7 @@ func (h *heldRotation) startArriving(t *testing.T) chan error {
 		_ = h.pending.Wait()
 		rotationErr := <-h.rotating
 		t.Fatalf("a write arriving during the rotation finished before it: %v (rotation: %v)", err, rotationErr)
-	case <-time.After(30 * time.Second):
+	case <-time.After(testwait.Deadline(30 * time.Second)):
 		t.Fatal("a write arriving during the rotation neither waited nor finished")
 	}
 	return arriving
@@ -223,7 +223,7 @@ func TestCheckpointWaitsForRotationInProgress(t *testing.T) {
 	case <-gateEntered:
 	case err := <-done:
 		t.Fatalf("checkpoint ran during a rotation: %v", err)
-	case <-time.After(30 * time.Second):
+	case <-time.After(testwait.Deadline(30 * time.Second)):
 		t.Fatal("checkpoint neither waited nor finished")
 	}
 	rec.mu.Lock()
@@ -273,7 +273,7 @@ func TestEntryCountRotationWaitsForSizeRotation(t *testing.T) {
 	case <-gateEntered:
 	case err := <-done:
 		t.Fatalf("entry-count rotation ran during a size rotation: %v", err)
-	case <-time.After(30 * time.Second):
+	case <-time.After(testwait.Deadline(30 * time.Second)):
 		t.Fatal("entry-count rotation neither waited nor finished")
 	}
 	// The size rotation finishes and its new file has one entry.
@@ -321,7 +321,7 @@ func TestCloseFileSkipsAFileClosedDuringItsWait(t *testing.T) {
 	}
 	select {
 	case <-syncStarted:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		close(release)
 		t.Fatal("sync never started")
 	}

@@ -45,6 +45,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 	"github.com/luckyPipewrench/pipelock/internal/shield"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 const (
@@ -4004,7 +4005,7 @@ func waitForInterceptReceipts(t *testing.T, resp *http.Response, conn net.Conn, 
 			_ = conn.Close()
 			select {
 			case <-done:
-			case <-time.After(5 * time.Second):
+			case <-time.After(testwait.Deadline(5 * time.Second)):
 				t.Error("intercept handler did not finish receipt emission")
 			}
 		})

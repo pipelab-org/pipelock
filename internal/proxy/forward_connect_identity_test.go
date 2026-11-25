@@ -23,6 +23,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 var errConnectIdentityDialStopped = errors.New("connect identity test stopped dial")
@@ -130,7 +131,7 @@ func readConnectDialTarget(t *testing.T, targets <-chan string) string {
 	select {
 	case target := <-targets:
 		return target
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("CONNECT never reached the TCP dial path")
 		return "" // unreachable
 	}

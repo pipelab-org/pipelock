@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func writerTestOptions(dir string) StreamWriterOptions {
@@ -462,7 +463,7 @@ func TestStreamWriterHeartbeatCallbackCanClose(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		close(abortJoin)
 		t.Fatal("heartbeat callback could not close the writer")
 	}
@@ -497,7 +498,7 @@ func TestStreamWriterReportsScheduledHeartbeatFlushFailure(t *testing.T) {
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("heartbeat callback = %v, want failed flush", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("heartbeat failure was not reported")
 	}
 	if err := w.WriteHeartbeat(t.Context()); err != nil {

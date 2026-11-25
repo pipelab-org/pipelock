@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestResponseVerdictCacheFreshAndBounds(t *testing.T) {
@@ -83,7 +84,7 @@ func waitResponseSignal(t *testing.T, ch <-chan struct{}) {
 	t.Helper()
 	select {
 	case <-ch:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("response flight deadline")
 	}
 }
@@ -126,7 +127,7 @@ func TestResponseVerdictFlightConcurrent(t *testing.T) {
 					if !reflect.DeepEqual(got, result) {
 						t.Fatal("changed result")
 					}
-				case <-time.After(5 * time.Second):
+				case <-time.After(testwait.Deadline(5 * time.Second)):
 					t.Fatal("scan completion deadline")
 				}
 			}

@@ -72,7 +72,7 @@ func TestLicenseRevocationClosesMainListenerConnect(t *testing.T) {
 	}
 	select {
 	case <-live:
-	case <-time.After(3 * time.Second):
+	case <-time.After(testwait.Deadline(3 * time.Second)):
 		t.Fatal("positive control: CONNECT probe not delivered")
 	}
 	if !p.SetLicenseRevoked(p.CurrentConfig(), true) {

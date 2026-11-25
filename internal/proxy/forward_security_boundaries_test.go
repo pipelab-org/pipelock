@@ -18,6 +18,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 type forwardBoundaryRoundTripper func(*http.Request) (*http.Response, error)
@@ -197,7 +198,7 @@ func TestForwardSecurityBoundary_CancellationReachesOutboundTransport(t *testing
 
 	select {
 	case <-entered:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("outbound transport was not entered")
 	}
 	cancel()
@@ -207,12 +208,12 @@ func TestForwardSecurityBoundary_CancellationReachesOutboundTransport(t *testing
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("outbound context error = %v, want context.Canceled", err)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("outbound transport did not observe request cancellation")
 	}
 	select {
 	case <-handlerDone:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("forward handler did not return after request cancellation")
 	}
 	if rec.Code != http.StatusBadGateway {

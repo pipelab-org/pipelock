@@ -17,6 +17,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 const (
@@ -77,7 +79,7 @@ func TestWebhookSink_DoesNotFollowRedirect(t *testing.T) {
 
 	select {
 	case <-frontHit:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("timed out waiting for configured webhook URL")
 	}
 	if err := sink.Close(); err != nil {
@@ -127,7 +129,7 @@ func TestWebhookSink_SuccessfulPost(t *testing.T) {
 
 	select {
 	case <-done:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("timed out waiting for webhook POST")
 	}
 
@@ -191,7 +193,7 @@ func TestWebhookSink_OCSFOverHTTP(t *testing.T) {
 	var gotCapture capture
 	select {
 	case gotCapture = <-captures:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("timed out waiting for webhook capture")
 	}
 	if gotCapture.contentType != contentTypeJSON {
@@ -236,7 +238,7 @@ func TestWebhookSink_OCSFHostileFieldNeverSendsEmptyPayload(t *testing.T) {
 	var body []byte
 	select {
 	case body = <-captures:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("timed out waiting for webhook capture")
 	}
 	if len(body) == 0 || string(body) == "{}" {
@@ -275,7 +277,7 @@ func TestWebhookSink_BearerToken(t *testing.T) {
 
 	select {
 	case <-done:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("timed out waiting for webhook POST")
 	}
 
@@ -311,7 +313,7 @@ func TestWebhookSink_NoAuthHeaderWithoutToken(t *testing.T) {
 
 	select {
 	case <-done:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("timed out waiting for webhook POST")
 	}
 }
@@ -566,7 +568,7 @@ func TestWebhookSink_NilFieldsInPayload(t *testing.T) {
 
 	select {
 	case <-done:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("timed out waiting for webhook POST")
 	}
 
@@ -722,7 +724,7 @@ func TestWebhookSink_EmitClosedDuringQueueWait(t *testing.T) {
 	}
 	select {
 	case <-started:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("timed out waiting for first webhook request")
 	}
 	if err := sink.Emit(context.Background(), event); err != nil {
@@ -786,7 +788,7 @@ func TestWebhookSink_EmitSignalsPriorDegradedStateThenRecovers(t *testing.T) {
 			if got != i {
 				t.Fatalf("request order = %d, want %d", got, i)
 			}
-		case <-time.After(5 * time.Second):
+		case <-time.After(testwait.Deadline(5 * time.Second)):
 			t.Fatalf("timed out waiting for request %d", i)
 		}
 	}
@@ -824,7 +826,7 @@ func TestWebhookSink_SafeSendAccountsPanic(t *testing.T) {
 
 func waitWebhookStats(t *testing.T, sink *WebhookSink, accept func(WebhookStats) bool) {
 	t.Helper()
-	deadline := time.After(5 * time.Second)
+	deadline := time.After(testwait.Deadline(5 * time.Second))
 	ticker := time.NewTicker(time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -888,7 +890,7 @@ func TestWebhookSink_ConcurrentEmitCloseAccountsEveryAcceptedEvent(t *testing.T)
 	// accepted==accounted==0.
 	select {
 	case <-admitted:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("no event was admitted before timeout")
 	}
 	// Race Close against the emitters so admission overlaps shutdown.
@@ -1001,11 +1003,11 @@ func TestWebhookSink_SuccessHealthTransitionIsAtomic(t *testing.T) {
 	}()
 	select {
 	case <-requestDone:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		sink.lastErrMu.Unlock()
 		t.Fatal("timeout waiting for webhook request")
 	}
-	deadline := time.After(2 * time.Second)
+	deadline := time.After(testwait.Deadline(2 * time.Second))
 	for sink.delivered.Load() != 1 {
 		select {
 		case <-deadline:

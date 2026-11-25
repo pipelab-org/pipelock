@@ -23,6 +23,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // Payloads copied verbatim from agent-egress-bench@ff16965's MCP-drift fixture.
@@ -399,7 +400,7 @@ func TestAF330_ListenerResetRejectsPreResetToolsListResponse(t *testing.T) {
 
 	select {
 	case <-firstStarted:
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("first tools/list did not reach upstream")
 	}
 	instanceID := listenerResetInstance(t, logBuf.String())
@@ -429,7 +430,7 @@ func TestAF330_ListenerResetRejectsPreResetToolsListResponse(t *testing.T) {
 		if !strings.Contains(result.body, `"error"`) || !strings.Contains(result.body, "tool_definition_baseline_reset") {
 			t.Fatalf("pre-reset tools/list = %s, want explicit stale-baseline block", result.body)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("pre-reset tools/list did not complete")
 	}
 

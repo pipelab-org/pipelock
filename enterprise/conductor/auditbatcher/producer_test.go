@@ -847,7 +847,7 @@ func waitForPending(t *testing.T, q *Queue, producer *Producer, want int) {
 	// which testwait.For's eagerly-evaluated format args cannot capture.
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
-	deadline := time.After(2 * time.Second)
+	deadline := time.After(testwait.Deadline(2 * time.Second))
 	for {
 		stats, err := q.Stats()
 		if err != nil {

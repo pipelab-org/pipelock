@@ -18,6 +18,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 type viewSignalWriter struct{ lines chan string }
@@ -78,7 +80,7 @@ func TestViewCommandDependencies(t *testing.T) {
 	go func() { done <- runContainViewCommand(ctx, base, viewOptions{}) }()
 	select {
 	case <-ready.lines:
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("positive control did not listen")
 	}
 	cancel()
@@ -154,7 +156,7 @@ func TestViewCommandControlSendsRequestedMode(t *testing.T) {
 		if printed != path+"\n" {
 			t.Fatalf("printed socket = %q", printed)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("viewer socket did not become ready")
 	}
 	conn, err := (&net.Dialer{}).DialContext(ctx, "unix", path)
@@ -167,7 +169,7 @@ func TestViewCommandControlSendsRequestedMode(t *testing.T) {
 		if mode != "control\n" {
 			t.Fatalf("requested mode = %q, want control", mode)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("viewer did not send control mode")
 	}
 	cancel()
@@ -191,7 +193,7 @@ func TestContainViewControlDialFailure(t *testing.T) {
 	}()
 	select {
 	case <-stdout.lines:
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("listener did not start")
 	}
 	client, err := (&net.Dialer{}).DialContext(ctx, "unix", path)
@@ -204,7 +206,7 @@ func TestContainViewControlDialFailure(t *testing.T) {
 		if !strings.Contains(detail, "connect viewer control socket: control unavailable") {
 			t.Fatalf("error = %q", detail)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("dial error not reported")
 	}
 	cancel()
@@ -251,7 +253,7 @@ func TestContainViewRelayAndBusy(t *testing.T) {
 				if !strings.Contains(path, localPath) {
 					t.Fatalf("printed path = %q", path)
 				}
-			case <-time.After(time.Second):
+			case <-time.After(testwait.Deadline(time.Second)):
 				t.Fatal("viewer listener did not start")
 			}
 			client, err := (&net.Dialer{}).DialContext(ctx, "unix", localPath)
@@ -281,7 +283,7 @@ func TestContainViewRelayAndBusy(t *testing.T) {
 					if !strings.Contains(detail, "busy") {
 						t.Fatalf("busy reason = %q", detail)
 					}
-				case <-time.After(time.Second):
+				case <-time.After(testwait.Deadline(time.Second)):
 					t.Fatal("busy was not reported")
 				}
 			}
@@ -311,7 +313,7 @@ func TestContainViewRejectsWrongLocalPeer(t *testing.T) {
 	case <-out.lines:
 	case err := <-done:
 		t.Fatalf("listener exited before ready: %v", err)
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("listener did not start")
 	}
 	conn, err := (&net.Dialer{}).DialContext(ctx, "unix", path)
@@ -328,7 +330,7 @@ func TestContainViewRejectsWrongLocalPeer(t *testing.T) {
 		if !strings.Contains(detail, "peer uid") {
 			t.Fatalf("wrong peer reason = %q", detail)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("wrong peer was not reported")
 	}
 	cancel()
@@ -540,7 +542,7 @@ func TestContainViewCancellationClosesActiveBridge(t *testing.T) {
 	}()
 	select {
 	case <-out.lines:
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("view listener did not start")
 	}
 	client, err := (&net.Dialer{}).DialContext(ctx, "unix", localPath)
@@ -551,7 +553,7 @@ func TestContainViewCancellationClosesActiveBridge(t *testing.T) {
 	var remote net.Conn
 	select {
 	case remote = <-remoteReady:
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("bridge did not connect")
 	}
 	defer func() { _ = remote.Close() }()
@@ -561,7 +563,7 @@ func TestContainViewCancellationClosesActiveBridge(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("view did not wait for active bridge shutdown")
 	}
 	_ = client.SetReadDeadline(time.Now().Add(time.Second))

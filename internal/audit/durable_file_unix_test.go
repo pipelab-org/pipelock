@@ -12,6 +12,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestOpenDurableAuditFileFailurePaths(t *testing.T) {
@@ -73,7 +75,7 @@ func TestNewDurableFileRejectsFIFOWithoutBlocking(t *testing.T) {
 		if err == nil {
 			t.Fatal("NewDurableFile accepted FIFO")
 		}
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("NewDurableFile blocked on FIFO without a reader")
 	}
 }

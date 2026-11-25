@@ -14,6 +14,8 @@ import (
 	"runtime"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 const (
@@ -506,7 +508,7 @@ func TestFileReplayStoreCloseWaitsForActiveOperation(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Close: %v", err)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("Close did not finish after operation lock was released")
 	}
 }

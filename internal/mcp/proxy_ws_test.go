@@ -75,7 +75,7 @@ func waitForResponse(t *testing.T, ch <-chan struct{}) {
 	t.Helper()
 	select {
 	case <-ch:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("timed out waiting for upstream response signal")
 	}
 }
@@ -87,7 +87,7 @@ func waitForResponseNumber(t *testing.T, ch <-chan int, want int) {
 		if got != want {
 			t.Fatalf("upstream response signal = %d, want %d", got, want)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatalf("timed out waiting for upstream response %d", want)
 	}
 }

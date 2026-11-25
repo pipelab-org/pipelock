@@ -8,6 +8,8 @@ import (
 	"io"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // blockingReader never returns from ReadMessage until a response is pushed
@@ -144,7 +146,7 @@ func TestTimeoutReader_CloseDrainsHungInner(t *testing.T) {
 		if !errors.Is(err, io.EOF) {
 			t.Fatalf("drained read: want io.EOF, got %v", err)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("ReadMessage hung after Close; background goroutine did not drain")
 	}
 }

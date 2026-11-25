@@ -14,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 type analyticsRoundTripper struct{ captures chan analyticsCapture }
@@ -59,7 +61,7 @@ func TestAnalyticsRelayAcceptsOnlyCountsSchema(t *testing.T) {
 		if _, ok := got.Properties["distinct_id"].(string); !ok {
 			t.Fatalf("missing server distinct_id: %#v", got.Properties)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("capture was not forwarded")
 	}
 }
@@ -248,7 +250,7 @@ func TestAnalyticsRelayStopsWhenDisabledOrContextEnds(t *testing.T) {
 	cancel()
 	select {
 	case <-relay.done:
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("relay worker did not stop")
 	}
 	if got := request(); got != http.StatusServiceUnavailable {

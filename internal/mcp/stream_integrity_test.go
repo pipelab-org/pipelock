@@ -23,6 +23,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/httpstream"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // A cancelled upstream can finish its chunked body while the proxy is reading.
@@ -200,7 +201,7 @@ func TestMCPListenerStreamIntegrity(t *testing.T) {
 				}
 				select {
 				case <-upstreamDone:
-				case <-time.After(5 * time.Second):
+				case <-time.After(testwait.Deadline(5 * time.Second)):
 					t.Fatal("upstream did not end after downstream cancellation")
 				}
 				cancelListener()
@@ -209,7 +210,7 @@ func TestMCPListenerStreamIntegrity(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-				case <-time.After(6 * time.Second):
+				case <-time.After(testwait.Deadline(6 * time.Second)):
 					t.Fatal("listener handler did not end")
 				}
 				if err := h.rec.Close(); err != nil {

@@ -25,6 +25,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 const (
@@ -657,7 +658,7 @@ func TestInterceptIssuedRedirectWhileStreaming(t *testing.T) {
 			case <-tail.entered:
 			case <-done:
 				t.Fatal("source response ended before the controlled body tail")
-			case <-time.After(10 * time.Second):
+			case <-time.After(testwait.Deadline(10 * time.Second)):
 				t.Fatal("source never began streaming the body tail")
 			}
 			if got := e.do("agent-one", http.MethodGet, good); got != http.StatusOK {

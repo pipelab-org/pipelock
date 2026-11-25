@@ -246,7 +246,7 @@ func TestListenerStateMessageWriter_BoundsBlockedWriteBeforeRevocation(t *testin
 	}()
 	select {
 	case <-revokeDone:
-	case <-time.After(250 * time.Millisecond):
+	case <-time.After(testwait.Deadline(250 * time.Millisecond)):
 		t.Fatal("revocation remained blocked behind a downstream write deadline")
 	}
 	if err := <-writeDone; !errors.Is(err, context.DeadlineExceeded) {

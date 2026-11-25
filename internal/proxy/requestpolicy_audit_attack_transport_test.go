@@ -33,6 +33,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/contract/runtime/contractruntimetest"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 type attackReadHook struct {
@@ -183,7 +184,7 @@ func attackConnect(t *testing.T, p *Proxy, target string) policyAuditObs {
 	_ = conn.Close()
 	select {
 	case <-handlerDone:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("CONNECT handler did not return")
 	}
 	if resp.StatusCode == http.StatusOK {

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/playground/livechat"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestReleaseDestroyDeadlineRetainsCapacityAndRetries(t *testing.T) {
@@ -28,7 +29,7 @@ func TestReleaseDestroyDeadlineRetainsCapacityAndRetries(t *testing.T) {
 	go func() { lm.Release(context.Background(), "first"); close(done) }()
 	select {
 	case <-done:
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("destroy did not return after deadline")
 	}
 	if _, ok := lm.ActiveMachineIDs()[lease.Machine.ID]; !ok {
@@ -58,7 +59,7 @@ func TestAdoptWarmReleaseCallbackCanReadManager(t *testing.T) {
 	go func() { lm.Release(context.Background(), "warm"); close(done) }()
 	select {
 	case <-done:
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("release callback deadlocked on manager lock")
 	}
 	select {
@@ -93,7 +94,7 @@ func TestRetryFailedDestroysHonorsCallerCancellation(t *testing.T) {
 	go func() { lm.RetryFailedDestroys(ctx); close(done) }()
 	select {
 	case <-done:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		close(p.allow)
 		t.Fatal("canceled retry kept waiting on provider deletion")
 	}
@@ -178,7 +179,7 @@ func TestRetryFailedDestroysCancellationStopsInFlightDelete(t *testing.T) {
 	cancel()
 	select {
 	case <-done:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		close(p.allow)
 		t.Fatal("in-flight delete ignored caller cancellation")
 	}
@@ -269,14 +270,14 @@ func TestReleaseSlowDestroyDoesNotBlockReadsOrDoubleClaim(t *testing.T) {
 	go func() { lm.Release(context.Background(), "first"); close(done) }()
 	select {
 	case <-p.entered:
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("destroy did not start")
 	}
 	readDone := make(chan struct{})
 	go func() { _, _ = lm.LeaseFor("first"); _ = lm.ActiveMachineIDs(); close(readDone) }()
 	select {
 	case <-readDone:
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("reads blocked by slow destroy")
 	}
 	leaseDone := make(chan error, 1)
@@ -286,14 +287,14 @@ func TestReleaseSlowDestroyDoesNotBlockReadsOrDoubleClaim(t *testing.T) {
 		if !errors.Is(err, ErrAtCapacity) {
 			t.Fatalf("lease during destroy = %v, want capacity refusal", err)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("lease blocked by slow destroy")
 	}
 	retryDone := make(chan struct{})
 	go func() { lm.RetryFailedDestroys(context.Background()); close(retryDone) }()
 	select {
 	case <-retryDone:
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("retry blocked by slow destroy")
 	}
 	p.mu.Lock()
@@ -308,7 +309,7 @@ func TestReleaseSlowDestroyDoesNotBlockReadsOrDoubleClaim(t *testing.T) {
 	close(p.allow)
 	select {
 	case <-done:
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("release did not finish")
 	}
 }

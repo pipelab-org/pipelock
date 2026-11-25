@@ -32,6 +32,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/shield"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // testGet performs a GET request with a background context (noctx-safe).
@@ -616,7 +617,7 @@ func TestReverseProxy_ServeHTTPSnapshotsUnderReloadLock(t *testing.T) {
 	reloadMu.Unlock()
 	select {
 	case <-done:
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("ServeHTTP did not complete after reload lock was released")
 	}
 
@@ -1039,7 +1040,7 @@ func TestReverseProxy_RequestScanInflightBudgetBoundsConcurrentBodies(t *testing
 
 	select {
 	case <-entered:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("first request never reached the upstream")
 	}
 	if got := handler.requestScanBudget.inflightBytes.Load(); got != int64(cfg.RequestBodyScanning.MaxBodyBytes) {
@@ -1061,7 +1062,7 @@ func TestReverseProxy_RequestScanInflightBudgetBoundsConcurrentBodies(t *testing
 		if err != nil {
 			t.Fatal(err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("first request did not complete")
 	}
 	if got := handler.requestScanBudget.inflightBytes.Load(); got != 0 {

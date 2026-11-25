@@ -116,7 +116,7 @@ func wsControlSendServer(t *testing.T, opcode ws.OpCode, payload []byte) (string
 		}
 		select {
 		case <-done:
-		case <-time.After(time.Second):
+		case <-time.After(testwait.Deadline(time.Second)):
 			t.Error("control server did not stop")
 		}
 	})
@@ -128,7 +128,7 @@ func awaitCapturedWSFrame(t *testing.T, frames <-chan capturedWSFrame) capturedW
 	select {
 	case frame := <-frames:
 		return frame
-	case <-time.After(3 * time.Second):
+	case <-time.After(testwait.Deadline(3 * time.Second)):
 		t.Fatal("upstream did not receive a frame")
 		return capturedWSFrame{}
 	}
@@ -415,7 +415,7 @@ func TestWSProxyClosePayloadNotForwardedVerbatim_Reproduction(t *testing.T) {
 		if string(got.payload) == string(secret) {
 			t.Fatalf("upstream received client close payload verbatim: %q", got.payload)
 		}
-	case <-time.After(3 * time.Second):
+	case <-time.After(testwait.Deadline(3 * time.Second)):
 		t.Fatal("upstream did not receive replacement close frame")
 	}
 }

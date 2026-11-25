@@ -176,7 +176,8 @@ var leakedRuns atomic.Int64
 // never construct a watcher through the next test's hook.
 func runJoined(t *testing.T, parent context.Context, fn func(ctx context.Context) error, stop func()) <-chan error {
 	t.Helper()
-	return runJoinedWithin(t, testwait.Deadline(orphanJoinDeadline), parent, fn, stop)
+	// runJoinedWithin applies testwait.Deadline, so the bound stays raw here.
+	return runJoinedWithin(t, orphanJoinDeadline, parent, fn, stop)
 }
 
 func runJoinedWithin(tb testing.TB, deadline time.Duration, parent context.Context, fn func(ctx context.Context) error, stop func()) <-chan error {
@@ -195,7 +196,7 @@ func runJoinedWithin(tb testing.TB, deadline time.Duration, parent context.Conte
 		}
 		select {
 		case <-finished:
-		case <-time.After(deadline):
+		case <-time.After(testwait.Deadline(deadline)):
 			leakedRuns.Add(1)
 			buf := make([]byte, 1<<20)
 			buf = buf[:goruntime.Stack(buf, true)]

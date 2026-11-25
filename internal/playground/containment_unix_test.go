@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/playground"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 	"golang.org/x/sys/unix"
 )
 
@@ -68,7 +69,7 @@ func TestLocalEscapeProbe_UnixSocketOpen(t *testing.T) {
 	}
 	select {
 	case <-done:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("accept goroutine did not finish")
 	}
 }

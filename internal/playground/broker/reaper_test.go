@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 type retryOrderProvider struct {
@@ -324,7 +326,7 @@ func TestReaperRunStartupReconcileAndCancel(t *testing.T) {
 	}()
 
 	// Wait for the startup reconcile to have destroyed the orphan.
-	deadline := time.NewTimer(5 * time.Second)
+	deadline := time.NewTimer(testwait.Deadline(5 * time.Second))
 	defer deadline.Stop()
 	for {
 		fp.mu.Lock()
@@ -364,7 +366,7 @@ func TestReaperRunStartupReconcileAndCancel(t *testing.T) {
 	cancel()
 	select {
 	case <-done:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("Run did not exit after cancel")
 	}
 }
@@ -427,7 +429,7 @@ func TestReaperRunLogsStartupAndTickErrors(t *testing.T) {
 
 	// Wait long enough for at least the startup reconcile + one tick to fire
 	// and log the list errors.
-	deadline := time.NewTimer(2 * time.Second)
+	deadline := time.NewTimer(testwait.Deadline(2 * time.Second))
 	defer deadline.Stop()
 	for strings.Count(logBuf.String(), "boom") < 2 {
 		select {
@@ -440,7 +442,7 @@ func TestReaperRunLogsStartupAndTickErrors(t *testing.T) {
 	cancel()
 	select {
 	case <-done:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("Run did not exit after cancel")
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 const (
@@ -62,7 +63,7 @@ func newLapseTestServer(t *testing.T, body string) (*Server, *syncBuffer, error)
 func waitForLapseEvents(t *testing.T, events <-chan serverTestWebhookEvent, want int) map[string]serverTestWebhookEvent {
 	t.Helper()
 	got := map[string]serverTestWebhookEvent{}
-	timer := time.NewTimer(5 * time.Second)
+	timer := time.NewTimer(testwait.Deadline(5 * time.Second))
 	defer timer.Stop()
 	for len(got) < want {
 		select {

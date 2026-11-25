@@ -15,6 +15,7 @@ import (
 	"github.com/gobwas/ws"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // The scanner and the session recorder must see the same supplied URL, even
@@ -81,7 +82,7 @@ func TestWebSocketURLFindingEvidenceMatchesAdmission(t *testing.T) {
 							}
 							select {
 							case <-upstreamSeen:
-							case <-time.After(5 * time.Second):
+							case <-time.After(testwait.Deadline(5 * time.Second)):
 								t.Fatal("allowed handshake did not reach upstream")
 							}
 						}

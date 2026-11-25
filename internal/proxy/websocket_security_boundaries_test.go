@@ -17,6 +17,7 @@ import (
 
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func websocketBoundaryBackend(t *testing.T) (string, *atomic.Int32, *atomic.Int32, <-chan struct{}) {
@@ -84,7 +85,7 @@ func assertWebSocketBoundaryBackendReceivedNothing(
 
 	select {
 	case <-done:
-	case <-time.After(3 * time.Second):
+	case <-time.After(testwait.Deadline(3 * time.Second)):
 		t.Fatal("backend did not observe relay termination")
 	}
 	if got := delivered.Load(); got != 0 {

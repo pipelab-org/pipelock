@@ -1170,7 +1170,7 @@ func TestDashboardServe_MTLSOnlyStartsAndEnforces(t *testing.T) {
 		if err != nil {
 			t.Fatalf("serve shutdown error: %v", err)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(testwait.Deadline(10 * time.Second)):
 		t.Fatal("serve did not shut down")
 	}
 }

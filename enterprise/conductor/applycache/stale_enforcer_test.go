@@ -17,6 +17,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // fakeStaleKillSwitch records the last SetConductorStale call and counts calls
@@ -253,7 +254,7 @@ func TestStaleEnforcer_RunEvaluatesImmediatelyAndStopsOnCancel(t *testing.T) {
 	go func() { done <- e.Run(ctx) }()
 
 	// Run evaluates once immediately on entry; poll for the engage to land.
-	deadline := time.After(2 * time.Second)
+	deadline := time.After(testwait.Deadline(2 * time.Second))
 	for {
 		if active, _ := ks.state(); active {
 			break
@@ -271,7 +272,7 @@ func TestStaleEnforcer_RunEvaluatesImmediatelyAndStopsOnCancel(t *testing.T) {
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("Run returned %v, want context.Canceled", err)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("Run did not return after cancel")
 	}
 }

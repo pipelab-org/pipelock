@@ -166,7 +166,7 @@ func launchSandboxedToCompletion(t *testing.T, cfg LaunchConfig) error {
 			t.Skipf("sandbox launch unavailable in this runner: %v", err)
 		}
 		return err
-	case <-time.After(sandboxLaunchTimeout + sandboxWatchdogGrace):
+	case <-time.After(testwait.Deadline(sandboxLaunchTimeout + sandboxWatchdogGrace)):
 		cancel()
 		t.Fatalf("sandbox launch did not complete within %s; failing fast instead of hanging (kernel namespace/Landlock primitives may be broken)",
 			sandboxLaunchTimeout+sandboxWatchdogGrace)
@@ -199,7 +199,7 @@ func launchSandboxedStarted(t *testing.T, cfg LaunchConfig) (*exec.Cmd, context.
 			t.Fatalf("LaunchSandboxed: %v", res.err)
 		}
 		return res.cmd, cancel
-	case <-time.After(sandboxLaunchTimeout + sandboxWatchdogGrace):
+	case <-time.After(testwait.Deadline(sandboxLaunchTimeout + sandboxWatchdogGrace)):
 		cancel()
 		t.Fatalf("sandbox launch did not start within %s; failing fast instead of hanging (kernel namespace/Landlock primitives may be broken)",
 			sandboxLaunchTimeout+sandboxWatchdogGrace)

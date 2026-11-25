@@ -499,7 +499,7 @@ func waitWSDLPRecord(t *testing.T, obs *wsDLPRecordObserver) capture.DLPVerdictR
 	select {
 	case rec := <-obs.ch:
 		return rec
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("timed out waiting for websocket header DLP capture record")
 		return capture.DLPVerdictRecord{}
 	}
@@ -566,7 +566,7 @@ func waitForWarnContext(t *testing.T, hookCh <-chan scanner.DLPWarnContext, scop
 	select {
 	case got := <-hookCh:
 		return got
-	case <-time.After(testWarnHookTimeout):
+	case <-time.After(testwait.Deadline(testWarnHookTimeout)):
 		t.Fatalf("timed out waiting for DLP warn hook to capture %s context", scope)
 		return scanner.DLPWarnContext{}
 	}
@@ -671,7 +671,7 @@ func TestWSProxyIssuerHistoryTaintedBeforeHandshake(t *testing.T) {
 		t.Fatalf("client upgrade before upstream dial: %v", err)
 	}
 	defer func() { _ = conn.Close() }()
-	handshakeTimeout := time.NewTimer(5 * time.Second)
+	handshakeTimeout := time.NewTimer(testwait.Deadline(5 * time.Second))
 	defer handshakeTimeout.Stop()
 	select {
 	case got := <-observed:
@@ -2252,7 +2252,7 @@ func TestWSProxyCompressionExtensionStripped(t *testing.T) {
 		if gotExtensions != "" {
 			t.Errorf("Sec-WebSocket-Extensions should not be forwarded, got %q", gotExtensions)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("timed out waiting for backend extension header capture")
 	}
 }

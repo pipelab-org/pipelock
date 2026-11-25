@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestStartReportsBackendFailureWithActiveContext(t *testing.T) {
@@ -35,7 +36,7 @@ func TestStartReportsBackendFailureWithActiveContext(t *testing.T) {
 		if ctx.Err() != nil {
 			t.Fatalf("test reached cancellation path: %v", ctx.Err())
 		}
-	case <-time.After(filesentryPositiveBackstop):
+	case <-time.After(testwait.Deadline(filesentryPositiveBackstop)):
 		t.Fatal("Start did not report lost filesystem observation")
 	}
 }

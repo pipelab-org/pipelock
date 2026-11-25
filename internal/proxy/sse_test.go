@@ -19,6 +19,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func ssetestScanner(t *testing.T) *scanner.Scanner {
@@ -321,7 +322,7 @@ func TestHijackResponseForSSE_CtxCancelClosesUpstream(t *testing.T) {
 		t.Logf("goroutine result: %v", err)
 		// Good: the goroutine exited within the deadline. The pipe writer
 		// got closed too, so any read should now return.
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatalf("ctx cancel did not unblock the scan goroutine within 2s")
 	}
 

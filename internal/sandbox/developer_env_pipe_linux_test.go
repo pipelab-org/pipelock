@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestDeveloperEnvironmentPipeWriteFailsClosedWhenReaderDoesNotDrain(t *testing.T) {
@@ -28,7 +30,7 @@ func TestDeveloperEnvironmentPipeWriteFailsClosedWhenReaderDoesNotDrain(t *testi
 		if err == nil || !strings.Contains(err.Error(), "timed out") {
 			t.Fatalf("writeAndCloseWithin error = %v, want timeout", err)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("writeAndCloseWithin hung after the reader did not drain")
 	}
 }
@@ -85,7 +87,7 @@ func TestDeveloperEnvironmentPipeWritesMaximumPayloadWhenReaderDrains(t *testing
 		if len(environment) != 1 || environment[0] != entry {
 			t.Fatal("maximum developer environment payload did not round trip")
 		}
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("reader did not receive the maximum developer environment payload")
 	}
 }

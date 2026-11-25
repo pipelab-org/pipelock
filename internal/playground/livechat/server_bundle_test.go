@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/playground"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestServer_Bundle_AuthAndMethodChecks(t *testing.T) {
@@ -140,7 +141,7 @@ func TestServer_Bundle_DownloadsVerifiableArchive(t *testing.T) {
 
 	select {
 	case <-bothSeen:
-	case <-time.After(20 * time.Second):
+	case <-time.After(testwait.Deadline(20 * time.Second)):
 		t.Fatal("did not observe both ALLOW and BLOCKED decisions")
 	}
 
@@ -369,7 +370,7 @@ func sealReadySession(t *testing.T, ts *httptest.Server) string {
 
 	select {
 	case <-bothSeen:
-	case <-time.After(20 * time.Second):
+	case <-time.After(testwait.Deadline(20 * time.Second)):
 		t.Fatal("did not observe both ALLOW and BLOCKED decisions")
 	}
 	return cr.Token

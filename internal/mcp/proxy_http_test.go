@@ -1751,7 +1751,7 @@ func TestRunHTTPProxy_ContextCancellation(t *testing.T) {
 	_, _ = stdinW.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"test"}` + "\n"))
 	select {
 	case <-requestSeen:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("timeout waiting for upstream request")
 	}
 
@@ -2539,7 +2539,7 @@ func TestRunHTTPProxy_ContextCancelDuringRead(t *testing.T) {
 	_, _ = pw.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize"}` + "\n"))
 	select {
 	case <-requestStarted:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("timeout waiting for upstream request")
 	}
 
@@ -4386,14 +4386,14 @@ func TestHTTPListener_SSEUpstream_StreamsBeforeUpstreamEOF(t *testing.T) {
 
 	select {
 	case <-eventSent:
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("timeout waiting for upstream SSE event")
 	}
 
 	var result postResult
 	select {
 	case result = <-respCh:
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("listener did not flush downstream SSE response before upstream EOF")
 	}
 	if result.err != nil {
@@ -4500,7 +4500,7 @@ func TestHTTPListener_SSEUpstream_BlocksInboundDLP(t *testing.T) {
 	var captureRecord capture.ResponseVerdictRecord
 	select {
 	case captureRecord = <-obs.got:
-	case <-time.After(testWarnContextTimeout):
+	case <-time.After(testwait.Deadline(testWarnContextTimeout)):
 		t.Fatal("expected SSE inbound-DLP capture")
 	}
 	if err := rec.Close(); err != nil {
@@ -6250,7 +6250,7 @@ func TestScanHTTPInput_RedirectOutputDLP(t *testing.T) {
 	var captureRecord capture.ResponseVerdictRecord
 	select {
 	case captureRecord = <-obs.got:
-	case <-time.After(testWarnContextTimeout):
+	case <-time.After(testwait.Deadline(testWarnContextTimeout)):
 		t.Fatal("expected redirect-output DLP capture")
 	}
 	if err := rec.Close(); err != nil {

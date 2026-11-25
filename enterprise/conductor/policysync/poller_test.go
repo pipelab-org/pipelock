@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 const (
@@ -371,7 +372,7 @@ func TestRun_StopsOnContextCancel(t *testing.T) {
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("Run returned %v, want context.Canceled", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("Run did not stop after cancel")
 	}
 }
@@ -396,7 +397,7 @@ func TestRun_LogsPollErrorAndContinues(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- p.Run(ctx) }()
-	deadline := time.After(5 * time.Second)
+	deadline := time.After(testwait.Deadline(5 * time.Second))
 	for doer.reqCount() < 1 {
 		select {
 		case <-deadline:
@@ -410,7 +411,7 @@ func TestRun_LogsPollErrorAndContinues(t *testing.T) {
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("Run = %v, want context.Canceled", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("Run did not stop")
 	}
 }

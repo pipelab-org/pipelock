@@ -1029,7 +1029,7 @@ func TestForwarderRetriesPendingWithoutNewEvent(t *testing.T) {
 	}
 	select {
 	case <-received:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("pending event was not retried")
 	}
 	waitFor(t, func() bool { return f.Health().Delivered == 1 })
@@ -1071,7 +1071,7 @@ func TestForwarderRetriesSpoolAppendWithoutDroppingAcceptedEvent(t *testing.T) {
 	}
 	select {
 	case <-received:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("accepted event was not delivered after spool recovery")
 	}
 	waitFor(t, func() bool { return f.Health().Delivered == 1 })
@@ -1245,7 +1245,7 @@ func TestForwarderDropsUnencodableEventWithoutBlocking(t *testing.T) {
 		if seq != 2 {
 			t.Fatalf("delivered sequence %d, want the good event (2)", seq)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("good event was blocked behind the unencodable one")
 	}
 	waitFor(t, func() bool { return f.Health().Dropped == 1 })
@@ -1346,7 +1346,7 @@ func TestCloseAbortsInFlightDeliveryPromptly(t *testing.T) {
 	}
 	select {
 	case <-entered:
-	case <-time.After(3 * time.Second):
+	case <-time.After(testwait.Deadline(3 * time.Second)):
 		t.Fatal("delivery did not reach the endpoint")
 	}
 	done := make(chan struct{})
@@ -1356,7 +1356,7 @@ func TestCloseAbortsInFlightDeliveryPromptly(t *testing.T) {
 	}()
 	select {
 	case <-done:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("Close blocked on in-flight delivery instead of cancelling it")
 	}
 }

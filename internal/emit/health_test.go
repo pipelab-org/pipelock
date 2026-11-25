@@ -8,6 +8,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestEmitterSinkHealthIncludesAllBuiltInSinks(t *testing.T) {
@@ -167,7 +169,7 @@ func TestEmitterSinkHealthPreservesLateRetiringFailureAcrossShutdown(t *testing.
 
 	select {
 	case <-old.closeStarted:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("retiring sink did not start closing")
 	}
 	if err := emitter.Close(); err != nil {
@@ -179,7 +181,7 @@ func TestEmitterSinkHealthPreservesLateRetiringFailureAcrossShutdown(t *testing.
 	close(old.releaseClose)
 	select {
 	case <-oldCloseDone:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("retiring sink did not finish closing")
 	}
 

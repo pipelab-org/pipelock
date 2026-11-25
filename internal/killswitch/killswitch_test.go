@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // Package-level test constants for strings used 3+ times across test files.
@@ -101,7 +102,7 @@ func TestDecisionChecksShareReadLock(t *testing.T) {
 	}()
 	select {
 	case <-done:
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		c.deferredMu.RUnlock()
 		<-done
 		t.Fatal("decision check waited for another reader")

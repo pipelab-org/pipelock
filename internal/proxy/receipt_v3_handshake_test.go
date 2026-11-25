@@ -28,6 +28,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestV3RawHandshakeFailure(t *testing.T) {
@@ -91,7 +92,7 @@ func TestV3RawHandshakeFailure(t *testing.T) {
 				if n != 0 {
 					t.Fatalf("relay sent %d bytes after failed CONNECT handshake", n)
 				}
-			case <-time.After(5 * time.Second):
+			case <-time.After(testwait.Deadline(5 * time.Second)):
 				t.Fatal("upstream observer did not finish")
 			}
 			if conn.writes != 1 {
@@ -194,7 +195,7 @@ func TestV3ReverseUpgradeRefusal(t *testing.T) {
 					if err != nil {
 						t.Fatalf("upstream upgrade failed: %v", err)
 					}
-				case <-time.After(5 * time.Second):
+				case <-time.After(testwait.Deadline(5 * time.Second)):
 					t.Fatal("upstream upgrade did not return")
 				}
 				if observer.Code != http.StatusBadGateway {

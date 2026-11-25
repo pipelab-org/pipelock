@@ -18,6 +18,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/httpstream"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestHandlerDrainParity(t *testing.T) {
@@ -56,7 +57,7 @@ func TestHandlerDrainParity(t *testing.T) {
 			}()
 			select {
 			case <-entered:
-			case <-time.After(5 * time.Second):
+			case <-time.After(testwait.Deadline(5 * time.Second)):
 				t.Fatal("Scan API warning hook did not run")
 			}
 			if !pending {
@@ -76,7 +77,7 @@ func TestHandlerDrainParity(t *testing.T) {
 			}
 			select {
 			case <-finished:
-			case <-time.After(5 * time.Second):
+			case <-time.After(testwait.Deadline(5 * time.Second)):
 				t.Fatal("scan request did not stop")
 			}
 			joined, joinCancel := context.WithTimeout(t.Context(), 5*time.Second)

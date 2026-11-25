@@ -59,7 +59,7 @@ func TestOTLPSink_DoesNotFollowRedirect(t *testing.T) {
 
 	select {
 	case <-frontHit:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("timed out waiting for configured OTLP URL")
 	}
 	if err := sink.Close(); err != nil {
@@ -109,7 +109,7 @@ func TestOTLPSink_EmitEvent(t *testing.T) {
 	var lastBody []byte
 	select {
 	case lastBody = <-bodyCh:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("timeout waiting for request")
 	}
 
@@ -171,7 +171,7 @@ func TestOTLPSink_NilFields(t *testing.T) {
 
 	select {
 	case <-doneCh:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("timeout — nil fields caused issue")
 	}
 }
@@ -197,7 +197,7 @@ func TestOTLPSink_SeverityFilter(t *testing.T) {
 	// Wait for the one expected request.
 	select {
 	case <-requestCh:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("timeout waiting for warn event")
 	}
 
@@ -267,7 +267,7 @@ func TestOTLPSink_RetryOn503(t *testing.T) {
 
 	select {
 	case <-doneCh:
-	case <-time.After(10 * time.Second):
+	case <-time.After(testwait.Deadline(10 * time.Second)):
 		t.Fatal("timeout waiting for retry success")
 	}
 
@@ -299,7 +299,7 @@ func TestOTLPSink_NoRetryOn500(t *testing.T) {
 
 	select {
 	case <-doneCh:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("timeout")
 	}
 
@@ -349,7 +349,7 @@ func TestOTLPSink_Gzip(t *testing.T) {
 		if r.bodyLen == 0 {
 			t.Error("expected non-empty decompressed body")
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("timeout waiting for gzip request")
 	}
 }
@@ -376,7 +376,7 @@ func TestOTLPSink_CustomHeaders(t *testing.T) {
 		if auth != "Bearer test-token-123" {
 			t.Errorf("expected auth header, got %q", auth)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("timeout waiting for request")
 	}
 }
@@ -448,7 +448,7 @@ func TestOTLPSink_EndpointWithV1Logs(t *testing.T) {
 		if path != otlpLogsPath {
 			t.Errorf("expected /v1/logs, got %s (double path?)", path)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("timeout")
 	}
 }
@@ -474,7 +474,7 @@ func TestOTLPSink_EndpointWithTrailingSlash(t *testing.T) {
 		if path != otlpLogsPath {
 			t.Errorf("expected /v1/logs, got %s", path)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("timeout")
 	}
 }
@@ -581,7 +581,7 @@ func TestOTLPSink_RetryExhausted(t *testing.T) {
 
 	select {
 	case <-doneCh:
-	case <-time.After(15 * time.Second):
+	case <-time.After(testwait.Deadline(15 * time.Second)):
 		t.Fatal("timeout waiting for retry exhaustion")
 	}
 
@@ -613,7 +613,7 @@ func TestOTLPSink_4xxNotRetried(t *testing.T) {
 
 	select {
 	case <-doneCh:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("timeout")
 	}
 

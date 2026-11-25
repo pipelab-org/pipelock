@@ -22,6 +22,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/identitykey"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestCeeRecordMCPReportsOnlyContributingRPCIDs(t *testing.T) {
@@ -126,7 +127,7 @@ func TestCEEDepsReconfigure_SerializesPolicyAndStateSnapshots(t *testing.T) {
 	release()
 	select {
 	case <-done:
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("reload remained wedged after the in-flight CEE check completed")
 	}
 

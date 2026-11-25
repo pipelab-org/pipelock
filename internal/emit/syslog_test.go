@@ -22,6 +22,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/emitformat"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 const (
@@ -144,7 +145,7 @@ func TestSyslogSink_EmitReturnsBeforeSlowWriter(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Emit returned error: %v", err)
 		}
-	case <-time.After(250 * time.Millisecond):
+	case <-time.After(testwait.Deadline(250 * time.Millisecond)):
 		t.Fatal("Emit blocked on syslog writer")
 	}
 
@@ -233,7 +234,7 @@ func TestSyslogSink_CloseDrainsQueuedEvents(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Close: %v", err)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("timeout waiting for Close")
 	}
 	if got := writer.count.Load(); got != 3 {
@@ -366,7 +367,7 @@ func TestSyslogSink_CloseTimeoutBoundsWait(t *testing.T) {
 	}()
 	select {
 	case <-waitDone:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("worker did not exit after writer close")
 	}
 }
@@ -522,7 +523,7 @@ func TestSyslogSink_SuccessHealthTransitionIsAtomic(t *testing.T) {
 		close(done)
 	}()
 
-	deadline := time.After(2 * time.Second)
+	deadline := time.After(testwait.Deadline(2 * time.Second))
 	for writer.count.Load() != 1 {
 		select {
 		case <-deadline:
@@ -639,7 +640,7 @@ func TestNewSyslogSink_And_Emit(t *testing.T) {
 				t.Errorf("message missing %q:\n%s", want, msg)
 			}
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("timeout waiting for syslog message")
 	}
 }
@@ -668,7 +669,7 @@ func TestSyslogSink_Emit_CriticalSeverity(t *testing.T) {
 		if !contains(msg, `"severity":"critical"`) {
 			t.Errorf("expected critical severity in message:\n%s", msg)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("timeout waiting for syslog message")
 	}
 }
@@ -697,7 +698,7 @@ func TestSyslogSink_Emit_InfoSeverity(t *testing.T) {
 		if !contains(msg, `"severity":"info"`) {
 			t.Errorf("expected info severity in message:\n%s", msg)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("timeout waiting for syslog message")
 	}
 }
@@ -1048,7 +1049,7 @@ func (w *blockingSyslogWriter) waitStarted(t *testing.T) {
 	t.Helper()
 	select {
 	case <-w.started:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("timeout waiting for syslog writer")
 	}
 }
@@ -1067,7 +1068,7 @@ func (w *blockingSyslogWriter) messages() []string {
 
 func waitSinkClosed(t *testing.T, sink *SyslogSink) {
 	t.Helper()
-	deadline := time.After(2 * time.Second)
+	deadline := time.After(testwait.Deadline(2 * time.Second))
 	ticker := time.NewTicker(time.Millisecond)
 	defer ticker.Stop()
 	for {
