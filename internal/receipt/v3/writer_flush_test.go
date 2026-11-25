@@ -641,6 +641,12 @@ func TestSharedFlushHeartbeatAndRollover(t *testing.T) {
 	firstSync := awaitFlushEvent(t, f.syncs)
 	secondBeat := asyncWriterResult(func() error { return w.WriteHeartbeat(t.Context()) })
 	awaitFlushEvent(t, f.writes)
+	w.gate <- struct{}{}
+	reserved := w.active.beat
+	w.release()
+	if reserved != 2 {
+		t.Fatalf("reserved %d heartbeat beats before confirmation, want 2", reserved)
+	}
 	done := asyncWriterResult(func() error { return w.Rollover(t.Context()) })
 	requirePending(t, firstBeat)
 	requirePending(t, secondBeat)
