@@ -310,7 +310,6 @@ test("directory verification detects orphan artifacts and gates before accepting
   t.after(() => rmSync(dir, { recursive: true }));
   const trusted = keys(source);
   assert.equal((await verifyReceiptGroups(dir, trusted)).groups, 0);
-  mkdirSync(join(dir, "ael"));
 
   const orphan = "a".repeat(32);
   const close = join(dir, `receipt-group-${orphan}-close.json`);

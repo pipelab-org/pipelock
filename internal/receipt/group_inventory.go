@@ -70,6 +70,10 @@ func (m groupAELMembership) Finish(incomplete bool) error {
 // is SHA-256 separated.
 // A count distinguishes an added pair that might otherwise cancel itself.
 func fingerprintGroupDirectory(dir string) (groupInventoryFingerprint, error) {
+	return fingerprintGroupInventory(dir, false)
+}
+
+func fingerprintGroupInventory(dir string, allowMissingAEL bool) (groupInventoryFingerprint, error) {
 	var result groupInventoryFingerprint
 	var err error
 	result.root, result.rootCount, err = fingerprintDirectory(dir)
@@ -77,6 +81,9 @@ func fingerprintGroupDirectory(dir string) (groupInventoryFingerprint, error) {
 		return result, err
 	}
 	result.ael, result.aelCount, err = fingerprintDirectory(filepath.Join(dir, "ael"))
+	if allowMissingAEL && errors.Is(err, os.ErrNotExist) {
+		return result, nil
+	}
 	if err != nil {
 		return result, err
 	}

@@ -668,7 +668,7 @@ function groupDirectoryInventory(): string {
     return names;
   };
   scan(".");
-  for (const run of scan("ael")) {
+  for (const run of scan("ael", true)) {
     if (!isHex(run, 32)) throw new Error("invalid native AEL run directory " + JSON.stringify(run));
     const dir = path.join("ael", run);
     scan(dir);
@@ -895,15 +895,24 @@ function requireCloseBindsOpen(
     throw new Error("receipt group close does not bind opening manifest");
 }
 
+function aelInventoryIdentity() {
+  try {
+    return lstatSync("ael", { bigint: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    return undefined;
+  }
+}
+
 function checkDirectoryIdentity(
   rootPath: string,
   root: { dev: bigint; ino: bigint },
-  ael: { dev: bigint; ino: bigint },
+  ael: { dev: bigint; ino: bigint } | undefined,
   before: string,
   inventory = fileInventory,
 ): void {
   const re = statSync(".", { bigint: true }),
-    ae = statSync("ael", { bigint: true }),
+    ae = aelInventoryIdentity(),
     requestedRoot = lstatSync(rootPath, { bigint: true });
   if (
     requestedRoot.isSymbolicLink() ||
@@ -911,8 +920,8 @@ function checkDirectoryIdentity(
     requestedRoot.ino !== root.ino ||
     re.dev !== root.dev ||
     re.ino !== root.ino ||
-    ae.dev !== ael.dev ||
-    ae.ino !== ael.ino ||
+    ae?.dev !== ael?.dev ||
+    ae?.ino !== ael?.ino ||
     inventory() !== before
   )
     throw new Error("receipt group directory changed during verification");
@@ -1904,7 +1913,7 @@ export async function verifyReceiptGroupsInProcess(
       if (!directoryHasGroups()) return;
       const physicalRoot = process.cwd();
       const root = statSync(".", { bigint: true });
-      const aelStart = lstatSync("ael", { bigint: true });
+      const aelStart = aelInventoryIdentity();
       const before = groupDirectoryInventory();
       try {
         const names = readdirSync(".");

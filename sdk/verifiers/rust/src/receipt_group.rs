@@ -2276,7 +2276,11 @@ fn batch_inventory_fingerprint(dir: &Path) -> crate::util::Result<InventoryFinge
     };
     fingerprint_directory_level(dir, dir, &mut out)?;
     let ael = dir.join("ael");
-    fingerprint_directory_level(dir, &ael, &mut out)?;
+    match fs::symlink_metadata(&ael) {
+        Ok(_) => fingerprint_directory_level(dir, &ael, &mut out)?,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(out),
+        Err(err) => return Err(batch_io_error(err)),
+    }
     for entry in fs::read_dir(&ael).map_err(batch_io_error)? {
         let run = entry.map_err(batch_io_error)?;
         let name = run.file_name();
@@ -2584,6 +2588,38 @@ mod tests {
     use std::ffi::CString;
     use std::sync::mpsc;
     use std::time::Duration;
+
+    struct BatchTestDirectory(std::path::PathBuf);
+
+    impl Drop for BatchTestDirectory {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn batch_test_directory() -> BatchTestDirectory {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir =
+            std::env::temp_dir().join(format!("pipelock-group-batch-{}-{id}", std::process::id()));
+        fs::create_dir(&dir).unwrap();
+        BatchTestDirectory(dir)
+    }
+
+    #[test]
+    fn batch_reports_orphan_without_ael() {
+        let dir = batch_test_directory();
+        let id = "a".repeat(32);
+        fs::write(dir.0.join(format!("receipt-group-{id}-close.json")), "{}").unwrap();
+        let mut groups = Vec::new();
+        let summary = verify_receipt_groups(&dir.0, &[], |report| {
+            groups.push(report.group_id);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(summary.invalid, 1);
+        assert_eq!(groups, [id]);
+    }
 
     // A path swapped to a FIFO after the regular-file check must fail closed
     // promptly instead of blocking the verifier on the open.

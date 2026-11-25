@@ -149,3 +149,23 @@ func TestGroupInventoryPropagatesUnreadableGenesis(t *testing.T) {
 		t.Fatalf("unreadable group inventory: %+v, %v", summary, err)
 	}
 }
+
+func TestGroupInventoryReportsOrphanWithoutAEL(t *testing.T) {
+	dir := t.TempDir()
+	id := strings.Repeat("a", 32)
+	name, err := ReceiptGroupFileName(id, "close")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, name), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var groupID string
+	summary, err := VerifyReceiptGroups(dir, nil, func(row ReceiptGroupResult) error {
+		groupID = row.GroupID
+		return nil
+	})
+	if err != nil || summary.Invalid != 1 || groupID != id {
+		t.Fatalf("orphan inventory did not identify its group: %+v, %q, %v", summary, groupID, err)
+	}
+}

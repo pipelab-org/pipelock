@@ -330,12 +330,12 @@ func VerifyLegacyReceiptGroups(dir string, trusted []string, excluded map[string
 	if !hasGroupEvidence {
 		return summary, nil
 	}
-	before, err := fingerprintGroupDirectory(dir)
+	before, err := fingerprintGroupInventory(dir, true)
 	if err != nil {
 		return summary, fmt.Errorf("inventory receipt groups: %w", err)
 	}
 	defer func() {
-		after, checkErr := fingerprintGroupDirectory(dir)
+		after, checkErr := fingerprintGroupInventory(dir, true)
 		if checkErr != nil || after != before {
 			retErr = fmt.Errorf("%w: receipt group directory changed during verification", recorder.ErrEvidenceChanged)
 		}
