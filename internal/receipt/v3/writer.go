@@ -558,6 +558,9 @@ func (w *StreamWriter) waitForAppend(ctx context.Context) error {
 	}); err != nil {
 		return err
 	}
+	if w.fatal != nil {
+		return w.ensureStream(ctx)
+	}
 	select {
 	case <-w.closeRequested:
 		return fmt.Errorf("%w: closed", ErrWriterUnavailable)

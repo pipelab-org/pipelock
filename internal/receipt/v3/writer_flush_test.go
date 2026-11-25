@@ -827,3 +827,25 @@ func TestSharedFlushRefuseOutcomeReplayPreservesParent(t *testing.T) {
 		t.Fatalf("verified not_released outcomes = %d, want 1", got)
 	}
 }
+
+func TestOptionalAdmissionWithholdsAfterFatalRecoveryAndClose(t *testing.T) {
+	opts := writerTestOptions(t.TempDir())
+	opts.Coverage.ReceiptsRequired = false
+	w := requireWriter(t, opts, localWriterStorage())
+	fault := errors.New("injected unavailable storage")
+	w.gate <- struct{}{}
+	w.active.file = errorWriterFile{StreamFile: w.active.file, syncErr: fault}
+	w.storage.createTemp = func(string, string) (StreamFile, error) { return nil, fault }
+	w.release()
+	gate := NewEffectGate(w)
+	if _, err := gate.Admit(t.Context(), writerTestIntent("failed-before-close"), PolicySnapshot{}); !errors.Is(err, ErrActionPersistStarted) {
+		t.Fatalf("first admission = %v, want %v", err, ErrActionPersistStarted)
+	}
+	_ = w.Close(t.Context(), nil)
+	if token, err := gate.Admit(t.Context(), writerTestIntent("after-fatal-close"), PolicySnapshot{}); token != nil || !errors.Is(err, ErrWriterUnavailable) {
+		t.Fatalf("optional admission after fatal close: token=%v, err=%v", token, err)
+	}
+	if _, err := gate.AdmitDenialDelivery(t.Context(), writerTestIntent("local-denial-after-fatal-close"), PolicySnapshot{}); err != nil {
+		t.Fatalf("optional local denial withheld after fatal close: %v", err)
+	}
+}
