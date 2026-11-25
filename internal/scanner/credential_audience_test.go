@@ -124,6 +124,11 @@ func TestGoogleOAuthToken_CredentialAudience(t *testing.T) {
 	for _, target := range []string{
 		"https://gmail.googleapis.com/gmail/v1/users/me/profile",
 		"https://GMAIL.GOOGLEAPIS.COM./gmail/v1/users/me/profile",
+		"https://cloudcode-pa.googleapis.com/v1internal:generateContent",
+		"https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist",
+		"https://aicode.googleapis.com/v1alpha:fetchConfig",
+		"https://play.googleapis.com/log",
+		"https://www.googleapis.com/oauth2/v2/userinfo",
 	} {
 		retained, allows := s.FilterTextDLPMatchesForDestination(matches, target, CredentialAudienceAuthorizationHeaderSurface)
 		if len(retained) != 0 || len(allows) != 1 || allows[0].PatternName != "Google OAuth Token" {

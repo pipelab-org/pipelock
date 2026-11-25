@@ -72,7 +72,7 @@ func TestBuiltInCredentialAudienceHosts_ReplaceDerivedProviderDefaults(t *testin
 		"Answer Engine API Key": {"api.perplexity.ai"},
 		"Web Research API Key":  {"api.tavily.com"},
 		"Google API Key":        {"generativelanguage.googleapis.com", "language.googleapis.com", "translation.googleapis.com", "maps.googleapis.com"},
-		"Google OAuth Token":    {"gmail.googleapis.com", "www.googleapis.com", "storage.googleapis.com"},
+		"Google OAuth Token":    {"gmail.googleapis.com", "www.googleapis.com", "storage.googleapis.com", "cloudcode-pa.googleapis.com", "daily-cloudcode-pa.googleapis.com", "aicode.googleapis.com", "play.googleapis.com"},
 		"Hugging Face Token":    {"huggingface.co", "router.huggingface.co"},
 		"Databricks Token":      nil,
 		"Replicate API Token":   {"api.replicate.com"},
