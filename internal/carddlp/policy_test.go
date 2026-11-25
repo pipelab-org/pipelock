@@ -113,3 +113,16 @@ func TestCardKeyTextMappedSpans(t *testing.T) {
 		t.Fatal("Unicode key span lost original offsets")
 	}
 }
+
+func TestCardCorroboratedKeyNames(t *testing.T) {
+	for _, key := range []string{"card", "CC", "card_number", "Card No", "pan", "credit_card", "cvv"} {
+		if !CorroboratedKey(key) {
+			t.Fatalf("payment key %q not recognized", key)
+		}
+	}
+	for _, key := range []string{"", "note", "id", "cards", "panel", "x\":\"note"} {
+		if CorroboratedKey(key) {
+			t.Fatalf("non-payment key %q recognized", key)
+		}
+	}
+}

@@ -18,6 +18,7 @@ import (
 // The symmetric 100-rune window is Pipelock policy, not Purview's 300 characters.
 var (
 	paymentContext = regexp.MustCompile(`(?i)(?:^|[^a-z0-9])(?:card[ _-]*[:#]|credit[ _-]*card|debit[ _-]*card|payment[ _-]*card|bank[ _-]*card|charge[ _-]*card|card[ _-]*(?:number|num|no|#|holder)|cc[ _-]*(?:number|num|#)|ccn|pan|primary[ _-]*account[ _-]*number|payment[ _-]*account[ _-]*number|visa|master[ _-]*card|amex|american[ _-]*express|diners[ _-]*club|unionpay|discover[ _-]*card|jcb[ _-]*card|cvv2?|cvc2?|security[ _-]*code|verification[ _-]*code|exp[ _-]*(?:date|month|year)|expiration|expiry|valid[ _-]*thru|good[ _-]*thru)(?:$|[^a-z0-9])`)
+	paymentKeyName = regexp.MustCompile(`(?i)^(?:card|cc|card[ _-]*(?:no|number)|pan)$`)
 	paymentKey     = regexp.MustCompile(`(?i)"(?:card|cc|card[ _-]*(?:no|number)|pan)"\s*:\s*"?[^"{}]*$`)
 	expiryContext  = regexp.MustCompile(`\b(?:0[1-9]|1[0-2])\s*/\s*(?:[0-9]{4}|[0-9]{2})\b`)
 )
@@ -52,7 +53,7 @@ func hasCardExpiry(text string) bool {
 // value's length. A field label is schema evidence, not a nearby text window.
 func CorroboratedKey(key string) bool {
 	key = normalize.ForCardText(key)
-	return paymentContext.MatchString(key) || paymentKey.MatchString("\""+key+"\":")
+	return paymentContext.MatchString(key) || paymentKeyName.MatchString(key)
 }
 
 // VisitWithKey applies the same candidate grammar with an enclosing key.
