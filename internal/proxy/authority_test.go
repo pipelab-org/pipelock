@@ -26,6 +26,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 type proxyAuthorityVerifierFunc func(context.Context, authority.Request) authority.Result
@@ -332,7 +333,7 @@ func (b *authorityDialBarrier) assertNoDial(t *testing.T, handlerDone <-chan str
 	t.Helper()
 	select {
 	case <-handlerDone:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("WebSocket handler did not finish")
 	}
 	if got := b.attempts.Load(); got != 0 {

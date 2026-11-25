@@ -20,6 +20,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // TestAuditModeWebSocketRefusals records the WebSocket proxy with enforce false.
@@ -126,7 +127,7 @@ func TestAuditModeWebSocketRefusals(t *testing.T) {
 				// forwarded on it has been counted.
 				select {
 				case <-backendDone:
-				case <-time.After(5 * time.Second):
+				case <-time.After(testwait.Deadline(5 * time.Second)):
 					t.Fatal("backend connection did not end")
 				}
 				if got := frames(); got != 0 {

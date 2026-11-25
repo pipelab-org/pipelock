@@ -25,6 +25,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/session"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // capacityEvidence is the client response and refusal evidence for one
@@ -503,7 +504,7 @@ func driveConnectInterceptCapacity(t *testing.T) capacityEvidence {
 	_ = conn.Close()
 	select {
 	case <-done:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("CONNECT handler did not finish")
 	}
 	return sink.evidence(t, proxy, resp.StatusCode, resp.Header, string(body), calls.Load())

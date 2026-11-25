@@ -46,6 +46,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 type v3AppendFaultFile struct {
@@ -495,7 +496,7 @@ func waitForV3Transport(t *testing.T, done <-chan struct{}) {
 	t.Helper()
 	select {
 	case <-done:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("transport did not settle")
 	}
 }

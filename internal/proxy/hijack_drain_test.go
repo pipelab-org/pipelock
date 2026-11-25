@@ -22,6 +22,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/httpstream"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // A grace shorter than the relay's normal close handshake must still suffice
@@ -138,7 +139,7 @@ func TestConnectGateDrainClosesSockets(t *testing.T) {
 			}
 			select {
 			case <-closed:
-			case <-time.After(time.Second):
+			case <-time.After(testwait.Deadline(time.Second)):
 				t.Fatal("upstream socket left open")
 			}
 		})
@@ -177,7 +178,7 @@ func TestShutdownClosesAllAgentHijacksBeforeJoining(t *testing.T) {
 		}
 		select {
 		case <-entered:
-		case <-time.After(time.Second):
+		case <-time.After(testwait.Deadline(time.Second)):
 			t.Fatal("no hijack")
 		}
 	}
@@ -206,7 +207,7 @@ func TestShutdownAgentServersSharesOneGrace(t *testing.T) {
 		}
 		select {
 		case <-entered:
-		case <-time.After(time.Second):
+		case <-time.After(testwait.Deadline(time.Second)):
 			t.Fatal("handler not entered")
 		}
 	}
@@ -277,14 +278,14 @@ func TestWebSocketShutdownInterruptsBlockedReads(t *testing.T) {
 		_ = conn.Close()
 		select {
 		case <-finished:
-		case <-time.After(5 * time.Second):
+		case <-time.After(testwait.Deadline(5 * time.Second)):
 			t.Error("relay did not stop")
 		}
 	})
 	for _, read := range []<-chan struct{}{clientRead, upstreamRead} {
 		select {
 		case <-read:
-		case <-time.After(5 * time.Second):
+		case <-time.After(testwait.Deadline(5 * time.Second)):
 			t.Fatal("relay did not enter socket read")
 		}
 	}

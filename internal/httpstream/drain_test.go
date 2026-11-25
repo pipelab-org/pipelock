@@ -54,7 +54,7 @@ func gatedTestServer(t *testing.T, handler http.Handler) (GatedServer, string, <
 
 func waitConnState(t *testing.T, states <-chan http.ConnState, want http.ConnState) {
 	t.Helper()
-	deadline := time.After(10 * time.Second)
+	deadline := time.After(testwait.Deadline(10 * time.Second))
 	for {
 		select {
 		case st := <-states:
@@ -290,7 +290,7 @@ func TestDrainServerHijackedHandlers(t *testing.T) {
 				close(release)
 				select {
 				case <-finished:
-				case <-time.After(5 * time.Second):
+				case <-time.After(testwait.Deadline(5 * time.Second)):
 					t.Error("handler did not stop")
 				}
 			})
@@ -300,7 +300,7 @@ func TestDrainServerHijackedHandlers(t *testing.T) {
 			}
 			select {
 			case <-hijacked:
-			case <-time.After(5 * time.Second):
+			case <-time.After(testwait.Deadline(5 * time.Second)):
 				t.Fatal("no hijack")
 			}
 			ctx, cancel := context.WithTimeout(t.Context(), drainTestGrace)
@@ -345,7 +345,7 @@ func TestHijackContextLifecycle(t *testing.T) {
 	gate.StopHijacks()
 	select {
 	case <-early.Done():
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("early hijack outlived shutdown")
 	}
 	gate.Wrap(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
@@ -433,7 +433,7 @@ func TestGateHijackRacingShutdown(t *testing.T) {
 	}
 	select {
 	case <-entered:
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("handler did not start")
 	}
 	gs.Gate.StopHijacks()
@@ -525,7 +525,7 @@ func TestGateTracksHijackBehindUnwrap(t *testing.T) {
 	}
 	select {
 	case <-hijacked:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("no hijack")
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), drainTestGrace)
@@ -555,7 +555,7 @@ func TestDrainServersStopsEveryListenerBeforeWaiting(t *testing.T) {
 	}
 	select {
 	case <-entered:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("handler not entered")
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)

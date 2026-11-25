@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestReloadDoorwaysPrecedeConfigErrors(t *testing.T) {
@@ -210,7 +211,7 @@ func TestReloadBrokenConfigStopsInstalledExpiredDoorway(t *testing.T) {
 			select {
 			case relayErr := <-done:
 				_ = relayErr // revocation cancels the relay; only its exit is asserted
-			case <-time.After(5 * time.Second):
+			case <-time.After(testwait.Deadline(5 * time.Second)):
 				t.Fatal("revoked relay did not exit")
 			}
 			inv, err = readLoopbackForwarderInventory(installed)

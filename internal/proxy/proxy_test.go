@@ -2874,7 +2874,7 @@ func TestProxy_StartAndShutdown(t *testing.T) {
 		if err != nil {
 			t.Errorf("expected clean shutdown, got: %v", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Error("proxy did not shut down within 5 seconds")
 	}
 }
@@ -5266,7 +5266,7 @@ func TestProxy_RegisterAndShutdownAgentServers(t *testing.T) {
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			t.Errorf("agent server error: %v", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("agent server did not shut down within 5s")
 	}
 

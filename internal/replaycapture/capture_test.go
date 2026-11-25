@@ -18,6 +18,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // newTestEngine builds an Engine with a fresh lab key under a temp dir.
@@ -210,7 +211,7 @@ func TestCapture_EarlyErrorAfterRecorderConstructionClosesRecorder(t *testing.T)
 
 			select {
 			case <-closed:
-			case <-time.After(5 * time.Second):
+			case <-time.After(testwait.Deadline(5 * time.Second)):
 				t.Fatal("recorder close hook was not invoked on early Capture error")
 			}
 		})

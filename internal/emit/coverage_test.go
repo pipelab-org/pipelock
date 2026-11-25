@@ -14,6 +14,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestGzipCompress_EmptyInput(t *testing.T) {
@@ -168,7 +170,7 @@ func TestOTLPSink_RetryOn429(t *testing.T) {
 
 	select {
 	case <-doneCh:
-	case <-time.After(10 * time.Second):
+	case <-time.After(testwait.Deadline(10 * time.Second)):
 		t.Fatal("timeout waiting for 429 retry success")
 	}
 
@@ -208,7 +210,7 @@ func TestOTLPSink_RetryOn502(t *testing.T) {
 
 	select {
 	case <-doneCh:
-	case <-time.After(10 * time.Second):
+	case <-time.After(testwait.Deadline(10 * time.Second)):
 		t.Fatal("timeout waiting for 502 retry success")
 	}
 
@@ -248,7 +250,7 @@ func TestOTLPSink_RetryOn504(t *testing.T) {
 
 	select {
 	case <-doneCh:
-	case <-time.After(10 * time.Second):
+	case <-time.After(testwait.Deadline(10 * time.Second)):
 		t.Fatal("timeout waiting for 504 retry success")
 	}
 
@@ -334,7 +336,7 @@ func TestOTLPSink_InstanceIDInAttributes(t *testing.T) {
 	case <-bodyCh:
 		// Received the request. The instance ID attribute is embedded
 		// in the protobuf, verifying it doesn't error out is sufficient.
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("timeout waiting for OTLP request")
 	}
 }

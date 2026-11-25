@@ -24,6 +24,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // newReverseParityHarness builds a reverse-proxy handler wired to an owner
@@ -232,7 +233,7 @@ func containsReverseAdaptiveDeny(body string) bool {
 // shortly after ServeHTTP returns; poll-with-deadline instead of a fixed sleep.
 func waitReverseWordingFinding(t *testing.T, rec *SessionState) {
 	t.Helper()
-	deadline := time.After(2 * time.Second)
+	deadline := time.After(testwait.Deadline(2 * time.Second))
 	tick := time.NewTicker(5 * time.Millisecond)
 	defer tick.Stop()
 	for {
@@ -354,7 +355,7 @@ func countReverseResponseTaintSources(rec *SessionState) int {
 // completion event, so the window catches it.
 func waitReverseResponseTaintSettledOne(t *testing.T, rec *SessionState) {
 	t.Helper()
-	deadline := time.After(2 * time.Second)
+	deadline := time.After(testwait.Deadline(2 * time.Second))
 	tick := time.NewTicker(5 * time.Millisecond)
 	defer tick.Stop()
 	for countReverseResponseTaintSources(rec) < 1 {
@@ -364,7 +365,7 @@ func waitReverseResponseTaintSettledOne(t *testing.T, rec *SessionState) {
 		case <-tick.C:
 		}
 	}
-	settle := time.After(500 * time.Millisecond)
+	settle := time.After(testwait.Deadline(500 * time.Millisecond))
 	for {
 		if got := countReverseResponseTaintSources(rec); got > 1 {
 			t.Fatalf("SSE completion recorded %d reverse_response taint observations, want exactly 1 "+

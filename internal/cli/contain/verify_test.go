@@ -30,6 +30,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // Test helpers ---------------------------------------------------------------
@@ -3518,14 +3519,14 @@ func TestRunVerify_ConcurrentModesKeepRunningImagePolicyIsolated(t *testing.T) {
 	enforcement := run(verifyOpts{enforcementOnly: true})
 	select {
 	case <-enforcementAtBarrier:
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("enforcement-only verification did not reach the barrier")
 	}
 
 	normal := run(verifyOpts{})
 	select {
 	case <-runtimeImageChecks:
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		unblockEnforcement()
 		normalResult := <-normal
 		enforcementResult := <-enforcement

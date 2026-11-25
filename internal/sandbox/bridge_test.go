@@ -14,6 +14,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // shortTempDir creates a temp dir with a short path to avoid exceeding
@@ -126,7 +128,7 @@ func TestBridgeProxy_ServeReturnsParentSocketFailure(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "connect to parent proxy") {
 			t.Fatalf("Serve error = %v, want parent socket failure", err)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("Serve did not report parent socket failure")
 	}
 }
@@ -149,7 +151,7 @@ func TestBridgeProxy_ServeReturnsUnexpectedListenerFailure(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "bridge listener accept") {
 			t.Fatalf("Serve error = %v, want listener failure", err)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("Serve did not report listener failure")
 	}
 }
@@ -229,7 +231,7 @@ func TestBridgeProxy_CloseClosesIdleActiveConnections(t *testing.T) {
 
 	select {
 	case <-parentAccepted:
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("bridge never connected to parent socket")
 	}
 
@@ -241,7 +243,7 @@ func TestBridgeProxy_CloseClosesIdleActiveConnections(t *testing.T) {
 
 	select {
 	case <-closeDone:
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("BridgeProxy.Close blocked on idle active connection")
 	}
 }
@@ -278,12 +280,12 @@ func TestBridgeProxy_CloseStopsContextWatcher(t *testing.T) {
 
 	select {
 	case <-bp.watcherDone:
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("Close did not stop Serve context watcher")
 	}
 	select {
 	case <-serveDone:
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("Serve did not return after Close")
 	}
 }
@@ -301,7 +303,7 @@ func TestBridgeProxy_CloseBeforeServeRejectsDial(t *testing.T) {
 	}()
 	select {
 	case <-closeDone:
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("Close blocked before Serve started")
 	}
 	select {
@@ -400,12 +402,12 @@ func TestBridgeProxy_HandleConnAfterCloseDoesNotProxy(t *testing.T) {
 		if got.proxied != "" {
 			t.Fatalf("post-close bridge proxied %q to parent", got.proxied)
 		}
-	case <-time.After(4 * time.Second):
+	case <-time.After(testwait.Deadline(4 * time.Second)):
 		t.Fatal("parent never reported an outcome for the post-close bridge attempt")
 	}
 	select {
 	case <-handleDone:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("handleConn did not return after post-close rejection")
 	}
 }
@@ -474,7 +476,7 @@ func TestBridgeProxy_FailWakesServeWithRecordedError(t *testing.T) {
 		if !errors.Is(err, wantErr) {
 			t.Fatalf("Serve error = %v, want the recorded failure %v", err, wantErr)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("Serve did not return after fail()")
 	}
 	bp.Close()
@@ -505,7 +507,7 @@ func TestBridgeProxy_FailAfterCloseIsDropped(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Serve error = %v, want nil after Close drops a late failure", err)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("Serve did not return after Close")
 	}
 }
@@ -530,7 +532,7 @@ func TestBridgeProxy_CloseAndFailAreRaceSafe(t *testing.T) {
 
 		select {
 		case <-serveDone:
-		case <-time.After(2 * time.Second):
+		case <-time.After(testwait.Deadline(2 * time.Second)):
 			t.Fatal("Serve did not return under concurrent Close and fail")
 		}
 	}

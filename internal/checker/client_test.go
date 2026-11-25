@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/dialfallback"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func testItem() Item {
@@ -146,7 +147,7 @@ func TestDeadlines(t *testing.T) {
 			go func() { result <- client.Check(t.Context(), testItem(), policy) }()
 			select {
 			case <-started:
-			case <-time.After(3 * time.Second):
+			case <-time.After(testwait.Deadline(3 * time.Second)):
 				t.Fatal("server did not receive request")
 			}
 			select {
@@ -154,7 +155,7 @@ func TestDeadlines(t *testing.T) {
 				if got.Reason != ReasonTimeout || got.State == StateBenign {
 					t.Fatalf("%+v", got)
 				}
-			case <-time.After(3 * time.Second):
+			case <-time.After(testwait.Deadline(3 * time.Second)):
 				t.Fatal("deadline did not terminate request")
 			}
 		})

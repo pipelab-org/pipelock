@@ -483,7 +483,7 @@ func (p *liveMCPProxy) requireNoResponse(t *testing.T, label string) {
 
 func (p *liveMCPProxy) readRPCResponse(t *testing.T, label string) liveRPCResponse {
 	t.Helper()
-	timer := time.NewTimer(rpcReadTimeout)
+	timer := time.NewTimer(testwait.Deadline(rpcReadTimeout))
 	defer timer.Stop()
 	for {
 		select {
@@ -679,7 +679,7 @@ func waitForHTTP(t *testing.T, label, target string, errCh <-chan error, stderr 
 	t.Helper()
 
 	client := &http.Client{Timeout: 500 * time.Millisecond}
-	deadline := time.NewTimer(10 * time.Second)
+	deadline := time.NewTimer(testwait.Deadline(10 * time.Second))
 	defer deadline.Stop()
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
@@ -1030,7 +1030,7 @@ func waitForDeferredAPI(t *testing.T, apiAddr string, errCh <-chan error, stderr
 	t.Helper()
 
 	client := &http.Client{Timeout: 500 * time.Millisecond}
-	deadline := time.NewTimer(10 * time.Second)
+	deadline := time.NewTimer(testwait.Deadline(10 * time.Second))
 	defer deadline.Stop()
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()

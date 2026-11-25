@@ -28,6 +28,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/enterprise/dashboard"
 	"github.com/luckyPipewrench/pipelock/internal/emit"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 const (
@@ -793,7 +794,7 @@ func TestDashboardOIDC_AuthenticationEventAttributesFailureMode(t *testing.T) {
 				if event.Fields["auth_mode"] != tt.wantAuthMode {
 					t.Errorf("auth_mode = %v, want %q", event.Fields["auth_mode"], tt.wantAuthMode)
 				}
-			case <-time.After(time.Second):
+			case <-time.After(testwait.Deadline(time.Second)):
 				t.Fatal("timed out waiting for authentication event")
 			}
 		})
@@ -992,7 +993,7 @@ func TestDashboardOIDC_JWKSCacheCoalescesConcurrentRefresh(t *testing.T) {
 	}
 	select {
 	case <-start:
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("timed out waiting for JWKS refresh to start")
 	}
 	close(block)
@@ -1099,7 +1100,7 @@ func TestDashboardOIDC_JWKSJoinedCallerGetsItsRefreshFailure(t *testing.T) {
 	case <-waiting:
 	case err := <-joined:
 		t.Fatalf("caller returned %v instead of waiting on the in-flight refresh", err)
-	case <-time.After(10 * time.Second):
+	case <-time.After(testwait.Deadline(10 * time.Second)):
 		t.Fatal("caller never joined the in-flight refresh")
 	}
 
@@ -1116,7 +1117,7 @@ func TestDashboardOIDC_JWKSJoinedCallerGetsItsRefreshFailure(t *testing.T) {
 		if !errors.Is(err, firstErr) {
 			t.Fatalf("joined caller error = %v, want the refresh it waited on: %v", err, firstErr)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(testwait.Deadline(10 * time.Second)):
 		t.Fatal("joined caller did not return after its refresh completed")
 	}
 	if reads := p.jwksReads.Load(); reads != 1 {
@@ -1159,7 +1160,7 @@ func TestDashboardOIDC_JWKSJoinedCallerRejectsKeysExpiredBeforeResume(t *testing
 	case <-waiting:
 	case r := <-joined:
 		t.Fatalf("caller returned (%v, %v) instead of waiting on the in-flight refresh", r.key, r.err)
-	case <-time.After(10 * time.Second):
+	case <-time.After(testwait.Deadline(10 * time.Second)):
 		t.Fatal("caller never joined the in-flight refresh")
 	}
 
@@ -1181,7 +1182,7 @@ func TestDashboardOIDC_JWKSJoinedCallerRejectsKeysExpiredBeforeResume(t *testing
 		if r.key != nil || !errors.Is(r.err, errDashboardOIDCKeysExpired) {
 			t.Fatalf("key after expired joined refresh = (%v, %v), want fail-closed %v", r.key, r.err, errDashboardOIDCKeysExpired)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(testwait.Deadline(10 * time.Second)):
 		t.Fatal("joined caller did not return after its refresh completed")
 	}
 	if reads := p.jwksReads.Load(); reads != 1 {

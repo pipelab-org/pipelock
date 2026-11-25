@@ -23,6 +23,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestBodyParseFailureIdentity(t *testing.T) {
@@ -199,7 +200,7 @@ func TestBodyParseFailureWebSocketRelayReceipts(t *testing.T) {
 			}
 			select {
 			case <-done:
-			case <-time.After(timeout):
+			case <-time.After(testwait.Deadline(timeout)):
 				t.Fatal("relay did not terminate")
 			}
 			foundParser, foundClose := false, false

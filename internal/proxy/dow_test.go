@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 const (
@@ -405,7 +407,7 @@ func TestDoW_ConcurrentLimit_ThreadSafe(t *testing.T) {
 			if !ok {
 				t.Fatal("holder acquire was denied before limit was full")
 			}
-		case <-time.After(time.Second):
+		case <-time.After(testwait.Deadline(time.Second)):
 			t.Fatal("timed out waiting for holders to acquire concurrent slots")
 		}
 	}
@@ -426,7 +428,7 @@ func TestDoW_ConcurrentLimit_ThreadSafe(t *testing.T) {
 	for range 50 {
 		select {
 		case <-contenderResults:
-		case <-time.After(time.Second):
+		case <-time.After(testwait.Deadline(time.Second)):
 			t.Fatal("timed out waiting for contenders to attempt concurrent acquire")
 		}
 	}

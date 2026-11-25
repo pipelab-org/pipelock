@@ -115,7 +115,7 @@ func dialBridge(t *testing.T, bp *BridgeProxy, accepted <-chan net.Conn) (net.Co
 			t.Fatalf("clear parent read deadline: %v", err)
 		}
 		return agent, parent
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("parent never accepted the bridged connection")
 	}
 	return nil, nil

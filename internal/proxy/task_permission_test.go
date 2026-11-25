@@ -35,6 +35,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/responseencoding"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestForwardTaskPermissionChecksEffectiveRequestAfterHostileExposure(t *testing.T) {
@@ -613,7 +614,7 @@ func TestForwardTaskPermissionAtReceiptConfirmation(t *testing.T) {
 			case <-syncStarted:
 			case <-finished:
 				t.Fatalf("request returned before confirmation: status=%d body=%q", w.Code, w.Body)
-			case <-time.After(5 * time.Second):
+			case <-time.After(testwait.Deadline(5 * time.Second)):
 				t.Fatal("required receipt did not reach confirmation")
 			}
 			var rotatedTaskID string
@@ -624,7 +625,7 @@ func TestForwardTaskPermissionAtReceiptConfirmation(t *testing.T) {
 			release()
 			select {
 			case <-finished:
-			case <-time.After(5 * time.Second):
+			case <-time.After(testwait.Deadline(5 * time.Second)):
 				t.Fatal("request did not finish after confirmation")
 			}
 
@@ -770,13 +771,13 @@ func TestForwardRequiredReceiptQueuedScanCancellation(t *testing.T) {
 			case <-queued:
 			case <-finished:
 				t.Fatalf("request finished before its receipt scan queued: status=%d body=%q", w.Code, w.Body)
-			case <-time.After(5 * time.Second):
+			case <-time.After(testwait.Deadline(5 * time.Second)):
 				t.Fatal("receipt scan never queued for a slot")
 			}
 			cancelReq(tc.cause)
 			select {
 			case <-finished:
-			case <-time.After(5 * time.Second):
+			case <-time.After(testwait.Deadline(5 * time.Second)):
 				t.Fatal("canceled request stayed queued for a receipt scan slot")
 			}
 			if w.Code != tc.status || !strings.Contains(w.Body.String(), tc.body) || calls.Load() != 0 {
@@ -827,7 +828,7 @@ func holdReceiptScanSlots(t *testing.T, rec *recorder.Recorder) {
 		close(release)
 		done.Wait()
 	})
-	timeout := time.After(5 * time.Second)
+	timeout := time.After(testwait.Deadline(5 * time.Second))
 	for range slots {
 		select {
 		case <-holding:

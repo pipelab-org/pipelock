@@ -611,7 +611,7 @@ func TestRunHTTPProxy_DeferResolverAllowsBridge(t *testing.T) {
 		if !strings.Contains(body, "send_tool") {
 			t.Fatalf("upstream body = %s, want held call", body)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatalf("timed out waiting for bridge forward; stderr=%s stdout=%s", &stderr, &stdout)
 	}
 	if err := inputW.Close(); err != nil {
@@ -860,7 +860,7 @@ func TestForwardScannedInput_DeferCapacityBlocksAudit(t *testing.T) {
 		if !strings.Contains(blocked.ErrorMessage, "defer capacity exceeded") {
 			t.Fatalf("blocked = %+v, want defer capacity exceeded", blocked)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatalf("timed out waiting for capacity block; log=%s", &logBuf)
 	}
 	if strings.Contains(serverBuf.String(), "send_tool") {
@@ -930,7 +930,7 @@ func TestForwardScanned_ToolInventoryResolvesHeldActions(t *testing.T) {
 				if got.FinalDecision != tt.want || got.ResolutionSource != deferred.SourceToolInventory {
 					t.Fatalf("resolution = (%q,%q), want (%q,%q)", got.FinalDecision, got.ResolutionSource, tt.want, deferred.SourceToolInventory)
 				}
-			case <-time.After(time.Second):
+			case <-time.After(testwait.Deadline(time.Second)):
 				t.Fatal("inventory did not resolve held action")
 			}
 		})
@@ -974,7 +974,7 @@ func TestForwardScannedInput_DeferResolverShutdownDoesNotPanic(t *testing.T) {
 		}
 		select {
 		case <-done:
-		case <-time.After(time.Second):
+		case <-time.After(testwait.Deadline(time.Second)):
 			t.Fatalf("ForwardScannedInput did not shut down; log=%s server=%s", &logBuf, &serverBuf)
 		}
 		for range blockedCh {

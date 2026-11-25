@@ -23,6 +23,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/httpstream"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // Record upstream bytes without changing HTTP/2 framing or handling.
@@ -431,7 +432,7 @@ func TestInterceptTunnelStreamIntegrity(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-				case <-time.After(5 * time.Second):
+				case <-time.After(testwait.Deadline(5 * time.Second)):
 					t.Fatal("intercept tunnel did not end")
 				}
 				integrityWait(t, upstreamDone)

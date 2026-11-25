@@ -14,6 +14,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/checker/checkertest"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func bufferedTestSurfaces() []string {
@@ -171,7 +172,7 @@ func TestBufferedInjectionReloadAndWatch(t *testing.T) {
 				if !e.Watch || e.Surface != surface {
 					t.Fatalf("bad watch event: %+v", e)
 				}
-			case <-time.After(3 * time.Second):
+			case <-time.After(testwait.Deadline(3 * time.Second)):
 				t.Fatal("watch did not complete")
 			}
 		})

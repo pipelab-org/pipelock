@@ -92,7 +92,7 @@ func TestStartIgnoresConnectionsWithoutRequest(t *testing.T) {
 		if err != nil {
 			t.Fatalf("StartWithListener = %v, want a clean stop", err)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(testwait.Deadline(10 * time.Second)):
 		t.Fatal("StartWithListener did not return after cancel")
 	}
 }
@@ -156,7 +156,7 @@ func TestStartReportsHeldHandlerDrain(t *testing.T) {
 			go func() { _, _ = io.Copy(io.Discard, conn); close(finished) }()
 			select {
 			case <-entered:
-			case <-time.After(5 * time.Second):
+			case <-time.After(testwait.Deadline(5 * time.Second)):
 				t.Fatal("handler did not enter hold")
 			}
 			cancel()
@@ -165,12 +165,12 @@ func TestStartReportsHeldHandlerDrain(t *testing.T) {
 				if !errors.Is(err, ErrShutdownIncomplete) || !errors.Is(err, context.DeadlineExceeded) {
 					t.Errorf("held handler drain = %v, want incomplete deadline", err)
 				}
-			case <-time.After(5 * time.Second):
+			case <-time.After(testwait.Deadline(5 * time.Second)):
 				t.Fatal("held handler drain did not stop")
 			}
 			select {
 			case <-finished:
-			case <-time.After(5 * time.Second):
+			case <-time.After(testwait.Deadline(5 * time.Second)):
 				t.Error("force-close did not stop client")
 			}
 			unblock()

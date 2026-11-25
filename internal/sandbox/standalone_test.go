@@ -456,7 +456,7 @@ func TestStandaloneProxyServer_StopJoinsHandlers(t *testing.T) {
 
 			select {
 			case <-handlerEntered:
-			case <-time.After(time.Second):
+			case <-time.After(testwait.Deadline(time.Second)):
 				t.Fatal("proxy handler did not start")
 			}
 
@@ -477,12 +477,12 @@ func TestStandaloneProxyServer_StopJoinsHandlers(t *testing.T) {
 
 			select {
 			case <-handlerDone:
-			case <-time.After(time.Second):
+			case <-time.After(testwait.Deadline(time.Second)):
 				t.Fatal("proxy handler did not exit")
 			}
 			select {
 			case <-stopDone:
-			case <-time.After(time.Second):
+			case <-time.After(testwait.Deadline(time.Second)):
 				t.Fatal("stop did not return after proxy handler exited")
 			}
 		})
@@ -525,7 +525,7 @@ func TestStandaloneProxyServer_StopIsBoundedForBlockedHandler(t *testing.T) {
 
 	select {
 	case <-handlerEntered:
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("proxy handler did not start")
 	}
 
@@ -596,7 +596,7 @@ func TestStandaloneProxyServer_StopTimeoutAllowsLateHandlerCleanup(t *testing.T)
 
 	select {
 	case <-handlerEntered:
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("proxy handler did not start")
 	}
 
@@ -607,7 +607,7 @@ func TestStandaloneProxyServer_StopTimeoutAllowsLateHandlerCleanup(t *testing.T)
 	release()
 	select {
 	case <-handlerDone:
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("proxy handler did not exit after release")
 	}
 

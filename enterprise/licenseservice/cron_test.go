@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 	"github.com/rs/zerolog"
 )
 
@@ -138,7 +139,7 @@ func TestRefreshCron_Run_StopsOnCancel(t *testing.T) {
 	select {
 	case <-done:
 		// Run stopped as expected.
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("Run did not stop within timeout after context cancel")
 	}
 }

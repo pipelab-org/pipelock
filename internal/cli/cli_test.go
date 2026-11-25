@@ -900,7 +900,7 @@ logging:
 			if err != nil {
 				return fmt.Errorf("unexpected run error: %w", err)
 			}
-		case <-time.After(10 * time.Second):
+		case <-time.After(testwait.Deadline(10 * time.Second)):
 			t.Fatal("run command did not shut down within timeout")
 		}
 		return nil
@@ -1052,7 +1052,7 @@ func TestRunCmd_ListenFlagOverride(t *testing.T) {
 			if err != nil {
 				return fmt.Errorf("unexpected run error: %w", err)
 			}
-		case <-time.After(10 * time.Second):
+		case <-time.After(testwait.Deadline(10 * time.Second)):
 			t.Fatal("run command did not shut down within timeout")
 		}
 		return nil
@@ -1218,7 +1218,7 @@ func TestRunCmd_WithAgentArgs(t *testing.T) {
 			if err != nil {
 				return fmt.Errorf("unexpected error: %w", err)
 			}
-		case <-time.After(10 * time.Second):
+		case <-time.After(testwait.Deadline(10 * time.Second)):
 			t.Fatal("run did not shut down")
 		}
 
@@ -1267,7 +1267,7 @@ func TestRunCmd_DefaultMode(t *testing.T) {
 			if err != nil {
 				return fmt.Errorf("unexpected error: %w", err)
 			}
-		case <-time.After(10 * time.Second):
+		case <-time.After(testwait.Deadline(10 * time.Second)):
 			t.Fatal("run did not shut down")
 		}
 		return nil
@@ -1338,7 +1338,7 @@ func TestRunCmd_ModeFlag(t *testing.T) {
 			if err != nil {
 				return fmt.Errorf("unexpected error: %w", err)
 			}
-		case <-time.After(10 * time.Second):
+		case <-time.After(testwait.Deadline(10 * time.Second)):
 			t.Fatal("run did not shut down")
 		}
 		return nil
@@ -1425,7 +1425,7 @@ fetch_proxy:
 			if err != nil {
 				return fmt.Errorf("unexpected error: %w", err)
 			}
-		case <-time.After(10 * time.Second):
+		case <-time.After(testwait.Deadline(10 * time.Second)):
 			t.Fatal("run did not shut down")
 		}
 		return nil
@@ -1548,7 +1548,7 @@ response_scanning:
 			if err != nil {
 				return fmt.Errorf("unexpected error: %w", err)
 			}
-		case <-time.After(10 * time.Second):
+		case <-time.After(testwait.Deadline(10 * time.Second)):
 			t.Fatal("run did not shut down")
 		}
 		return nil
@@ -1609,7 +1609,7 @@ response_scanning:
 			if err != nil {
 				return fmt.Errorf("unexpected error: %w", err)
 			}
-		case <-time.After(10 * time.Second):
+		case <-time.After(testwait.Deadline(10 * time.Second)):
 			t.Fatal("run did not shut down")
 		}
 		return nil
@@ -1682,7 +1682,7 @@ forward_proxy:
 			if cmdErr != nil {
 				return fmt.Errorf("unexpected error: %w", cmdErr)
 			}
-		case <-time.After(10 * time.Second):
+		case <-time.After(testwait.Deadline(10 * time.Second)):
 			t.Fatal("run did not shut down")
 		}
 
@@ -1803,7 +1803,7 @@ fetch_proxy:
 			if cmdErr != nil {
 				return fmt.Errorf("unexpected error: %w", cmdErr)
 			}
-		case <-time.After(10 * time.Second):
+		case <-time.After(testwait.Deadline(10 * time.Second)):
 			t.Fatal("run did not shut down")
 		}
 		return nil
@@ -2103,7 +2103,7 @@ logging:
 			if cmdErr != nil {
 				return fmt.Errorf("unexpected error: %w", cmdErr)
 			}
-		case <-time.After(10 * time.Second):
+		case <-time.After(testwait.Deadline(10 * time.Second)):
 			t.Fatal("run did not shut down")
 		}
 		return nil
@@ -2240,7 +2240,7 @@ func TestRunCmd_MCPListenBanner(t *testing.T) {
 			if cmdErr != nil {
 				return fmt.Errorf("unexpected error: %w", cmdErr)
 			}
-		case <-time.After(10 * time.Second):
+		case <-time.After(testwait.Deadline(10 * time.Second)):
 			t.Fatal("run did not shut down")
 		}
 		return nil
@@ -2370,7 +2370,7 @@ fetch_proxy:
 			if cmdErr != nil {
 				return fmt.Errorf("unexpected error: %w", cmdErr)
 			}
-		case <-time.After(10 * time.Second):
+		case <-time.After(testwait.Deadline(10 * time.Second)):
 			t.Fatal("run did not shut down")
 		}
 
@@ -2490,7 +2490,7 @@ kill_switch:
 			if cmdErr != nil {
 				return fmt.Errorf("unexpected error: %w", cmdErr)
 			}
-		case <-time.After(10 * time.Second):
+		case <-time.After(testwait.Deadline(10 * time.Second)):
 			t.Fatal("run did not shut down")
 		}
 
@@ -2644,7 +2644,7 @@ fetch_proxy:
 			if cmdErr != nil {
 				return fmt.Errorf("unexpected error: %w", cmdErr)
 			}
-		case <-time.After(10 * time.Second):
+		case <-time.After(testwait.Deadline(10 * time.Second)):
 			t.Fatal("run did not shut down")
 		}
 
@@ -2728,7 +2728,7 @@ fetch_proxy:
 			if cmdErr != nil {
 				return fmt.Errorf("unexpected error: %w", cmdErr)
 			}
-		case <-time.After(10 * time.Second):
+		case <-time.After(testwait.Deadline(10 * time.Second)):
 			t.Fatal("run did not shut down")
 		}
 
@@ -2812,7 +2812,7 @@ fetch_proxy:
 			if cmdErr != nil {
 				return fmt.Errorf("unexpected error: %w", cmdErr)
 			}
-		case <-time.After(10 * time.Second):
+		case <-time.After(testwait.Deadline(10 * time.Second)):
 			t.Fatal("run did not shut down")
 		}
 
@@ -2901,7 +2901,7 @@ fetch_proxy:
 			if cmdErr != nil {
 				return fmt.Errorf("unexpected error: %w", cmdErr)
 			}
-		case <-time.After(10 * time.Second):
+		case <-time.After(testwait.Deadline(10 * time.Second)):
 			t.Fatal("run did not shut down")
 		}
 
@@ -2972,7 +2972,7 @@ websocket_proxy:
 			if err != nil {
 				return fmt.Errorf("unexpected run error: %w", err)
 			}
-		case <-time.After(10 * time.Second):
+		case <-time.After(testwait.Deadline(10 * time.Second)):
 			t.Fatal("run did not shut down")
 		}
 		return nil

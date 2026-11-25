@@ -157,6 +157,7 @@ vet:
 lint: check-lint-version vet
 	golangci-lint run ./...
 	./scripts/check-test-stability.sh
+	./scripts/check-test-deadline-scaling.sh
 
 test-stability-check:
 	./scripts/check-test-stability.sh

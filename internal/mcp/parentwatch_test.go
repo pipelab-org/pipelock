@@ -118,7 +118,7 @@ func TestRunSessionBoundExit_BlockedLogDoesNotDelayTeardown(t *testing.T) {
 
 	select {
 	case <-logW.started:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("session-exit log was never attempted")
 	}
 
@@ -127,7 +127,7 @@ func TestRunSessionBoundExit_BlockedLogDoesNotDelayTeardown(t *testing.T) {
 		if !escalated {
 			t.Fatal("session teardown did not escalate while its log writer was blocked")
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("blocked log writer delayed session teardown")
 	}
 	if !marked.Load() || !intakeStopped.Load() || !stdinClosed.Load() || !terminated.Load() {
@@ -176,7 +176,7 @@ func TestRunSessionBoundExit_CooperativeServerIsNotKilled(t *testing.T) {
 		if escalated {
 			t.Error("escalated to a forced teardown for a server that exited on its own")
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("teardown blocked past the cooperative exit; the grace window was waited out")
 	}
 
@@ -345,7 +345,7 @@ func TestProcessExitHandoff_TerminateProceedsWhileReapInFlight(t *testing.T) {
 		if !ok || !stableDirectKill.Load() {
 			t.Error("escalation did not use the stable direct-child handle while reap was in flight")
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("terminate blocked on an in-flight reap; this is the deadlock that hangs the proxy with its tree alive")
 	}
 

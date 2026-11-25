@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // Distinct payload tokens keep these tests isolated from goconst rules
@@ -289,7 +291,7 @@ func readNextSSEData(t *testing.T, scanner *bufio.Scanner) string {
 			t.Fatalf("readNextSSEData: %v", r.err)
 		}
 		return r.line
-	case <-time.After(sseReadDeadline):
+	case <-time.After(testwait.Deadline(sseReadDeadline)):
 		t.Fatalf("timed out waiting for SSE data line")
 	}
 	return ""

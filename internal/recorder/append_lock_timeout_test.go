@@ -9,6 +9,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestAppendLockContentionIsBounded(t *testing.T) {
@@ -26,7 +28,7 @@ func TestAppendLockContentionIsBounded(t *testing.T) {
 		}
 		done <- err
 	}()
-	timer := time.NewTimer(2 * time.Second)
+	timer := time.NewTimer(testwait.Deadline(2 * time.Second))
 	defer timer.Stop()
 	select {
 	case err := <-done:

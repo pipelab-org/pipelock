@@ -30,6 +30,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/playground/broker"
 	"github.com/luckyPipewrench/pipelock/internal/playground/livechat"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 type fakeProvider struct{}
@@ -133,7 +134,7 @@ func waitTestCall(t *testing.T, ch <-chan struct{}, name string) {
 	t.Helper()
 	select {
 	case <-ch:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatalf("timed out waiting for %s", name)
 	}
 }
@@ -283,7 +284,7 @@ func TestBuildServerWiresProviderHealthToWarmPoolAndHealthEndpoint(t *testing.T)
 	cancel()
 	select {
 	case <-done:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("timed out waiting for warm pool maintainer to exit")
 	}
 
@@ -556,7 +557,7 @@ func TestBrokerSecurityHeaders(t *testing.T) {
 	}
 	select {
 	case <-analyticsReceived:
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("analytics event did not reach configured sink")
 	}
 
@@ -919,7 +920,7 @@ func runReaperStartupOnce(t *testing.T, startReaper func(context.Context), listC
 	cancel()
 	select {
 	case <-done:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("timed out waiting for reaper to exit")
 	}
 }
@@ -1291,7 +1292,7 @@ func TestStartSignalControlLoopContextCancelled(t *testing.T) {
 	cancel()
 	select {
 	case <-shutdownDone:
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("timed out waiting for signal loop shutdown")
 	}
 	stop()

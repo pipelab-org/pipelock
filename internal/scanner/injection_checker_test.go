@@ -13,6 +13,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/checker"
 	"github.com/luckyPipewrench/pipelock/internal/checker/checkertest"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 type checkerEvents struct {
@@ -39,7 +40,7 @@ func (c *checkerEvents) snapshot() []InjectionCheckerEvent {
 
 func (c *checkerEvents) waitFor(t *testing.T, n int) []InjectionCheckerEvent {
 	t.Helper()
-	deadline := time.After(5 * time.Second)
+	deadline := time.After(testwait.Deadline(5 * time.Second))
 	for {
 		if got := c.snapshot(); len(got) >= n {
 			return got

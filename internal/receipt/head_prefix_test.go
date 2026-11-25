@@ -99,7 +99,7 @@ func TestConfirmedTailObservationWaitsForDurability(t *testing.T) {
 		if got.err != nil || got.obs.Unconfirmed || !got.obs.WriteKnown || got.obs.PersistedHash != got.obs.PrevHash {
 			t.Fatalf("obs=%+v err=%v", got.obs, got.err)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(testwait.Deadline(10 * time.Second)):
 		t.Fatal("observation blocked after confirmation")
 	}
 }

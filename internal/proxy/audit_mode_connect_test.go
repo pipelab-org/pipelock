@@ -17,6 +17,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // TestAuditModeConnectRefusals records CONNECT with enforce false.
@@ -122,7 +123,7 @@ func TestAuditModeConnectRefusals(t *testing.T) {
 			_ = conn.Close()
 			select {
 			case <-handlerDone:
-			case <-time.After(5 * time.Second):
+			case <-time.After(testwait.Deadline(5 * time.Second)):
 				t.Fatal("CONNECT handler did not return")
 			}
 			// The handler writes its last audit event when the relay ends, so
@@ -146,7 +147,7 @@ func TestAuditModeConnectRefusals(t *testing.T) {
 						goto drained
 					}
 					count++
-				case <-time.After(5 * time.Second):
+				case <-time.After(testwait.Deadline(5 * time.Second)):
 					t.Fatal("upstream accept loop did not reach sentinel")
 				}
 			}

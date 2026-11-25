@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/emit"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestAuditSinkDeliveryFailureIsExposedByPrometheus(t *testing.T) {
@@ -30,12 +31,12 @@ func TestAuditSinkDeliveryFailureIsExposedByPrometheus(t *testing.T) {
 	emitter.EmitWithSeverity(t.Context(), emit.SeverityWarn, emit.EventBlocked, nil)
 	select {
 	case <-requestSeen:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("timed out waiting for simulated sink failure")
 	}
 	ticker := time.NewTicker(time.Millisecond)
 	defer ticker.Stop()
-	deadline := time.After(2 * time.Second)
+	deadline := time.After(testwait.Deadline(2 * time.Second))
 	for sink.Stats().Failed == 0 {
 		select {
 		case <-ticker.C:

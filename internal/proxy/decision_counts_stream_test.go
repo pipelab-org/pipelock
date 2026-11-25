@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // An intercepted stream keeps its handler open until the upstream ends. The
@@ -56,7 +58,7 @@ func TestURLDecisionInterceptCountedDuringStream(t *testing.T) {
 		if r.err != nil || r.line != "data: first\n" {
 			t.Fatalf("first event = %q, err %v", r.line, r.err)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(testwait.Deadline(10 * time.Second)):
 		t.Fatal("first event did not arrive while the stream was open")
 	}
 	// The upstream stream is still open here.

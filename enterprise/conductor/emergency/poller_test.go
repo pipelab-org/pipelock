@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 type fakeRemoteKillClient struct {
@@ -291,7 +292,7 @@ func TestRemoteKillPollerRunStopsOnContextCancel(t *testing.T) {
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("Run() error = %v, want context.Canceled", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("Run() did not stop after context cancel")
 	}
 }

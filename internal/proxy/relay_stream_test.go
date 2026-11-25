@@ -17,6 +17,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // streamChunk is the per-tick payload a modeled streaming backend writes.
@@ -330,7 +331,7 @@ func TestCopyDirWriteErrorTearsDownTunnel(t *testing.T) {
 	select {
 	case <-done:
 		// client->target read returned 'x', target.Write failed, tunnel torn down.
-	case <-time.After(3 * time.Second):
+	case <-time.After(testwait.Deadline(3 * time.Second)):
 		t.Fatal("bidirectionalCopy did not return after a write error")
 	}
 	<-sentOnce
@@ -366,7 +367,7 @@ func TestCopyDirShortWriteTearsDownTunnel(t *testing.T) {
 
 	select {
 	case <-doneCh:
-	case <-time.After(3 * time.Second):
+	case <-time.After(testwait.Deadline(3 * time.Second)):
 		t.Fatal("bidirectionalCopy did not return after a short write")
 	}
 	<-sent
@@ -407,7 +408,7 @@ func TestCopyDirPostReadKillSwitch(t *testing.T) {
 
 	select {
 	case <-doneCh:
-	case <-time.After(3 * time.Second):
+	case <-time.After(testwait.Deadline(3 * time.Second)):
 		t.Fatal("bidirectionalCopy did not return after kill switch activated")
 	}
 	if forwarded {
@@ -458,7 +459,7 @@ func TestWatchdogKillSwitchOnIdleTunnel(t *testing.T) {
 		if elapsed := time.Since(start); elapsed > 2*time.Second {
 			t.Fatalf("watchdog took %v to honor the kill switch on an idle tunnel", elapsed)
 		}
-	case <-time.After(3 * time.Second):
+	case <-time.After(testwait.Deadline(3 * time.Second)):
 		t.Fatal("watchdog did not terminate the idle tunnel after the kill switch activated")
 	}
 }

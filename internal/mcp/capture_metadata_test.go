@@ -14,6 +14,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 type mcpCaptureMetadataObserver struct {
@@ -79,7 +80,7 @@ func TestForwardScanned_CapturesInboundDLPWithEffectiveAction(t *testing.T) {
 				t.Fatalf("DLP capture finding = %+v, want kind=dlp action=warn", finding)
 			}
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("expected inbound DLP response capture record")
 	}
 }
@@ -179,7 +180,7 @@ func TestCaptureMetadata_MCPStdioInputTransport(t *testing.T) {
 		if blocked.ID == nil {
 			t.Fatal("blocked request missing ID")
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("timeout waiting for blocked request")
 	}
 	<-done
@@ -213,7 +214,7 @@ func TestCaptureMetadata_MCPStdioInputTransport(t *testing.T) {
 		if string(rec.Request.RPCID) != "1" {
 			t.Fatalf("rpc_id = %q, want %q (request-side join key from id=1)", string(rec.Request.RPCID), "1")
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("expected DLP capture record on stdio block path")
 	}
 }

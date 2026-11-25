@@ -18,6 +18,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func newAppliedStateProducer(t *testing.T, cfg ProducerConfig) (*Producer, *Queue, ed25519.PublicKey) {
@@ -215,7 +216,7 @@ func TestProducer_AppliedStateHeartbeatRunsIdleAndStopsOnClose(t *testing.T) {
 	})
 	select {
 	case <-started:
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("idle applied-state heartbeat did not fire")
 	}
 	if err := producer.Close(); err != nil {
@@ -229,7 +230,7 @@ func TestProducer_AppliedStateHeartbeatRunsIdleAndStopsOnClose(t *testing.T) {
 	close(release)
 	select {
 	case <-finished:
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("in-flight heartbeat callback did not finish after release")
 	}
 	select {
@@ -283,7 +284,7 @@ func TestProducer_CloseCancelsActiveAppliedStateHeartbeat(t *testing.T) {
 	}
 	select {
 	case <-canceled:
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("active heartbeat context was not canceled by Close")
 	}
 }
@@ -313,7 +314,7 @@ func TestProducer_AppliedStateHeartbeatRetriesAfterTimeout(t *testing.T) {
 	go producer.runAppliedStateHeartbeat()
 	select {
 	case <-retried:
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		heartbeatCancel()
 		close(producer.heartbeatStop)
 		<-producer.heartbeatDone
@@ -345,7 +346,7 @@ func TestProducer_CloseDoesNotWaitForHeartbeatIgnoringCancellation(t *testing.T)
 	}()
 	select {
 	case <-closed:
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		close(release)
 		t.Fatal("Close blocked on heartbeat callback that ignored cancellation")
 	}

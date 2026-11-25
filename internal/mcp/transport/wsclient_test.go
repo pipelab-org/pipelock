@@ -17,6 +17,7 @@ import (
 
 	"github.com/gobwas/ws"
 	gobwasutil "github.com/gobwas/ws/wsutil"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 const (
@@ -93,7 +94,7 @@ func TestWSClient_WriteMessage(t *testing.T) {
 		if msg != `{"jsonrpc":"2.0","method":"test"}` {
 			t.Errorf("server received unexpected: %s", msg)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("timeout waiting for server to receive message")
 	}
 }
@@ -245,7 +246,7 @@ func TestWSClient_PingPong(t *testing.T) {
 	select {
 	case <-pongReceived:
 		// OK
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Error("server did not receive pong")
 	}
 }

@@ -122,7 +122,7 @@ func TestDeferredStdioKillSwitchCancelsHeldCallWithoutAnotherMessage(t *testing.
 				if rec.ErrorCode != -32004 {
 					t.Fatalf("blocked record code = %d, want -32004", rec.ErrorCode)
 				}
-			case <-time.After(5 * time.Second):
+			case <-time.After(testwait.Deadline(5 * time.Second)):
 				t.Fatal("cancelled call produced no client error")
 			}
 			if got := upstream.String(); got != "" {

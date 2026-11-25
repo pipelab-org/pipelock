@@ -19,6 +19,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 const principalStateTestBearer = "shared-listener-credential"
@@ -315,7 +316,7 @@ func TestHTTPListener_PrincipalState_RotatedBearerStateAdmissionFailsClosed(t *t
 
 	select {
 	case <-oldReachedConfig:
-	case <-time.After(30 * time.Second):
+	case <-time.After(testwait.Deadline(30 * time.Second)):
 		t.Fatal("old bearer request never reached AdaptiveCfgFn")
 	}
 	active.Store(newBearer)
@@ -410,7 +411,7 @@ func TestHTTPListener_PrincipalState_RotatedBearerCapacityDeniesReadAndDelete(t 
 
 			select {
 			case <-oldReachedConfig:
-			case <-time.After(30 * time.Second):
+			case <-time.After(testwait.Deadline(30 * time.Second)):
 				t.Fatalf("%s request never reached AdaptiveCfgFn", method)
 			}
 			active.Store(newBearer)
@@ -631,7 +632,7 @@ func TestHTTPListener_PrincipalState_ResolverRotationScrubsBothBearerGenerations
 		if headers.Get(listenerAuthorization) != "" || headers.Get(listenerProxyAuthorization) != "" {
 			t.Fatalf("upstream received listener bearer headers: Authorization=%q Proxy-Authorization=%q", headers.Get(listenerAuthorization), headers.Get(listenerProxyAuthorization))
 		}
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("rotated resolver request did not reach upstream")
 	}
 }
@@ -776,7 +777,7 @@ func TestMCPListenerPrincipalState_RotationWaitDoesNotHoldRegistryLock(t *testin
 	}()
 	select {
 	case <-contended:
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		oldState.commitMu.Unlock()
 		t.Fatal("rotation never reached the retired in-flight response")
 	}
@@ -794,7 +795,7 @@ func TestMCPListenerPrincipalState_RotationWaitDoesNotHoldRegistryLock(t *testin
 			oldState.commitMu.Unlock()
 			t.Fatal("new state was not admitted before retired response commit drained")
 		}
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		oldState.commitMu.Unlock()
 		t.Fatal("rotation held the listener registry lock while waiting for a response commit")
 	}
@@ -807,7 +808,7 @@ func TestMCPListenerPrincipalState_RotationWaitDoesNotHoldRegistryLock(t *testin
 	oldState.commitMu.Unlock()
 	select {
 	case <-rotationDone:
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("rotation did not finish after retired response commit drained")
 	}
 }

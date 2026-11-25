@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/playground/livechat"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 const testImage = "registry.fly.io/playground:test"
@@ -847,7 +848,7 @@ func TestPoolMaintainerExitsOnCancel(t *testing.T) {
 	}()
 
 	// Let the maintainer run at least one cycle.
-	deadline := time.NewTimer(5 * time.Second)
+	deadline := time.NewTimer(testwait.Deadline(5 * time.Second))
 	defer deadline.Stop()
 	for len(pool.WarmMachineIDs()) == 0 {
 		select {
@@ -860,7 +861,7 @@ func TestPoolMaintainerExitsOnCancel(t *testing.T) {
 	cancel()
 	select {
 	case <-done:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("Run did not exit after cancel")
 	}
 }

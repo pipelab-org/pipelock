@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // TestApply_IsOneShot proves a second application is refused.
@@ -79,7 +81,7 @@ func TestPreparedManifest_CloseWaitsForApply(t *testing.T) {
 
 	select {
 	case <-inside:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("apply never reached the locked region")
 	}
 
@@ -99,12 +101,12 @@ func TestPreparedManifest_CloseWaitsForApply(t *testing.T) {
 	close(release)
 	select {
 	case <-applyDone:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("apply did not finish after release")
 	}
 	select {
 	case <-closeDone:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("Close did not finish after apply released the lock")
 	}
 }

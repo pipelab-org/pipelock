@@ -390,7 +390,7 @@ func TestLoader_Watch_CancelExitsCleanly(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Watch on cancel: %v, want nil", err)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("Watch did not return after cancel")
 	}
 }
@@ -972,7 +972,7 @@ func TestLoader_Watch_DirectoryDeletionEndsWatcher(t *testing.T) {
 		if !strings.Contains(err.Error(), "store directory removed") && !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("err = %v, want store-directory-removed or os.ErrNotExist", err)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("Watch did not return within 2s after directory deletion")
 	}
 }
@@ -986,7 +986,7 @@ func waitForLoaderReady(t *testing.T, loader *Loader) {
 	t.Helper()
 	select {
 	case <-loader.ready:
-	case <-time.After(watchTestTimeout):
+	case <-time.After(testwait.Deadline(watchTestTimeout)):
 		t.Fatal("loader watcher did not report ready")
 	}
 }

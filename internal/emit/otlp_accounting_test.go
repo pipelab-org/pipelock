@@ -85,7 +85,7 @@ func TestOTLPSink_StatsSnapshotDelivered(t *testing.T) {
 	}
 	select {
 	case <-requestCh:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("timeout waiting for OTLP request")
 	}
 
@@ -354,7 +354,7 @@ func TestOTLPSink_QueueFullDropAccountingAndPrecedence(t *testing.T) {
 	}
 	select {
 	case <-started:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("timeout waiting for worker to block in OTLP handler")
 	}
 	sink.degraded.Store(true)
@@ -472,7 +472,7 @@ func TestOTLPSink_CloseDuringRetryAbandonsEvent(t *testing.T) {
 	}
 	select {
 	case <-firstAttempt:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("timeout waiting for first OTLP retry attempt")
 	}
 	if err := sink.Close(); err != nil {
@@ -509,7 +509,7 @@ func TestOTLPSink_EmitDuringCloseRejectedAfterCloseGate(t *testing.T) {
 	}
 	select {
 	case <-started:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("timeout waiting for worker to enter OTLP handler")
 	}
 
@@ -534,7 +534,7 @@ func TestOTLPSink_EmitDuringCloseRejectedAfterCloseGate(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Close: %v", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("timeout waiting for Close")
 	}
 }
@@ -566,7 +566,7 @@ func TestOTLPSink_LogDiagnosticStructuredJSON(t *testing.T) {
 	var data []byte
 	select {
 	case data = <-readDone:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("timeout waiting for OTLP diagnostic")
 	}
 	line := bytes.TrimSpace(data)

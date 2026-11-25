@@ -13,6 +13,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestReadReceiptProducerInventory_RejectsFIFOWithoutBlocking(t *testing.T) {
@@ -32,7 +34,7 @@ func TestReadReceiptProducerInventory_RejectsFIFOWithoutBlocking(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "regular file") {
 			t.Fatalf("read FIFO error = %v, want regular-file refusal", err)
 		}
-	case <-time.After(500 * time.Millisecond):
+	case <-time.After(testwait.Deadline(500 * time.Millisecond)):
 		if writer, err := os.OpenFile(path, os.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil { // #nosec G304 -- test FIFO under t.TempDir
 			_ = writer.Close()
 		}

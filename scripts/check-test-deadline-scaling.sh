@@ -27,6 +27,17 @@
 # every test would flag hundreds of legitimate lines, and an over-strict guard
 # gets deleted rather than obeyed.
 #
+# A second rule, enforced by scripts/deadlinescaling, covers every tracked
+# *_test.go file except internal/testwait (the helper's own tests). It flags
+# only a select receive from time.After, from an identifier assigned from
+# time.After in the same function, or from a time.NewTimer channel, when that
+# case body fails the test. Expiry there is the test result, so a raw duration
+# turns runner load into a red build. A poll tick, an absence check, and a
+# receive whose case does not fail the test are not flagged at any duration.
+# That is why this does not widen the subprocess rule into the over-strict
+# scan the paragraph above refuses: those waits stay legal, and the regex
+# checks below are unchanged.
+#
 # The forms below are the ones that appear in this tree. Extend the list rather
 # than adding a second pattern beside it.
 #   context.WithTimeout(parent, 30*time.Second)
@@ -50,7 +61,8 @@ cd "$(dirname "$0")/.."
 violations=0
 scanned=0
 file_list=$(mktemp)
-trap 'rm -f "$file_list"' EXIT
+analyzer_dir=$(mktemp -d)
+trap 'rm -f "$file_list"; rm -rf "$analyzer_dir"' EXIT
 
 # git ls-files quotes a path containing a newline, so a file could otherwise be
 # skipped in silence. -z keeps the names intact.
@@ -116,4 +128,74 @@ MSG
 	exit 1
 fi
 
+# Select waits whose expiry fails the test. The regex above stays as it is.
+# This pass is every tracked test file, not only subprocess tests, because the
+# failure mode is a red test rather than a killed child. internal/testwait is
+# the helper under test and is excluded. Poll ticks and absence checks have no
+# failing call in the timer case, so the analyzer leaves them alone.
+if [[ ! -f scripts/deadlinescaling/main.go ]]; then
+	echo "check-test-deadline-scaling: the failing-wait analyzer (scripts/deadlinescaling) is missing." >&2
+	echo "The deadline gate must fail closed when it cannot scan." >&2
+	exit 2
+fi
+if ! command -v go >/dev/null 2>&1; then
+	echo "check-test-deadline-scaling: go is not on PATH; cannot run the failing-wait analyzer." >&2
+	echo "The deadline gate must fail closed when it cannot scan." >&2
+	exit 127
+fi
+all_list="$analyzer_dir/files"
+if ! git ls-files -z -- '*_test.go' >"$all_list"; then
+	echo "check-test-deadline-scaling: could not enumerate tracked test files for the failing-wait scan" >&2
+	exit 1
+fi
+fail_files=()
+while IFS= read -r -d '' file; do
+	case "$file" in
+	internal/testwait | internal/testwait/*) continue ;;
+	esac
+	if [[ ! -f "$file" || ! -r "$file" ]]; then
+		printf 'check-test-deadline-scaling: cannot read tracked test file: %s\n' "$file" >&2
+		exit 1
+	fi
+	fail_files+=("$file")
+done <"$all_list"
+if [[ ${#fail_files[@]} -eq 0 ]]; then
+	echo "check-test-deadline-scaling: no tracked test files found; refusing to pass" >&2
+	exit 1
+fi
+# Build first: go run reports every non-zero exit as 1, which would hide the
+# analyzer's distinct scan-error status.
+if ! go build -o "$analyzer_dir/deadlinescaling" ./scripts/deadlinescaling; then
+	echo "check-test-deadline-scaling: cannot build the failing-wait analyzer." >&2
+	echo "The deadline gate must fail closed when it cannot scan." >&2
+	exit 2
+fi
+set +e
+fail_out="$("$analyzer_dir/deadlinescaling" "${fail_files[@]}")"
+fail_rc=$?
+set -e
+if [[ "$fail_rc" -gt 1 ]]; then
+	echo "check-test-deadline-scaling: failing-wait analyzer exited with $fail_rc." >&2
+	printf '%s\n' "$fail_out" >&2
+	echo "The deadline gate must fail closed on scan errors, not pass with zero scans." >&2
+	exit "$fail_rc"
+fi
+if [[ -n "$fail_out" ]]; then
+	cat >&2 <<'MSG'
+
+Unscaled failing wait. The timer case fails the test, so a loaded CI runner
+needs the same four-times headroom Deadline already applies. Poll ticks and
+absence checks are not this pattern and are not flagged.
+
+    case <-time.After(testwait.Deadline(5 * time.Second)):
+    case <-timer.C: // timer := time.NewTimer(testwait.Deadline(5 * time.Second))
+
+    import "github.com/luckyPipewrench/pipelock/internal/testwait"
+
+MSG
+	printf '%s\n' "$fail_out" >&2
+	exit 1
+fi
+
 printf 'check-test-deadline-scaling: %d subprocess test file(s) scanned, no unscaled deadlines\n' "$scanned"
+printf 'check-test-deadline-scaling: %d test file(s) scanned, no unscaled failing waits\n' "${#fail_files[@]}"

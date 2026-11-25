@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/testexec"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestHardeningLiveRunRejectsMalformedConfiguration(t *testing.T) {
@@ -82,7 +83,7 @@ func TestHardeningLiveRunProbeCancellationStopsProcess(t *testing.T) {
 
 			ticker := time.NewTicker(10 * time.Millisecond)
 			defer ticker.Stop()
-			startDeadline := time.NewTimer(2 * time.Second)
+			startDeadline := time.NewTimer(testwait.Deadline(2 * time.Second))
 			defer startDeadline.Stop()
 		waitForStart:
 			for {
@@ -106,7 +107,7 @@ func TestHardeningLiveRunProbeCancellationStopsProcess(t *testing.T) {
 				if !errors.Is(err, context.Canceled) {
 					t.Fatalf("probe error = %v, want context cancellation", err)
 				}
-			case <-time.After(2 * time.Second):
+			case <-time.After(testwait.Deadline(2 * time.Second)):
 				t.Fatal("probe process did not terminate after cancellation")
 			}
 		})

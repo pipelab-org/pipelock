@@ -217,7 +217,7 @@ func TestDeferredStdioReleaseRecordsUpstreamWriteFailure(t *testing.T) {
 		_ = feed.Close()
 		select {
 		case <-done:
-		case <-time.After(5 * time.Second):
+		case <-time.After(testwait.Deadline(5 * time.Second)):
 			t.Error("stdio input loop did not stop")
 		}
 	})

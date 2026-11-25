@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/redact"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestLoadForInspectionRejectsMalformedTrailingDocument(t *testing.T) {
@@ -211,7 +212,7 @@ func TestReloaderWatchSetupFailureResolvesLifecycleChannels(t *testing.T) {
 		if ok {
 			t.Fatal("Changes remained open after Start returned")
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("Changes did not close after Start returned")
 	}
 }
