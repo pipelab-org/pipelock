@@ -4,6 +4,7 @@
 package certgen
 
 import (
+	"bytes"
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -21,6 +22,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sync"
 	"time"
 )
@@ -80,12 +82,13 @@ func GenerateCA(org string, validity time.Duration) (*x509.Certificate, *ecdsa.P
 // DigitalSignature because the leaf key is always ECDSA P-256 (RFC 5480
 // Section 3); ExtKeyUsage defaults to server-auth when left empty.
 type LeafOptions struct {
-	CommonName  string
-	DNSNames    []string
-	IPAddresses []net.IP
-	URIs        []*url.URL
-	ExtKeyUsage []x509.ExtKeyUsage
-	TTL         time.Duration
+	CommonName            string
+	DNSNames              []string
+	IPAddresses           []net.IP
+	URIs                  []*url.URL
+	ExtKeyUsage           []x509.ExtKeyUsage
+	TTL                   time.Duration
+	CRLDistributionPoints []string
 }
 
 // GenerateLeaf creates a server leaf certificate for a hostname or IP, signed
@@ -141,15 +144,16 @@ func GenerateLeafCert(ca *x509.Certificate, caKey crypto.PrivateKey, opts LeafOp
 	}
 
 	template := &x509.Certificate{
-		SerialNumber: serial,
-		Subject:      pkix.Name{CommonName: opts.CommonName},
-		NotBefore:    time.Now().Add(-1 * time.Hour), // backdate 1h for clock skew tolerance
-		NotAfter:     time.Now().Add(opts.TTL),
-		KeyUsage:     x509.KeyUsageDigitalSignature, // ECDSA: DigitalSignature only (RFC 5480 Section 3)
-		ExtKeyUsage:  extKeyUsage,
-		DNSNames:     opts.DNSNames,
-		IPAddresses:  opts.IPAddresses,
-		URIs:         opts.URIs,
+		SerialNumber:          serial,
+		Subject:               pkix.Name{CommonName: opts.CommonName},
+		NotBefore:             time.Now().Add(-1 * time.Hour), // backdate 1h for clock skew tolerance
+		NotAfter:              time.Now().Add(opts.TTL),
+		KeyUsage:              x509.KeyUsageDigitalSignature, // ECDSA: DigitalSignature only (RFC 5480 Section 3)
+		ExtKeyUsage:           extKeyUsage,
+		DNSNames:              opts.DNSNames,
+		IPAddresses:           opts.IPAddresses,
+		URIs:                  opts.URIs,
+		CRLDistributionPoints: opts.CRLDistributionPoints,
 	}
 
 	certDER, err := x509.CreateCertificate(rand.Reader, template, ca, &leafKey.PublicKey, caKey)
@@ -316,12 +320,17 @@ type cachedCert struct {
 
 // CertCache is a bounded, TTL-based certificate cache.
 type CertCache struct {
-	mu      sync.RWMutex
-	certs   map[string]*cachedCert
-	maxSize int
-	ca      *x509.Certificate
-	caKey   crypto.PrivateKey
-	ttl     time.Duration
+	mu            sync.RWMutex
+	certs         map[string]*cachedCert
+	maxSize       int
+	ca            *x509.Certificate
+	caKey         crypto.PrivateKey
+	ttl           time.Duration
+	crlURLs       []string
+	crlGeneration uint64
+	crlDER        []byte
+	crlNextUpdate time.Time
+	crlNumber     *big.Int
 }
 
 // NewCertCache creates a certificate cache that generates leaf certs on demand.
@@ -346,36 +355,49 @@ func NewCertCache(ca *x509.Certificate, caKey crypto.PrivateKey, ttl time.Durati
 
 // Get returns a cached cert or generates a new one.
 func (c *CertCache) Get(host string) (*tls.Certificate, error) {
-	c.mu.RLock()
-	if entry, ok := c.certs[host]; ok && time.Now().Before(entry.expiresAt) {
+	for {
+		c.mu.RLock()
+		if entry, ok := c.certs[host]; ok && time.Now().Before(entry.expiresAt) {
+			c.mu.RUnlock()
+			return entry.cert, nil
+		}
+		urls := slices.Clone(c.crlURLs)
+		generation := c.crlGeneration
 		c.mu.RUnlock()
-		return entry.cert, nil
+		opts := LeafOptions{CommonName: host, TTL: c.ttl, CRLDistributionPoints: urls}
+		if ip := net.ParseIP(host); ip != nil {
+			opts.IPAddresses = []net.IP{ip}
+		} else {
+			opts.DNSNames = []string{host}
+		}
+		leaf, err := GenerateLeafCert(c.ca, c.caKey, opts)
+		if err != nil {
+			return nil, err
+		}
+
+		c.mu.Lock()
+		if generation != c.crlGeneration {
+			c.mu.Unlock()
+			continue
+		}
+		defer c.mu.Unlock()
+
+		// Double-check after acquiring write lock.
+		if entry, ok := c.certs[host]; ok && time.Now().Before(entry.expiresAt) {
+			return entry.cert, nil
+		}
+
+		c.certs[host] = &cachedCert{
+			cert:      leaf,
+			expiresAt: time.Now().Add(c.ttl),
+		}
+
+		if len(c.certs) > c.maxSize {
+			c.evictLocked()
+		}
+
+		return leaf, nil
 	}
-	c.mu.RUnlock()
-
-	leaf, err := GenerateLeaf(c.ca, c.caKey, host, c.ttl)
-	if err != nil {
-		return nil, err
-	}
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	// Double-check after acquiring write lock.
-	if entry, ok := c.certs[host]; ok && time.Now().Before(entry.expiresAt) {
-		return entry.cert, nil
-	}
-
-	c.certs[host] = &cachedCert{
-		cert:      leaf,
-		expiresAt: time.Now().Add(c.ttl),
-	}
-
-	if len(c.certs) > c.maxSize {
-		c.evictLocked()
-	}
-
-	return leaf, nil
 }
 
 // Size returns the number of cached certificates.
@@ -406,4 +428,77 @@ func (c *CertCache) evictLocked() {
 		}
 		delete(c.certs, oldestHost)
 	}
+}
+
+// Matches reports whether the immutable issuer and cache settings are unchanged.
+func (c *CertCache) Matches(ca *x509.Certificate, ttl time.Duration, maxSize int) bool {
+	return bytes.Equal(c.ca.Raw, ca.Raw) && c.ttl == ttl && c.maxSize == maxSize
+}
+
+// CanSignCRL reports whether the issuer permits certificate revocation lists
+// and carries the subject key identifier x509.CreateRevocationList requires.
+func (c *CertCache) CanSignCRL() bool {
+	return c.ca.KeyUsage&x509.KeyUsageCRLSign != 0 && len(c.ca.SubjectKeyId) > 0
+}
+
+// SetCRLDistributionPoints changes leaf CDPs and invalidates previously minted leaves.
+// Issuers without CRL signing usage retain the previous no-CDP behavior.
+func (c *CertCache) SetCRLDistributionPoints(urls []string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.CanSignCRL() {
+		urls = nil
+	}
+	if slices.Equal(c.crlURLs, urls) {
+		return
+	}
+	c.crlURLs = slices.Clone(urls)
+	c.crlGeneration++
+	clear(c.certs)
+}
+
+// GenerateCRL signs an empty X.509 CRL. This is a compatibility statement for
+// short-lived interception leaves, not a per-certificate revocation service.
+func GenerateCRL(ca *x509.Certificate, key crypto.PrivateKey, number *big.Int, now time.Time) ([]byte, error) {
+	if ca == nil {
+		return nil, errors.New("certgen: nil CA certificate")
+	}
+	signer, ok := key.(crypto.Signer)
+	if !ok {
+		return nil, errors.New("certgen: CRL requires a signing key")
+	}
+	if number == nil || number.Sign() < 0 {
+		return nil, errors.New("certgen: CRL requires a nonnegative number")
+	}
+	der, err := x509.CreateRevocationList(rand.Reader, &x509.RevocationList{
+		Number: number, ThisUpdate: now.Add(-time.Minute), NextUpdate: now.Add(24 * time.Hour),
+	}, ca, signer)
+	if err != nil {
+		return nil, fmt.Errorf("create CRL: %w", err)
+	}
+	return der, nil
+}
+
+// CRL returns a signed DER CRL, refreshing one hour before its 24-hour expiry.
+// The number increases on refresh and starts at the current Unix nanosecond.
+func (c *CertCache) CRL() ([]byte, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.crlLocked(time.Now())
+}
+
+func (c *CertCache) crlLocked(now time.Time) ([]byte, error) {
+	if len(c.crlDER) > 0 && now.Before(c.crlNextUpdate.Add(-time.Hour)) {
+		return slices.Clone(c.crlDER), nil
+	}
+	number := big.NewInt(now.UnixNano())
+	if c.crlNumber != nil && number.Cmp(c.crlNumber) <= 0 {
+		number.Add(c.crlNumber, big.NewInt(1))
+	}
+	der, err := GenerateCRL(c.ca, c.caKey, number, now)
+	if err != nil {
+		return nil, err
+	}
+	c.crlDER, c.crlNumber, c.crlNextUpdate = der, number, now.Add(24*time.Hour).Truncate(time.Second)
+	return slices.Clone(der), nil
 }
