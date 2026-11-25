@@ -489,9 +489,16 @@ func affectedNames(base, head map[string]support, baseInits, headInits, baseBlan
 			}
 		}
 	}
-	for id := range base {
+	for id, item := range base {
 		if _, ok := head[id]; !ok && id == "TestMain" {
 			whole = true
+		}
+		// Removing a method from a type that still exists can expose a
+		// method promoted from an embedded type, so calls through it change.
+		if _, ok := head[id]; !ok && strings.HasPrefix(id, "method/") {
+			if _, exists := head[item.name]; exists {
+				affected[item.name] = true
+			}
 		}
 	}
 	// Propagate through helpers that call changed helpers until nothing new

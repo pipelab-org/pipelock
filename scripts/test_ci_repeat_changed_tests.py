@@ -261,6 +261,16 @@ func TestOtherDone(t *testing.T) { <-context.Background().Done() }
             head = repo.commit({"types_test.go": types + "func (outer) Step() int { return 2 }\n"})
             self.assertEqual(self.select(repo, base, head, support=True), {"TestOuter"})
 
+    def test_removed_method_exposing_a_promoted_method_is_a_change(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = FixtureRepo(Path(directory))
+            types = 'package fixture\ntype leaf struct{}\nfunc (leaf) Step() int { return 1 }\ntype outer struct{ leaf }\ntype other struct{}\nfunc (other) Step() int { return 3 }\n'
+            uses = ('package fixture\nimport "testing"\nfunc TestOuter(t *testing.T) { _ = outer{}.Step() }\n'
+                    'func TestOther(t *testing.T) { _ = other{}.Step() }\n')
+            base = repo.commit({"types_test.go": types + "func (outer) Step() int { return 2 }\n", "a_test.go": uses})
+            head = repo.commit({"types_test.go": types})
+            self.assertEqual(self.select(repo, base, head, support=True), {"TestOuter"})
+
     def test_external_wrapper_of_a_changed_internal_helper(self):
         with tempfile.TemporaryDirectory() as directory:
             repo = FixtureRepo(Path(directory))
