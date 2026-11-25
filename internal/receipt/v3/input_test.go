@@ -76,7 +76,7 @@ func TestCallerPins(t *testing.T) {
 func TestInputClaims(t *testing.T) {
 	dir := t.TempDir()
 	profile := filepath.Join(dir, "example.jsonl")
-	if err := os.WriteFile(profile, []byte(profilePrefix), 0o600); err != nil {
+	if err := os.WriteFile(profile, []byte(contract.ProfileEnvelopePrefix), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	unknownProfile := filepath.Join(dir, "example.receipt-v4.jsonl")

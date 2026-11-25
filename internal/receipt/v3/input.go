@@ -5,7 +5,6 @@ package v3
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"crypto/ed25519"
 	"encoding/hex"
@@ -102,10 +101,7 @@ type inputFile struct {
 	code   string
 }
 
-var (
-	profileName = regexp.MustCompile(`\.receipt-v([0-9]+)\.jsonl$`)
-	streamName  = regexp.MustCompile(`^([0-9a-f]{32})-([0-9]{16})\.receipt-v3\.jsonl$`)
-)
+var streamName = regexp.MustCompile(`^([0-9a-f]{32})-([0-9]{16})\.receipt-v3\.jsonl$`)
 
 // ParseHead parses the v3 command-line form stream:seq:sha256:digest.
 func ParseHead(value string) (Head, error) {
@@ -149,11 +145,11 @@ func DecodeKeys(keys []string) ([]ed25519.PublicKey, error) {
 func identify(path string) (inputFile, bool) {
 	file := inputFile{path: path, start: -1}
 	name := filepath.Base(path)
-	version := profileName.FindStringSubmatch(name)
-	if version == nil {
+	version := contract.ProfileFilenameVersion(name)
+	if version == "" {
 		return file, false
 	}
-	if version[1] != "3" {
+	if version != "3" {
 		file.code = codeUnknownProfile
 		return file, true
 	}
@@ -203,14 +199,11 @@ func startsWithProfile(path string) (bool, error) {
 		return false, fmt.Errorf("open evidence file: %w", err)
 	}
 	defer func() { _ = f.Close() }()
-	prefix := make([]byte, len(profilePrefix))
-	if _, err = io.ReadFull(f, prefix); errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-		return false, nil
-	}
+	claimed, err := contract.HasProfileEnvelope(f)
 	if err != nil {
 		return false, fmt.Errorf("read evidence prefix: %w", err)
 	}
-	return bytes.Equal(prefix, []byte(profilePrefix)), nil
+	return claimed, nil
 }
 
 func readInputDirectory(path string) (string, []os.DirEntry, error) {
