@@ -143,7 +143,7 @@ func TestTranscriptRootRefusesV3(t *testing.T) {
 			if entry.IsDir() {
 				continue
 			}
-			data, err := os.ReadFile(filepath.Join(mixed, entry.Name()))
+			data, err := os.ReadFile(filepath.Clean(filepath.Join(mixed, entry.Name())))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -190,7 +190,7 @@ func TestTranscriptRootRefusesV3(t *testing.T) {
 			if entry.IsDir() || strings.Contains(entry.Name(), ".receipt-v3.") {
 				continue
 			}
-			data, err := os.ReadFile(filepath.Join(legacy, entry.Name()))
+			data, err := os.ReadFile(filepath.Clean(filepath.Join(legacy, entry.Name())))
 			if err != nil {
 				t.Fatal(err)
 			}

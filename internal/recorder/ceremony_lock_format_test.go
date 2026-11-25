@@ -93,7 +93,7 @@ func TestCheckLegacyEvidenceFormatRefusesUnreadableCandidate(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
-	if f, err := os.Open(path); err == nil {
+	if f, err := os.Open(filepath.Clean(path)); err == nil {
 		_ = f.Close()
 		t.Skip("file permissions do not restrict this user")
 	}
