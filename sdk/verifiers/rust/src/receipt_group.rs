@@ -2319,7 +2319,10 @@ fn fingerprint_directory_level(
         fingerprint_entry(&relative.to_string_lossy(), metadata, out)
             .map_err(VerifierError::Invalid)
     };
-    fingerprint(dir, &stamp)?;
+    // Every nested directory has already been recorded by its parent.
+    if dir == root {
+        fingerprint(dir, &stamp)?;
+    }
     for entry in fs::read_dir(dir).map_err(batch_io_error)? {
         let path = entry.map_err(batch_io_error)?.path();
         let metadata = fs::symlink_metadata(&path).map_err(batch_io_error)?;
@@ -2604,6 +2607,19 @@ mod tests {
             std::env::temp_dir().join(format!("pipelock-group-batch-{}-{id}", std::process::id()));
         fs::create_dir(&dir).unwrap();
         BatchTestDirectory(dir)
+    }
+
+    #[test]
+    fn batch_fingerprint_detects_ael_directory_replacement() {
+        let dir = batch_test_directory();
+        let run = dir.0.join("ael").join("a".repeat(32));
+        let keys = run.join("keys");
+        fs::create_dir_all(&keys).unwrap();
+        let before = batch_inventory_fingerprint(&dir.0).unwrap();
+        let other = batch_test_directory();
+        fs::rename(&keys, other.0.join("keys")).unwrap();
+        fs::create_dir(&keys).unwrap();
+        assert!(batch_inventory_fingerprint(&dir.0).unwrap() != before);
     }
 
     #[test]
