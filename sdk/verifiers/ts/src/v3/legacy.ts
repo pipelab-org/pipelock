@@ -17,7 +17,7 @@ import {
   verifyBase,
   withPinnedEvidenceDirectorySync,
 } from "../chain-set.js";
-import { verifyReceiptGroups } from "../group.js";
+import { verifyReceiptGroups, type ReceiptGroupResult } from "../group.js";
 import { closeEndsChain } from "../lifecycle.js";
 import { trimGoSpace } from "../line-space.js";
 import { bindExtSource, objectMemberSpan } from "../rawjson.js";
@@ -340,6 +340,7 @@ class LegacyVerifier {
 export async function verifyLegacy(
   v: Verification,
   paths: string[],
+  readGroups = verifyReceiptGroups,
 ): Promise<Map<string, LegacyPresentation>> {
   const verifier = new LegacyVerifier(v);
   const sessions = new Map<string, string>();
@@ -368,10 +369,23 @@ export async function verifyLegacy(
   }
 
   for (const dir of [...groupDirs.keys()].sort(byteOrder)) {
-    const summary = await verifyReceiptGroups(
+    const groups: ReceiptGroupResult[] = [];
+    const summary = await readGroups(
       dir,
       v.opts.keys ?? [],
-      (group) => {
+      (group) => groups.push(group),
+      recorderExcludedNames(),
+    );
+    if (summary.error !== undefined)
+      failure(
+        v,
+        "",
+        groupFormat,
+        summary.unavailable ? "GROUP_INCOMPLETE" : "GROUP_INVALID",
+        summary.unavailable,
+      );
+    else {
+      for (const group of groups) {
         if (group.verdict === "GROUP_INCOMPLETE") v.add("LEGACY_GROUP_INCOMPLETE");
         if (group.verdict === "GROUP_INVALID") v.add("LEGACY_INVALID");
         const head = group.close_manifest_sha256 ?? group.open_manifest_sha256;
@@ -383,17 +397,8 @@ export async function verifyLegacy(
           position: 0,
           verdict: group.verdict,
         });
-      },
-      recorderExcludedNames(),
-    );
-    if (summary.error)
-      failure(
-        v,
-        "",
-        groupFormat,
-        summary.unavailable ? "GROUP_INCOMPLETE" : "GROUP_INVALID",
-        summary.unavailable,
-      );
+      }
+    }
     groupDirs.set(dir, summary.groups > 0 || summary.error !== undefined);
   }
 

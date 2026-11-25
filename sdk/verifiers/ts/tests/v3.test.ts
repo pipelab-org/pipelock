@@ -20,6 +20,9 @@ import { canonicalV3, claimsV3Input, verifyV3Paths } from "../src/index.js";
 import { findPackageRoot } from "./paths.js";
 import { readV3Fixture, resignV3Fixture } from "./v3-fixtures.js";
 import { limits } from "../src/v3/wire.js";
+import { verifyLegacy } from "../src/v3/legacy.js";
+import { finding, newResult } from "../src/v3/result.js";
+import { Stage } from "../src/v3/store.js";
 
 const root = findPackageRoot(import.meta.url);
 const corpus = resolve(root, "../../conformance/testdata/v3");
@@ -363,4 +366,46 @@ test("v3 verification holds the original option values across awaits", async () 
   head.record = "sha256:" + "0".repeat(64);
   opts.expectHeads.push({ ...head, stream: "0".repeat(32) });
   assert.deepEqual(await pending, expected);
+});
+
+test("v3 discards provisional groups when the inventory fails", async () => {
+  const id = "a".repeat(32);
+  const opts = { directory: true };
+  const result = newResult(opts, 0);
+  const store = new Stage();
+  try {
+    const presented = await verifyLegacy(
+      {
+        opts,
+        result,
+        store,
+        used: new Set(),
+        streams: new Map(),
+        histories: new Map(),
+        add: (code, loc = "") => result.findings.push(finding(code, loc)),
+      },
+      [`example/receipt-group-${id}-open.json`],
+      async (_dir, _keys, visit) => {
+        visit?.({
+          group_id: id,
+          verdict: "GROUP_VALID",
+          shard_count: 1,
+          close_manifest_sha256: "b".repeat(64),
+        });
+        return {
+          groups: 1,
+          incomplete: 0,
+          invalid: 0,
+          unavailable: true,
+          error: "inventory changed",
+        };
+      },
+    );
+    assert.equal(presented.size, 0);
+    assert.deepEqual(result.legacy, [
+      { chain: "", class: "failure", format: "receipt_group", verdict: "GROUP_INCOMPLETE" },
+    ]);
+  } finally {
+    store.close();
+  }
 });

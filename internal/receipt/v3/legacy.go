@@ -92,41 +92,9 @@ func (v *verification) verifyLegacy(paths []string, excluded map[string]bool) (m
 		}
 	}
 	for _, dir := range sortedKeys(groupDirs) {
-		summary, err := legacy.VerifyLegacyReceiptGroups(dir, keys, excluded, func(group legacy.ReceiptGroupResult) error {
-			if v.skip == codeLegacyGroupIncomplete && group.Verdict == legacy.GroupIncomplete {
-				group.Verdict = legacy.GroupValid
-			}
-			switch group.Verdict {
-			case legacy.GroupIncomplete:
-				v.addCode(codeLegacyGroupIncomplete, "")
-			case legacy.GroupInvalid:
-				v.addCode(codeLegacyInvalid, "")
-			}
-			head := group.CloseManifestSHA
-			if head == "" {
-				head = group.OpenManifestSHA
-			}
-			if head != "" && !strings.HasPrefix(head, "sha256:") {
-				head = "sha256:" + head
-			}
-			key := legacyIdentity{legacyGroup, group.GroupID}
-			presented[key] = legacyPresentation{InventoryChain: InventoryChain{
-				Format: key.format, Chain: key.chain, Seq: int64(group.ShardCount), Record: head,
-			}, verdict: string(group.Verdict)}
-			return nil
+		groupDirs[dir] = v.verifyLegacyGroups(presented, func(visit func(legacy.ReceiptGroupResult) error) (legacy.ReceiptGroupInventoryResult, error) {
+			return legacy.VerifyLegacyReceiptGroups(dir, keys, excluded, visit)
 		})
-		if err != nil {
-			verdict := legacy.GroupInvalid
-			code := codeLegacyInvalid
-			if recorder.IsEvidenceUnavailable(err) {
-				verdict, code = legacy.GroupIncomplete, codeLegacyGroupIncomplete
-			}
-			v.addCode(code, "")
-			v.result.Legacy = append(v.result.Legacy, LegacyResult{
-				Class: legacyFailure, Format: legacyGroup, Verdict: string(verdict),
-			})
-		}
-		groupDirs[dir] = summary.Groups != 0 || err != nil
 	}
 	ordinarySessions := map[string][]string{}
 	bareSessions := map[string]bool{}
@@ -207,6 +175,51 @@ func (v *verification) verifyLegacy(paths []string, excluded map[string]bool) (m
 	}
 	sortLegacy(v.result.Legacy)
 	return presented, nil
+}
+
+type legacyGroupReader func(func(legacy.ReceiptGroupResult) error) (legacy.ReceiptGroupInventoryResult, error)
+
+func (v *verification) verifyLegacyGroups(presented map[legacyIdentity]legacyPresentation, read legacyGroupReader) bool {
+	var groups []legacy.ReceiptGroupResult
+	summary, err := read(func(group legacy.ReceiptGroupResult) error {
+		groups = append(groups, group)
+		return nil
+	})
+	if err != nil {
+		verdict := legacy.GroupInvalid
+		code := codeLegacyInvalid
+		if recorder.IsEvidenceUnavailable(err) {
+			verdict, code = legacy.GroupIncomplete, codeLegacyGroupIncomplete
+		}
+		v.addCode(code, "")
+		v.result.Legacy = append(v.result.Legacy, LegacyResult{
+			Class: legacyFailure, Format: legacyGroup, Verdict: string(verdict),
+		})
+		return true
+	}
+	for _, group := range groups {
+		if v.skip == codeLegacyGroupIncomplete && group.Verdict == legacy.GroupIncomplete {
+			group.Verdict = legacy.GroupValid
+		}
+		switch group.Verdict {
+		case legacy.GroupIncomplete:
+			v.addCode(codeLegacyGroupIncomplete, "")
+		case legacy.GroupInvalid:
+			v.addCode(codeLegacyInvalid, "")
+		}
+		head := group.CloseManifestSHA
+		if head == "" {
+			head = group.OpenManifestSHA
+		}
+		if head != "" && !strings.HasPrefix(head, "sha256:") {
+			head = "sha256:" + head
+		}
+		key := legacyIdentity{legacyGroup, group.GroupID}
+		presented[key] = legacyPresentation{InventoryChain: InventoryChain{
+			Format: key.format, Chain: key.chain, Seq: int64(group.ShardCount), Record: head,
+		}, verdict: string(group.Verdict)}
+	}
+	return summary.Groups != 0
 }
 
 func (v *verification) verifyLegacyContinuity(dir, base string, keys []string, grouped bool, excluded map[string]bool) {

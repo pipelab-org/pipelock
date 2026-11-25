@@ -225,7 +225,22 @@ pub(crate) fn verify_receipt_groups_for_cutover(
     trusted_keys: &[String],
     visit: impl FnMut(ReceiptGroupReport) -> crate::util::Result<()>,
 ) -> crate::util::Result<ReceiptGroupInventory> {
-    verify_groups(dir, trusted_keys, true, visit)
+    publish_cutover_inventory(|emit| verify_groups(dir, trusted_keys, true, emit), visit)
+}
+
+fn publish_cutover_inventory(
+    scan: impl FnOnce(
+        &mut dyn FnMut(ReceiptGroupReport) -> crate::util::Result<()>,
+    ) -> crate::util::Result<ReceiptGroupInventory>,
+    mut visit: impl FnMut(ReceiptGroupReport) -> crate::util::Result<()>,
+) -> crate::util::Result<ReceiptGroupInventory> {
+    let mut provisional = Vec::new();
+    let summary = scan(&mut |report| {
+        provisional.push(report);
+        Ok(())
+    })?;
+    provisional.into_iter().try_for_each(&mut visit)?;
+    Ok(summary)
 }
 
 fn verify_groups(
@@ -2607,6 +2622,26 @@ mod tests {
             std::env::temp_dir().join(format!("pipelock-group-batch-{}-{id}", std::process::id()));
         fs::create_dir(&dir).unwrap();
         BatchTestDirectory(dir)
+    }
+
+    #[test]
+    fn failed_cutover_inventory_does_not_publish_partial_results() {
+        let mut published = Vec::new();
+        let result = publish_cutover_inventory(
+            |visit| {
+                let mut provisional =
+                    report_from_inner(Err(("GROUP_INVALID", "example".into())), "example");
+                provisional.verdict = "GROUP_VALID".into();
+                visit(provisional)?;
+                Err(VerifierError::Unavailable("inventory changed".into()))
+            },
+            |row| {
+                published.push(row);
+                Ok(())
+            },
+        );
+        assert!(matches!(result, Err(VerifierError::Unavailable(_))));
+        assert!(published.is_empty());
     }
 
     #[test]

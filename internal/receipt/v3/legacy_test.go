@@ -211,6 +211,23 @@ func TestLegacyDiagnosticLabels(t *testing.T) {
 	}
 }
 
+func TestFailedLegacyGroupInventoryDropsProvisionalRows(t *testing.T) {
+	v := verification{}
+	presented := map[legacyIdentity]legacyPresentation{}
+	grouped := v.verifyLegacyGroups(presented, func(visit func(legacy.ReceiptGroupResult) error) (legacy.ReceiptGroupInventoryResult, error) {
+		group := legacy.ReceiptGroupResult{
+			GroupID: "example", Verdict: legacy.GroupValid, CloseManifestSHA: strings.Repeat("a", 64), ShardCount: 1,
+		}
+		if err := visit(group); err != nil {
+			t.Fatal(err)
+		}
+		return legacy.ReceiptGroupInventoryResult{Groups: 1}, recorder.ErrEvidenceChanged
+	})
+	if !grouped || len(presented) != 0 || len(v.result.Legacy) != 1 || v.result.Legacy[0].Verdict != string(legacy.GroupIncomplete) {
+		t.Fatal("failed inventory published provisional group evidence")
+	}
+}
+
 func TestLegacyInvalidGroupInventoryLabel(t *testing.T) {
 	dir := t.TempDir()
 	stream := signedStream(t, 1, nil, &Cutover{Inventory: EmptyInventoryDigest()})
