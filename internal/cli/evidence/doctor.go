@@ -17,6 +17,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/evidence/receiptinput"
+
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
@@ -300,6 +302,9 @@ func runEvidenceDoctorSnapshot(dir string, afterScan func()) (evidenceDoctorRepo
 		return evidenceDoctorReport{}, fmt.Errorf("%q is not a directory", dir)
 	}
 
+	if err := receiptinput.Refuse(cleanDir, "evidence doctor", "the evidence doctor"); errors.Is(err, receiptinput.ErrUnsupported) {
+		return evidenceDoctorReport{}, err
+	}
 	locations, err := recorder.DiscoverEvidenceLocations(cleanDir)
 	if err != nil {
 		// Discovery failures leave the corpus unavailable, without establishing
@@ -315,6 +320,13 @@ func runEvidenceDoctorSnapshot(dir string, afterScan func()) (evidenceDoctorRepo
 	}
 	if len(locations) == 0 || locations[0].ID != "" {
 		locations = append([]recorder.EvidenceLocation{{Root: cleanDir, Dir: cleanDir}}, locations...)
+	}
+	for _, location := range locations {
+		if location.Dir != cleanDir {
+			if err := receiptinput.Refuse(location.Dir, "evidence doctor", "the evidence doctor"); errors.Is(err, receiptinput.ErrUnsupported) {
+				return evidenceDoctorReport{}, err
+			}
+		}
 	}
 	before, err := doctorCorpusInventory(locations)
 	if err != nil {

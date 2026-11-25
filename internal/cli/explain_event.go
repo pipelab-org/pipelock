@@ -19,6 +19,8 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/luckyPipewrench/pipelock/internal/evidence/receiptinput"
+
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
@@ -151,6 +153,12 @@ func resolveExplainEventLogPath(cfg *config.Config, auditLog string) (string, er
 }
 
 func lookupExplainEvent(path, id string, sanitizer explainEventSanitizer) (explainEventLookup, error) {
+	if err := receiptinput.Refuse(path, "explain event", "the audit event reader"); err != nil {
+		if errors.Is(err, receiptinput.ErrUnsupported) {
+			return explainEventLookup{}, err
+		}
+		return explainEventLookup{}, fmt.Errorf("open audit log: %w", err)
+	}
 	cleanPath := filepath.Clean(path)
 	f, err := os.Open(cleanPath)
 	if err != nil {

@@ -140,6 +140,12 @@ func addLifecycleFlags(cmd *cobra.Command, flags *lifecycleFlags) {
 }
 
 func runPromote(cmd *cobra.Command, flags lifecycleFlags) error {
+	return withLegacyReceiptOutput("learn promote", flags.receiptOut, filepath.Join(flags.storeDir, defaultLifecycleReceiptOut), func() error {
+		return runPromoteLegacy(cmd, flags)
+	})
+}
+
+func runPromoteLegacy(cmd *cobra.Command, flags lifecycleFlags) error {
 	lc, err := resolveLifecycle(flags)
 	if err != nil {
 		return err
@@ -219,6 +225,12 @@ func runPromote(cmd *cobra.Command, flags lifecycleFlags) error {
 }
 
 func runRollback(cmd *cobra.Command, flags lifecycleFlags) error {
+	return withLegacyReceiptOutput("learn rollback", flags.receiptOut, filepath.Join(flags.storeDir, defaultLifecycleReceiptOut), func() error {
+		return runRollbackLegacy(cmd, flags)
+	})
+}
+
+func runRollbackLegacy(cmd *cobra.Command, flags lifecycleFlags) error {
 	lc, err := resolveLifecycle(flags)
 	if err != nil {
 		return err

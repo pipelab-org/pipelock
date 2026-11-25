@@ -29,6 +29,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/contract/inference"
 	contractcompile "github.com/luckyPipewrench/pipelock/internal/contract/inference/compile"
 	"github.com/luckyPipewrench/pipelock/internal/contract/inference/normalize"
+	"github.com/luckyPipewrench/pipelock/internal/evidence/receiptinput"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
@@ -224,6 +225,9 @@ func resolveCompileInputs(cfg *config.Config, flags compileFlags) ([]string, err
 			if err := ensurePathWithinDir(captureRootReal, resolved); err != nil {
 				return nil, err
 			}
+		}
+		if err := receiptinput.Refuse(path, "learn compile", "contract inference"); err != nil {
+			return nil, err
 		}
 		paths[i] = resolved
 	}

@@ -21,6 +21,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/evidence/receiptinput"
+
 	"github.com/google/uuid"
 
 	conductorcore "github.com/luckyPipewrench/pipelock/enterprise/conductor"
@@ -134,6 +136,9 @@ func Build(ctx context.Context, source EvidenceSource, opts Options) (Result, er
 			}); err != nil {
 				return Result{}, fmt.Errorf("fleet report: verify audit batch %s: %w", ev.Envelope.BatchID, err)
 			}
+		}
+		if err := receiptinput.RefusePayload(ev.Payload, "fleet report", "fleet reports"); err != nil {
+			return Result{}, err
 		}
 		entries, err := recorder.ReadEntriesFromReader(bytes.NewReader(ev.Payload))
 		if err != nil {

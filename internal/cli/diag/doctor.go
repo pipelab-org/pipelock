@@ -16,6 +16,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/evidence/receiptinput"
+
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/certgen"
@@ -832,6 +834,12 @@ func checkDoctorFlightRecorder(cfg *config.Config) doctorReportCheck {
 			Enforcing:  false,
 			Detail:     detail,
 			Next:       next,
+		}
+	}
+	if err := receiptinput.Refuse(cfg.FlightRecorder.Dir, "doctor", "flight recorder evidence health"); err != nil {
+		return doctorReportCheck{
+			Name: "flight_recorder", Surface: doctorSurfaceConfig, Status: doctorStatusFail,
+			Configured: true, Reachable: true, Detail: err.Error(),
 		}
 	}
 	health, err := recorder.EvidenceDirectoryHealthForDir(cfg.FlightRecorder.Dir, cfg.FlightRecorder.RetentionDays)

@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/evidence/receiptinput"
+
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
@@ -103,6 +105,9 @@ func runCompact(cmd *cobra.Command, opts compactOptions) error {
 	if err != nil {
 		return fmt.Errorf("resolve evidence location: %w", err)
 	}
+	if err := receiptinput.Refuse(location.Dir, "evidence compact", "the legacy evidence reader"); err != nil {
+		return err
+	}
 	key, err := signing.LoadPublicKey(strings.TrimSpace(opts.publicKey))
 	if err != nil {
 		return fmt.Errorf("load --key: %w", err)
@@ -112,6 +117,9 @@ func runCompact(cmd *cobra.Command, opts compactOptions) error {
 		return fmt.Errorf("lock stopped evidence directory: %w", err)
 	}
 	defer func() { _ = lock.Close() }()
+	if err := receiptinput.Refuse(location.Dir, "evidence compact", "the legacy evidence reader"); err != nil {
+		return err
+	}
 	grouped, err := hasReceiptGroupArtifacts(location.Dir)
 	if err != nil {
 		return err

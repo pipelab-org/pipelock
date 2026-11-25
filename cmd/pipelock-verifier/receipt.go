@@ -9,6 +9,8 @@ import (
 	"io"
 	"strings"
 
+	"github.com/luckyPipewrench/pipelock/internal/evidence/receiptinput"
+
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
@@ -83,6 +85,13 @@ type receiptReport struct {
 }
 
 func runReceipt(stdout, stderr io.Writer, target string, opts receiptOptions) error {
+	command, reader := "receipt", "the standalone receipt reader"
+	if opts.recheckSource != "" {
+		command, reader = "receipt --recheck-source", "the receipt recheck verifier"
+	}
+	if err := receiptinput.Refuse(target, command, reader); err != nil {
+		return cliutil.ExitCodeError(cliutil.ExitConfig, err)
+	}
 	keyHex, err := resolveSignerKey(strings.TrimSpace(opts.signerKey))
 	if err != nil {
 		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("resolve signer key: %w", err))

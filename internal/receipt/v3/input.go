@@ -4,6 +4,7 @@
 package v3
 
 import (
+	"bytes"
 	"bufio"
 	"context"
 	"crypto/ed25519"
@@ -191,6 +192,12 @@ func ClaimsInput(path string, directory bool) (bool, error) {
 		return true, nil
 	}
 	return startsWithProfile(path)
+}
+
+// ClaimsContent identifies the receipt profile prefix on a byte-oriented input
+// that has no filename, such as a fleet audit payload.
+func ClaimsContent(data []byte) bool {
+	return bytes.HasPrefix(data, []byte(contract.ProfileEnvelopePrefix))
 }
 
 func startsWithProfile(path string) (bool, error) {

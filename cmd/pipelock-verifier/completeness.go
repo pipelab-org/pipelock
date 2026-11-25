@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/luckyPipewrench/pipelock/internal/evidence/receiptinput"
+
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
@@ -64,6 +66,9 @@ Exit-code contract:
 }
 
 func runCompleteness(stdout, stderr io.Writer, target string, opts completenessOptions) error {
+	if err := receiptinput.Refuse(target, "completeness", "the completeness verifier"); err != nil {
+		return cliutil.ExitCodeError(cliutil.ExitConfig, err)
+	}
 	keyHex, err := resolveSignerKey(strings.TrimSpace(opts.signerKey))
 	if err != nil {
 		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("resolve signer key: %w", err))
@@ -78,6 +83,9 @@ func runCompleteness(stdout, stderr io.Writer, target string, opts completenessO
 		location, locationErr := recorder.ResolveEvidenceLocation(target, opts.locationID)
 		if locationErr != nil {
 			return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("resolve evidence location: %w", locationErr))
+		}
+		if err := receiptinput.Refuse(location.Dir, "completeness", "the completeness verifier"); err != nil {
+			return cliutil.ExitCodeError(cliutil.ExitConfig, err)
 		}
 		clean = location.Dir
 		resolvedLocation = &location

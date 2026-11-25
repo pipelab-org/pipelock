@@ -22,6 +22,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/luckyPipewrench/pipelock/internal/evidence/receiptinput"
+
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
@@ -118,6 +120,9 @@ const (
 )
 
 func runReplay(stdout, stderr io.Writer, receiptPath string, opts replayOptions) error {
+	if err := receiptinput.Refuse(receiptPath, "replay", "the replay verifier"); err != nil {
+		return cliutil.ExitCodeError(cliutil.ExitConfig, err)
+	}
 	if strings.TrimSpace(opts.policyPath) == "" {
 		return cliutil.ExitCodeError(exitUsage, fmt.Errorf("--policy is required"))
 	}

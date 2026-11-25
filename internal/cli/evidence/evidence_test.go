@@ -1483,7 +1483,7 @@ func TestExpireCmd_ErrorPaths(t *testing.T) {
 				}
 				return []string{"expire", "--receipt-dir", dir, "--retention-days", "0"}
 			},
-			wantErr: "evidence expire does not support v3 receipt directories",
+			wantErr: "evidence expire: receipt v3 evidence is not supported",
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

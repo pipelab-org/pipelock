@@ -24,6 +24,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contract"
 	"github.com/luckyPipewrench/pipelock/internal/contract/shadow"
+	"github.com/luckyPipewrench/pipelock/internal/evidence/receiptinput"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
@@ -88,6 +89,12 @@ provide --agent and configure learn.capture_dir; the command reads
 }
 
 func runShadow(cmd *cobra.Command, flags shadowFlags) error {
+	const command = "learn shadow"
+	if filepath.IsAbs(flags.recorderDir) {
+		if err := receiptinput.Refuse(flags.recorderDir, command, "learn lifecycle receipts"); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
 	if flags.duration <= 0 {
 		return fmt.Errorf("learn shadow: --duration must be positive")
 	}
@@ -208,11 +215,27 @@ func runShadow(cmd *cobra.Command, flags shadowFlags) error {
 			return err
 		}
 	}
-	if err := writeShadowReports(cmd, report, flags); err != nil {
+	var receiptsEmitted int
+	write := func() error {
+		if err := writeShadowReports(cmd, report, flags); err != nil {
+			return err
+		}
+		var err error
+		receiptsEmitted, err = emitShadowReceipts(flags, env.Body, report, now)
 		return err
 	}
-	receiptsEmitted, err := emitShadowReceipts(flags, env.Body, report, now)
-	if err != nil {
+	if flags.recorderDir != "" && len(report.Batches) != 0 {
+		dir, err := checkedWriteDir(flags.recorderDir)
+		if err != nil {
+			return err
+		}
+		flags.recorderDir = dir
+	}
+	if filepath.IsAbs(flags.recorderDir) {
+		if err := withLegacyReceiptDirectory(command, flags.recorderDir, write); err != nil {
+			return err
+		}
+	} else if err := write(); err != nil {
 		return err
 	}
 

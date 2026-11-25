@@ -13,6 +13,8 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+
+	"github.com/luckyPipewrench/pipelock/internal/evidence/receiptinput"
 )
 
 const (
@@ -82,6 +84,9 @@ func LoadDeliveryHealth(path string) (DeliveryHealth, error) {
 }
 
 func InspectReadModelIndex(indexPath, sourceDir string) (ReadModelIndex, bool, error) {
+	if err := receiptinput.Refuse(sourceDir, "dashboard", "the dashboard read model"); err != nil {
+		return ReadModelIndex{}, false, err
+	}
 	data, err := readFileLimit(indexPath, maxReadModelIndexBytes)
 	if err != nil {
 		return ReadModelIndex{}, false, fmt.Errorf("read model index: %w", err)

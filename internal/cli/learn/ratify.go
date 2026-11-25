@@ -100,6 +100,16 @@ enforcement, so use it only for deliberate operator-reviewed dogfood workflows.`
 }
 
 func runRatify(cmd *cobra.Command, flags ratifyFlags) error {
+	output := flags.outPath
+	if output == "" {
+		output = flags.candidatePath
+	}
+	return withLegacyReceiptOutput("learn ratify", flags.receiptOut, filepath.Join(filepath.Dir(output), "ratification-receipts.jsonl"), func() error {
+		return runRatifyLegacy(cmd, flags)
+	})
+}
+
+func runRatifyLegacy(cmd *cobra.Command, flags ratifyFlags) error {
 	clean, env, err := loadCandidateEnvelope(flags.candidatePath)
 	if err != nil {
 		return err

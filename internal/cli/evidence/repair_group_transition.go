@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"path/filepath"
 
+	"github.com/luckyPipewrench/pipelock/internal/evidence/receiptinput"
+
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
@@ -22,6 +24,9 @@ func repairGroupTransitionCmd() *cobra.Command {
 		Short: "Complete a missing transition for a stopped receipt group",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := receiptinput.Refuse(dir, "evidence repair-group-transition", "the legacy evidence reader"); err != nil {
+				return err
+			}
 			key, err := signing.LoadPrivateKeyFileForPurpose(keyFile, signing.PurposeReceiptSigning)
 			if err != nil {
 				return fmt.Errorf("load opening key: %w", err)

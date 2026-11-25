@@ -14,6 +14,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/luckyPipewrench/pipelock/internal/evidence/receiptinput"
+
 	"github.com/spf13/cobra"
 
 	clisigning "github.com/luckyPipewrench/pipelock/internal/cli/signing"
@@ -148,6 +150,9 @@ type runPeek struct {
 }
 
 func runAuditPacket(stdout, stderr io.Writer, target string, opts auditPacketOptions) error {
+	if err := receiptinput.Refuse(target, "audit-packet", "the audit packet verifier"); err != nil {
+		return cliutil.ExitCodeError(cliutil.ExitConfig, err)
+	}
 	packetPath, baseDir, err := resolvePacketPath(target)
 	if err != nil {
 		return cliutil.ExitCodeError(cliutil.ExitConfig, err)
@@ -430,6 +435,9 @@ func reverifyChain(baseDir string, packet *auditpacket.Packet, signerOverride st
 	// Classify and verify the same bounded snapshot. A second read could see a
 	// different file and let an action chain pass while v2 or recorder checks
 	// inspect different evidence.
+	if err := receiptinput.Refuse(evidencePath, "audit-packet", "the audit packet verifier"); err != nil {
+		return receipt.ChainResult{}, nil, false, err
+	}
 	bare, data, err := isBareActionReceiptJSONL(evidencePath)
 	if err != nil {
 		return receipt.ChainResult{}, nil, false, fmt.Errorf("read evidence: %w", err)

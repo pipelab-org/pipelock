@@ -14,6 +14,8 @@ import (
 	"os"
 	"strings"
 
+	"github.com/luckyPipewrench/pipelock/internal/evidence/receiptinput"
+
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
@@ -48,6 +50,17 @@ func runVerifyEpochPin(cmd *cobra.Command, opts verifyEpochPinOptions) error {
 	if err != nil {
 		return err
 	}
+	root, err := validateReceiptDir(opts.receiptDir)
+	if err != nil {
+		return err
+	}
+	location, err := recorder.ResolveEvidenceLocation(root, opts.locationID)
+	if err != nil {
+		return fmt.Errorf("resolve evidence location: %w", err)
+	}
+	if err := receiptinput.Refuse(location.Dir, "evidence verify-epoch-pin", "the legacy evidence reader"); err != nil {
+		return err
+	}
 	pinBytes, pin, err := readEpochPin(opts.pinFile, expectedDigest)
 	if err != nil {
 		return err
@@ -71,14 +84,6 @@ func runVerifyEpochPin(cmd *cobra.Command, opts verifyEpochPinOptions) error {
 	if len(pin.CheckpointVerification.Unsigned) != 0 {
 		return fmt.Errorf("epoch pin contains %d unsigned checkpoint(s); a fully signed checkpoint proof is required", len(pin.CheckpointVerification.Unsigned))
 	}
-	root, err := validateReceiptDir(opts.receiptDir)
-	if err != nil {
-		return err
-	}
-	location, err := recorder.ResolveEvidenceLocation(root, opts.locationID)
-	if err != nil {
-		return fmt.Errorf("resolve evidence location: %w", err)
-	}
 	key, err := signing.LoadPublicKey(strings.TrimSpace(opts.publicKey))
 	if err != nil {
 		return fmt.Errorf("load --key: %w", err)
@@ -88,6 +93,9 @@ func runVerifyEpochPin(cmd *cobra.Command, opts verifyEpochPinOptions) error {
 		return fmt.Errorf("lock stopped evidence directory: %w", err)
 	}
 	defer func() { _ = lock.Close() }()
+	if err := receiptinput.Refuse(location.Dir, "evidence verify-epoch-pin", "the legacy evidence reader"); err != nil {
+		return err
+	}
 	grouped, err := receipt.ReceiptGroupEvidencePresent(location.Dir, 0)
 	if err != nil {
 		return fmt.Errorf("inspect receipt group evidence: %w", err)

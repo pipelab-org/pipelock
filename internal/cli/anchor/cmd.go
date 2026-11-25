@@ -6,6 +6,7 @@ package anchor
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -13,6 +14,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/evidence/receiptinput"
 
 	"github.com/spf13/cobra"
 
@@ -87,6 +90,9 @@ verify Rekor bundles with pipelock-verifier independent --rekor-log-key.`,
 }
 
 func runReceipts(out io.Writer, target string, opts receiptsOptions) error {
+	if err := receiptinput.Refuse(target, "anchor receipts", "the receipt anchor"); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
 	trustedKeys, err := resolveTrustedKeys(opts.keys)
 	if err != nil {
 		return err

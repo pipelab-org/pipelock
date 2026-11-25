@@ -151,6 +151,13 @@ Examples:
 				return configError(detectErr)
 			}
 			if claimed {
+				if wholeRecorder || requireSeal {
+					flag := "--whole-recorder"
+					if requireSeal && !wholeRecorder {
+						flag = "--require-seal"
+					}
+					return configError(fmt.Errorf("%s: receipt v3 has no whole-recorder proof in this release; a v3 stream's close can bind the operational log's root, and checking the log against that root is not offered yet", flag))
+				}
 				keys, err := resolveExpectedKeyHexes(expectedKeys)
 				if err != nil {
 					return configError(fmt.Errorf("loading public key: %w", err))
@@ -163,7 +170,7 @@ Examples:
 					Paths: args, Directory: targetDir, Keys: keys, Head: expectHead,
 					Seq: expectSeq, SeqSet: cmd.Flags().Changed("expect-seq"),
 					AllowPrefix: allowPrefix, AllowUnpinned: allowUnpinned,
-					LegacyOptions: wholeRecorder || requireSeal || allowUnanchoredSeal || fleetReport ||
+					LegacyOptions: allowUnanchoredSeal || fleetReport ||
 						cleanReport != "" || posturePath != "" || postureKey != "" || showRaw || hexdump || len(endorsementPaths) > 0,
 					LegacySelection: legacy,
 				})

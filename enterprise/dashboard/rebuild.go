@@ -20,6 +20,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/evidence/receiptinput"
+
 	"github.com/luckyPipewrench/pipelock/internal/atomicfile"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
@@ -69,6 +71,12 @@ type StalenessMarker struct {
 }
 
 func RebuildReadModel(opts RebuildOptions) error {
+	if err := receiptinput.Refuse(opts.SourceDir, "dashboard rebuild", "the dashboard read model"); err != nil {
+		if errors.Is(err, receiptinput.ErrUnsupported) {
+			return err
+		}
+		return fmt.Errorf("NO SOURCE EVIDENCE: read recorder directory: %w", err)
+	}
 	paths, err := evidencePaths(opts.SourceDir)
 	if err != nil {
 		return fmt.Errorf("NO SOURCE EVIDENCE: read recorder directory: %w", err)

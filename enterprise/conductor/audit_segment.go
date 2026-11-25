@@ -14,6 +14,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/luckyPipewrench/pipelock/internal/evidence/receiptinput"
+
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
 
@@ -93,6 +95,9 @@ func (a AuditBatchEnvelope) PayloadNamespace(ctx context.Context, payload []byte
 	}
 	if a.Validate() != nil || a.ValidatePayload(payload) != nil {
 		return AuditNamespace{}, nil
+	}
+	if err := receiptinput.RefusePayload(payload, "audit batch", "the fleet audit receiver"); err != nil {
+		return AuditNamespace{}, err
 	}
 	entries, err := recorder.ReadEntriesFromReader(bytes.NewReader(payload))
 	if ctxErr := ctx.Err(); ctxErr != nil {

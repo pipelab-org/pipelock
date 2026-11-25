@@ -12,6 +12,9 @@ import (
 	"strings"
 )
 
+// ErrLegacyEvidenceFormat indicates the directory has switched to v3.
+var ErrLegacyEvidenceFormat = errors.New("legacy receipts require a new evidence directory after a v3 switch")
+
 var tryAcquireEvidenceCeremonyLock = tryLockEvidenceFileForExpiry
 
 // EvidenceCeremonyLock proves that no recorder is writing in an evidence
@@ -84,7 +87,7 @@ func checkLegacyEvidenceFormat(dir string) error {
 	}
 	for _, entry := range entries {
 		if strings.HasSuffix(entry.Name(), ".receipt-v3.jsonl") {
-			return errors.New("legacy receipts require a new evidence directory after a v3 switch")
+			return ErrLegacyEvidenceFormat
 		}
 	}
 	return nil

@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/luckyPipewrench/pipelock/internal/evidence/receiptinput"
+
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/anchor"
@@ -70,6 +72,9 @@ and verifies the recorded SET, signed checkpoint, and inclusion proof offline.`,
 }
 
 func runIndependent(stdout, stderr io.Writer, target string, opts independentOptions) error {
+	if err := receiptinput.Refuse(target, "independent", "the independent anchor verifier"); err != nil {
+		return cliutil.ExitCodeError(cliutil.ExitConfig, err)
+	}
 	if strings.TrimSpace(opts.bundlePath) == "" {
 		return cliutil.ExitCodeError(exitUsage, fmt.Errorf("--bundle is required"))
 	}
@@ -235,6 +240,9 @@ func independentReceipts(target string, opts independentOptions) ([]receipt.Rece
 		location, err := recorder.ResolveEvidenceLocation(target, opts.locationID)
 		if err != nil {
 			return nil, fmt.Errorf("resolve evidence location: %w", err)
+		}
+		if err := receiptinput.Refuse(location.Dir, "independent", "the independent anchor verifier"); err != nil {
+			return nil, err
 		}
 		return receipt.ExtractReceiptsFromResolvedSessionDir(location, opts.sessionID)
 	}
