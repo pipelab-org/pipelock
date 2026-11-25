@@ -170,6 +170,8 @@ export function discover(paths: readonly string[], options: VerifyV3Options) {
       if (!entry.isFile()) throw new Error("evidence path is not a regular file: " + path);
       return [path];
     });
+  } else {
+    for (const path of paths) closeSync(openEvidence(path));
   }
   const files: InputFile[] = [];
   const legacy: string[] = [];

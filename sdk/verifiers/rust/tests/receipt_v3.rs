@@ -558,3 +558,47 @@ fn operational_recorder_read_failure_is_a_legacy_finding() {
         );
     }
 }
+
+#[test]
+fn filename_claimed_missing_or_directory_inputs_are_input_errors() {
+    use std::process::Command;
+
+    let cli = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_pipelock-verifier-rs"))
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let dir = TestDirectory::new();
+    let good = dir.0.join("good.jsonl");
+    fs::write(&good, b"{}\n").unwrap();
+    let absent_v3 = dir.0.join("absent.receipt-v3.jsonl");
+    let absent_v4 = dir.0.join("absent.receipt-v4.jsonl");
+    let dir_v3 = dir.0.join("dir.receipt-v3.jsonl");
+    fs::create_dir(&dir_v3).unwrap();
+
+    let good_s = good.to_str().unwrap();
+    let av3 = absent_v3.to_str().unwrap();
+    let av4 = absent_v4.to_str().unwrap();
+    let dv3 = dir_v3.to_str().unwrap();
+
+    for args in [
+        vec!["v3", "--claims", av3],
+        vec!["v3", "--claims", av4],
+        vec!["v3", "--claims", dv3],
+        vec!["v3", av3],
+        vec!["v3", av4],
+        vec!["v3", good_s, av3],
+        vec!["v3", good_s, av4],
+        vec!["v3", good_s, dv3],
+    ] {
+        let output = cli(&args);
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+        assert!(output.stdout.is_empty(), "{args:?}");
+        assert_eq!(
+            String::from_utf8(output.stderr).unwrap().lines().count(),
+            1,
+            "{args:?}"
+        );
+    }
+}

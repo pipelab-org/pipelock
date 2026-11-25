@@ -272,6 +272,9 @@ fn discover(paths: &[PathBuf], options: &Options) -> Result<Discovery> {
         }
         selected
     } else {
+        for path in paths {
+            let _ = open(path)?;
+        }
         paths.iter().cloned().collect()
     };
     for path in paths {
@@ -514,6 +517,7 @@ fn run_cli(args: &[String]) -> Result<i32> {
             if path.starts_with("--") {
                 return Err(input_error("v3 --claims requires one path"));
             }
+            let _ = open(Path::new(path))?;
             println!("{}", claims_input(Path::new(path))?);
             return Ok(0);
         }

@@ -474,3 +474,23 @@ def test_parse_line_rejects_trailing_comma_after_max_signatures(tmp_path):
     assert proj["verdict"] == "INVALID"
     assert proj["exit_code"] == 1
     assert proj["finding_codes"] == ["LINE_LAYOUT"]
+
+
+def test_filename_claimed_missing_or_directory_inputs_are_input_errors(tmp_path):
+    good = Path(_request_args("g08-pinned")[-1])
+    absent_v3 = tmp_path / "absent.receipt-v3.jsonl"
+    absent_v4 = tmp_path / "absent.receipt-v4.jsonl"
+    dir_v3 = tmp_path / "dir.receipt-v3.jsonl"
+    dir_v3.mkdir()
+
+    for argv in (
+        ["v3", "--claims", str(absent_v3)],
+        ["v3", "--claims", str(absent_v4)],
+        ["v3", "--claims", str(dir_v3)],
+        ["v3", str(absent_v3)],
+        ["v3", str(absent_v4)],
+        ["v3", str(good), str(absent_v3)],
+        ["v3", str(good), str(absent_v4)],
+        ["v3", str(good), str(dir_v3)],
+    ):
+        assert main(argv) == 2, argv

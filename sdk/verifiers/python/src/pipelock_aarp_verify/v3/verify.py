@@ -155,6 +155,10 @@ def _discover(
             if child.is_symlink() or not child.is_file():
                 raise ValueError(f"evidence path is not a regular file: {child}")
             paths.append(child)
+    else:
+        for path in paths:
+            with _open_regular_input(path):
+                pass
     v3 = []
     legacy = []
     inventories = defaultdict(list)

@@ -307,3 +307,30 @@ test("v3 cutover recognizes a bare legacy EvidenceReceipt v2 session", async (t)
   assert.equal(result.legacy[0].format, "evidence_v2");
   assert.equal(result.legacy[0].verdict, "VALID PREFIX, END UNPROVEN");
 });
+
+test("v3 rejects missing or directory inputs even when filename claims v3", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "pipelock-v3-input-err-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const good = join(dir, "good.jsonl");
+  writeFileSync(good, "{}\n");
+  const absentV3 = join(dir, "absent.receipt-v3.jsonl");
+  const absentV4 = join(dir, "absent.receipt-v4.jsonl");
+  const dirV3 = join(dir, "dir.receipt-v3.jsonl");
+  mkdirSync(dirV3);
+
+  for (const args of [
+    ["--claims", absentV3],
+    ["--claims", absentV4],
+    ["--claims", dirV3],
+    [absentV3],
+    [absentV4],
+    [good, absentV3],
+    [good, absentV4],
+    [good, dirV3],
+  ]) {
+    const command = invoke(...args);
+    assert.equal(command.status, 2, JSON.stringify(args));
+    assert.equal(command.stdout, "", JSON.stringify(args));
+    assert.match(command.stderr, /^[^\n]+\n$/u, JSON.stringify(args));
+  }
+});

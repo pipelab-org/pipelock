@@ -10,6 +10,7 @@ import sqlite3
 import sys
 from pathlib import Path
 
+from ..input_file import _open_regular_input
 from .verify import Options, claims_input, verify_paths
 from .wire import canonical
 
@@ -53,6 +54,8 @@ def run(argv: list[str]) -> int:
                 raise ValueError(
                     "--claims requires exactly one file and no other options"
                 )
+            with _open_regular_input(args.paths[0]):
+                pass
             sys.stdout.write("true\n" if claims_input(args.paths[0]) else "false\n")
             return 0
         directory = len(args.paths) == 1 and args.paths[0].is_dir()

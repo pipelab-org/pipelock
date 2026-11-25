@@ -1,9 +1,9 @@
 // Copyright 2026 Pipelock contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { statSync } from "node:fs";
+import { closeSync, statSync } from "node:fs";
 import { parseArgs } from "node:util";
-import { claimsV3Input, parseHead, parseSequence } from "./input.js";
+import { claimsV3Input, openEvidence, parseHead, parseSequence } from "./input.js";
 import { canonicalV3 } from "./result.js";
 import { verifyV3Paths } from "./verify.js";
 
@@ -44,6 +44,7 @@ export async function runV3Command(args: string[]): Promise<number> {
         tokens.filter((token) => token.kind === "option").length !== 1
       )
         throw new Error("--claims requires exactly one path and no other flags");
+      closeSync(openEvidence(positionals[0]));
       process.stdout.write(String(claimsV3Input(positionals[0])) + "\n");
       return 0;
     }
