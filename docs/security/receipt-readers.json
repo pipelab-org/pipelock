@@ -114,7 +114,7 @@
   {
     "package": "internal/cli/signing",
     "role": "v3-verifier",
-    "reason": "Routes v3 to its verifier and refuses legacy-only whole-recorder options.",
+    "reason": "Routes v3 to its verifier, refuses legacy-only whole-recorder options, and refuses v3 in transcript-root and receipt rotation endorse.",
     "test": "TestVerifyReceiptV3RefusesWholeRecorderOptions"
   },
   {

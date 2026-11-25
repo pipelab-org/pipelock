@@ -27,6 +27,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/evidence"
 	"github.com/luckyPipewrench/pipelock/internal/evidence/display"
 	"github.com/luckyPipewrench/pipelock/internal/evidence/endproof"
+	"github.com/luckyPipewrench/pipelock/internal/evidence/receiptinput"
 	"github.com/luckyPipewrench/pipelock/internal/fleetreceipt"
 	"github.com/luckyPipewrench/pipelock/internal/posture"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
@@ -2385,11 +2386,17 @@ Examples:
 			var label string
 			var receipts []receipt.Receipt
 			if chainDir != "" {
+				if err := refuseTranscriptRootV3(chainDir, true); err != nil {
+					return err
+				}
 				location, locationErr := recorder.ResolveEvidenceLocation(chainDir, locationID)
 				if locationErr != nil {
 					return fmt.Errorf("extracting session receipts: resolve evidence location: %w", locationErr)
 				}
 				chainDir = location.Dir
+				if err := refuseTranscriptRootV3(chainDir, false); err != nil {
+					return err
+				}
 				if !cmd.Flags().Changed("session") {
 					sessionID, err = resolveOneReceiptSession(location, sessionID)
 					if err != nil {
@@ -2406,6 +2413,9 @@ Examples:
 					return fmt.Errorf("--location requires --chain")
 				}
 				path := args[0]
+				if err := refuseTranscriptRootV3(path, false); err != nil {
+					return err
+				}
 				label = path
 				var fileSessionID string
 				receipts, fileSessionID, err = receipt.ExtractReceiptsWithSessionID(path)
@@ -2444,6 +2454,22 @@ Examples:
 	cmd.Flags().StringVar(&sessionID, "session", "proxy", "receipt chain session ID inside the evidence directory")
 	cmd.Flags().StringVar(&locationID, "location", "", "location path relative to the evidence directory")
 	return cmd
+}
+
+// refuseTranscriptRootV3 keeps transcript-root from printing a root for a
+// directory or file the v3 verifier claims. A missing path is left to the
+// decoder, which already names it. With resolve set, the single location a
+// location-less lookup would pick is checked as well.
+func refuseTranscriptRootV3(path string, resolve bool) error {
+	const command, reader = "transcript-root", "transcript root"
+	check := receiptinput.Refuse
+	if resolve {
+		check = receiptinput.RefuseLocation
+	}
+	if err := check(path, command, reader); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 
 func resolveExpectedKeyHex(expectedKey string) (string, error) {
