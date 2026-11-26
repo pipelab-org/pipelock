@@ -66,10 +66,11 @@ func ClaimsReceiptName(name string) bool {
 	return stream
 }
 
-// ReceiptProfileEntry finds the first claimed filename in a directory listing.
+// ReceiptProfileEntry finds the first profile-shaped non-directory entry.
+// Other non-regular entries remain claimed so readers cannot follow them as legacy evidence.
 func ReceiptProfileEntry(entries []fs.DirEntry) string {
 	for _, entry := range entries {
-		if ClaimsReceiptName(entry.Name()) {
+		if !entry.IsDir() && ClaimsReceiptName(entry.Name()) {
 			return entry.Name()
 		}
 	}

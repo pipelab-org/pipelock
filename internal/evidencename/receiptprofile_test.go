@@ -4,6 +4,8 @@
 package evidencename
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -93,5 +95,20 @@ func TestProbeReceiptContentWhitespaceLimit(t *testing.T) {
 	claimed, err := ProbeReceiptContent(r)
 	if err != nil || claimed || size-r.Len() > limit+len(ReceiptProfilePrefix) {
 		t.Fatalf("claimed=%t, err=%v, read %d bytes; want a bounded negative probe", claimed, err, size-r.Len())
+	}
+}
+
+func TestReceiptProfileEntryIgnoresDirectories(t *testing.T) {
+	dir := t.TempDir()
+	const name = "empty.receipt-v3.jsonl"
+	if err := os.Mkdir(filepath.Join(dir, name), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := ReceiptProfileEntry(entries); got != "" {
+		t.Fatalf("directory claimed its parent as %q", got)
 	}
 }

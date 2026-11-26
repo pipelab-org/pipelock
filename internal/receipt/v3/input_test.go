@@ -545,3 +545,14 @@ func coreDiscover(paths []string, opts Options, skip string) ([]inputFile, []str
 	files, _, inventories, _, err := discover(selected, Options{}, skip)
 	return files, old, inventories, ignored, err
 }
+
+func TestDiscoveryRejectsProfileNamedDirectory(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "empty.receipt-v3.jsonl"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	_, _, _, _, err := discover([]string{dir}, Options{Directory: true}, "")
+	if err == nil || !strings.Contains(err.Error(), "not a regular file") {
+		t.Fatalf("discover = %v, want non-regular evidence error", err)
+	}
+}
