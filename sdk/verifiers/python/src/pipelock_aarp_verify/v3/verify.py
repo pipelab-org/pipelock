@@ -7,13 +7,12 @@ from __future__ import annotations
 
 import json
 import re
-import sqlite3
 from collections import defaultdict
 from collections.abc import Iterable, Iterator
-from contextlib import closing
+from contextlib import closing, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import BinaryIO
+from typing import TYPE_CHECKING, BinaryIO
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
@@ -254,8 +253,25 @@ def _position_order(current: Record, last: Record | None, stream: str) -> str:
     return ""
 
 
+if TYPE_CHECKING:
+    from sqlite3 import Connection
+
+
+@contextmanager
+def _scratch_database() -> Iterator[Connection]:
+    try:
+        import sqlite3
+    except ImportError as exc:
+        raise ValueError("receipt v3 verification requires SQLite") from exc
+    try:
+        with closing(sqlite3.connect("")) as db:
+            yield db
+    except sqlite3.Error as exc:
+        raise OSError(f"receipt v3 verification database: {exc}") from exc
+
+
 class Verification:
-    def __init__(self, db: sqlite3.Connection, opts: Options, ignored: int) -> None:
+    def __init__(self, db: Connection, opts: Options, ignored: int) -> None:
         self.db = db
         db.execute("""
             CREATE TABLE records (
@@ -778,7 +794,7 @@ def verify_paths(
     inputs = [Path(path) for path in paths]
     options.validate(inputs)
     files, old, inventories, ignored = _discover(inputs, options)
-    with closing(sqlite3.connect("")) as db:
+    with _scratch_database() as db:
         v = Verification(db, options, ignored)
         for item in files:
             v.discover_key(item)

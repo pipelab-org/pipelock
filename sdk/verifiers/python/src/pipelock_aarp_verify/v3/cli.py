@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import argparse
-import sqlite3
 import sys
 from pathlib import Path
 
@@ -79,7 +78,7 @@ def run(argv: list[str]) -> int:
             + "\n"
         )
         return result["exit_code"]
-    except (OSError, ValueError, sqlite3.Error) as exc:
+    except (OSError, ValueError) as exc:
         sys.stderr.write(" ".join(str(exc).splitlines()) + "\n")
         return 2
     except SystemExit as exc:

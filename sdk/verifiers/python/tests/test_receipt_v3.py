@@ -7,6 +7,8 @@ import base64
 import io
 import json
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -91,6 +93,31 @@ def _request_args(name):
         *(arg for key in request.get("keys", []) for arg in ("--key", key)),
         *(str(directory / path) for path in request["inputs"]),
     ]
+
+
+def test_legacy_cli_without_sqlite():
+    script = """
+import sys
+sys.modules["_sqlite3"] = None
+from pipelock_aarp_verify.cli import main
+
+try:
+    main(["receipt", "--help"])
+except SystemExit as exc:
+    assert exc.code == 0
+sys.exit(main(["v3", *sys.argv[1:]]))
+"""
+    process = subprocess.run(
+        [sys.executable, "-c", script, *_request_args("g08-pinned")],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert process.returncode == 2
+    assert "usage:" in process.stdout
+    assert "SQLite" in process.stderr
+    assert "Traceback" not in process.stderr
+    assert '"verdict"' not in process.stdout
 
 
 @pytest.mark.parametrize(
