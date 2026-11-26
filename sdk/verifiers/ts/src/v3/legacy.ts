@@ -112,6 +112,7 @@ function legacyVerdict(v: Verification, item: LegacyPresentation): V3LegacyResul
 function fileStamp(path: string): string {
   try {
     const info = lstatSync(path, { bigint: true });
+    if (!info.isFile() || info.ino === 0n) return "";
     return [info.dev, info.ino, info.size, info.mtimeNs, info.ctimeNs].join(":");
   } catch {
     return "";
@@ -458,7 +459,7 @@ export async function verifyLegacy(
     // A wrapper shard stays excluded only while it is the file that was read;
     // a replacement under the same name is a change, not a pass.
     const settled = (): boolean =>
-      [...bareStamps].every(([path, stamp]) => fileStamp(path) === stamp);
+      [...bareStamps].every(([path, stamp]) => stamp !== "" && fileStamp(path) === stamp);
     try {
       const restart = settled()
         ? await withRecorderFileExclusions(restartExcluded, () =>

@@ -492,6 +492,29 @@ test("v3 does not exclude a replaced bare wrapper from restart continuity", asyn
   }
 });
 
+test("v3 does not settle bare wrappers without file identity", async (t) => {
+  const vector = join(corpus, "g09-legacy-bare-evidence-under-run-name");
+  const request: Request = JSON.parse(readFileSync(join(vector, "request.json"), "utf8"));
+  const dir = mkdtempSync(join(tmpdir(), "pipelock-ts-bare-no-identity-"));
+  const fs = createRequire(import.meta.url)("node:fs") as typeof import("node:fs");
+  const lstat = fs.lstatSync;
+  try {
+    for (const name of request.inputs) copyFileSync(join(vector, name), join(dir, name));
+    t.mock.method(fs, "lstatSync", (...args: unknown[]) => {
+      const info = Reflect.apply(lstat, fs, args);
+      if (new Error().stack?.includes("fileStamp")) info.ino = 0n;
+      return info;
+    });
+    syncBuiltinESMExports();
+    const { result } = await verifyV3Paths([dir], { keys: request.keys, directory: true });
+    assert.ok(result.legacy.some((row) => row.verdict === "RESTART CONTINUITY INCOMPLETE"));
+  } finally {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("v3 pending hold replay retains only its identity", () => {
   const hold = "hold-".repeat(16384);
   const action = {
