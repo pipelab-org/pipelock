@@ -509,27 +509,23 @@ def test_decision_prefix_inference_and_shape_rules():
     assert not piece.advance({**last, "effect_boundary": "hook_execution"}, False)
 
 
-def test_decision_limit_keeps_integrity_checks(monkeypatch):
+@pytest.mark.parametrize("damage", [False, True])
+def test_decision_limit_keeps_integrity_checks(monkeypatch, tmp_path, damage):
     from pipelock_aarp_verify.v3.wire import LIMITS
 
-    candidate = next(
-        path
-        for path in REQUESTS
-        if any(
-            b'"kind":"action"' in (path.parent / name).read_bytes()
-            for name in json.loads(path.read_bytes())["inputs"]
-            if (path.parent / name).stat().st_size < 16 * 1024
-        )
-        and json.loads((path.parent / "projection.json").read_bytes())["verdict"]
-        == "VALID"
-    )
-    request = json.loads(candidate.read_bytes())
+    vector = VECTORS / "g05-completed"
+    request = json.loads((vector / "request.json").read_bytes())
+    source = vector / request["inputs"][0]
+    path = tmp_path / source.name
+    path.write_bytes(source.read_bytes() + (b"torn tail" if damage else b""))
     monkeypatch.setitem(LIMITS, "decisions", 0)
-    paths = [candidate.parent / name for name in request["inputs"]]
-    result, _ = verify_v3(paths, _options(request))
+    result, _ = verify_v3([path], _options(request))
     assert "L-DECISION-INDEX" in result["limits"]
     assert result["counts"] == {"scope": "not_appraised"}
-    assert "DECISION_INDEX_FULL" in {f["code"] for f in result["findings"]}
+    codes = {f["code"] for f in result["findings"]}
+    assert "DECISION_INDEX_FULL" in codes
+    if damage:
+        assert "DATA_AFTER_CLOSE" in codes
 
 
 def test_legacy_scope_error_and_recorder_discriminator(tmp_path):

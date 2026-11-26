@@ -292,7 +292,7 @@ test("v3 appraises legal pieces after a missing predecessor", async (t) => {
   }
 });
 
-test("v3 still verifies evidence when its decision index fills", async () => {
+test("v3 still verifies evidence when its decision index fills", async (t) => {
   const { path, keys } = fixture("g05-completed");
   const limit = limits.decisions;
   try {
@@ -303,6 +303,14 @@ test("v3 still verifies evidence when its decision index fills", async () => {
     assert.equal(result.histories[0].streams[0].end, "closed");
     assert.ok(result.limits.includes("L-DECISION-INDEX"));
     assert.deepEqual(result.counts, { scope: "not_appraised" });
+    const dir = mkdtempSync(join(tmpdir(), "pipelock-v3-decision-limit-"));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const damaged = join(dir, basename(path));
+    writeFileSync(damaged, Buffer.concat([readFileSync(path), Buffer.from("torn tail")]));
+    const checked = await verifyV3Paths([damaged], { keys });
+    const codes = checked.result.findings.map((finding) => finding.code);
+    assert.ok(codes.includes("DECISION_INDEX_FULL"));
+    assert.ok(codes.includes("DATA_AFTER_CLOSE"));
   } finally {
     limits.decisions = limit;
   }
