@@ -28,6 +28,14 @@ import { verifyLegacy } from "../src/v3/legacy.js";
 import { finding, newResult } from "../src/v3/result.js";
 import { Stage } from "../src/v3/store.js";
 
+test("receipt v3 canonical output rejects sparse arrays", () => {
+  const document = newResult({}, 0);
+  document.findings.length = 2;
+  assert.throws(() => canonicalV3(document), /sparse/i);
+  document.findings.length = 0;
+  assert.deepEqual(JSON.parse(canonicalV3(document)).findings, []);
+});
+
 const root = findPackageRoot(import.meta.url);
 const corpus = resolve(root, "../../conformance/testdata/v3");
 const cli = resolve(root, "dist/src/cli.js");

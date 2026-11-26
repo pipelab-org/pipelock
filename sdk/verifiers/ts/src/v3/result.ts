@@ -97,7 +97,14 @@ export function canonicalV3(value: V3Result | V3Projection): string {
 
 // V3 uses RFC 8785, including UTF-16 member order and unmodified string bytes.
 export function canonicalJSON(value: unknown): string {
-  if (Array.isArray(value)) return "[" + value.map(canonicalJSON).join(",") + "]";
+  if (Array.isArray(value)) {
+    const elements: string[] = [];
+    for (let i = 0; i < value.length; i++) {
+      if (!Object.hasOwn(value, i)) throw new TypeError("sparse canonical JSON array");
+      elements.push(canonicalJSON(value[i]));
+    }
+    return "[" + elements.join(",") + "]";
+  }
   if (typeof value === "object" && value !== null) {
     const object = value as Record<string, unknown>;
     return (
