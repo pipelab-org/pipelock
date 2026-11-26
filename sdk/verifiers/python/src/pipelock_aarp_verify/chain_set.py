@@ -268,7 +268,9 @@ def _verify_chains(
             )
             if not valid:
                 add("corrupt_chain", session)
-            chain.valid = bool(valid and not chain.run.outer_error)
+            chain.valid = bool(
+                valid and (actions or chain.run.evidence) and not chain.run.outer_error
+            )
         except _READ_FAILURES:
             add("corrupt_chain", session)
         resolved.add(session)

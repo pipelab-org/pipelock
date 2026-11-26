@@ -21,6 +21,19 @@ ROTATED = (RUNS / "rotated-signer-key.hex").read_text().strip()
 CASES = sorted(RUNS.glob("*/expect*.json"))
 
 
+def test_operational_only_run_is_healthy_but_unverified(tmp_path):
+    vector = ROOT / "v3" / "g07-operational-logs-only"
+    name = json.loads((vector / "request.json").read_bytes())["inputs"][0]
+    shutil.copyfile(vector / name, tmp_path / name)
+    session = name.removeprefix("evidence-").removesuffix("-0.jsonl")
+    report = verify_base(tmp_path, session)
+    assert report["healthy"]
+    assert not report["findings"]
+    assert [(row["session"], row["valid"]) for row in report["chains"]] == [
+        (session, False)
+    ]
+
+
 @pytest.mark.parametrize("fixture", CASES, ids=lambda p: f"{p.parent.name}/{p.stem}")
 def test_run_chain_matches_go(fixture):
     want = json.loads(fixture.read_bytes())
