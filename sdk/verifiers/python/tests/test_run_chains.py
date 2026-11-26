@@ -372,8 +372,9 @@ def test_contested_opening_with_nonstring_lineage_is_unknown_membership():
     state = SimpleNamespace(
         histories={"a": [root]},
         streams={
-            "contested": _Stream(limit=-1, fork=[invalid]),
+            "contested": _Stream(limit=-1, forked=True),
         },
+        walk=lambda _stream, _limit: iter([invalid]),
     )
     assert _membership_known(state) is False
 
@@ -398,7 +399,8 @@ def test_contested_opening_with_malformed_previous_is_unknown_membership(
     )
     state = SimpleNamespace(
         histories={"a": [root]},
-        streams={"contested": _Stream(limit=-1, fork=[opener])},
+        streams={"contested": _Stream(limit=-1, forked=True)},
+        walk=lambda _stream, _limit: iter([opener]),
     )
     assert _membership_known(state) is known
 
