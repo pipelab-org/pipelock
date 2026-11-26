@@ -196,6 +196,11 @@ def test_cli_result(capsys, vector, status, output):
     assert not stderr
     document = json.loads(stdout)
     assert document["exit_code"] == status
+    if output == "projection":
+        assert stdout.encode() == (VECTORS / vector / "projection.json").read_bytes()
+    else:
+        assert document["kind"] == "verify_result"
+        assert "findings" in document and "finding_codes" not in document
     assert canonical_v3(document) + b"\n" == stdout.encode()
 
 
