@@ -109,8 +109,9 @@
   },
   {
     "package": "internal/cli/runtime",
-    "role": "writer",
-    "reason": "Selects and runs the receipt writer and gates legacy runtime evidence features."
+    "role": "v3-runtime",
+    "reason": "Selects and resumes the configured receipt writer, reads evidence health, and recovers deferred actions from the journal.",
+    "test": "TestRuntimeReceiptV3Reload"
   },
   {
     "package": "internal/cli/setup",
@@ -142,8 +143,9 @@
   },
   {
     "package": "internal/contract/receipt",
-    "role": "not-a-reader",
-    "reason": "Defines the v2 schema and checks v2 envelopes and typed chains supplied by callers."
+    "role": "refuses-v3",
+    "reason": "Extracts v2 receipts from legacy recorder shards, which refuse receipt-profile evidence.",
+    "test": "internal/evidence/receiptinput:TestLegacyEvidenceChokePoints"
   },
   {
     "package": "internal/contract/runtime",
@@ -178,8 +180,9 @@
   },
   {
     "package": "internal/evidence/receiptinput",
-    "role": "not-a-reader",
-    "reason": "Shares v3 detection and refusal text without decoding legacy evidence."
+    "role": "refuses-v3",
+    "reason": "Lists evidence directories and probes candidate files to identify receipt profiles.",
+    "test": "TestReceiptInputRefusal"
   },
   {
     "package": "internal/evidenceview",
@@ -226,8 +229,9 @@
   },
   {
     "package": "internal/receipt",
-    "role": "not-a-reader",
-    "reason": "Implements legacy codecs and chain checks dispatched by format-aware readers and the v3 legacy adapter."
+    "role": "refuses-v3",
+    "reason": "Reads legacy receipt chains and groups, and refuses receipt-profile evidence without format-aware dispatch.",
+    "test": "internal/evidence/receiptinput:TestLegacyEvidenceChokePoints"
   },
   {
     "package": "internal/receipt/v3",
@@ -266,8 +270,9 @@
   },
   {
     "package": "internal/testreceipt",
-    "role": "writer",
-    "reason": "Generates signed v3 streams for reader tests."
+    "role": "test-fixture",
+    "reason": "Generates signed v3 streams and locates or reads them for reader tests.",
+    "test": "internal/cli:TestReceiptCommandTreeOracle"
   },
   {
     "package": "scripts",
@@ -282,7 +287,8 @@
   },
   {
     "package": "tools/gen-shadow-example",
-    "role": "writer",
-    "reason": "Generates an example using legacy shadow receipts it emitted into its temporary recorder."
+    "role": "refuses-v3",
+    "reason": "Reads the temporary legacy recorder to extract a signed shadow receipt.",
+    "test": "TestExtractReceiptRefusesV3"
   }
 ]

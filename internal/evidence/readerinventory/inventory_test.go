@@ -28,6 +28,7 @@ type reader struct {
 type listedPackage struct {
 	ImportPath   string
 	Imports      []string
+	GoFiles      []string
 	TestGoFiles  []string
 	XTestGoFiles []string
 }
@@ -46,8 +47,9 @@ func TestReceiptReaderInventory(t *testing.T) {
 	packages := make(map[string]bool)
 	importers := make(map[string]bool)
 	tests := make(map[string]map[string]bool)
+	source := make(map[string]map[string]bool)
 	for _, tags := range []string{"", "enterprise"} {
-		collectPackages(t, root, tags, packages, importers, tests)
+		collectPackages(t, root, tags, packages, importers, tests, source)
 	}
 
 	registered := make(map[string]bool, len(registry))
@@ -64,7 +66,16 @@ func TestReceiptReaderInventory(t *testing.T) {
 		}
 		switch entry.Role {
 		case "writer", "not-a-reader":
-		case "v3-verifier", "refuses-v3":
+			if entry.Package != "internal/recorder" && entry.Package != "internal/receipt" && !strings.HasPrefix(entry.Package, "internal/receipt/") {
+				var files []string
+				for name := range source[entry.Package] {
+					files = append(files, name)
+				}
+				if reads := receiptReads(t, root, entry.Package, files); len(reads) != 0 {
+					t.Errorf("%s has role %q but reads receipt evidence at %s", entry.Package, entry.Role, strings.Join(reads, ", "))
+				}
+			}
+		case "v3-verifier", "refuses-v3", "v3-runtime", "test-fixture":
 			testPackage, testName, external := strings.Cut(entry.Test, ":")
 			if !external {
 				testPackage, testName = entry.Package, entry.Test
@@ -83,9 +94,9 @@ func TestReceiptReaderInventory(t *testing.T) {
 	}
 }
 
-func collectPackages(t *testing.T, root, tags string, packages, importers map[string]bool, tests map[string]map[string]bool) {
+func collectPackages(t *testing.T, root, tags string, packages, importers map[string]bool, tests, source map[string]map[string]bool) {
 	t.Helper()
-	cmd := exec.CommandContext(t.Context(), "go", "list", "-tags", tags, "-json=ImportPath,Imports,TestGoFiles,XTestGoFiles", "./...") // #nosec G204 -- Go tool, fixed flags and build tags.
+	cmd := exec.CommandContext(t.Context(), "go", "list", "-tags", tags, "-json=ImportPath,Imports,GoFiles,TestGoFiles,XTestGoFiles", "./...") // #nosec G204 -- Go tool, fixed flags and build tags.
 	cmd.Dir = root
 	output, err := cmd.Output()
 	if err != nil {
@@ -104,6 +115,12 @@ func collectPackages(t *testing.T, root, tags string, packages, importers map[st
 			continue
 		}
 		packages[name] = true
+		if source[name] == nil {
+			source[name] = make(map[string]bool)
+		}
+		for _, file := range pkg.GoFiles {
+			source[name][file] = true
+		}
 		for _, path := range pkg.Imports {
 			if isReceiptEvidenceImport(path) {
 				importers[name] = true
