@@ -84,8 +84,12 @@ func TestCoreProjections(t *testing.T) {
 				t.Fatal(err)
 			}
 			corePath := filepath.Join(vector, "projection.core.json")
-			if *updateCore && !bytes.Equal(normal, projected) {
-				if err := os.WriteFile(corePath, projected, 0o600); err != nil {
+			if *updateCore {
+				if bytes.Equal(normal, projected) {
+					if err := os.Remove(corePath); err != nil && !os.IsNotExist(err) {
+						t.Fatal(err)
+					}
+				} else if err := os.WriteFile(corePath, projected, 0o600); err != nil {
 					t.Fatal(err)
 				}
 			}
