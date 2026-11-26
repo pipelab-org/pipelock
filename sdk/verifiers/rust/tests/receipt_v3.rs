@@ -575,15 +575,23 @@ fn operational_recorder_read_failure_is_a_legacy_finding() {
         .join("\n")
         + "\n";
     let dir = TestDirectory::new();
+    let valid = vector.with_file_name("g01-valid-line");
+    let valid_input: Value =
+        serde_json::from_slice(&fs::read(valid.join("request.json")).unwrap()).unwrap();
+    let v3_filename = valid_input["inputs"][0].as_str().unwrap();
+    fs::copy(valid.join(v3_filename), dir.0.join(v3_filename)).unwrap();
     let recorder = dir.0.join(filename);
     for bytes in [damaged.as_bytes(), b"\xff\n"] {
         fs::write(&recorder, bytes).unwrap();
-        let error = verify_paths(std::slice::from_ref(&dir.0), &options)
-            .err()
-            .unwrap();
+        let result = verify_paths(std::slice::from_ref(&dir.0), &options).unwrap();
+        let doc: Value = serde_json::from_slice(result.json()).unwrap();
         assert!(
-            error.to_string().contains("legacy-only evidence"),
-            "{error}"
+            doc["findings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|finding| finding["code"] == "LEGACY_INVALID"),
+            "damaged recorder did not produce LEGACY_INVALID"
         );
     }
 }
