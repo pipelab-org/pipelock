@@ -370,6 +370,24 @@ def test_oversized_cutover_inventory_row(tmp_path, capsys):
     assert result["finding_codes"] == ["CUTOVER_INVENTORY_MISMATCH"]
 
 
+def test_inventory_row_is_bounded_before_payload_parsing(tmp_path, monkeypatch):
+    from pipelock_aarp_verify.v3 import legacy
+
+    row = {"chain": "0" * 32, "format": "action_v1", "record": digest(b""), "seq": 0}
+    assert legacy._valid_row(row)
+    token = canonical_v3(row).removesuffix(b"}")
+    oversize = token + b" " * (legacy._INVENTORY_ITEM_LIMIT - len(token)) + b"}"
+    raw = b'{"chains":[' + oversize + b'],"v":1}'
+    path = tmp_path / "inventory.json"
+    path.write_bytes(raw)
+
+    def reject_parse(_raw):
+        pytest.fail("oversized inventory row reached the payload parser")
+
+    monkeypatch.setattr(legacy, "parse_payload", reject_parse)
+    assert legacy._read_inventory(path, digest(raw), 1) is None
+
+
 def test_ordinary_legacy_ignores_unrelated_symlink(tmp_path):
     vector = VECTORS / "g09-legacy-prefix"
     request = json.loads((vector / "request.json").read_bytes())
