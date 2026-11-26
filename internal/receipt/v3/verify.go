@@ -16,17 +16,17 @@ import (
 )
 
 type verification struct {
-	ctx       context.Context
-	opts      Options
-	result    Result
-	store     *recordStore
-	keys      map[string]validatedKey
-	trusted   map[string]bool
-	used      map[string]bool
-	streams   map[string]*verifiedStream
-	contested map[string][]stagedRecord
-	histories map[string][]*verifiedStream
-	skip      string
+	ctx               context.Context
+	opts              Options
+	result            Result
+	store             *recordStore
+	keys              map[string]validatedKey
+	trusted           map[string]bool
+	used              map[string]bool
+	streams           map[string]*verifiedStream
+	contestedLineages map[string]bool
+	histories         map[string][]*verifiedStream
+	skip              string
 
 	actionVersionNeeded int64
 }
@@ -37,7 +37,7 @@ type verifiedStream struct {
 	last                stagedRecord
 	limit               int64
 	confirmedWriteError bool
-	contenders          []stagedRecord
+	forked              bool
 	successors          []*verifiedStream
 	missing             bool
 	segment             int
@@ -106,7 +106,7 @@ func verifyPathsInspect(ctx context.Context, paths []string, opts Options, skip 
 	v := verification{
 		ctx: ctx, opts: opts, result: newResult(opts), store: store, skip: skip,
 		keys: map[string]validatedKey{}, trusted: map[string]bool{}, used: map[string]bool{},
-		streams: map[string]*verifiedStream{}, contested: map[string][]stagedRecord{},
+		streams: map[string]*verifiedStream{}, contestedLineages: map[string]bool{},
 		histories: map[string][]*verifiedStream{},
 	}
 	v.result.IgnoredFiles = ignored
@@ -524,16 +524,28 @@ func (v *verification) verifyStream(id string, s *verifiedStream) error {
 		s.summary.Records++
 		return nil
 	}
+	var contested []string
+	reportContender := func(record stagedRecord) {
+		v.add(record.finding(codeFork))
+		if record.Seq == 0 {
+			contested = append(contested, record.id)
+			v.noteContestedOpener(record)
+		}
+	}
 	err := v.store.walk(v.ctx, id, maxInteger, func(current stagedRecord) error {
-		if len(s.contenders) != 0 {
-			if current.Seq == s.contenders[0].Seq {
-				s.contenders = append(s.contenders, current)
+		if s.forked {
+			if current.Seq == s.limit+1 {
+				reportContender(current)
 			}
 			return nil
 		}
 		if previous.id != "" {
 			if previous.Seq == current.Seq && v.skip != codeFork {
-				s.contenders = []stagedRecord{previous, current}
+				s.forked = true
+				s.limit = current.Seq - 1
+				reportContender(previous)
+				reportContender(current)
+				previous = stagedRecord{}
 				return nil
 			}
 			if err := publish(previous); err != nil {
@@ -546,20 +558,8 @@ func (v *verification) verifyStream(id string, s *verifiedStream) error {
 	if err != nil {
 		return err
 	}
-	if len(s.contenders) > 0 {
-		s.limit = s.contenders[0].Seq - 1
-		for _, record := range s.contenders {
-			v.add(record.finding(codeFork))
-		}
-		if s.limit < 0 {
-			v.contested[id] = s.contenders
-			ids := make([]string, 0, len(s.contenders))
-			for _, candidate := range s.contenders {
-				ids = append(ids, candidate.id)
-			}
-			v.result.ContestedStreams = append(v.result.ContestedStreams, ContestedStream{Records: ids, Stream: id})
-		}
-		return nil
+	if len(contested) > 0 {
+		v.result.ContestedStreams = append(v.result.ContestedStreams, ContestedStream{Records: contested, Stream: id})
 	}
 	if previous.id != "" {
 		return publish(previous)

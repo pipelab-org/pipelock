@@ -260,7 +260,7 @@ func (v *verification) appraiseDecisions() error {
 }
 
 func (v *verification) appraiseHistory(a *appraisal, pieces []segment, first *verifiedStream) error {
-	complete := len(pieces) == 1 && pieces[0].rooted && len(pieces[0].streams[len(pieces[0].streams)-1].contenders) == 0
+	complete := len(pieces) == 1 && pieces[0].rooted && !pieces[0].streams[len(pieces[0].streams)-1].forked
 	a.fullHistory = a.fullHistory && complete
 	future := false
 	for _, piece := range pieces {

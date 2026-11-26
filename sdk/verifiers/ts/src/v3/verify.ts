@@ -71,7 +71,7 @@ class Verifier implements Verification {
     if (!this.streams.has(stream))
       this.streams.set(stream, {
         limit: limits.integer,
-        contenders: [],
+        forked: false,
         successors: [],
         segment: -1,
         summary: { stream: "", signer: "", records: 0, end: "open" },
@@ -256,28 +256,26 @@ class Verifier implements Verification {
         stream.summary.records++;
       }
     };
+    const contested: string[] = [];
     for (const current of this.store.walk(id, limits.integer)) {
-      if (stream.contenders.length) {
-        if (current.seq === stream.contenders[0].seq) stream.contenders.push(current);
-        else break;
+      if (stream.forked) {
+        if (current.seq !== stream.limit + 1) break;
+        this.add("FORK", current);
+        if (stream.limit < 0) contested.push(current.id);
+      } else if (previous?.seq === current.seq) {
+        stream.forked = true;
+        stream.limit = current.seq - 1;
+        this.add("FORK", previous);
+        this.add("FORK", current);
+        if (stream.limit < 0) contested.push(previous.id, current.id);
+        previous = undefined;
       } else {
-        if (previous?.seq === current.seq) {
-          stream.contenders = [previous, current];
-          continue;
-        }
         if (previous) publish(previous);
         previous = current;
       }
     }
-    if (stream.contenders.length) {
-      stream.limit = stream.contenders[0].seq - 1;
-      for (const record of stream.contenders) this.add("FORK", record);
-      if (stream.limit < 0)
-        this.result.contested_streams.push({
-          stream: id,
-          records: stream.contenders.map((r) => r.id),
-        });
-    } else if (previous) publish(previous);
+    if (contested.length) this.result.contested_streams.push({ stream: id, records: contested });
+    if (previous) publish(previous);
   }
 
   private checkStagedBody(record: Staged): boolean {

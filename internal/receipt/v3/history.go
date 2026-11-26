@@ -18,7 +18,7 @@ func (v *verification) verifySuccession() error {
 		if p := stream.body.Previous; p != nil {
 			parent := v.streams[p.Stream]
 			switch {
-			case parent == nil || parent.open.id == "" && len(parent.contenders) == 0:
+			case parent == nil || parent.open.id == "" && !parent.forked:
 				if v.skip != codePredecessorNotPresented {
 					stream.missing = true
 					v.add(stream.open.finding(codePredecessorNotPresented))
@@ -78,7 +78,7 @@ func (v *verification) checkPin(parent, child *verifiedStream) error {
 		}
 		return nil
 	}
-	if v.skip == codeUnconfirmed || len(parent.successors) != 1 || !sameLineage || len(parent.contenders) > 0 {
+	if v.skip == codeUnconfirmed || len(parent.successors) != 1 || !sameLineage || parent.forked {
 		return nil
 	}
 	parent.limit = pin.Seq
@@ -106,7 +106,7 @@ func (s *verifiedStream) setSummary() {
 	}
 	s.summary.End = "open"
 	switch {
-	case len(s.contenders) > 0:
+	case s.forked:
 		s.summary.End = "forked"
 	case s.last.Kind == kindStreamClose:
 		s.summary.End = "closed"
@@ -114,7 +114,7 @@ func (s *verifiedStream) setSummary() {
 	switch {
 	case len(s.successors) > 1:
 		s.summary.Tip = nil
-	case len(s.successors) == 1 && len(s.contenders) == 0:
+	case len(s.successors) == 1 && !s.forked:
 		child := s.successors[0]
 		pin := child.body.Previous
 		switch {
@@ -144,7 +144,7 @@ func (v *verification) segments(members []*verifiedStream) []segment {
 		if member.body.Previous == nil {
 			rootCount++
 		}
-		if len(member.contenders) == 0 && len(member.successors) == 1 {
+		if !member.forked && len(member.successors) == 1 {
 			child := member.successors[0]
 			if child.body.Lineage == member.body.Lineage {
 				next[member] = child
@@ -170,7 +170,7 @@ func (v *verification) segments(members []*verifiedStream) []segment {
 	}
 	forked := false
 	for _, member := range members {
-		forked = forked || len(member.contenders) != 0 || len(member.successors) > 1
+		forked = forked || member.forked || len(member.successors) > 1
 		if !hasParent[member] {
 			appendFrom(member)
 		}

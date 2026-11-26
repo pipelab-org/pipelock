@@ -462,9 +462,9 @@ def _membership_known(v: Verification) -> bool:
             or not isinstance(item.body.get("lineage"), str)
             or item.body.get("lineage") not in v.histories
         )
-        for stream in v.streams.values()
-        if stream.limit < 0
-        for item in stream.fork
+        for stream_id, stream in v.streams.items()
+        if stream.forked and stream.limit < 0
+        for item in v.walk(stream_id, 0)
     )
 
 

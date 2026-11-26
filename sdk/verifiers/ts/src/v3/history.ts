@@ -30,7 +30,7 @@ export interface VerifiedStream {
   body?: OpenBody;
   limit: number;
   confirmedWriteError?: boolean;
-  contenders: Staged[];
+  forked: boolean;
   successors: VerifiedStream[];
   missing?: boolean;
   segment: number;
@@ -48,7 +48,7 @@ export function verifySuccession(v: Verification): void {
     const pin = stream.body?.previous;
     if (!pin) continue;
     const parent = v.streams.get(pin.stream);
-    if (!parent || (!parent.open && !parent.contenders.length)) {
+    if (!parent || (!parent.open && !parent.forked)) {
       stream.missing = true;
       v.add("PREDECESSOR_NOT_PRESENTED", stream.open!);
     } else {
@@ -83,7 +83,7 @@ function checkPin(v: Verification, parent: VerifiedStream, child: VerifiedStream
   }
   if (pin.ended !== "write_error") {
     if ((parent.last?.seq ?? 0) > pin.seq) v.add("TAIL_AFTER_SUCCESSION", child.open!);
-  } else if (parent.successors.length === 1 && sameLineage && !parent.contenders.length) {
+  } else if (parent.successors.length === 1 && sameLineage && !parent.forked) {
     parent.limit = pin.seq;
     parent.confirmedWriteError = true;
     for (const item of v.store.walk(pin.stream, parent.last?.seq ?? 0)) {
@@ -93,14 +93,14 @@ function checkPin(v: Verification, parent: VerifiedStream, child: VerifiedStream
 }
 
 function setSummary(stream: VerifiedStream): void {
-  const { body, last, open, summary, contenders, successors } = stream;
+  const { body, last, open, summary, forked, successors } = stream;
   summary.stream = open?.stream ?? "";
   summary.signer = open?.signer ?? "";
   if (body?.previous) summary.previous = body.previous.stream;
   if (last) summary.last = summary.tip = position(last);
-  summary.end = contenders.length ? "forked" : last?.kind === "stream_close" ? "closed" : "open";
+  summary.end = forked ? "forked" : last?.kind === "stream_close" ? "closed" : "open";
   if (successors.length > 1) delete summary.tip;
-  else if (successors.length === 1 && !contenders.length) {
+  else if (successors.length === 1 && !forked) {
     const child = successors[0];
     const pin = child.body!.previous!;
     if (
@@ -130,7 +130,7 @@ export function segments(v: Verification, members: VerifiedStream[]): Segment[] 
   const hasParent = new Set<VerifiedStream>();
   const roots = members.filter((member) => !member.body!.previous);
   for (const member of members) {
-    if (!member.contenders.length && member.successors.length === 1) {
+    if (!member.forked && member.successors.length === 1) {
       const child = member.successors[0];
       if (child.body!.lineage === member.body!.lineage) {
         next.set(member, child);
@@ -150,7 +150,7 @@ export function segments(v: Verification, members: VerifiedStream[]): Segment[] 
   };
   let forked = false;
   for (const member of members) {
-    forked ||= member.contenders.length > 0 || member.successors.length > 1;
+    forked ||= member.forked || member.successors.length > 1;
     if (!hasParent.has(member)) append(member);
   }
   for (const member of members) {
@@ -224,9 +224,9 @@ export function cutoverMembershipKnown(v: Verification): boolean {
     if (!members.some((s) => !s.body!.previous && s.body!.legacy_cutover)) return false;
     roots.add(lineage);
   }
-  for (const stream of v.streams.values()) {
-    if (stream.limit >= 0) continue;
-    for (const candidate of stream.contenders) {
+  for (const [id, stream] of v.streams) {
+    if (!stream.forked || stream.limit >= 0) continue;
+    for (const candidate of v.store.walk(id, 0)) {
       if (candidate.kind !== "stream_open") continue;
       const body: Fields = candidate.body;
       if (

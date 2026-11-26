@@ -195,18 +195,24 @@ func (v *verification) cutoverMembershipKnown() bool {
 			return false
 		}
 	}
-	for _, candidates := range v.contested {
-		for _, candidate := range candidates {
-			if candidate.Kind != kindStreamOpen {
-				continue
-			}
-			body, err := unmarshalBody[StreamOpen](candidate)
-			if err != nil || candidate.unknown || body.Previous == nil || !roots[body.Lineage] {
-				return false
-			}
+	for lineage := range v.contestedLineages {
+		if !roots[lineage] {
+			return false
 		}
 	}
 	return true
+}
+
+func (v *verification) noteContestedOpener(candidate stagedRecord) {
+	if candidate.Kind != kindStreamOpen {
+		return
+	}
+	body, err := unmarshalBody[StreamOpen](candidate)
+	lineage := body.Lineage
+	if err != nil || candidate.unknown || body.Previous == nil {
+		lineage = ""
+	}
+	v.contestedLineages[lineage] = true
 }
 
 func readInventory(path string, pin Cutover, skip string) (Inventory, string, error) {

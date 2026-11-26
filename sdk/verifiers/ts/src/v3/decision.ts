@@ -348,7 +348,7 @@ function appraiseHistory(
   }
   if (future || full) return false;
   for (const piece of pieces) appraiseSegment(v, piece, ids, bad.get(piece)!, decisions);
-  return pieces.length === 1 && pieces[0].rooted && !pieces[0].streams.at(-1)!.contenders.length;
+  return pieces.length === 1 && pieces[0].rooted && !pieces[0].streams.at(-1)!.forked;
 }
 
 function appraiseSegment(

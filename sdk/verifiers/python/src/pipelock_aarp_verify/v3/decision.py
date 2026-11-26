@@ -347,7 +347,7 @@ def appraise(verification: Verification) -> Document:
             full_history = False
             continue
         full_history &= (
-            len(segments) == 1 and segments[0][0] and not segments[0][1][-1].fork
+            len(segments) == 1 and segments[0][0] and not segments[0][1][-1].forked
         )
         for segment, (rooted, streams) in enumerate(segments):
             _appraise_segment(verification, segment, rooted, streams, ids, decisions)

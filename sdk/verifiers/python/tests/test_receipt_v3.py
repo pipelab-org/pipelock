@@ -151,6 +151,40 @@ def test_v3_predecessor_lookup_works_without_sqlite_json(monkeypatch):
     )
 
 
+def test_fork_scan_releases_decoded_contenders():
+    import sqlite3
+    from contextlib import closing
+
+    from pipelock_aarp_verify.v3.verify import Verification, _Stream
+    from pipelock_aarp_verify.v3.wire import Record
+
+    class Contender(Record):
+        alive = 0
+
+        def __init__(self, index):
+            super().__init__({"seq": 0, "stream": "example"}, str(index))
+            Contender.alive += 1
+
+        def __del__(self):
+            Contender.alive -= 1
+
+    class TrackedVerification(Verification):
+        def walk(self, stream, limit=0):
+            for index in range(10):
+                assert Contender.alive <= 2
+                yield Contender(index)
+
+    with closing(sqlite3.connect(":memory:")) as db:
+        verifier = TrackedVerification(db, V3Options(), 0)
+        verifier.streams["example"] = _Stream()
+        verifier.verify_streams()
+        assert Contender.alive == 0
+        assert verifier.result["contested_streams"] == [
+            {"stream": "example", "records": [str(index) for index in range(10)]}
+        ]
+        assert len(verifier.result["findings"]) == 10
+
+
 @pytest.mark.parametrize(
     ("vector", "status"),
     [("g08-pinned", 0), ("g08-unpinned-refused", 1), ("g01-empty-input", 3)],

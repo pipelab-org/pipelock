@@ -191,7 +191,7 @@ class _Stream:
     last: Record | None = None
     limit: int = MAX_INTEGER
     confirmed_write_error: bool = False
-    fork: list[Record] = field(default_factory=list)
+    forked: bool = False
     children: list[_Stream] = field(default_factory=list)
     missing: bool = False
     broken: bool = False
@@ -207,13 +207,13 @@ class _Stream:
         if self.last:
             row["last"] = row["tip"] = self.last.position()
         row["end"] = "open"
-        if self.fork:
+        if self.forked:
             row["end"] = "forked"
         elif self.last and self.last.kind == "stream_close":
             row["end"] = "closed"
         if len(self.children) > 1:
             row.pop("tip", None)
-        elif self.children and not self.fork:
+        elif self.children and not self.forked:
             child = self.children[0]
             pin = child.body["previous"]
             if (
@@ -492,28 +492,32 @@ class Verification:
     def verify_streams(self) -> None:
         for stream, state in sorted(self.streams.items()):
             previous = None
+            contenders: list[str] = []
             beat = 0
             for current in self.walk(stream):
-                if state.fork:
-                    if current.seq == state.fork[0].seq:
-                        state.fork.append(current)
-                    else:
+                if state.forked:
+                    if current.seq != state.limit + 1:
                         break
+                    self.add("FORK", record=current)
+                    if state.limit < 0:
+                        contenders.append(current.id)
                 elif previous is not None and previous.seq == current.seq:
-                    state.fork.extend((previous, current))
+                    state.forked = True
+                    state.limit = current.seq - 1
+                    self.add("FORK", record=previous)
+                    self.add("FORK", record=current)
+                    if state.limit < 0:
+                        contenders.extend((previous.id, current.id))
+                    previous = None
                 else:
                     if previous is not None:
                         beat = self._publish(stream, state, previous, beat)
                     previous = current
-            if state.fork:
-                state.limit = state.fork[0].seq - 1
-                for candidate in state.fork:
-                    self.add("FORK", record=candidate)
-                if state.limit < 0:
-                    self.result["contested_streams"].append(
-                        {"stream": stream, "records": [r.id for r in state.fork]}
-                    )
-            elif previous is not None:
+            if contenders:
+                self.result["contested_streams"].append(
+                    {"stream": stream, "records": contenders}
+                )
+            if previous is not None:
                 self._publish(stream, state, previous, beat)
             if state.broken:
                 state.opening = state.last = None
@@ -526,7 +530,7 @@ class Verification:
             pin = stream.body.get("previous")
             if pin and stream.opening:
                 parent = self.streams.get(pin["stream"])
-                if parent is None or (not parent.opening and not parent.fork):
+                if parent is None or (not parent.opening and not parent.forked):
                     stream.missing = True
                     self.add("PREDECESSOR_NOT_PRESENTED", record=stream.opening)
                 else:
@@ -564,7 +568,7 @@ class Verification:
         elif ended != "write_error":
             if parent.last and parent.last.seq > pin["seq"]:
                 self.add("TAIL_AFTER_SUCCESSION", record=child.opening)
-        elif len(parent.children) == 1 and same_lineage and not parent.fork:
+        elif len(parent.children) == 1 and same_lineage and not parent.forked:
             parent.limit = pin["seq"]
             parent.confirmed_write_error = True
             if parent.last and parent.last.seq > parent.limit:
@@ -579,7 +583,7 @@ class Verification:
         for member in members:
             if "previous" not in member.body:
                 roots.append(member)
-            if not member.fork and len(member.children) == 1:
+            if not member.forked and len(member.children) == 1:
                 child = member.children[0]
                 if child.body["lineage"] == member.body["lineage"]:
                     following[member] = child
@@ -589,7 +593,7 @@ class Verification:
                 self.add("ROOT_FORK", record=root.opening)
         visited = set()
         pieces = []
-        forked = any(member.fork or len(member.children) > 1 for member in members)
+        forked = any(member.forked or len(member.children) > 1 for member in members)
         for member in sorted(members, key=lambda item: item in children):
             if member in visited:
                 continue
