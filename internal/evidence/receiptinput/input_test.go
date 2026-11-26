@@ -5,12 +5,14 @@ package receiptinput_test
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/evidence/receiptinput"
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/testreceipt"
 )
 
@@ -121,4 +123,39 @@ func TestReceiptInputRefuseLocationMultiLocationRenamedV3(t *testing.T) {
 		}
 		testreceipt.RequiresV3Refusal(t, receiptinput.RefuseLocation(root, command, reader), command, reader)
 	})
+}
+
+func TestReceiptInputRefuseTreeBudget(t *testing.T) {
+	const command, reader = "example", "the example reader"
+	for _, tc := range []struct {
+		name   string
+		limit  int
+		create func(string, int) error
+	}{
+		{"directories", recorder.MaxEvidenceReadDirectoryEntries - 1, func(dir string, i int) error {
+			return os.Mkdir(filepath.Join(dir, fmt.Sprintf("child-%d", i)), 0o750)
+		}},
+		{"entries", 16 * recorder.MaxEvidenceReadDirectoryEntries, func(dir string, i int) error {
+			return os.WriteFile(filepath.Join(dir, fmt.Sprintf("file-%d", i)), nil, 0o600)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			for i := range tc.limit {
+				if err := tc.create(dir, i); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := receiptinput.RefuseTree(dir, command, reader); err != nil {
+				t.Fatalf("at budget: %v", err)
+			}
+			if err := tc.create(dir, tc.limit); err != nil {
+				t.Fatal(err)
+			}
+			err := receiptinput.RefuseTree(dir, command, reader)
+			if !errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) || !strings.Contains(err.Error(), "pipelock verify-receipt --chain <dir>") {
+				t.Fatalf("past %s budget: %v", tc.name, err)
+			}
+		})
+	}
 }

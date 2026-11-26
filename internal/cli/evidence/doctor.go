@@ -302,8 +302,14 @@ func runEvidenceDoctorSnapshot(dir string, afterScan func()) (evidenceDoctorRepo
 		return evidenceDoctorReport{}, fmt.Errorf("%q is not a directory", dir)
 	}
 
-	if err := receiptinput.RefuseTree(cleanDir, "evidence doctor", "the evidence doctor"); errors.Is(err, receiptinput.ErrUnsupported) {
+	switch err := receiptinput.RefuseTree(cleanDir, "evidence doctor", "the evidence doctor"); {
+	case errors.Is(err, receiptinput.ErrUnsupported):
 		return evidenceDoctorReport{}, err
+	case errors.Is(err, recorder.ErrEvidenceReadLimitExceeded):
+		return evidenceDoctorReport{
+			Dir: cleanDir, ReadIncomplete: true, ScanTruncated: true, FilesSkipped: 1,
+			Findings: []evidenceDoctorFinding{{Kind: "directory_read_error", Message: err.Error()}},
+		}, nil
 	}
 	locations, err := recorder.DiscoverEvidenceLocations(cleanDir)
 	if err != nil {

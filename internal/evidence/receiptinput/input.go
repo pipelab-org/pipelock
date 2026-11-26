@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -98,42 +99,75 @@ func RefuseLocation(dir, command, reader string) error {
 // directory holds v3 evidence. A reader can supply additional filenames it
 // treats as evidence even when the standard directory probe does not.
 func RefuseTree(dir, command, reader string, extraCandidates ...func(string) bool) error {
-	claimed, directory, err := inspect(dir)
+	info, err := os.Stat(dir)
 	if err != nil {
 		return err
 	}
-	if claimed {
-		return unsupported(command, reader, directory)
-	}
-	if !directory {
-		return nil
+	if !info.IsDir() {
+		return Refuse(dir, command, reader)
 	}
 	root, err := filepath.EvalSymlinks(dir)
 	if err != nil {
 		return err
 	}
-	return filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
+
+	// Match the recorder's directory read ceiling and the evidence doctor's
+	// corpus file budget. This is a preflight for legacy readers, not a census.
+	const maxDirectories = recorder.MaxEvidenceReadDirectoryEntries
+	const maxEntries = 16 * recorder.MaxEvidenceReadDirectoryEntries
+	remainingEntries := maxEntries
+	pending := []string{root}
+	for visited := 0; len(pending) != 0; visited++ {
+		if visited == maxDirectories {
+			return treeLimit(command, reader, maxDirectories, "directories")
 		}
-		if !entry.IsDir() {
-			name := entry.Name()
-			if entry.Type().IsRegular() && !evidencename.IsLegacyReceiptCandidate(name) &&
-				slices.ContainsFunc(extraCandidates, func(matches func(string) bool) bool { return matches(name) }) {
-				return Refuse(path, command, reader)
-			}
-			return nil
+		path := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+		entries, err := readTreeDirectory(path, remainingEntries+1)
+		if err != nil {
+			return err
 		}
-		if path == root {
-			return nil
+		if len(entries) > remainingEntries {
+			return treeLimit(command, reader, maxEntries, "entries")
 		}
-		claimed, checkErr := ClaimsInput(path, true)
-		if checkErr != nil {
-			return checkErr
-		}
+		remainingEntries -= len(entries)
+		claimed, err := ClaimsDirectory(path, entries)
 		if claimed {
 			return unsupported(command, reader, true)
 		}
-		return nil
-	})
+		if err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			name := entry.Name()
+			switch {
+			case entry.IsDir():
+				pending = append(pending, filepath.Join(path, name))
+			case entry.Type().IsRegular() && !evidencename.IsLegacyReceiptCandidate(name) &&
+				slices.ContainsFunc(extraCandidates, func(matches func(string) bool) bool { return matches(name) }):
+				if err := Refuse(filepath.Join(path, name), command, reader); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func readTreeDirectory(path string, limit int) ([]fs.DirEntry, error) {
+	dir, err := recorder.OpenEvidenceDirectory(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = dir.Close() }()
+	entries, err := dir.ReadDir(limit)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil, err
+	}
+	return entries, nil
+}
+
+func treeLimit(command, reader string, limit int, unit string) error {
+	return fmt.Errorf("%s: %s: %w (%d %s); use 'pipelock verify-receipt --chain <dir>'",
+		command, reader, recorder.ErrEvidenceReadLimitExceeded, limit, unit)
 }
