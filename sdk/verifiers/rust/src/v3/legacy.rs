@@ -352,7 +352,7 @@ impl Verifier<'_> {
                     bare_stamps.extend(stamps);
                     Ok((None, batch))
                 } else {
-                    read_session_evidence(dir, &session)
+                    read_session_evidence(dir, &session).map_err(session_unavailable)
                 }
             });
             match batch {
@@ -361,11 +361,7 @@ impl Verifier<'_> {
                 }
                 Ok((None, batch)) => self.legacy_batch(&mut presented, &keys, batch, true),
                 Ok((Some(_), _)) => record_read_failure(&mut self.doc, &session, false),
-                Err(err) => record_read_failure(
-                    &mut self.doc,
-                    &session,
-                    !err.refused && is_unavailable_message(&err.message),
-                ),
+                Err(unavailable) => record_read_failure(&mut self.doc, &session, unavailable),
             }
         }
         let legacy_opts = BaseVerifyOptions {
@@ -573,10 +569,24 @@ impl Verifier<'_> {
 fn read_bare_session(
     dir: &Path,
     session: &str,
-) -> std::result::Result<Option<ExtractedReceipts>, SessionReadError> {
-    with_session_files(dir, session, |paths| {
-        read_bare_files(paths).map_err(|err| SessionReadError::from(err.to_string()))
-    })
+) -> std::result::Result<Option<ExtractedReceipts>, bool> {
+    probe_bare_session(dir, session, read_bare_files)
+}
+
+fn session_unavailable(err: SessionReadError) -> bool {
+    !err.refused && is_unavailable_message(&err.message)
+}
+
+fn probe_bare_session(
+    dir: &Path,
+    session: &str,
+    read: impl FnOnce(&[PathBuf]) -> Result<Option<ExtractedReceipts>>,
+) -> std::result::Result<Option<ExtractedReceipts>, bool> {
+    // Keep read errors inside the snapshot result so the final snapshot check
+    // still runs without converting the typed read error to a string.
+    with_session_files(dir, session, |paths| Ok(read(paths)))
+        .map_err(session_unavailable)?
+        .map_err(|err| unavailable(&err))
 }
 
 fn read_bare_files(paths: &[PathBuf]) -> Result<Option<ExtractedReceipts>> {
@@ -1022,6 +1032,27 @@ mod tests {
                 "{text}"
             );
         }
+    }
+
+    #[test]
+    fn bare_session_io_failure_is_unavailable() {
+        let dir = std::env::temp_dir().join(format!("pipelock-bare-io-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (error, expected) in [
+            (
+                super::VerifierError::Unavailable("Input/output error".into()),
+                true,
+            ),
+            (
+                super::VerifierError::Invalid("malformed evidence".into()),
+                false,
+            ),
+        ] {
+            let outcome = super::probe_bare_session(&dir, "example", |_| Err(error));
+            let actual = outcome.err().expect("read error");
+            assert_eq!(actual, expected);
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
