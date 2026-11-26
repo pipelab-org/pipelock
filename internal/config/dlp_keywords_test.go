@@ -234,11 +234,12 @@ func TestDLPKeywordsLegacyPolicyHashGolden(t *testing.T) {
 	// request-policy undecodable-encoding action in the canonical config.
 	// Bumped for the Google editor ID-only path-entropy scope.
 	// Rebaselined for card_bare_action in the effective DLP policy.
+	// Rebaselined for the Google OAuth coding-client audience hosts.
 	// Balanced mode without default patterns remains independent of changes
 	// to the built-in corpus.
 	for _, tc := range []struct{ body, want string }{
 		{keywordConfigYAML(""), "bba65c34a5f58af9c0a92366798e1884d3c69bc2a93e62bdf20609052d3e328b"},
-		{"mode: balanced\n", "706c8de19b234a7537ab683dd44586853ce3f2b2387f2d553bc0c7cf7e72e845"},
+		{"mode: balanced\n", "e8124d27510c732cccf3ec5653349d3e10f9ade69e5af7b6a1f6070e94674ba7"},
 		{"mode: balanced\ndlp:\n  include_defaults: false\n", "c8cd0108e949d3a40b855d76ea16390c92f2dec689c6614cc370595b75325ee0"},
 	} {
 		cfg, err := LoadBytes([]byte(tc.body))

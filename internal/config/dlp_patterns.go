@@ -270,7 +270,11 @@ var defaultDLPPatternSet = []DLPPattern{
 	// Source: https://aws.amazon.com/blogs/security/securing-amazon-bedrock-api-keys-best-practices-for-implementation-and-management/
 	{Name: "Amazon Bedrock Long-Term API Key", Regex: `(?-i:ABSKQmVkcm9ja0FQSUtleS)[A-Za-z0-9+/]+={0,2}`, Severity: SeverityCritical},
 	{Name: "Amazon Bedrock Short-Term API Key", Regex: bedrockShortTermKeyRegex, Severity: SeverityCritical},
-	{Name: "Google OAuth Token", Regex: `ya29\.[a-zA-Z0-9_-]{20,}`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"gmail.googleapis.com", "www.googleapis.com", "storage.googleapis.com"}, CredentialAudienceAuthorizationOnly: true},
+	// Exact API authorities only: googleapis.com also serves user content.
+	// OAuth bearer carriage stays restricted to Authorization and API routes.
+	// Source: https://developers.google.com/identity/protocols/oauth2/web-server#callinganapi
+	// Source: https://docs.cloud.google.com/docs/security/compliance/deploy-antigravity-us-public-sector#disable_optional_apis
+	{Name: "Google OAuth Token", Regex: `ya29\.[a-zA-Z0-9_-]{20,}`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"gmail.googleapis.com", "www.googleapis.com", "storage.googleapis.com", "cloudcode-pa.googleapis.com", "daily-cloudcode-pa.googleapis.com", "aicode.googleapis.com", "play.googleapis.com"}, CredentialAudienceAuthorizationOnly: true},
 	// GCP service-account JSON private_key_id. The "service_account"
 	// type marker is already an always-on CORE pattern (see
 	// scanner/core.go), so it is deliberately NOT duplicated here;

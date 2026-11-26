@@ -988,6 +988,11 @@ func TestInterceptTunnel_BuiltInCredentialAudience(t *testing.T) {
 		{name: "GitLab.com PAT", host: "gitlab.com", path: "/api/v4/user", token: fakeGitLabPAT(), tokenPrefix: "glpat-", pattern: "GitLab PAT", core: true},
 		{name: "Web API bot token", host: "slack.com", path: "/api/auth.test", token: fakeSlackBotToken(), tokenPrefix: "xoxb-", pattern: "Slack Token", core: true},
 		{name: "hosted MCP user token", host: "mcp.slack.com", path: "/mcp", token: "xoxp-" + strings.Repeat("a", 24), tokenPrefix: "xoxp-", pattern: "Slack Token", core: true},
+		{name: "Cloud Code", host: "cloudcode-pa.googleapis.com", path: "/v1internal:generateContent", token: "ya29." + strings.Repeat("a", 24), tokenPrefix: "ya29.", pattern: "Google OAuth Token"},
+		{name: "Cloud Code daily", host: "daily-cloudcode-pa.googleapis.com", path: "/v1internal:loadCodeAssist", token: "ya29." + strings.Repeat("a", 24), tokenPrefix: "ya29.", pattern: "Google OAuth Token"},
+		{name: "AI code config", host: "aicode.googleapis.com", path: "/v1alpha:fetchConfig", token: "ya29." + strings.Repeat("a", 24), tokenPrefix: "ya29.", pattern: "Google OAuth Token"},
+		{name: "Google telemetry", host: "play.googleapis.com", path: "/log", token: "ya29." + strings.Repeat("a", 24), tokenPrefix: "ya29.", pattern: "Google OAuth Token"},
+		{name: "Google user info", host: "www.googleapis.com", path: "/oauth2/v2/userinfo", token: "ya29." + strings.Repeat("a", 24), tokenPrefix: "ya29.", pattern: "Google OAuth Token"},
 		{name: "Gmail API access token", host: "gmail.googleapis.com", path: "/gmail/v1/users/me/profile", token: "ya29." + strings.Repeat("a", 24), tokenPrefix: "ya29.", pattern: "Google OAuth Token"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
