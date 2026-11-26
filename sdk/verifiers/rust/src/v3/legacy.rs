@@ -138,15 +138,22 @@ fn session_stamps(paths: &[PathBuf], session: &str) -> Vec<(PathBuf, String)> {
 fn file_stamp(path: &Path) -> String {
     std::fs::symlink_metadata(path).map_or_else(
         |_| String::new(),
-        |metadata| {
-            format!(
-                "{:?}:{}:{:?}:{:?}",
-                metadata_identity(&metadata),
-                metadata.len(),
-                metadata.modified().ok(),
-                metadata.file_type()
-            )
-        },
+        |metadata| stamp_from(&metadata_identity(&metadata), &metadata),
+    )
+}
+
+/// A shard without a platform file identity cannot be shown to be the file
+/// that was read, so it gets no stamp and its exclusion never settles.
+fn stamp_from(identity: &[u8], metadata: &std::fs::Metadata) -> String {
+    if identity.is_empty() {
+        return String::new();
+    }
+    format!(
+        "{:?}:{}:{:?}:{:?}",
+        identity,
+        metadata.len(),
+        metadata.modified().ok(),
+        metadata.file_type()
     )
 }
 
@@ -964,6 +971,16 @@ fn consume(reader: &mut impl Read, literal: &[u8]) -> io::Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::{decode_inventory, digest, session_stamps, stamps_unchanged, EMPTY_INVENTORY};
+
+    #[test]
+    fn stamp_requires_a_file_identity() {
+        let path = std::env::temp_dir().join(format!("pipelock-v3-stamp-{}", std::process::id()));
+        std::fs::write(&path, b"x").unwrap();
+        let metadata = std::fs::symlink_metadata(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert!(super::stamp_from(&[], &metadata).is_empty());
+        assert!(!super::stamp_from(&[1], &metadata).is_empty());
+    }
 
     #[test]
     fn rejects_oversized_unterminated_legacy_line() {
