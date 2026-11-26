@@ -173,3 +173,33 @@ func TestPendingHoldReplayRetainsOnlyIdentity(t *testing.T) {
 		t.Fatal("inferred hold used a different identity")
 	}
 }
+
+func TestResolutionRejectsEmptyHoldID(t *testing.T) {
+	var piece decisionPiece
+	pending := Action{Phase: "hold", Hold: &Hold{ID: ""}}
+	resolution := Action{Phase: "resolution", Verdict: "allow", Hold: &Hold{ID: ""}}
+	if !piece.advance(pending, false) {
+		t.Fatal("could not establish pending state")
+	}
+	if piece.advance(resolution, false) {
+		t.Fatal("accepted empty hold ID")
+	}
+}
+
+func TestHoldCardinalityDoesNotFillDecisionIndex(t *testing.T) {
+	index := decisionIndex{maxIDs: 1}
+	if err := index.reset(); err != nil {
+		t.Fatal(err)
+	}
+	if err := index.remember("decision", false); err != nil {
+		t.Fatal(err)
+	}
+	for _, hold := range []string{"first", "second"} {
+		if owner, err := index.holdOwner(hold, "decision"); err != nil || owner != "decision" {
+			t.Fatalf("hold %q: %q %v", hold, owner, err)
+		}
+	}
+	if index.full || len(index.holds) != 2 {
+		t.Fatalf("hold cardinality filled decision index: %+v", index)
+	}
+}

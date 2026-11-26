@@ -162,6 +162,7 @@ class _Piece:
         if (
             self.number
             or not self.hold
+            or not action["hold"]["id"]
             or digest(action["hold"]["id"].encode()) != self.hold
         ):
             return False

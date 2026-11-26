@@ -173,7 +173,7 @@ func (p *decisionPiece) inferPrefix(a Action) bool {
 }
 
 func (p *decisionPiece) resolve(a Action) bool {
-	if p.Attempt != 0 || p.HoldID == "" || Digest([]byte(a.Hold.ID)) != p.HoldID {
+	if p.Attempt != 0 || p.HoldID == "" || a.Hold.ID == "" || Digest([]byte(a.Hold.ID)) != p.HoldID {
 		return false
 	}
 	prior := p.FirstResolution

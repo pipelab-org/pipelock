@@ -15,7 +15,6 @@
 // records carry the same run_nonce are reported (finding duplicate_run_nonce),
 // because a process run writes exactly one chain.
 
-import { AsyncLocalStorage } from "node:async_hooks";
 import { lstatSync, readdirSync, realpathSync, statSync } from "node:fs";
 import * as path from "node:path";
 import * as ed25519 from "@noble/ed25519";
@@ -39,8 +38,6 @@ import {
 import type { ChainResult, Receipt } from "./types.js";
 import { InvalidError, RuntimeError, decodeUTF8, readVerifierBytes, sha256Hex } from "./util.js";
 import { blankAfterGoTrim } from "./line-space.js";
-import { firstRecorderGroupGate } from "./group.js";
-
 export { blankAfterGoTrim } from "./line-space.js";
 
 export const FindingCorruptChain = "corrupt_chain";
@@ -137,7 +134,6 @@ export interface BaseReport {
 export interface BaseVerifyOptions {
   trustedKeys: string[];
   endorsements: RotationEndorsement[];
-  excludeReceiptGroupSessions?: boolean;
 }
 
 export function baseHealthy(report: BaseReport): boolean {
@@ -180,24 +176,9 @@ function isBaseChain(session: string, base: string): boolean {
 // parseEvidenceFilename mirrors Go evidencename.Parse: the session is
 // everything between "evidence-" and the LAST dash, and a sequence that is not
 // a uint64 parses as 0.
-const recorderFileExclusions = new AsyncLocalStorage<ReadonlySet<string>>();
-
-export function isExcludedLegacyFile(name: string): boolean {
-  return recorderFileExclusions.getStore()?.has(name) ?? false;
-}
-
-export function recorderExcludedNames(): string[] {
-  return [...(recorderFileExclusions.getStore() ?? [])];
-}
-
-export function withRecorderFileExclusions<T>(excluded: readonly string[], read: () => T): T {
-  return recorderFileExclusions.run(new Set(excluded), read);
-}
-
 export function parseEvidenceFilename(
   name: string,
 ): { session: string; seqStart: bigint } | undefined {
-  if (isExcludedLegacyFile(name)) return undefined;
   if (!name.startsWith(evidencePrefix) || !name.endsWith(evidenceSuffix)) return undefined;
   const rest = name.slice(evidencePrefix.length, name.length - evidenceSuffix.length);
   const lastDash = rest.lastIndexOf("-");
@@ -217,7 +198,6 @@ export function parseEvidenceFilename(
 interface EvidenceIndex {
   files: Map<string, string[]>;
   symlinks: Map<string, string[]>;
-  groups: Set<string>;
 }
 
 // refuseSymlinkInEvidenceRootPath applies Go's no-symlink evidence-root rule
@@ -397,7 +377,7 @@ export function withPinnedEvidenceDirectorySync<T>(root: string, read: () => T):
   }
 }
 
-function indexRecorderFiles(dir: string, excludeGroups = false): EvidenceIndex {
+function indexRecorderFiles(dir: string): EvidenceIndex {
   const shards = new Map<string, { file: string; name: string; seq: bigint }[]>();
   const symlinks = new Map<string, string[]>();
   for (const de of readdirSync(dir, { withFileTypes: true })) {
@@ -413,26 +393,11 @@ function indexRecorderFiles(dir: string, excludeGroups = false): EvidenceIndex {
     list.push({ file: path.join(dir, de.name), name: de.name, seq: parsed.seqStart });
     shards.set(parsed.session, list);
   }
-  const ix: EvidenceIndex = { files: new Map(), symlinks, groups: new Set() };
+  const ix: EvidenceIndex = { files: new Map(), symlinks };
   for (const [session, list] of shards) {
     list.sort((a, b) =>
       a.seq !== b.seq ? (a.seq < b.seq ? -1 : 1) : a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
     );
-    const first = excludeGroups ? list.find((shard) => shard.seq === 0n) : undefined;
-    const firstLink = excludeGroups
-      ? symlinks.get(session)?.find((name) => parseEvidenceFilename(name)?.seqStart === 0n)
-      : undefined;
-    if (
-      excludeGroups &&
-      (!session ||
-        (first &&
-          (!firstLink || compareStrings(first.name, firstLink) < 0) &&
-          firstRecorderGroupGate(first.file)))
-    ) {
-      ix.groups.add(session);
-      ix.symlinks.delete(session);
-      continue;
-    }
     ix.files.set(
       session,
       list.map((s) => s.file),
@@ -494,11 +459,6 @@ function compareStrings(a: string, b: string): number {
 // base in dir, sorted.
 export function resolveBaseSessions(dir: string, base: string): string[] {
   return sortedSessions(indexRecorderFiles(dir)).filter((s) => isBaseChain(s, base));
-}
-
-/** Resolve ordinary sessions without treating a gated group shard as a standalone run. */
-export function resolveBaseSessionsExcludingReceiptGroups(dir: string, base: string): string[] {
-  return sortedSessions(indexRecorderFiles(dir, true)).filter((s) => isBaseChain(s, base));
 }
 
 // EvidenceRefusedError is evidence the verifier will not read as the session
@@ -1187,36 +1147,22 @@ export async function verifyBase(
   base: string,
   opts: BaseVerifyOptions,
 ): Promise<BaseReport> {
-  return withBaseHistorySnapshot(
-    dir,
-    base,
-    (ix, links) => verifyBaseInner(dir, base, opts, ix, links),
-    opts.excludeReceiptGroupSessions,
-  );
+  return withBaseHistorySnapshot(dir, base, () => verifyBaseInner(dir, base, opts));
 }
 
 // Defer publication until all reads used to assemble a base report finish.
-// The index that classified the sessions is the one the report consumes, so a
-// gate that flickers between two separate listings cannot hide in a snapshot
-// that was taken from another listing.
 export async function withBaseHistorySnapshot<T>(
   dir: string,
   base: string,
-  consume: (ix: EvidenceIndex, links?: ChainLinkRecord[]) => Promise<T>,
-  excludeGroups = false,
+  consume: () => Promise<T>,
 ): Promise<T> {
-  const used = indexRecorderFiles(dir, excludeGroups);
-  const before = baseInventory(dir, base, true, used);
-  const links = excludeGroups ? await readChainLinkFiles(dir) : undefined;
+  const before = baseInventory(dir, base);
   try {
-    return await consume(used, links);
+    return await consume();
   } finally {
     let changed = true;
     try {
-      const final = indexRecorderFiles(dir, excludeGroups);
-      changed =
-        baseInventory(dir, base, true, final) !== before ||
-        (links !== undefined && groupMembershipChanged(base, links, used.groups, final.groups));
+      changed = baseInventory(dir, base) !== before;
     } catch {
       // Unavailable final inventory cannot support either verdict.
     }
@@ -1224,65 +1170,19 @@ export async function withBaseHistorySnapshot<T>(
   }
 }
 
-function affectsBase(claim: ChainLinkRecord, base: string): boolean {
-  return [
-    claim.namePred,
-    claim.link?.predecessor_session,
-    claim.link?.successor_session,
-    claim.recoverySeal?.predecessor_session,
-    claim.recoverySeal?.successor_session,
-  ].some((session) => session !== undefined && isBaseChain(session, base));
-}
-
-// A group gate matters if the report reads that session or a relevant claim
-// refers to it, including a recovery seal whose endpoints are both gated.
-function groupMembershipChanged(
-  base: string,
-  links: ChainLinkRecord[],
-  before: ReadonlySet<string>,
-  after: ReadonlySet<string>,
-): boolean {
-  const named = new Set<string>();
-  for (const claim of links) {
-    if (!affectsBase(claim, base)) continue;
-    named.add(claim.namePred);
-    for (const link of [claim.link, claim.recoverySeal]) {
-      if (link) {
-        named.add(link.predecessor_session);
-        named.add(link.successor_session);
-      }
-    }
-  }
-  const relevant = (session: string): boolean => named.has(session) || isBaseChain(session, base);
-  for (const session of before) if (relevant(session) && !after.has(session)) return true;
-  for (const session of after) if (relevant(session) && !before.has(session)) return true;
-  return false;
-}
-
-function baseInventory(
-  dir: string,
-  base: string,
-  baseMode = true,
-  ordinary?: EvidenceIndex,
-): string {
+function baseInventory(dir: string, base: string, baseMode = true): string {
   const root = statSync(dir, { bigint: true });
   const items: unknown[] = [[root.dev.toString(), root.ino.toString()]];
-  const relevant = (session: string): boolean =>
-    baseMode ? isBaseChain(session, base) : session === base;
-  const names = readdirSync(dir).filter((name) => {
-    if (baseMode && chainLinkFilePredecessor(name) !== undefined) return true;
-    if (ordinary) return false;
+  for (const name of readdirSync(dir).sort()) {
     const parsed = parseEvidenceFilename(name);
-    return parsed !== undefined && relevant(parsed.session);
-  });
-  if (ordinary) {
-    for (const [session, paths] of ordinary.files) {
-      if (!relevant(session)) continue;
-      for (const file of paths) names.push(path.basename(file));
-      for (const name of ordinary.symlinks.get(session) ?? []) names.push(name);
-    }
-  }
-  for (const name of names.sort()) {
+    if (
+      !(
+        parsed !== undefined &&
+        (baseMode ? isBaseChain(parsed.session, base) : parsed.session === base)
+      ) &&
+      !(baseMode && chainLinkFilePredecessor(name) !== undefined)
+    )
+      continue;
     const info = lstatSync(path.join(dir, name), { bigint: true });
     items.push(
       [name, info.dev, info.ino, info.mode, info.size, info.mtimeNs, info.ctimeNs].map(String),
@@ -1295,27 +1195,25 @@ async function verifyBaseInner(
   dir: string,
   base: string,
   opts: BaseVerifyOptions,
-  ix: EvidenceIndex,
-  snapshotLinks?: ChainLinkRecord[],
 ): Promise<BaseReport> {
   const report: BaseReport = { base, chains: [], findings: [] };
+  const ix = indexRecorderFiles(dir);
   const sessions = sortedSessions(ix).filter((s) => isBaseChain(s, base));
-  const links = snapshotLinks ?? (await readChainLinkFiles(dir));
+  const links = await readChainLinkFiles(dir);
   const add = (kind: string, session: string, detail: string): void => {
     report.findings.push({ kind, session, detail });
   };
 
-  const scoped = links.filter((lf) => {
-    const seal = lf.recoverySeal;
-    if (
-      seal &&
-      seal.predecessor_session === lf.namePred &&
-      ix.groups.has(seal.predecessor_session) &&
-      ix.groups.has(seal.successor_session)
-    )
-      return false;
-    return affectsBase(lf, base);
-  });
+  const scoped = links.filter(
+    (lf) =>
+      isBaseChain(lf.namePred, base) ||
+      (lf.link !== undefined &&
+        (isBaseChain(lf.link.predecessor_session, base) ||
+          isBaseChain(lf.link.successor_session, base))) ||
+      (lf.recoverySeal !== undefined &&
+        (isBaseChain(lf.recoverySeal.predecessor_session, base) ||
+          isBaseChain(lf.recoverySeal.successor_session, base))),
+  );
 
   const data = new Map<string, BaseChainData>();
   for (const s of sessions) {

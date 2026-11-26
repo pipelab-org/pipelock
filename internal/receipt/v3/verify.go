@@ -88,13 +88,20 @@ func verifyPaths(ctx context.Context, paths []string, opts Options, skip string)
 }
 
 func verifyPathsInspect(ctx context.Context, paths []string, opts Options, skip string, inspect func(*verification) error) (Result, error) {
+	return verifyPathsWithCutover(ctx, paths, opts, skip, inspect, nil, nil)
+}
+
+func verifyPathsWithCutover(ctx context.Context, paths []string, opts Options, skip string, inspect func(*verification) error, cutover func(*verification, []string, map[string][]string, []inputFile) (map[string]stagedRecord, error), discovery func([]string, Options, string) ([]inputFile, []string, map[string][]string, int, error)) (Result, error) {
 	if err := opts.validate(); err != nil {
 		return Result{}, err
 	}
 	if opts.ExplicitV3 && len(paths) != 1 {
 		return Result{}, errors.New("explicit v3 format requires exactly one file")
 	}
-	files, legacy, inventories, ignored, err := discover(paths, opts, skip)
+	if discovery == nil {
+		discovery = discover
+	}
+	files, legacy, inventories, ignored, err := discovery(paths, opts, skip)
 	if err != nil {
 		return Result{}, err
 	}
@@ -128,7 +135,10 @@ func verifyPathsInspect(ctx context.Context, paths []string, opts Options, skip 
 	if err := v.verifySuccession(); err != nil {
 		return Result{}, err
 	}
-	cutoverEnds, err := v.verifyCutover(legacy, inventories, files)
+	if cutover == nil {
+		cutover = (*verification).verifyCutover
+	}
+	cutoverEnds, err := cutover(&v, legacy, inventories, files)
 	if err != nil {
 		return Result{}, err
 	}

@@ -68,6 +68,8 @@ export async function runV3Command(args: string[]): Promise<number> {
       acceptDiscontinuities: values["accept-discontinuity"],
       allowPartialHistories: values["allow-partial-history"],
     });
+    if (result.findings.some((finding) => finding.code === "USE_HOST_VERIFIER"))
+      process.stderr.write("Use pipelock verify-receipt --chain <dir> for this evidence.\n");
     process.stdout.write(canonicalV3(output === "projection" ? projection : result) + "\n");
     return result.exit_code;
   } catch (error) {

@@ -38,7 +38,7 @@ from .appraise import (
 from .chain import verify_chain
 from .envelope import GENESIS_PRIOR_HASH, parse_seq_value, unmarshal
 from .group import GROUP_VALID, verify_receipt_group
-from .input_file import MAX_VERIFIER_INPUT_BYTES, read_verifier_file
+from .input_file import read_verifier_file
 from .line_space import trim_go_space_bytes
 from .provenance_proof import MAX_FIXTURE_BYTES, compact_fixture_json
 from .receipt import (
@@ -465,8 +465,6 @@ def _run_receipt(
         )
     else:
         report = verify_receipt_file(target, key_hex, allow_unpinned)
-        if report.get("error") == f"input exceeds {MAX_VERIFIER_INPUT_BYTES} bytes":
-            report["error"] = f"read receipt: {report['error']}"
     if json_mode:
         stdout.write(json.dumps(report, separators=(",", ":"), ensure_ascii=False))
         stdout.write("\n")

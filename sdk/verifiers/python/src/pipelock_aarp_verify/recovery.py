@@ -17,7 +17,6 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from .number import (
-    BadGrammarError,
     StrictParseError,
     UnsafeNumberError,
     enforce_cross_language_number_range,
@@ -106,9 +105,7 @@ def _session_base(session: str) -> str | None:
     return match.group(1) if match else None
 
 
-def _validate(
-    seal: dict[str, Any], trusted: set[str], *, ordinary_restart: bool = False
-) -> None:
+def _validate(seal: dict[str, Any], trusted: set[str]) -> None:
     if (
         seal["kind"] != "recovery_seal"
         or type(seal["version"]) is not int
@@ -126,21 +123,10 @@ def _validate(
         or not successor.strip()
         or "/" in successor
         or "\\" in successor
+        or _session_base(predecessor) is None
+        or _session_base(predecessor) != _session_base(successor)
         or predecessor == successor
     ):
-        raise RecoverySealError("recovery seal sessions do not share a base")
-    if ordinary_restart:
-        base, sep, _ = successor.partition(".run.")
-        valid_base = bool(
-            base
-            and sep
-            and (predecessor == base or predecessor.partition(".run.")[0] == base)
-        )
-    else:
-        valid_base = _session_base(predecessor) is not None and _session_base(
-            predecessor
-        ) == _session_base(successor)
-    if not valid_base:
         raise RecoverySealError("recovery seal sessions do not share a base")
     shard = seal["shard"]
     if (
@@ -151,12 +137,6 @@ def _validate(
         or not shard.endswith(".jsonl")
     ):
         raise RecoverySealError("recovery seal shard identity mismatch")
-    if ordinary_restart:
-        from .group import _parse_evidence_filename
-
-        parsed = _parse_evidence_filename(shard)
-        if parsed is None or parsed[0] != predecessor:
-            raise RecoverySealError("recovery seal shard identity mismatch")
     for field in (
         "shard_size",
         "damage_offset",
@@ -183,7 +163,7 @@ def _validate(
     timestamp = seal["observed_at"]
     try:
         validate_timestamp(timestamp)
-    except (BadGrammarError, TypeError, ValueError) as exc:
+    except (TypeError, ValueError) as exc:
         raise RecoverySealError("invalid recovery seal observed_at") from exc
     if (
         not isinstance(timestamp, str)
@@ -298,23 +278,6 @@ def verify_recovery_seal(
         raise RecoverySealError("recovery seal digest differs from transition")
     seal = _strict_seal(raw)
     _validate(seal, trusted)
-    check_recovery_binding(
-        seal,
-        expected,
-        predecessor_session=predecessor_session,
-        successor_session=successor_session,
-    )
-    return seal
-
-
-def check_recovery_binding(
-    seal: dict[str, Any],
-    expected: dict[str, Any],
-    *,
-    predecessor_session: str,
-    successor_session: str,
-) -> None:
-    """Compare a verified seal with its observed predecessor and successor."""
     if (
         seal["predecessor_session"] != predecessor_session
         or seal["successor_session"] != successor_session
@@ -337,3 +300,4 @@ def check_recovery_binding(
             raise RecoverySealError(
                 f"recovery seal {field} differs from observed evidence"
             )
+    return seal

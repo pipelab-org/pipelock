@@ -147,7 +147,7 @@ JSON separates `integrity`, `end_proof` (`proven` and checked `evidence`), `scop
 
 ### Receipt v3 verification
 
-Use the installed package to verify a v3 file set or an evidence directory.
+Use the installed package to verify a v3 file set or an evidence directory. Mixed old-format and v3 evidence returns `USE_HOST_VERIFIER`; run `pipelock verify-receipt --chain <dir>`.
 
     python -m pipelock_aarp_verify v3 --key "$PUBLIC_KEY_HEX" /path/to/evidence
     python -m pipelock_aarp_verify v3 --claims /path/to/receipt.jsonl

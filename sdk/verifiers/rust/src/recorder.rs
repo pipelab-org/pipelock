@@ -11,7 +11,7 @@ use std::fs::Metadata;
 use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 
-pub(crate) const MAX_RECORDER_LINE_BYTES: usize = 1 << 20;
+const MAX_RECORDER_LINE_BYTES: usize = 1 << 20;
 
 const ACTION_RECEIPT_TYPE: &str = "action_receipt";
 const EVIDENCE_RECEIPT_TYPE: &str = "evidence_receipt";

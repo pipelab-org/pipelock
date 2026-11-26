@@ -15,6 +15,7 @@ pub struct VerificationResult {
     result: Vec<u8>,
     projection: Vec<u8>,
     exit_code: i32,
+    pub(super) needs_host: bool,
 }
 
 impl VerificationResult {
@@ -236,6 +237,10 @@ impl Document {
                 .map(|f| f.code).collect::<BTreeSet<_>>(),
             "integrity": integrity, "trust": trust, "trust_state": self.trust_state, "verdict": verdict,
         });
+        let needs_host = self
+            .findings
+            .iter()
+            .any(|finding| finding.code == "USE_HOST_VERIFIER");
         let full = json!({
             "accepted": self.accepted, "completeness": completeness, "contested_streams": self.contested,
             "counts": self.counts, "exit_code": exit_code, "findings": self.findings,
@@ -260,6 +265,7 @@ impl Document {
             result: canonical(full),
             projection: canonical(projection),
             exit_code,
+            needs_host,
         }
     }
 }

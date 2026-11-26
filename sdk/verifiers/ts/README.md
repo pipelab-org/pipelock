@@ -97,7 +97,7 @@ When full verification fails, the report never repeats the packet's own trust cl
 
 ## Receipt v3
 
-Run `pipelock-verifier-ts v3 --key HEX PATH` to verify one file, a set of v3 files, or a directory with v3 and legacy evidence. Repeat `--key` to pin multiple signers. Use `--format v3` for a single file whose name omits the v3 suffix. Use `v3 --claims PATH` to check which format the file claims.
+Run `pipelock-verifier-ts v3 --key HEX PATH` to verify one file, a set of v3 files, or a directory with v3 evidence. Mixed old-format and v3 evidence returns `USE_HOST_VERIFIER`; run `pipelock verify-receipt --chain <dir>`. Repeat `--key` to pin multiple signers. Use `--format v3` for a single file whose name omits the v3 suffix. Use `v3 --claims PATH` to check which format the file claims.
 
 The command writes a canonical JSON verification result. Pass `--output projection` for the fields compared across verifiers. The result carries the process exit code. Usage and read errors exit 2 with a message on stderr.
 

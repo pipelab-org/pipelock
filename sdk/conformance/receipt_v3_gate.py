@@ -68,7 +68,7 @@ def compare(actual, expected, label):
                      f"{delta.decode('utf-8', errors='backslashreplace')}")
 
 
-def check_vector(command, request_path):
+def check_vector(command, request_path, profile):
     vector = request_path.parent
     request = json.loads(request_path.read_bytes())
     inputs = request["inputs"]
@@ -80,8 +80,12 @@ def check_vector(command, request_path):
             claims = verify(command, ["--claims", str(vector / name)], 0)
             compare(claims, b"false\n", "legacy claim")
         return False, False
-    expected = (vector / "projection.json").read_bytes()
+    core_projection = vector / "projection.core.json"
+    expected_path = core_projection if profile == "v3-core" and core_projection.is_file() else vector / "projection.json"
+    expected = expected_path.read_bytes()
     expected_exit = json.loads(expected)["exit_code"]
+    if profile == "v3-core" and expected_exit == 0 and json.loads((vector / "projection.json").read_bytes())["exit_code"] != 0:
+        raise ValueError("core projection turns a rejection into success")
     flags = request_flags(request)
     with tempfile.TemporaryDirectory(prefix="receipt-v3-gate-") as scratch:
         # Stage each vector so valid unknown files are visible in directory
@@ -110,8 +114,9 @@ def run_lane(lane, command, vectors):
     projections = claims = ordered = equal = failures = 0
     # Each browser CLI invocation starts a new Node and WebAssembly runtime.
     # Bound concurrency and consume results in corpus order for stable reports.
+    profile = "full" if lane in ("GO_V3", "WASM_V3") else "v3-core"
     with ThreadPoolExecutor(max_workers=4 if lane == "WASM_V3" else 1) as pool:
-        runs = [pool.submit(check_vector, command, vector) for vector in vectors]
+        runs = [pool.submit(check_vector, command, vector, profile) for vector in vectors]
         for vector, run in zip(vectors, runs, strict=True):
             try:
                 verified, same_full = run.result()

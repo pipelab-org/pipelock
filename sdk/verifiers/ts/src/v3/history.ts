@@ -5,7 +5,7 @@ import { headValue, sequenceValue, type V3Position } from "./input.js";
 import { position, type V3StreamResult } from "./result.js";
 import type { Staged } from "./store.js";
 import type { Verification } from "./verify.js";
-import { ascii, type Fields } from "./wire.js";
+import { ascii } from "./wire.js";
 
 interface Previous extends V3Position {
   stream: string;
@@ -215,30 +215,4 @@ export function checkExpectations(v: Verification, cutoverEnds: Map<string, Stag
       streams: members.map((s) => s.summary).sort((a, b) => ascii(a.stream, b.stream)),
     });
   }
-}
-
-export function cutoverMembershipKnown(v: Verification): boolean {
-  if (!v.histories.size) return false;
-  const roots = new Set<string>();
-  for (const [lineage, members] of v.histories) {
-    if (!members.some((s) => !s.body!.previous && s.body!.legacy_cutover)) return false;
-    roots.add(lineage);
-  }
-  for (const [id, stream] of v.streams) {
-    if (!stream.forked || stream.limit >= 0) continue;
-    for (const candidate of v.store.walk(id, 0)) {
-      if (candidate.kind !== "stream_open") continue;
-      const body: Fields = candidate.body;
-      if (
-        (body.previous !== undefined &&
-          (typeof body.previous !== "object" || Array.isArray(body.previous))) ||
-        (body.lineage !== undefined && typeof body.lineage !== "string") ||
-        candidate.unknown ||
-        !body.previous ||
-        !roots.has(body.lineage as string)
-      )
-        return false;
-    }
-  }
-  return true;
 }

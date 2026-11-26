@@ -105,9 +105,13 @@ export function isGroupArtifact(name: string): boolean {
   return name.startsWith("receipt-group-") && name.endsWith(".json");
 }
 
-function legacyCandidate(name: string): boolean {
+// Go discovery: internal/receipt/v3/legacy.go:43, internal/receipt/chain_set.go:358,
+// internal/ael/emitter.go:138 and internal/receipt/group_inventory.go:83.
+export function legacyCandidate(name: string): boolean {
   return (
     parseEvidenceFilename(name) !== undefined ||
+    name === "ael" ||
+    (name.startsWith("chain-link-") && name.endsWith(".json")) ||
     isGroupArtifact(name) ||
     [
       "activation-receipts.jsonl",
@@ -155,9 +159,16 @@ function startsWithProfile(path: string): boolean {
 
 export function discover(paths: readonly string[], options: VerifyV3Options) {
   let ignored = 0;
+  const oldCandidates: string[] = [];
   if (options.directory) {
     const dir = realpathSync(paths[0]);
     paths = readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+      if (!profileName.test(entry.name) && legacyCandidate(entry.name)) {
+        if (entry.name !== "ael" && !entry.isFile())
+          throw new Error("evidence path is not a regular file: " + join(dir, entry.name));
+        oldCandidates.push(join(dir, entry.name));
+        return [];
+      }
       if (
         !profileName.test(entry.name) &&
         !inventoryName.test(entry.name) &&
@@ -173,12 +184,14 @@ export function discover(paths: readonly string[], options: VerifyV3Options) {
   } else {
     for (const path of paths) closeSync(openEvidence(path));
   }
+  const namedV3 =
+    !options.directory && !options.explicitV3 && paths.some((path) => identify(path) !== undefined);
   const files: InputFile[] = [];
-  const legacy: string[] = [];
+  const legacy: string[] = oldCandidates;
   const inventories = new Map<string, string[]>();
   for (const path of [...new Set(paths)].sort(byteOrder)) {
     const inventory = inventoryName.exec(basename(path));
-    if (inventory) {
+    if (inventory && !options.explicitV3) {
       const id = "sha256:" + inventory[1];
       if (!inventories.has(id)) inventories.set(id, []);
       inventories.get(id)!.push(path);
@@ -187,6 +200,7 @@ export function discover(paths: readonly string[], options: VerifyV3Options) {
     const file = identify(path);
     if (file) files.push(file);
     else if (options.explicitV3) files.push({ path, start: -1, stream: "" });
+    else if (namedV3 || legacyCandidate(basename(path))) legacy.push(path);
     else if (startsWithProfile(path))
       files.push({ path, start: -1, stream: "", code: "V3_CONTENT_UNCLAIMED" });
     else legacy.push(path);

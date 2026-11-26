@@ -16,10 +16,9 @@ from typing import TYPE_CHECKING, BinaryIO
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
-from ..group import _recorder_file_exclusions
 from ..input_file import _open_regular_input
+from .cutover import EMPTY_INVENTORY, legacy_candidate, verify_empty_cutover
 from .decision import appraise
-from .legacy import legacy_candidate, verify_cutover
 from .wire import (
     DIGEST,
     FINDINGS,
@@ -140,10 +139,16 @@ def _discover(
     paths: list[Path], options: Options
 ) -> tuple[list[_Input], list[Path], dict[str, list[Path]], int]:
     ignored = 0
+    old_candidates = []
     if options.directory:
         directory = paths[0].resolve(strict=True)
         paths = []
         for child in directory.iterdir():
+            if not _identify(child) and legacy_candidate(child.name):
+                if child.name != "ael" and (child.is_symlink() or not child.is_file()):
+                    raise ValueError(f"evidence path is not a regular file: {child}")
+                old_candidates.append(child)
+                continue
             if not (
                 _identify(child)
                 or _INVENTORY_NAME.fullmatch(child.name)
@@ -158,17 +163,24 @@ def _discover(
         for path in paths:
             with _open_regular_input(path):
                 pass
+    named_v3 = (
+        not options.directory
+        and not options.explicit_v3
+        and any(_identify(path) for path in paths)
+    )
     v3 = []
-    legacy = []
+    legacy = old_candidates
     inventories = defaultdict(list)
     for path in sorted(set(paths)):
         match = _INVENTORY_NAME.fullmatch(path.name)
-        if match:
+        if match and not options.explicit_v3:
             inventories["sha256:" + match[1]].append(path)
         elif identified := _identify(path):
             v3.append(identified)
         elif options.explicit_v3:
             v3.append(_Input(path))
+        elif named_v3 or legacy_candidate(path.name):
+            legacy.append(path)
         elif _starts_with_profile(path):
             v3.append(_Input(path, code="V3_CONTENT_UNCLAIMED"))
         else:
@@ -805,16 +817,28 @@ def verify_paths(
         v.stage_files(files)
         v.verify_streams()
         v.verify_succession()
-        excluded = (
-            frozenset(file.path.name for file in files)
-            if v.opts.directory
-            else frozenset()
+        empty_inventory = EMPTY_INVENTORY
+
+        host = bool(files) and (
+            bool(old)
+            or any(key != empty_inventory for key in inventories)
+            or any(
+                (cutover := stream.body.get("legacy_cutover"))
+                and cutover["inventory"] != empty_inventory
+                for stream in v.streams.values()
+            )
         )
-        token = _recorder_file_exclusions.set(excluded)
-        try:
-            unproven = verify_cutover(v, old, inventories, bool(files))
-        finally:
-            _recorder_file_exclusions.reset(token)
+
+        if host:
+            v.add("USE_HOST_VERIFIER")
+            unproven = {}
+        else:
+            if not files and options.directory:
+                v.result["ignored_files"] += len(old)
+            elif not files and old:
+                v.add("UNRECOGNIZED_FILE")
+            unproven = verify_empty_cutover(v, inventories, bool(files))
+
         v.result["counts"] = appraise(v)
         v.expectations(unproven)
         v.result["trust"]["keys"] = sorted(v.used)

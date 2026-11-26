@@ -204,7 +204,7 @@ impl Decision {
             || self.hold.is_empty()
             || action
                 .hold
-                .is_none_or(|id| digest(id.as_bytes()) != self.hold)
+                .is_none_or(|id| id.is_empty() || digest(id.as_bytes()) != self.hold)
         {
             return false;
         }
@@ -333,18 +333,13 @@ impl Inspection {
     }
 
     /// Records which decision owns a hold and reports a conflicting owner. The
-    /// index keeps a fixed-size digest of each hold ID and shares the decision
-    /// index budget: past it the history is reported as incomplete.
-    fn claim_hold(&mut self, hold: &str, action: &str, max: usize) -> bool {
+    /// index keeps a fixed-size digest of each hold ID.
+    fn claim_hold(&mut self, hold: &str, action: &str) -> bool {
         let key = digest(hold.as_bytes());
         if let Some(owner) = self.hold_owners.get(&key) {
             return owner != action;
         }
-        if self.hold_owners.len() < max {
-            self.hold_owners.insert(key, action.into());
-        } else {
-            self.full = true;
-        }
+        self.hold_owners.insert(key, action.into());
         false
     }
 
@@ -373,7 +368,7 @@ impl Inspection {
             .hold
             .filter(|_| matches!(action.phase, "hold" | "resolution"))
         {
-            if self.claim_hold(hold, action.id, MAX_DECISIONS) {
+            if self.claim_hold(hold, action.id) {
                 doc.add_record(INCONSISTENT, record);
             }
         }
@@ -563,6 +558,15 @@ mod tests {
     }
 
     #[test]
+    fn resolution_rejects_empty_hold_id() {
+        let pending = json!({"phase":"hold","hold":{"id":""}});
+        let resolution = json!({"phase":"resolution","verdict":"allow","hold":{"id":""}});
+        let mut decision = Decision::default();
+        assert!(decision.advance(&Action::new(&pending), false));
+        assert!(!decision.advance(&Action::new(&resolution), false));
+    }
+
+    #[test]
     fn pending_hold_replay_retains_only_identity() {
         let hold = "hold-".repeat(16384);
         let pending = json!({"phase":"hold","hold":{"id":hold}});
@@ -579,19 +583,22 @@ mod tests {
     }
 
     #[test]
-    fn hold_index_shares_the_decision_index_budget() {
+    fn hold_index_does_not_exhaust_decision_index() {
         let mut inspection = Inspection::default();
         let long = "h".repeat(1 << 16);
-        assert!(!inspection.claim_hold(&long, "first", 1));
-        assert!(inspection.claim_hold(&long, "second", 1), "owner conflict");
+        assert!(!inspection.claim_hold(&long, "first"));
+        assert!(inspection.claim_hold(&long, "second"), "owner conflict");
         assert!(!inspection.full);
         assert!(inspection.hold_owners.keys().all(|key| key.len() < 100));
 
-        assert!(!inspection.claim_hold("other", "first", 1));
-        assert!(inspection.full, "a second hold exceeds the budget of one");
-        assert_eq!(inspection.hold_owners.len(), 1);
+        assert!(!inspection.claim_hold("other", "first"));
         assert!(
-            !inspection.claim_hold(&long, "first", 1),
+            !inspection.full,
+            "hold cardinality must not fill the decision index"
+        );
+        assert_eq!(inspection.hold_owners.len(), 2);
+        assert!(
+            !inspection.claim_hold(&long, "first"),
             "known hold, same owner"
         );
     }

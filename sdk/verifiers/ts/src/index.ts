@@ -4,8 +4,6 @@
 export { verifyReceiptGroup } from "./group.js";
 export type { ReceiptGroupResult, ReceiptGroupVerdict } from "./group.js";
 
-export { verifyReceiptGroups } from "./group.js";
-export type { ReceiptGroupInventoryResult } from "./group.js";
 export { claimsV3Input } from "./v3/input.js";
 export type { VerifyV3Options, V3Head, V3Sequence } from "./v3/input.js";
 export { canonicalV3 } from "./v3/result.js";

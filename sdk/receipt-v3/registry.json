@@ -2344,6 +2344,9 @@
     "USE_HOST_VERIFIER": "unsupported",
     "V3_CONTENT_UNCLAIMED": "invalid"
   },
+  "finding_descriptions": {
+    "USE_HOST_VERIFIER": "This verifier cannot appraise the supplied evidence. Run pipelock verify-receipt --chain <dir>."
+  },
   "kinds": {
     "action": {
       "body": "Action",

@@ -16,7 +16,7 @@ Match `],"payload":` and take every byte before the final `}` and LF as the payl
 
 A file name is the stream ID, a hyphen, the first sequence number as 16 zero-padded decimal digits, and `.receipt-v3.jsonl`. Read files in ascending order of that number. A v3-named file must contain at least one complete record and match its first record's stream and sequence. A differently named single file may be explicitly identified as v3. A name ending in `.receipt-v<N>.jsonl` for another version, or a v3-named file carrying another receipt payload profile, gives `UNKNOWN_PROFILE`. A file supplied explicitly or selected by legacy discovery beginning with `{"payloadType":"application/vnd.pipelock.receipt.` without a v3 claim gives `V3_CONTENT_UNCLAIMED`. A damaged v3 claim never falls back to a legacy decoder.
 
-Directory scope selects those files, cutover inventories and files selected by legacy discovery. Count other files as ignored. Select a legacy decoder using its native discriminator. A selected file with no recognized records gives `UNRECOGNIZED_FILE`. Valid operational recorder files without receipts are ignored and counted in directory scope. The same input by itself lacks receipt evidence. An explicit file list mixing old and new formats is a usage error. Verify the directory for combined evidence.
+Directory scope selects those files, cutover inventories and files selected by legacy discovery. Count other files as ignored. Select a legacy decoder using its native discriminator. A selected file with no recognized records gives `UNRECOGNIZED_FILE`. Valid operational recorder files without receipts are ignored and counted in directory scope. The same input by itself lacks receipt evidence. An explicit file list mixing old and new formats is a usage error for the full verifier. Verifiers that do not discover old formats return `USE_HOST_VERIFIER` for mixed input; run `pipelock verify-receipt --chain <dir>`.
 
 Unterminated bytes give `TORN_TAIL` only after the last complete record of the stream's last file, when that record is not a close. Ignore those bytes. A torn tail after a close is `DATA_AFTER_CLOSE`. Reject a torn tail in an earlier file or a file without a complete record.
 
@@ -166,7 +166,7 @@ The normative projection includes `verdict`, `exit_code`, `trust`, `accepted`, `
 
 ## Limits and conformance
 
-A host verifier does not load a whole stream into memory. Streams and files have no additional length limits. Writers should start a new file at 64 MiB and reserve room for a close. The memory decision index counts distinct effective readable IDs per history. Past its limit, report `DECISION_INDEX_FULL` and continue stream and signature checks. The Go verifier's disk index has no such limit. Browser readers exceeding a listed archive bound return `USE_HOST_VERIFIER`.
+A host verifier does not load a whole stream into memory. Streams and files have no additional length limits. Writers should start a new file at 64 MiB and reserve room for a close. The memory decision index counts distinct effective readable IDs per history. Past its limit, report `DECISION_INDEX_FULL` and continue stream and signature checks. The Go verifier's disk index has no such limit. Browser readers exceeding a listed archive bound return `USE_HOST_VERIFIER`. Verifiers without old-format discovery also return it for mixed evidence; run `pipelock verify-receipt --chain <dir>`.
 
 Shared corpus inputs, pins, caller flags, expected documents and projections are generated from recipes. A rejecting vector names one target check and finding. All its other checks must pass, including the signature over the presented bytes unless the vector tests the signature. Compare canonical projections across implementations and full documents across presentation orders within one implementation. Keep frozen old-format fixtures byte-identical. Use the Wycheproof Ed25519 suite at revision 65ca494727a52944c204441c860b039e6786b99b (schema eddsa_verify_schema_v1.json) for signature edge cases.
 
@@ -580,6 +580,8 @@ The frozen AARP recipe records its key ID to public key mappings in `aarp_trust.
 | `UNRECOGNIZED_FILE` | invalid |
 | `USE_HOST_VERIFIER` | unsupported |
 | `V3_CONTENT_UNCLAIMED` | invalid |
+
+`USE_HOST_VERIFIER`: This verifier cannot appraise the supplied evidence. Run pipelock verify-receipt --chain <dir>.
 
 ### Limits
 

@@ -119,17 +119,16 @@ export function forEachVerifierJSONLLine(
   directoryChild: boolean,
   visit: (line: string, lineNumber: number) => void,
   includeUnterminated = true,
-  noFollow = directoryChild,
 ): boolean {
   if (directoryChild && (path.basename(file) !== file || file === "." || file === "..")) {
     throw new RuntimeError("evidence filename must be a base name");
   }
-  const clean = noFollow ? file : resolveOperatorFilePath(file);
-  const before = noFollow ? lstatSync(clean, { bigint: true }) : undefined;
+  const clean = directoryChild ? file : resolveOperatorFilePath(file);
+  const before = directoryChild ? lstatSync(clean, { bigint: true }) : undefined;
   if (before?.isSymbolicLink()) throw new RuntimeError("refuse symlink in evidence directory");
   const fd = openSync(
     clean,
-    constants.O_RDONLY | constants.O_NONBLOCK | (noFollow ? (constants.O_NOFOLLOW ?? 0) : 0),
+    constants.O_RDONLY | constants.O_NONBLOCK | (directoryChild ? (constants.O_NOFOLLOW ?? 0) : 0),
   );
   try {
     const initial = fstatSync(fd, { bigint: true });

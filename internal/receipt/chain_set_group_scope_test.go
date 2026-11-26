@@ -70,8 +70,8 @@ func TestVerifyBaseIgnoresUnrelatedGroupOpenedDuringVerification(t *testing.T) {
 // A group session of the base itself leaves its report, so the report is void.
 func TestVerifyBaseRejectsOwnGroupOpenedDuringVerification(t *testing.T) {
 	report := verifyBaseWithGroupOpenedDuringReads(t, "proxy.run.0123456789abcdef0123456789abcdef")
-	if report.Healthy() {
-		t.Fatal("a group opened for the base during verification left the report healthy")
+	if !report.EvidenceChangedDuringVerification() {
+		t.Fatalf("missing evidence-changed finding: %+v", report.Findings)
 	}
 }
 

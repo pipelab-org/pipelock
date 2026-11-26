@@ -62,7 +62,11 @@ fn shared_v3_corpus() {
         let name = vector.file_name().unwrap().to_string_lossy();
         let result = verify(&paths);
         let actual = result.projection();
-        let expected = read("projection.json");
+        let expected = if vector.join("projection.core.json").is_file() {
+            read("projection.core.json")
+        } else {
+            read("projection.json")
+        };
         if actual == expected.strip_suffix(b"\n").unwrap_or(&expected) {
             projected += 1;
         } else {
@@ -94,7 +98,7 @@ fn shared_v3_corpus() {
          {reordered} reversed file orders, {identical} full documents identical"
     );
     assert!(failures.is_empty(), "{}", failures.join("\n"));
-    assert_eq!((projected, legacy), (394, 5));
+    assert_eq!((projected, legacy), (399, 5));
 }
 
 struct TestDirectory(PathBuf);
@@ -205,10 +209,7 @@ fn cli_status_and_usage_errors() {
     fs::File::create(path).unwrap().set_len(8_388_609).unwrap();
     let output = cli(&["receipt", path]);
     assert_eq!(output.status.code(), Some(2));
-    assert_eq!(
-        output.stderr,
-        b"read receipt: input exceeds 8388608 bytes\n"
-    );
+    assert_eq!(output.stderr, b"input exceeds 8388608 bytes\n");
 }
 
 #[test]
@@ -280,112 +281,6 @@ fn cli_accepts_independent_endpoint_requirements() {
 }
 
 #[test]
-fn mixed_directory_reads_bare_v2_session() {
-    let corpus = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../conformance/testdata/v3");
-    if !corpus.is_dir() {
-        return;
-    }
-    let copy = |vector: &str| {
-        let vector = corpus.join(vector);
-        let request: Value =
-            serde_json::from_slice(&fs::read(vector.join("request.json")).unwrap()).unwrap();
-        (
-            vector.join(request["inputs"][0].as_str().unwrap()),
-            request["keys"][0].as_str().unwrap().to_string(),
-        )
-    };
-    let (v3_file, v3_key) = copy("g01-valid-line");
-    let (v2_file, v2_key) = copy("g10-valid-raw-unrewritable-intent");
-    let directory = TestDirectory::new();
-    fs::copy(&v3_file, directory.0.join(v3_file.file_name().unwrap())).unwrap();
-    let receipt = fs::read_to_string(v2_file).unwrap();
-    fs::write(
-        directory
-            .0
-            .join(format!("evidence-example.run.{}-0.jsonl", "a".repeat(32))),
-        format!(
-            "{{\"type\":\"evidence_receipt\",\"detail\":{}}}\n",
-            receipt.trim()
-        ),
-    )
-    .unwrap();
-    let result = verify_paths(
-        std::slice::from_ref(&directory.0),
-        &Options {
-            keys: vec![v2_key, v3_key],
-            directory: true,
-            ..Options::default()
-        },
-    )
-    .unwrap();
-    let document: Value = serde_json::from_slice(result.json()).unwrap();
-    assert_eq!(document["legacy"][0]["format"], "evidence_v2", "{document}");
-    assert_eq!(
-        document["legacy"][0]["verdict"], "VALID PREFIX, END UNPROVEN",
-        "{document}"
-    );
-    assert_eq!(
-        document["findings"],
-        serde_json::json!([{
-            "class": "invalid", "code": "LEGACY_CHAIN_UNLISTED"
-        }]),
-        "{document}"
-    );
-}
-
-#[test]
-fn legacy_presentations_require_directory_scope() {
-    let corpus = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../conformance/testdata/v3");
-    if !corpus.is_dir() {
-        return;
-    }
-    let inputs = |vector: &str| {
-        let vector = corpus.join(vector);
-        let request: Value =
-            serde_json::from_slice(&fs::read(vector.join("request.json")).unwrap()).unwrap();
-        vector.join(request["inputs"][0].as_str().unwrap())
-    };
-    let v3 = inputs("g01-valid-line");
-    let (action, evidence) = (
-        inputs("g10-action-receipt-v1-chain"),
-        inputs("g10-valid-raw-unrewritable-intent"),
-    );
-    for legacy in [action, evidence] {
-        let error = verify_paths(&[v3.clone(), legacy.clone()], &Options::default())
-            .err()
-            .unwrap();
-        assert!(
-            error.to_string().contains("require directory scope"),
-            "{error}"
-        );
-        let error = verify_paths(&[legacy], &Options::default()).err().unwrap();
-        assert!(
-            error.to_string().contains("legacy-only evidence"),
-            "{error}"
-        );
-    }
-
-    let recorder_vector = corpus.join("g09-writer-switch-legacy");
-    let recorder = fs::read_dir(recorder_vector)
-        .unwrap()
-        .map(|file| file.unwrap().path())
-        .find(|path| {
-            path.file_name()
-                .unwrap()
-                .to_string_lossy()
-                .starts_with("evidence-")
-        })
-        .unwrap();
-    let error = verify_paths(&[v3, recorder], &Options::default())
-        .err()
-        .unwrap();
-    assert!(
-        error.to_string().contains("require directory scope"),
-        "{error}"
-    );
-}
-
-#[test]
 fn cli_fault_on_unavailable_scratch() {
     let dir = TestDirectory::new();
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_pipelock-verifier-rs"))
@@ -400,52 +295,6 @@ fn cli_fault_on_unavailable_scratch() {
     assert!(String::from_utf8(output.stderr)
         .unwrap()
         .contains("record scratch file"));
-}
-
-#[test]
-fn cutover_reports_invalid_legacy_restart_and_group_inventory() {
-    let corpus = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../conformance/testdata/v3/g09-writer-switch-rotated-legacy");
-    if !corpus.is_dir() {
-        return;
-    }
-    let request: Value =
-        serde_json::from_slice(&fs::read(corpus.join("request.json")).unwrap()).unwrap();
-    let options: Options = serde_json::from_value(request.clone()).unwrap();
-    for expected in ["RESTART CONTINUITY FAILED", "GROUP_INVALID"] {
-        let dir = TestDirectory::new();
-        for file in request["inputs"].as_array().unwrap() {
-            let file = file.as_str().unwrap();
-            if expected == "RESTART CONTINUITY FAILED" && file.starts_with("chain-link-") {
-                fs::write(dir.0.join(file), b"{}").unwrap();
-            } else {
-                fs::copy(corpus.join(file), dir.0.join(file)).unwrap();
-            }
-        }
-        if expected == "GROUP_INVALID" {
-            fs::create_dir(dir.0.join("ael")).unwrap();
-            fs::write(dir.0.join("receipt-group-unknown.json"), b"{}").unwrap();
-        }
-        let result = verify_paths(std::slice::from_ref(&dir.0), &options).unwrap();
-        let doc: Value = serde_json::from_slice(result.json()).unwrap();
-        assert!(
-            doc["legacy"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|row| row["class"] == "failure" && row["verdict"] == expected),
-            "missing failure row: {expected}"
-        );
-        assert_eq!(doc["verdict"], "INVALID", "{expected}");
-        assert!(
-            doc["findings"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|finding| finding["code"] == "LEGACY_INVALID"),
-            "missing finding: {expected}"
-        );
-    }
 }
 
 #[test]
@@ -554,48 +403,6 @@ fn earlier_shard_cannot_have_a_torn_tail() {
     let doc: Value = serde_json::from_slice(result.json()).unwrap();
     assert_eq!(doc["findings"][0]["code"], "FILE_LAYOUT", "{doc}");
     assert_eq!(doc["exit_code"], 1);
-}
-
-#[test]
-fn operational_recorder_read_failure_is_a_legacy_finding() {
-    let vector = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../conformance/testdata/v3/g07-operational-logs-only");
-    if !vector.is_dir() {
-        return;
-    }
-    let request: Value =
-        serde_json::from_slice(&fs::read(vector.join("request.json")).unwrap()).unwrap();
-    let options: Options = serde_json::from_value(request.clone()).unwrap();
-    let filename = request["inputs"][0].as_str().unwrap();
-    let recorder = fs::read_to_string(vector.join(filename)).unwrap();
-    let mut lines = recorder.lines();
-    let mut line: Value = serde_json::from_str(lines.next().unwrap()).unwrap();
-    line["hash"] = Value::String("0".repeat(64));
-    let damaged = std::iter::once(line.to_string())
-        .chain(lines.map(str::to_owned))
-        .collect::<Vec<_>>()
-        .join("\n")
-        + "\n";
-    let dir = TestDirectory::new();
-    let valid = vector.with_file_name("g01-valid-line");
-    let valid_input: Value =
-        serde_json::from_slice(&fs::read(valid.join("request.json")).unwrap()).unwrap();
-    let v3_filename = valid_input["inputs"][0].as_str().unwrap();
-    fs::copy(valid.join(v3_filename), dir.0.join(v3_filename)).unwrap();
-    let recorder = dir.0.join(filename);
-    for bytes in [damaged.as_bytes(), b"\xff\n"] {
-        fs::write(&recorder, bytes).unwrap();
-        let result = verify_paths(std::slice::from_ref(&dir.0), &options).unwrap();
-        let doc: Value = serde_json::from_slice(result.json()).unwrap();
-        assert!(
-            doc["findings"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|finding| finding["code"] == "LEGACY_INVALID"),
-            "damaged recorder did not produce LEGACY_INVALID"
-        );
-    }
 }
 
 #[test]
@@ -731,4 +538,28 @@ fn profile_claims_need_the_exact_filename_suffix() {
     )
     .unwrap();
     assert!(!claims_input(&path).unwrap());
+}
+
+#[test]
+fn core_fallback_cli_guides_to_host_on_stderr() {
+    let dir = TestDirectory::new();
+    let name = "11111111111111111111111111111111-0000000000000000.receipt-v3.jsonl";
+    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../conformance/testdata/v3/g04-absent-max-write-error-pin")
+        .join(name);
+    if !source.exists() {
+        return;
+    }
+    fs::copy(source, dir.0.join(name)).unwrap();
+    fs::write(dir.0.join("chain-link-alone.json"), b"{}").unwrap();
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_pipelock-verifier-rs"))
+        .args(["v3", "--allow-unpinned"])
+        .arg(&dir.0)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(3));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("pipelock verify-receipt --chain <dir>")
+    );
+    let _: Value = serde_json::from_slice(&output.stdout).unwrap();
 }

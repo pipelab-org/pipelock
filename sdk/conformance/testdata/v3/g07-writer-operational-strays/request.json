@@ -1,0 +1,1 @@
+{"directory":true,"check":"writer-operational-strays","inputs":[".receipt-v3-tmp-leftover","22222222222222222222222222222222-0000000000000000.receipt-v3.jsonl","operational/.keep","stray.txt"],"keys":["d2ba0b3426fe6fc96e593249a5b02d22e3167cd233af72ab77660be3334c0e17"]}

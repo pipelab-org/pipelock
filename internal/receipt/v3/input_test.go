@@ -420,3 +420,128 @@ func TestValidateLegacyOptions(t *testing.T) {
 		})
 	}
 }
+
+func TestExplicitV3InventoryNameIsStream(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "receipt-v3-cutover-"+strings.Repeat("a", 64)+".json")
+	files, legacy, inventory, _, err := discover([]string{path}, Options{ExplicitV3: true}, "")
+	if err != nil || len(files) != 1 || len(legacy) != 0 || len(inventory) != 0 {
+		t.Fatalf("explicit v3: files=%v legacy=%v inventory=%v err=%v", files, legacy, inventory, err)
+	}
+}
+
+func TestCoreLoneChainLinkNeedsHost(t *testing.T) {
+	dir := t.TempDir()
+	name := "11111111111111111111111111111111-0000000000000000.receipt-v3.jsonl"
+	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "sdk", "conformance", "testdata", "v3", "g04-absent-max-write-error-pin", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, name), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "chain-link-alone.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := verifyCorePaths(t.Context(), []string{dir}, Options{Directory: true, AllowUnpinned: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range result.Findings {
+		if f.Code == codeUseHostVerifier {
+			return
+		}
+	}
+	t.Fatalf("missing core fallback: %+v", result.Findings)
+}
+
+// verifyCorePaths is a test-only reference for verifiers that do not read old formats.
+func verifyCorePaths(ctx context.Context, paths []string, opts Options) (Result, error) {
+	return verifyPathsWithCutover(ctx, paths, opts, "", nil, func(v *verification, old []string, inventories map[string][]string, files []inputFile) (map[string]stagedRecord, error) {
+		host := false
+		if len(files) != 0 {
+			for _, path := range old {
+				if !opts.Directory || legacyCandidate(filepath.Base(path)) || coreExtraCandidate(filepath.Base(path)) {
+					host = true
+				}
+			}
+			for id := range inventories {
+				if id != EmptyInventoryDigest() {
+					host = true
+				}
+			}
+			for _, stream := range v.streams {
+				if c := stream.body.LegacyCutover; c != nil && c.Inventory != EmptyInventoryDigest() {
+					host = true
+				}
+			}
+
+		}
+		if host {
+			v.addCode(codeUseHostVerifier, "")
+			return map[string]stagedRecord{}, nil
+		}
+		return v.verifyCutover(old, inventories, files)
+	}, coreDiscover)
+}
+
+// In addition to legacyCandidate, continuity and AEL discovery use these names:
+// chain_set.go:358; internal/ael/emitter.go:138; group_inventory.go:83.
+func coreExtraCandidate(name string) bool {
+	return name == "ael" || strings.HasPrefix(name, "chain-link-") && strings.HasSuffix(name, ".json")
+}
+
+func coreDiscover(paths []string, opts Options, skip string) ([]inputFile, []string, map[string][]string, int, error) {
+	if !opts.Directory {
+		if opts.ExplicitV3 {
+			return discover(paths, opts, skip)
+		}
+		var selected, old []string
+		hasV3 := false
+		for _, path := range paths {
+			if _, ok := identify(path); ok {
+				hasV3 = true
+				selected = append(selected, path)
+				continue
+			}
+			if _, ok := inventoryID(filepath.Base(path)); ok {
+				selected = append(selected, path)
+				continue
+			}
+			old = append(old, path)
+		}
+		if !hasV3 {
+			return discover(paths, opts, skip)
+		}
+		files, _, inventories, ignored, err := discover(selected, Options{}, skip)
+		return files, old, inventories, ignored, err
+	}
+	dir, entries, err := readInputDirectory(paths[0])
+	if err != nil {
+		return nil, nil, nil, 0, err
+	}
+	var selected, old []string
+	ignored := 0
+	for _, entry := range entries {
+		name := entry.Name()
+		path := filepath.Join(dir, name)
+		_, v3 := identify(path)
+		if !v3 && (legacyCandidate(name) || coreExtraCandidate(name)) {
+			if name != "ael" && !entry.Type().IsRegular() {
+				return nil, nil, nil, 0, errors.New("evidence path is not a regular file")
+			}
+			old = append(old, path)
+			continue
+		}
+		_, inventory := inventoryID(name)
+		if v3 || inventory {
+			if !entry.Type().IsRegular() {
+				return nil, nil, nil, 0, errors.New("evidence path is not a regular file")
+			}
+			selected = append(selected, path)
+		} else {
+			ignored++
+		}
+	}
+	files, _, inventories, _, err := discover(selected, Options{}, skip)
+	return files, old, inventories, ignored, err
+}

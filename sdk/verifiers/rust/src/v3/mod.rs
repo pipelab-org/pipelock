@@ -3,9 +3,9 @@
 
 //! Receipt v3 verification as specified in `docs/specs/receipt-v3.md`.
 
+mod cutover;
 mod decision;
 mod history;
-mod legacy;
 mod result;
 mod store;
 mod wire;
@@ -255,9 +255,22 @@ fn discover(paths: &[PathBuf], options: &Options) -> Result<Discovery> {
             let entry = entry.map_err(|e| input_error(format!("read evidence directory: {e}")))?;
             let path = entry.path();
             let name = name(&path);
+            if identify(&name).is_none() && cutover::candidate(&name) {
+                let kind = entry
+                    .file_type()
+                    .map_err(|e| input_error(format!("stat evidence path: {e}")))?;
+                if name != "ael" && !kind.is_file() {
+                    return Err(input_error(format!(
+                        "evidence path is not a regular file: {}",
+                        path.display()
+                    )));
+                }
+                found.old.push(path);
+                continue;
+            }
             if identify(&name).is_some()
-                || legacy::inventory_id(&name).is_some()
-                || legacy::candidate(&name)
+                || cutover::inventory_id(&name).is_some()
+                || cutover::candidate(&name)
             {
                 let kind = entry
                     .file_type()
@@ -280,8 +293,11 @@ fn discover(paths: &[PathBuf], options: &Options) -> Result<Discovery> {
         }
         paths.iter().cloned().collect()
     };
+    let named_v3 = !options.directory
+        && !options.explicit_v3
+        && paths.iter().any(|path| identify(&name(path)).is_some());
     for path in paths {
-        if let Some(id) = legacy::inventory_id(&name(&path)) {
+        if let Some(id) = cutover::inventory_id(&name(&path)).filter(|_| !options.explicit_v3) {
             found.inventories.entry(id).or_default().push(path);
         } else if let Some(file) = identify(&name(&path)) {
             found.files.push(InputFile { path, ..file });
@@ -290,6 +306,8 @@ fn discover(paths: &[PathBuf], options: &Options) -> Result<Discovery> {
                 path,
                 ..InputFile::default()
             });
+        } else if named_v3 || cutover::candidate(&name(&path)) {
+            found.old.push(path);
         } else if has_profile(&path)? {
             found.files.push(InputFile {
                 path,
@@ -349,7 +367,29 @@ pub fn verify_paths(paths: &[PathBuf], options: &Options) -> Result<Verification
     verifier.stage_files(&found.files)?;
     verifier.verify_streams()?;
     verifier.verify_succession()?;
-    let cutover_ends = verifier.verify_cutover(&found)?;
+    let empty_inventory = digest(b"{\"chains\":[],\"v\":1}");
+    let host = !found.files.is_empty()
+        && (!found.old.is_empty()
+            || found.inventories.keys().any(|id| id != &empty_inventory)
+            || verifier.streams.values().any(|stream| {
+                stream
+                    .body
+                    .as_ref()
+                    .and_then(|body| body.legacy_cutover.as_ref())
+                    .is_some_and(|cutover| cutover.inventory != empty_inventory)
+            }));
+
+    if found.files.is_empty() && options.directory {
+        verifier.doc.ignored += found.old.len();
+    } else if found.files.is_empty() && !found.old.is_empty() {
+        verifier.doc.add_code("UNRECOGNIZED_FILE", "");
+    }
+    let cutover_ends = if host {
+        verifier.doc.add_code("USE_HOST_VERIFIER", "");
+        BTreeMap::new()
+    } else {
+        verifier.verify_empty_cutover(&found)?
+    };
     verifier.appraise_decisions()?;
     verifier.check_expectations(&cutover_ends);
     if found.files.is_empty() {
@@ -504,6 +544,9 @@ impl Verifier<'_> {
         record.after_damage = state.after_damage;
         self.streams.entry(state.stream.clone()).or_default();
         self.store.insert(&record)?;
+        record.body = Value::Null;
+        record.prev.clear();
+        record.ts.clear();
         state.last = Some(record);
         state.after_damage = false;
         Ok(true)
@@ -601,6 +644,9 @@ fn run_cli(args: &[String]) -> Result<i32> {
     // A zero-file evidence set is supported by the library and the corpus CLI.
     options.directory = paths.len() == 1 && paths[0].is_dir();
     let result = verify_paths(&paths, &options)?;
+    if result.needs_host {
+        eprintln!("Use pipelock verify-receipt --chain <dir> for this evidence.");
+    }
     let mut stdout = io::stdout().lock();
     let output = if projection {
         result.projection()
@@ -612,4 +658,115 @@ fn run_cli(args: &[String]) -> Result<i32> {
         .and_then(|()| stdout.write_all(b"\n"))
         .map_err(|err| input_error(format!("write verification result: {err}")))?;
     Ok(result.exit_code())
+}
+
+#[cfg(test)]
+mod explicit_inventory_test {
+    use super::*;
+
+    #[test]
+    fn explicit_v3_treats_inventory_name_as_stream() {
+        let dir = std::env::temp_dir().join(format!("v3-explicit-{}", std::process::id()));
+        fs::create_dir(&dir).unwrap();
+        let path = dir.join(format!("receipt-v3-cutover-{}.json", "a".repeat(64)));
+        fs::write(&path, b"").unwrap();
+        let options = Options {
+            explicit_v3: true,
+            ..Options::default()
+        };
+        let found = discover(std::slice::from_ref(&path), &options).unwrap();
+        fs::remove_file(path).unwrap();
+        fs::remove_dir(dir).unwrap();
+        assert_eq!(found.files.len(), 1);
+        assert!(found.inventories.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod tail_metadata_test {
+    use super::*;
+    use std::io::BufRead;
+
+    #[test]
+    fn staged_file_retains_only_tail_metadata() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../conformance/testdata/v3/g04-absent-max-write-error-pin/11111111111111111111111111111111-0000000000000000.receipt-v3.jsonl");
+        if !path.exists() {
+            return;
+        }
+        let input = InputFile {
+            path: path.clone(),
+            ..identify(&name(&path)).unwrap()
+        };
+        let options = Options::default();
+        let mut verifier = Verifier {
+            options: &options,
+            doc: Document::new(&options, 0),
+            keys: BTreeMap::new(),
+            pinned: BTreeSet::new(),
+            used: BTreeSet::new(),
+            store: Store::new().unwrap(),
+            streams: BTreeMap::new(),
+            histories: BTreeMap::new(),
+        };
+        verifier.discover_key(&input).unwrap();
+        let mut line = Vec::new();
+        BufReader::new(open(&path).unwrap())
+            .read_until(b'\n', &mut line)
+            .unwrap();
+        let mut state = FileState {
+            stream: input.stream,
+            start: 0,
+            ..FileState::default()
+        };
+        assert!(verifier.stage_line(&line, &mut state, 0).unwrap());
+        let last = state.last.unwrap();
+        assert!(last.body.is_null());
+        assert!(last.prev.is_empty());
+        assert!(last.ts.is_empty());
+    }
+}
+#[cfg(test)]
+mod core_directory_test {
+    use super::*;
+
+    #[test]
+    fn lone_old_entries_use_host() {
+        let name = "11111111111111111111111111111111-0000000000000000.receipt-v3.jsonl";
+        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../conformance/testdata/v3/g04-absent-max-write-error-pin")
+            .join(name);
+        if !source.exists() {
+            return;
+        }
+        for extra in ["chain-link-alone.json", "ael"] {
+            let dir = std::env::temp_dir().join(format!("v3-core-{}-{extra}", std::process::id()));
+            fs::create_dir(&dir).unwrap();
+            fs::copy(&source, dir.join(name)).unwrap();
+            if extra == "ael" {
+                fs::create_dir(dir.join(extra)).unwrap();
+            } else {
+                fs::write(dir.join(extra), b"{}").unwrap();
+            }
+            let result = verify_paths(
+                std::slice::from_ref(&dir),
+                &Options {
+                    directory: true,
+                    allow_unpinned: true,
+                    ..Options::default()
+                },
+            )
+            .unwrap();
+            fs::remove_dir_all(dir).unwrap();
+            let value: Value = serde_json::from_slice(result.json()).unwrap();
+            assert!(
+                value["findings"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|f| f["code"] == "USE_HOST_VERIFIER"),
+                "{extra}"
+            );
+        }
+    }
 }

@@ -71,6 +71,12 @@ def run(argv: list[str]) -> int:
             explicit_v3=args.format == "v3",
         )
         result, projection = verify_paths(args.paths, options)
+        if any(
+            finding["code"] == "USE_HOST_VERIFIER" for finding in result["findings"]
+        ):
+            sys.stderr.write(
+                "Use pipelock verify-receipt --chain <dir> for this evidence.\n"
+            )
         sys.stdout.write(
             canonical(projection if args.output == "projection" else result).decode(
                 "utf-8"

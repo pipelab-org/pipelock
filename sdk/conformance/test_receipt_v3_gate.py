@@ -72,6 +72,18 @@ class ReceiptV3GateTest(unittest.TestCase):
                 self.assertEqual(proc.returncode, status, proc.stderr)
                 self.assertIn(output, proc.stdout + proc.stderr)
 
+    def test_core_lane_uses_core_projection(self):
+        (self.root / "scope/projection.core.json").write_bytes(b'{"exit_code":3,"core":true}\n')
+        full = self.run_gate("valid", lane="GO_V3")
+        self.assertEqual(full.returncode, 0, full.stderr)
+        core = self.run_gate("valid", lane="TS_V3")
+        self.assertEqual(core.returncode, 1)
+        self.assertIn("projection bytes differ", core.stderr)
+    def test_core_projection_cannot_turn_a_rejection_into_success(self):
+        (self.root / "scope/projection.core.json").write_bytes(b'{"exit_code":0}\n')
+        proc = self.run_gate("valid", lane="TS_V3")
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("core projection turns a rejection into success", proc.stderr)
     def test_browser_lane_checks_document_order(self):
         matching = self.run_gate("valid", lane="WASM_V3")
         self.assertEqual(matching.returncode, 0, matching.stderr)

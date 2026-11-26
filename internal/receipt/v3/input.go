@@ -247,7 +247,7 @@ func discover(paths []string, opts Options, skip string) (files []inputFile, leg
 	slices.Sort(ordered)
 	for _, path := range slices.Compact(ordered) {
 		base := filepath.Base(path)
-		if id, ok := inventoryID(base); ok {
+		if id, ok := inventoryID(base); ok && !opts.ExplicitV3 {
 			inventory[id] = append(inventory[id], path)
 			continue
 		}

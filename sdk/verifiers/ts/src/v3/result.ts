@@ -101,6 +101,7 @@ export function canonicalJSON(value: unknown): string {
     const elements: string[] = [];
     for (let i = 0; i < value.length; i++) {
       if (!Object.hasOwn(value, i)) throw new TypeError("sparse canonical JSON array");
+      if (value[i] === undefined) throw new TypeError("undefined canonical JSON array element");
       elements.push(canonicalJSON(value[i]));
     }
     return "[" + elements.join(",") + "]";

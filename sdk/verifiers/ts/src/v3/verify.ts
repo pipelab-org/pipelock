@@ -1,11 +1,9 @@
 // Copyright 2026 Pipelock contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { basename } from "node:path";
-import { withRecorderFileExclusions } from "../chain-set.js";
 import type { KeyObject } from "node:crypto";
 import { appraiseDecisions } from "./decision.js";
-import { verifyCutover } from "./cutover.js";
+import { verifyEmptyCutover } from "./cutover.js";
 import {
   checkExpectations,
   verifySuccession,
@@ -323,10 +321,21 @@ export async function verifyV3Paths(
     v.stageFiles(files);
     v.verifyStreams();
     verifySuccession(v);
-    const cutoverEnds = await withRecorderFileExclusions(
-      opts.directory ? files.map(({ path }) => basename(path)) : [],
-      () => verifyCutover(v, legacy, inventories, files.length > 0),
-    );
+    const emptyInventory = digest('{"chains":[],"v":1}');
+    const host =
+      files.length > 0 &&
+      (legacy.length > 0 ||
+        [...inventories.keys()].some((id) => id !== emptyInventory) ||
+        [...v.streams.values()].some(
+          (stream) =>
+            stream.body?.legacy_cutover && stream.body.legacy_cutover.inventory !== emptyInventory,
+        ));
+    if (!files.length && opts.directory) v.result.ignored_files += legacy.length;
+    else if (!files.length && legacy.length) v.add("UNRECOGNIZED_FILE");
+    const cutoverEnds = host
+      ? new Map<string, Staged>()
+      : verifyEmptyCutover(v, inventories, files.length > 0);
+    if (host) v.add("USE_HOST_VERIFIER");
     appraiseDecisions(v);
     checkExpectations(v, cutoverEnds);
     v.result.trust.keys = [...v.used].sort();

@@ -163,7 +163,8 @@ export class Decision {
   }
 
   private resolve(a: Action): boolean {
-    if (this.attemptNumber || !this.hold || holdIdentity(a.hold!.id) !== this.hold) return false;
+    if (this.attemptNumber || !this.hold || !a.hold!.id || holdIdentity(a.hold!.id) !== this.hold)
+      return false;
     const prior = this.firstResolution;
     if (
       prior === "ask" ||
@@ -271,18 +272,15 @@ export function appraiseDecisions(v: Verification): void {
   }
 }
 
-// The index keeps a fixed-size digest of each hold ID and shares the decision
-// index budget: past it the history is reported as incomplete.
+// The index keeps a fixed-size digest of each hold ID.
 export function claimHold(
   holds: Map<string, string>,
   hold: string,
   action: string,
-  max: number,
-): "conflict" | "full" | undefined {
+): "conflict" | undefined {
   const key = holdIdentity(hold);
   const owner = holds.get(key);
   if (owner !== undefined) return owner === action ? undefined : "conflict";
-  if (holds.size >= max) return "full";
   holds.set(key, action);
   return undefined;
 }
@@ -326,9 +324,8 @@ function appraiseHistory(
         else full = true;
 
         if (a.hold && (a.phase === "hold" || a.phase === "resolution")) {
-          const claim = claimHold(holds, a.hold.id, id, limits.decisions);
+          const claim = claimHold(holds, a.hold.id, id);
           if (claim === "conflict") v.add("DECISION_INCONSISTENT", record);
-          else if (claim === "full") full = true;
         }
         if (record.unknown) {
           increment(uninterpreted, "action");

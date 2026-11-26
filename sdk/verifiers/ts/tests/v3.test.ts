@@ -22,10 +22,9 @@ import { canonicalV3, claimsV3Input, verifyV3Paths } from "../src/index.js";
 import { findPackageRoot } from "./paths.js";
 import { readV3Fixture, resignV3Fixture } from "./v3-fixtures.js";
 import { digest, limits } from "../src/v3/wire.js";
-import { readInventory } from "../src/v3/cutover.js";
+import { discover } from "../src/v3/input.js";
 import { claimHold, Decision } from "../src/v3/decision.js";
-import { verifyLegacy } from "../src/v3/legacy.js";
-import { finding, newResult } from "../src/v3/result.js";
+import { canonicalJSON, finding, newResult } from "../src/v3/result.js";
 import { Stage } from "../src/v3/store.js";
 
 test("receipt v3 canonical output rejects sparse arrays", () => {
@@ -106,7 +105,14 @@ test("shared v3 projections, legacy detection, and full-document order determini
       }
       const projected = canonicalV3(projection) + "\n";
       if (canonicalV3(result) + "\n" === readFileSync(join(dir, "expect.json"), "utf8")) full++;
-      assert.equal(projected, readFileSync(join(dir, "projection.json"), "utf8"));
+      const coreProjection = join(dir, "projection.core.json");
+      assert.equal(
+        projected,
+        readFileSync(
+          existsSync(coreProjection) ? coreProjection : join(dir, "projection.json"),
+          "utf8",
+        ),
+      );
       matched++;
     });
   }
@@ -205,59 +211,11 @@ test("v3 CLI endpoint pins distinguish valid, invalid, and open histories", () =
   assert.match(invoke("--help").stdout, /^Usage: pipelock-verifier-ts v3/u);
 });
 
-test("mixed v3 input verifies legacy g1 links and rotations", async (t) => {
-  const fixture = join(corpus, "g01-valid-line");
-  const request: Request = JSON.parse(readFileSync(join(fixture, "request.json"), "utf8"));
-  const shared = resolve(corpus, "..");
-  const keyFile = JSON.parse(readFileSync(join(shared, "test-key.json"), "utf8")) as {
-    public_key_hex: string;
-    rotated_public_key_hex: string;
-    rotated_twice_public_key_hex: string;
-  };
-  const opts = {
-    directory: true,
-    keys: [
-      ...request.keys,
-      keyFile.public_key_hex,
-      keyFile.rotated_public_key_hex,
-      keyFile.rotated_twice_public_key_hex,
-    ],
-  };
-  const dir = mkdtempSync(join(tmpdir(), "ts-v3-mixed-g1-"));
-  t.after(() => rmSync(dir, { recursive: true }));
-  const v3 = join(dir, request.inputs[0]);
-  copyFileSync(join(fixture, request.inputs[0]), v3);
-  for (const [name, valid] of [
-    ["g1-valid-chain", true],
-    ["g1-restart-chain", true],
-    ["g1-rotated-close-count-valid", true],
-    ["g1-rotated-twice-valid", true],
-    ["g1-ext-chain", true],
-    ["g1-ext-tampered-invalid", false],
-    ["g1-rotated-same-key-invalid", false],
-    ["g1-broken-genesis", false],
-  ] as const) {
-    const legacy = join(dir, "evidence-conformance-session-0.jsonl");
-    copyFileSync(join(shared, name + ".jsonl"), legacy);
-    const { result, projection } = await verifyV3Paths([dir], opts);
-    assert.equal(!result.findings.some((f) => f.code === "LEGACY_INVALID"), valid, name);
-    assert.equal(result.verdict, "INVALID", name);
-    if (valid) assert.deepEqual(projection.finding_codes, ["LEGACY_CHAIN_UNLISTED"], name);
-  }
-  const plain = join(shared, "g1-valid-chain.jsonl");
-  await assert.rejects(verifyV3Paths([v3, plain], { keys: opts.keys }), /require directory scope/u);
-  await assert.rejects(
-    verifyV3Paths([plain], { keys: opts.keys }),
-    /requires the legacy verification path/u,
-  );
-});
-
 function fixture(name: string): { path: string; keys: string[] } {
   const dir = join(corpus, name);
   const request: Request = JSON.parse(readFileSync(join(dir, "request.json"), "utf8"));
   return { path: join(dir, request.inputs[0]), keys: request.keys };
 }
-
 test("v3 appraises legal pieces after a missing predecessor", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "ts-v3-partial-"));
   t.after(() => rmSync(dir, { recursive: true }));
@@ -314,27 +272,6 @@ test("v3 still verifies evidence when its decision index fills", async (t) => {
   } finally {
     limits.decisions = limit;
   }
-});
-
-test("v3 cutover recognizes a bare legacy EvidenceReceipt v2 session", async (t) => {
-  const input = fixture("g01-valid-line");
-  const legacy = fixture("g10-valid-transformed-intent");
-  const dir = mkdtempSync(join(tmpdir(), "ts-v3-bare-v2-"));
-  t.after(() => rmSync(dir, { recursive: true }));
-  copyFileSync(input.path, join(dir, basename(input.path)));
-  const raw = readFileSync(legacy.path, "utf8").trimEnd();
-  writeFileSync(
-    join(dir, "evidence-legacy-0.jsonl"),
-    '{"detail":' + raw + ',"type":"evidence_receipt"}\n',
-  );
-  const { result, projection } = await verifyV3Paths([dir], {
-    directory: true,
-    keys: [...input.keys, ...legacy.keys],
-  });
-  assert.deepEqual(projection.finding_codes, ["LEGACY_CHAIN_UNLISTED"]);
-  assert.equal(result.legacy.length, 1);
-  assert.equal(result.legacy[0].format, "evidence_v2");
-  assert.equal(result.legacy[0].verdict, "VALID PREFIX, END UNPROVEN");
 });
 
 test("v3 rejects missing or directory inputs even when filename claims v3", (t) => {
@@ -424,192 +361,6 @@ test("v3 verification holds the original prefix policy across awaits", async () 
   assert.equal((await verifyV3Paths([path], opts)).result.exit_code, 0);
 });
 
-test("v3 discards provisional groups when the inventory fails", async () => {
-  const id = "a".repeat(32);
-  const opts = { directory: true };
-  const result = newResult(opts, 0);
-  const store = new Stage();
-  try {
-    const presented = await verifyLegacy(
-      {
-        opts,
-        result,
-        store,
-        used: new Set(),
-        streams: new Map(),
-        histories: new Map(),
-        add: (code, loc = "") => result.findings.push(finding(code, loc)),
-      },
-      [`example/receipt-group-${id}-open.json`],
-      async (_dir, _keys, visit) => {
-        visit?.({
-          group_id: id,
-          verdict: "GROUP_VALID",
-          shard_count: 1,
-          close_manifest_sha256: "b".repeat(64),
-        });
-        return {
-          groups: 1,
-          incomplete: 0,
-          invalid: 0,
-          unavailable: true,
-          error: "inventory changed",
-        };
-      },
-    );
-    assert.equal(presented.size, 0);
-    assert.deepEqual(result.legacy, [
-      { chain: "", class: "failure", format: "receipt_group", verdict: "GROUP_INCOMPLETE" },
-    ]);
-  } finally {
-    store.close();
-  }
-});
-
-test("v3 does not exclude a replaced bare wrapper from restart continuity", async (t) => {
-  const vector = join(corpus, "g09-legacy-bare-evidence-under-run-name");
-  const request: Request = JSON.parse(readFileSync(join(vector, "request.json"), "utf8"));
-  const dir = mkdtempSync(join(tmpdir(), "pipelock-v3-bare-"));
-  const fs = createRequire(import.meta.url)("node:fs") as typeof import("node:fs");
-  const original = fs.readdirSync;
-  try {
-    for (const name of request.inputs) copyFileSync(join(vector, name), join(dir, name));
-    const options = { keys: request.keys, directory: true };
-    const codes = async (): Promise<string[]> =>
-      (await verifyV3Paths([dir], options)).result.findings.map((f) => f.code);
-    assert.deepEqual(await codes(), ["LEGACY_CHAIN_UNLISTED"], "control");
-    const wrapper = join(dir, "evidence-example.run.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-0.jsonl");
-    let replaced = false;
-    t.mock.method(fs, "readdirSync", (...args: unknown[]) => {
-      // The restart check lists the directory under its history snapshot.
-      if (!replaced && new Error().stack?.includes("withBaseHistorySnapshot")) {
-        replaced = true;
-        writeFileSync(wrapper + ".new", "not a recorder entry");
-        renameSync(wrapper + ".new", wrapper);
-      }
-      return Reflect.apply(original, fs, args);
-    });
-    syncBuiltinESMExports();
-    const changed = await codes();
-    assert.ok(replaced, "the continuity check never listed the directory");
-    assert.ok(changed.includes("LEGACY_INVALID"), changed.join());
-  } finally {
-    t.mock.restoreAll();
-    syncBuiltinESMExports();
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test("v3 binds bare wrapper reads to the discovered shards", async (t) => {
-  const vector = join(corpus, "g09-legacy-bare-evidence-under-run-name");
-  const request: Request = JSON.parse(readFileSync(join(vector, "request.json"), "utf8"));
-  const dir = mkdtempSync(join(tmpdir(), "pipelock-ts-bare-shard-set-"));
-  const fs = createRequire(import.meta.url)("node:fs") as typeof import("node:fs");
-  const list = fs.readdirSync;
-  try {
-    for (const name of request.inputs) copyFileSync(join(vector, name), join(dir, name));
-    const wrapper = request.inputs.find((name) => name.startsWith("evidence-"))!;
-    const extra = join(dir, wrapper.replace(/-0\.jsonl$/u, "-8.jsonl"));
-    let added = false;
-    t.mock.method(fs, "readdirSync", (...args: unknown[]) => {
-      if (!added && new Error().stack?.includes("readBareEvidence")) {
-        added = true;
-        writeFileSync(extra, "");
-      } else if (
-        added &&
-        existsSync(extra) &&
-        new Error().stack?.includes("withBaseHistorySnapshot")
-      ) {
-        rmSync(extra);
-      }
-      return Reflect.apply(list, fs, args);
-    });
-    syncBuiltinESMExports();
-    const options = { keys: request.keys, directory: true };
-    const { result } = await verifyV3Paths([dir], options);
-    assert.ok(added);
-    assert.ok(result.findings.some((finding) => finding.code === "LEGACY_INVALID"));
-  } finally {
-    t.mock.restoreAll();
-    syncBuiltinESMExports();
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test("v3 does not settle bare wrappers without file identity", async (t) => {
-  const vector = join(corpus, "g09-legacy-bare-evidence-under-run-name");
-  const request: Request = JSON.parse(readFileSync(join(vector, "request.json"), "utf8"));
-  const dir = mkdtempSync(join(tmpdir(), "pipelock-ts-bare-no-identity-"));
-  const fs = createRequire(import.meta.url)("node:fs") as typeof import("node:fs");
-  const lstat = fs.lstatSync;
-  try {
-    for (const name of request.inputs) copyFileSync(join(vector, name), join(dir, name));
-    t.mock.method(fs, "lstatSync", (...args: unknown[]) => {
-      const info = Reflect.apply(lstat, fs, args);
-      if (new Error().stack?.includes("fileStamp")) info.ino = 0n;
-      return info;
-    });
-    syncBuiltinESMExports();
-    const { result } = await verifyV3Paths([dir], { keys: request.keys, directory: true });
-    assert.ok(result.legacy.some((row) => row.verdict === "RESTART CONTINUITY INCOMPLETE"));
-  } finally {
-    t.mock.restoreAll();
-    syncBuiltinESMExports();
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test("v3 bare wrapper indexing and stamp checks scale with shard count", async (t) => {
-  const vector = join(corpus, "g09-legacy-bare-evidence-under-run-name");
-  const request: Request = JSON.parse(readFileSync(join(vector, "request.json"), "utf8"));
-  const wrapper = request.inputs.find((name) => name.startsWith("evidence-"))!;
-  const dir = mkdtempSync(join(tmpdir(), "pipelock-ts-bare-stamp-count-"));
-  const fs = createRequire(import.meta.url)("node:fs") as typeof import("node:fs");
-  const lstat = fs.lstatSync;
-  const opts = { keys: request.keys, directory: true };
-  const result = newResult(opts, 0);
-  const store = new Stage();
-  try {
-    const paths = Array.from({ length: 12 }, (_, i) =>
-      join(dir, wrapper.replace("evidence-example.", `evidence-base${i}.`)),
-    );
-    for (const file of paths) copyFileSync(join(vector, wrapper), file);
-    let pathReads = 0;
-    const observed = new Proxy(paths, {
-      get(target, property, receiver) {
-        if (typeof property === "string" && /^\d+$/u.test(property)) pathReads++;
-        return Reflect.get(target, property, receiver);
-      },
-    });
-    let stats = 0;
-    t.mock.method(fs, "lstatSync", (...args: unknown[]) => {
-      if (new Error().stack?.includes("fileStamp")) stats++;
-      return Reflect.apply(lstat, fs, args);
-    });
-    syncBuiltinESMExports();
-    await verifyLegacy(
-      {
-        opts,
-        result,
-        store,
-        add: (code: string) => result.findings.push(finding(code, "")),
-      } as never,
-      observed,
-      async () => ({ groups: 0, incomplete: 0, invalid: 0, unavailable: false }),
-    );
-    assert.deepEqual(
-      [pathReads <= paths.length * 2, stats <= paths.length * 4],
-      [true, true],
-      `${pathReads} discovery path reads, ${stats} wrapper stamp reads`,
-    );
-  } finally {
-    t.mock.restoreAll();
-    syncBuiltinESMExports();
-    store.close();
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
 test("v3 pending hold replay retains only its identity", () => {
   const hold = "hold-".repeat(16384);
   const action = {
@@ -636,38 +387,71 @@ test("v3 pending hold replay retains only its identity", () => {
   assert.deepEqual(inferred, pending);
 });
 
-test("v3 hold ownership shares the decision index budget", () => {
+test("v3 hold ownership does not exhaust the decision index", () => {
   const holds = new Map<string, string>();
   const long = "h".repeat(1 << 16);
-  assert.equal(claimHold(holds, long, "first", 1), undefined);
-  assert.equal(claimHold(holds, long, "second", 1), "conflict");
-  assert.equal(claimHold(holds, long, "first", 1), undefined);
-  assert.equal(claimHold(holds, "other", "first", 1), "full");
-  assert.equal(holds.size, 1);
+  assert.equal(claimHold(holds, long, "first"), undefined);
+  assert.equal(claimHold(holds, long, "second"), "conflict");
+  assert.equal(claimHold(holds, long, "first"), undefined);
+  assert.equal(claimHold(holds, "other", "first"), undefined);
+  assert.equal(holds.size, 2);
   assert.ok([...holds.keys()].every((key) => key.length < 100));
 });
 
-test("v3 validates an unreferenced inventory without retaining its rows", () => {
-  const dir = mkdtempSync(join(tmpdir(), "pipelock-v3-inventory-"));
+test("canonical JSON rejects undefined array elements", () => {
+  assert.throws(() => canonicalJSON([undefined]), /undefined/i);
+});
+
+test("explicit v3 treats inventory-shaped name as stream", () => {
+  const dir = mkdtempSync(join(tmpdir(), "v3-explicit-"));
   try {
-    const row = (chain: string): string =>
-      `{"chain":"${chain}","format":"evidence_v2","record":"${digest(Buffer.from("r"))}","seq":0}`;
-    const [low, high] = [digest(Buffer.from("a")), digest(Buffer.from("b"))].sort();
-    const write = (name: string, rows: string[]): { path: string; inventory: string } => {
-      const raw = `{"chains":[${rows.join(",")}],"v":1}`;
-      const path = join(dir, name);
-      writeFileSync(path, raw);
-      return { path, inventory: digest(Buffer.from(raw)) };
-    };
-    const ordered = write("ordered.json", [row(low), row(high)]);
-    assert.equal((readInventory(ordered.path, { ...ordered, chains: 2 }) as unknown[]).length, 2);
-    assert.deepEqual(readInventory(ordered.path, { ...ordered, chains: -1 }), []);
-    const reversed = write("reversed.json", [row(high), row(low)]);
-    assert.equal(
-      readInventory(reversed.path, { ...reversed, chains: -1 }),
-      "CUTOVER_INVENTORY_MISMATCH",
-    );
+    const path = join(dir, `receipt-v3-cutover-${"a".repeat(64)}.json`);
+    writeFileSync(path, "");
+    const result = discover([path], { explicitV3: true });
+    assert.equal(result.files.length, 1);
+    assert.equal(result.inventories.size, 0);
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true });
+  }
+});
+test("v3 resolution rejects an empty hold ID", () => {
+  const action = {
+    action_id: "test",
+    action_type: "test",
+    phase: "hold",
+    verdict: "defer",
+    effect_boundary: "approval_prompt",
+    effect_relation: "before",
+    transport: "",
+    method: "",
+    target: "",
+    hold: { id: "" },
+  };
+  const decision = new Decision();
+  assert.ok(decision.advance(action, false));
+  assert.equal(
+    decision.advance({ ...action, phase: "resolution", verdict: "allow" }, false),
+    false,
+  );
+});
+
+test("core directory defers lone chain-link and ael entries", async () => {
+  for (const extra of ["chain-link-alone.json", "ael"]) {
+    const dir = mkdtempSync(join(tmpdir(), "v3-core-"));
+    try {
+      const name = "11111111111111111111111111111111-0000000000000000.receipt-v3.jsonl";
+      copyFileSync(join(corpus, "g04-absent-max-write-error-pin", name), join(dir, name));
+      if (extra === "ael") mkdirSync(join(dir, extra));
+      else writeFileSync(join(dir, extra), "{}");
+      const { result } = await verifyV3Paths([dir], { directory: true, allowUnpinned: true });
+      assert.ok(
+        result.findings.some((f) => f.code === "USE_HOST_VERIFIER"),
+        extra,
+      );
+      const command = invoke("--allow-unpinned", "--", dir);
+      assert.match(command.stderr, /pipelock verify-receipt --chain <dir>/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   }
 });

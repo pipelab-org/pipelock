@@ -120,9 +120,7 @@ callers handling untrusted JSON should use `run_receipt` or
 
 ## Receipt v3
 
-Supply v3 receipt files or one evidence directory. Directory verification checks
-legacy chains and receipt groups against the inventory pinned by the first v3
-record. Repeat `--key` for each pinned Ed25519 public key in lowercase hex.
+Supply v3 receipt files or one evidence directory. Repeat `--key` for each pinned Ed25519 public key in lowercase hex. Mixed old-format and v3 evidence returns `USE_HOST_VERIFIER`; run `pipelock verify-receipt --chain <dir>`.
 
 ```text
 pipelock-verifier-rs v3 --key HEX --output projection EVIDENCE_DIR

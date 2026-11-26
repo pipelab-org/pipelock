@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import base64
-import io
 import json
 import shutil
 import subprocess
@@ -46,8 +45,11 @@ def test_v3_corpus(request_path, tmp_path):
         assert all(not claims_v3_input(path) for path in inputs)
         return
     options = _options(request)
+    core = request_path.parent / "projection.core.json"
     expected = (
-        (request_path.parent / "projection.json").read_bytes().removesuffix(b"\n")
+        (core if core.exists() else request_path.parent / "projection.json")
+        .read_bytes()
+        .removesuffix(b"\n")
     )
     if options.directory:
         for index, order in enumerate((inputs, inputs[::-1])):
@@ -264,16 +266,6 @@ def test_cli_claims_and_requirements(capsys):
     )
 
 
-def test_standalone_receipt_oversized_message(tmp_path, capsys):
-    path = tmp_path / "receipt.json"
-    with path.open("wb") as output:
-        output.truncate((8 << 20) + 1)
-    assert main(["receipt", "--json", str(path)]) == 1
-    assert json.loads(capsys.readouterr().out)["error"] == (
-        "read receipt: input exceeds 8388608 bytes"
-    )
-
-
 def _v3_open_with_cutover(directory, inventory, key):
     raw = canonical_v3(inventory)
     inventory_id = digest(raw)
@@ -309,48 +301,6 @@ def test_claims_profile_requires_exact_filename_suffix(tmp_path):
     assert not claims_v3_input(path)
 
 
-def test_cutover_inventory_reads_are_bounded(monkeypatch):
-    from pipelock_aarp_verify.v3 import legacy
-
-    vector = VECTORS / "g09-inventory-over-1024-chains"
-    inventory = next(vector.glob("receipt-v3-cutover-*.json"))
-    raw = inventory.read_bytes()
-
-    class BoundedInput(io.BytesIO):
-        def read(self, size=-1):
-            assert 0 < size <= 256
-            return super().read(size)
-
-    monkeypatch.setattr(legacy, "_open_regular_input", lambda _: BoundedInput(raw))
-    rows = legacy._read_inventory(inventory, digest(raw), 1025)
-    assert rows is not None and len(rows) == 1025
-
-
-@pytest.mark.parametrize(
-    ("layout", "count"),
-    [
-        pytest.param(b'{"v":1,"chains":[]}', 0, id="wrong-prefix"),
-        pytest.param(b'{"chains":[ROW],"v":1}', 0, id="too-many-rows"),
-        pytest.param(b'{"chains":[ROW],"v":1}', 2, id="not-enough-rows"),
-        pytest.param(b'{"chains":[{', 1, id="truncated-row"),
-        pytest.param(b'{"chains":[{"chain":}],"v":1}', 1, id="malformed-row"),
-        pytest.param(b'{"chains":[ROW,ROW],"v":1}', 2, id="duplicate-row"),
-        pytest.param(b'{"chains":[ROW,],"v":1}', 1, id="trailing-comma"),
-        pytest.param(b'{"chains":[ROW],"v":1} ', 1, id="trailing-data"),
-    ],
-)
-def test_cutover_inventory_rejects_invalid_layout(tmp_path, layout, count):
-    from pipelock_aarp_verify.v3.legacy import _read_inventory
-
-    row = canonical_v3(
-        {"chain": "0" * 32, "format": "action_v1", "record": digest(b""), "seq": 0}
-    )
-    raw = layout.replace(b"ROW", row)
-    inventory = tmp_path / "inventory.json"
-    inventory.write_bytes(raw)
-    assert _read_inventory(inventory, digest(raw), count) is None
-
-
 def test_oversized_cutover_inventory_row(tmp_path, capsys):
     inventory = {
         "chains": [
@@ -364,28 +314,10 @@ def test_oversized_cutover_inventory_row(tmp_path, capsys):
         "v": 1,
     }
     key = _v3_open_with_cutover(tmp_path, inventory, Ed25519PrivateKey.generate())
-    assert main(["v3", "--key", key, "--output", "projection", str(tmp_path)]) == 1
+    assert main(["v3", "--key", key, "--output", "projection", str(tmp_path)]) == 3
     result = json.loads(capsys.readouterr().out)
-    assert result["verdict"] == "INVALID"
-    assert result["finding_codes"] == ["CUTOVER_INVENTORY_MISMATCH"]
-
-
-def test_inventory_row_is_bounded_before_payload_parsing(tmp_path, monkeypatch):
-    from pipelock_aarp_verify.v3 import legacy
-
-    row = {"chain": "0" * 32, "format": "action_v1", "record": digest(b""), "seq": 0}
-    assert legacy._valid_row(row)
-    token = canonical_v3(row).removesuffix(b"}")
-    oversize = token + b" " * (legacy._INVENTORY_ITEM_LIMIT - len(token)) + b"}"
-    raw = b'{"chains":[' + oversize + b'],"v":1}'
-    path = tmp_path / "inventory.json"
-    path.write_bytes(raw)
-
-    def reject_parse(_raw):
-        pytest.fail("oversized inventory row reached the payload parser")
-
-    monkeypatch.setattr(legacy, "parse_payload", reject_parse)
-    assert legacy._read_inventory(path, digest(raw), 1) is None
+    assert result["verdict"] == "UNSUPPORTED"
+    assert result["finding_codes"] == ["USE_HOST_VERIFIER"]
 
 
 def test_ordinary_legacy_ignores_unrelated_symlink(tmp_path):
@@ -415,49 +347,6 @@ def test_pending_hold_replay_retains_only_identity():
     inferred = _Piece()
     assert inferred.advance(matching, True)
     assert inferred.hold == piece.hold
-
-
-def test_mixed_group_directory(tmp_path):
-    from pipelock_aarp_verify import verify_receipt_groups
-    from pipelock_aarp_verify.legacy_directory import recorder_index
-    from test_receipt_group import GROUP_ID, TRUSTED_KEYS, _extract_fixture
-
-    root = _extract_fixture("group-valid", tmp_path)
-    (group,) = verify_receipt_groups(root, TRUSTED_KEYS)
-    assert group["verdict"] == "GROUP_VALID"
-    assert recorder_index(root) and not recorder_index(root, exclude_groups=True)
-    head = group["close_manifest_sha256"]
-    inventory = {
-        "v": 1,
-        "chains": [
-            {
-                "chain": GROUP_ID,
-                "format": "receipt_group",
-                "seq": group["shard_count"],
-                "record": head if head.startswith("sha256:") else "sha256:" + head,
-            }
-        ],
-    }
-    key = Ed25519PrivateKey.from_private_bytes(bytes(range(32)))
-    v3_pub = _v3_open_with_cutover(root, inventory, key)
-    options = V3Options(keys=(*TRUSTED_KEYS, v3_pub), directory=True, allow_prefix=True)
-    full, projection = verify_v3([root], options)
-    assert full["legacy"] == [
-        {
-            "chain": GROUP_ID,
-            "format": "receipt_group",
-            "class": "pass",
-            "verdict": "GROUP_VALID",
-        }
-    ]
-    assert projection["finding_codes"] == ["END_UNPROVEN"]
-    assert projection["exit_code"] == 0
-
-    (root / f"receipt-group-{GROUP_ID}-open.json").unlink()
-    full, _ = verify_v3([root], options)
-    assert full["exit_code"] == 1
-    assert {row["format"] for row in full["legacy"]} == {"receipt_group"}
-    assert "LEGACY_INVALID" in {finding["code"] for finding in full["findings"]}
 
 
 def test_decision_prefix_inference_and_shape_rules():
@@ -528,22 +417,6 @@ def test_decision_limit_keeps_integrity_checks(monkeypatch, tmp_path, damage):
         assert "DATA_AFTER_CLOSE" in codes
 
 
-def test_legacy_scope_error_and_recorder_discriminator(tmp_path):
-    legacy = VECTORS / "g10-action-receipt-v1-single" / "action-receipt-v1-single.json"
-    with pytest.raises(ValueError, match="legacy-only evidence"):
-        verify_v3([legacy])
-    path = _request_args("g08-pinned")[-1]
-    jsonl = tmp_path / "legacy.jsonl"
-    jsonl.write_bytes(canonical_v3(json.loads(legacy.read_bytes())) + b"\n")
-    with pytest.raises(ValueError, match="require directory scope"):
-        verify_v3([path, jsonl])
-    with pytest.raises(ValueError, match="exactly one directory"):
-        verify_v3([path, legacy], V3Options(directory=True))
-    evidence = SDK / "conformance" / "testdata" / "g1-valid-chain.jsonl"
-    with pytest.raises(ValueError, match="legacy-only evidence"):
-        verify_v3([evidence])
-
-
 def test_cli_help(capsys):
     assert main(["v3", "--help"]) == 0
     assert "--claims" in capsys.readouterr().out
@@ -572,37 +445,13 @@ def test_cutover_with_unknown_group_artifact(tmp_path):
     shutil.copyfile(path, tmp_path / path.name)
     (tmp_path / "receipt-group-unknown.json").write_text("{}")
     result, _ = verify_v3([tmp_path], V3Options(directory=True))
-    assert any(f["code"] == "LEGACY_INVALID" for f in result["findings"])
+    assert any(f["code"] == "USE_HOST_VERIFIER" for f in result["findings"])
 
 
 def test_directory_rejects_an_evidence_subdirectory(tmp_path):
     (tmp_path / "evidence-proxy-0.jsonl").mkdir()
     with pytest.raises(ValueError, match="not a regular file"):
         verify_v3([tmp_path], V3Options(directory=True))
-
-
-@pytest.mark.parametrize("present", ["changed", "absent"])
-def test_continuity_failure_is_reported_in_cutover(tmp_path, monkeypatch, present):
-    from pipelock_aarp_verify.v3 import legacy
-
-    fixture = VECTORS / "g09-writer-switch-rotated-legacy"
-    request = json.loads((fixture / "request.json").read_bytes())
-    for name in request["inputs"]:
-        shutil.copyfile(fixture / name, tmp_path / name)
-    balance = "RESTART CONTINUITY FAILED"
-    if present == "changed":
-        (path,) = tmp_path.glob("chain-link-*.json")
-        path.write_text("{}")
-    else:
-
-        def unavailable(*args, **kwargs):
-            raise OSError("directory unavailable")
-
-        monkeypatch.setattr(legacy, "verify_base", unavailable)
-        balance = "RESTART CONTINUITY INCOMPLETE"
-    full, _ = verify_v3([tmp_path], _options(request))
-    assert any(item["verdict"] == balance for item in full["legacy"])
-    assert any(f["code"] == "LEGACY_INVALID" for f in full["findings"])
 
 
 def test_partial_history_acceptance_requires_the_named_missing_predecessor():
@@ -632,17 +481,6 @@ def test_partial_history_acceptance_requires_the_named_missing_predecessor():
         V3Options(keys=tuple(request["keys"]), allow_partial_histories=("0" * 32,)),
     )
     assert "EXPECTATION_NOT_MET" in projection["finding_codes"]
-
-
-def test_inventory_rows_reject_bad_identity_and_sequence():
-    from pipelock_aarp_verify.v3.legacy import _valid_row
-
-    row = {"format": "action_v1", "chain": "0" * 32, "seq": 0, "record": digest(b"row")}
-    assert _valid_row(row)
-    assert not _valid_row({**row, "seq": True})
-    assert not _valid_row({**row, "seq": -1})
-    assert not _valid_row({**row, "format": "receipt_group", "chain": digest(b"row")})
-    assert not _valid_row({**row, "extra": "data"})
 
 
 def test_parse_line_rejects_trailing_comma_after_max_signatures(tmp_path):
@@ -709,33 +547,86 @@ def test_filename_claimed_missing_or_directory_inputs_are_input_errors(tmp_path)
         assert main(argv) == 2, argv
 
 
-def test_bare_wrapper_replacement_is_not_excluded_from_restart(
-    tmp_path, monkeypatch, capsys
-):
-    from pipelock_aarp_verify.v3 import legacy
+def test_explicit_v3_treats_inventory_name_as_stream(tmp_path):
+    from pipelock_aarp_verify.v3.verify import _discover
 
-    vector = (
-        Path(__file__).resolve().parents[3]
-        / "conformance/testdata/v3/g09-legacy-bare-evidence-under-run-name"
+    path = tmp_path / ("receipt-v3-cutover-" + "a" * 64 + ".json")
+    path.write_bytes(b"")
+    files, legacy, inventories, _ = _discover([path], V3Options(explicit_v3=True))
+    assert len(files) == 1
+    assert not legacy
+    assert not inventories
+
+
+def test_resolution_rejects_empty_hold_id():
+    from pipelock_aarp_verify.v3.decision import _Piece
+
+    piece = _Piece()
+    assert piece.advance({"phase": "hold", "hold": {"id": ""}}, False)
+    assert not piece.advance(
+        {"phase": "resolution", "verdict": "allow", "hold": {"id": ""}}, False
     )
-    request = json.loads((vector / "request.json").read_bytes())
-    for name in request["inputs"]:
-        shutil.copyfile(vector / name, tmp_path / name)
-    wrapper = tmp_path / "evidence-example.run.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-0.jsonl"
-    args = ["v3", "--output", "projection", str(tmp_path)]
-    for key in request["keys"]:
-        args[1:1] = ["--key", key]
 
-    def codes():
-        main(args)
-        return set(json.loads(capsys.readouterr().out)["finding_codes"])
 
-    assert codes() == {"LEGACY_CHAIN_UNLISTED"}
-    verify_base = legacy.verify_base
+@pytest.mark.parametrize("extra", ["chain-link-alone.json", "ael"])
+def test_core_directory_defers_old_evidence(tmp_path, extra, capsys):
+    name = "11111111111111111111111111111111-0000000000000000.receipt-v3.jsonl"
+    shutil.copyfile(VECTORS / "g04-absent-max-write-error-pin" / name, tmp_path / name)
+    if extra == "ael":
+        (tmp_path / extra).mkdir()
+    else:
+        (tmp_path / extra).write_text("{}")
+    result, _ = verify_v3([tmp_path], V3Options(directory=True, allow_unpinned=True))
+    assert any(f["code"] == "USE_HOST_VERIFIER" for f in result["findings"])
+    from pipelock_aarp_verify.v3.cli import run
 
-    def replace_then_verify(*arguments, **options):
-        wrapper.write_bytes(b"not a recorder entry")
-        return verify_base(*arguments, **options)
+    assert run(["--allow-unpinned", str(tmp_path)]) == 3
+    assert "pipelock verify-receipt --chain <dir>" in capsys.readouterr().err
 
-    monkeypatch.setattr(legacy, "verify_base", replace_then_verify)
-    assert "LEGACY_INVALID" in codes()
+
+def test_hold_cardinality_does_not_fill_decision_index(monkeypatch):
+    import sqlite3
+    from collections import Counter
+    from types import SimpleNamespace
+
+    from pipelock_aarp_verify.v3.decision import _inspect_history
+    from pipelock_aarp_verify.v3.wire import LIMITS
+
+    monkeypatch.setitem(LIMITS, "decisions", 1)
+    db = sqlite3.connect(":memory:")
+    db.execute("CREATE TABLE hold_owners (id TEXT PRIMARY KEY, action_id TEXT)")
+    db.execute(
+        "CREATE TABLE bad_shapes (segment INTEGER, id TEXT, PRIMARY KEY(segment,id))"
+    )
+    records = []
+    for hold in ("first", "second"):
+        body = {
+            "action_id": "decision",
+            "phase": "hold",
+            "verdict": "defer",
+            "effect_boundary": "approval_prompt",
+            "effect_relation": "before",
+            "hold": {"id": hold},
+        }
+        records.append(
+            SimpleNamespace(
+                body_code=None,
+                kind="action",
+                fields={"body_v": 1},
+                body=body,
+                unknown=False,
+            )
+        )
+    stream = SimpleNamespace(
+        opening=SimpleNamespace(stream="s"),
+        limit=2,
+        body={"coverage": {"receipts_required": True}},
+    )
+    verification = SimpleNamespace(
+        db=db, walk=lambda *_: iter(records), add=lambda *args, **kwargs: None
+    )
+    ids, future, full = _inspect_history(verification, [(True, [stream])], Counter())
+    assert ids == {"decision": False}
+    assert not future and not full
+    assert db.execute("SELECT count(*) FROM hold_owners").fetchone()[0] == 2
+    db.close()
