@@ -492,6 +492,42 @@ test("v3 does not exclude a replaced bare wrapper from restart continuity", asyn
   }
 });
 
+test("v3 binds bare wrapper reads to the discovered shards", async (t) => {
+  const vector = join(corpus, "g09-legacy-bare-evidence-under-run-name");
+  const request: Request = JSON.parse(readFileSync(join(vector, "request.json"), "utf8"));
+  const dir = mkdtempSync(join(tmpdir(), "pipelock-ts-bare-shard-set-"));
+  const fs = createRequire(import.meta.url)("node:fs") as typeof import("node:fs");
+  const list = fs.readdirSync;
+  try {
+    for (const name of request.inputs) copyFileSync(join(vector, name), join(dir, name));
+    const wrapper = request.inputs.find((name) => name.startsWith("evidence-"))!;
+    const extra = join(dir, wrapper.replace(/-0\.jsonl$/u, "-8.jsonl"));
+    let added = false;
+    t.mock.method(fs, "readdirSync", (...args: unknown[]) => {
+      if (!added && new Error().stack?.includes("readBareEvidence")) {
+        added = true;
+        writeFileSync(extra, "");
+      } else if (
+        added &&
+        existsSync(extra) &&
+        new Error().stack?.includes("withBaseHistorySnapshot")
+      ) {
+        rmSync(extra);
+      }
+      return Reflect.apply(list, fs, args);
+    });
+    syncBuiltinESMExports();
+    const options = { keys: request.keys, directory: true };
+    const { result } = await verifyV3Paths([dir], options);
+    assert.ok(added);
+    assert.ok(result.findings.some((finding) => finding.code === "LEGACY_INVALID"));
+  } finally {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("v3 does not settle bare wrappers without file identity", async (t) => {
   const vector = join(corpus, "g09-legacy-bare-evidence-under-run-name");
   const request: Request = JSON.parse(readFileSync(join(vector, "request.json"), "utf8"));
@@ -511,6 +547,57 @@ test("v3 does not settle bare wrappers without file identity", async (t) => {
   } finally {
     t.mock.restoreAll();
     syncBuiltinESMExports();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("v3 bare wrapper indexing and stamp checks scale with shard count", async (t) => {
+  const vector = join(corpus, "g09-legacy-bare-evidence-under-run-name");
+  const request: Request = JSON.parse(readFileSync(join(vector, "request.json"), "utf8"));
+  const wrapper = request.inputs.find((name) => name.startsWith("evidence-"))!;
+  const dir = mkdtempSync(join(tmpdir(), "pipelock-ts-bare-stamp-count-"));
+  const fs = createRequire(import.meta.url)("node:fs") as typeof import("node:fs");
+  const lstat = fs.lstatSync;
+  const opts = { keys: request.keys, directory: true };
+  const result = newResult(opts, 0);
+  const store = new Stage();
+  try {
+    const paths = Array.from({ length: 12 }, (_, i) =>
+      join(dir, wrapper.replace("evidence-example.", `evidence-base${i}.`)),
+    );
+    for (const file of paths) copyFileSync(join(vector, wrapper), file);
+    let pathReads = 0;
+    const observed = new Proxy(paths, {
+      get(target, property, receiver) {
+        if (typeof property === "string" && /^\d+$/u.test(property)) pathReads++;
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    let stats = 0;
+    t.mock.method(fs, "lstatSync", (...args: unknown[]) => {
+      if (new Error().stack?.includes("fileStamp")) stats++;
+      return Reflect.apply(lstat, fs, args);
+    });
+    syncBuiltinESMExports();
+    await verifyLegacy(
+      {
+        opts,
+        result,
+        store,
+        add: (code: string) => result.findings.push(finding(code, "")),
+      } as never,
+      observed,
+      async () => ({ groups: 0, incomplete: 0, invalid: 0, unavailable: false }),
+    );
+    assert.deepEqual(
+      [pathReads <= paths.length * 2, stats <= paths.length * 4],
+      [true, true],
+      `${pathReads} discovery path reads, ${stats} wrapper stamp reads`,
+    );
+  } finally {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+    store.close();
     rmSync(dir, { recursive: true, force: true });
   }
 });

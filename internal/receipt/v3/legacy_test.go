@@ -308,7 +308,7 @@ func TestLegacyEndpointPinsEvidenceChainOfSelectedSession(t *testing.T) {
 
 func TestLegacyContinuityReadFailure(t *testing.T) {
 	v := verification{}
-	v.verifyLegacyContinuity(filepath.Join(t.TempDir(), "missing"), "example", nil, false, nil, func() bool { return true })
+	v.recordLegacyContinuity("example", v.legacyContinuityLabel(filepath.Join(t.TempDir(), "missing"), "example", nil, false, nil, func() bool { return true }))
 	if !hasFinding(v.result, codeLegacyInvalid) || len(v.result.Legacy) != 1 ||
 		v.result.Legacy[0].Verdict != "RESTART CONTINUITY INCOMPLETE" || v.result.Legacy[0].Class != legacyFailure {
 		t.Fatalf("continuity diagnostic: %+v", v.result)
@@ -576,7 +576,7 @@ func TestBareWrapperExclusionFollowsTheFileThatWasRead(t *testing.T) {
 		t.Fatal("a same-name replacement kept the wrapper's exclusion")
 	}
 	v := &verification{opts: Options{}, result: newResult(Options{})}
-	v.verifyLegacyContinuity(dir, "example", nil, false, map[string]bool{name: true}, func() bool { return stampsUnchanged(dir, stamps) })
+	v.recordLegacyContinuity("example", v.legacyContinuityLabel(dir, "example", nil, false, map[string]bool{name: true}, func() bool { return stampsUnchanged(dir, stamps) }))
 	if len(v.result.Legacy) != 1 || v.result.Legacy[0].Verdict != "RESTART CONTINUITY INCOMPLETE" || !hasFinding(v.result, codeLegacyInvalid) {
 		t.Fatalf("replaced wrapper was not reported: %+v %+v", v.result.Legacy, v.result.Findings)
 	}

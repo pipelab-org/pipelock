@@ -61,6 +61,7 @@ func (v *verification) verifyLegacy(paths []string, excluded map[string]bool) (m
 		keys = append(keys, hex.EncodeToString(key))
 	}
 	sessions := map[string]string{}
+	sessionPaths := map[string][]string{}
 	groupDirs := map[string]bool{}
 	positions := map[legacyIdentity]map[int64]string{}
 	bases := map[string]string{}
@@ -77,6 +78,7 @@ func (v *verification) verifyLegacy(paths []string, excluded map[string]bool) (m
 			}
 			if session, _, ok := recorder.ParseEvidenceFilename(name); ok {
 				sessions[session] = filepath.Dir(path)
+				sessionPaths[session] = append(sessionPaths[session], path)
 				continue
 			}
 		}
@@ -98,8 +100,7 @@ func (v *verification) verifyLegacy(paths []string, excluded map[string]bool) (m
 		})
 	}
 	ordinarySessions := map[string][]string{}
-	bareSessions := map[string]bool{}
-	bareStamps := map[string]string{}
+	bareStamps := map[string]map[string]string{}
 	for _, session := range sortedKeys(sessions) {
 		dir := sessions[session]
 		if groupDirs[dir] {
@@ -132,16 +133,15 @@ func (v *verification) verifyLegacy(paths []string, excluded map[string]bool) (m
 		location := recorder.EvidenceLocation{Root: root, Dir: root, ExcludedNames: excluded}
 		batch := legacyBatch{recorder: true, session: session}
 		// Bind a wrapper's exclusion to the files as they were before the read.
-		stamps := sessionStamps(paths, session)
+		stamps := sessionStamps(sessionPaths[session], session)
+		var bareNames []string
 		err := recorder.WithSessionHistorySnapshot(location, session, func() error {
 			var readErr error
 			batch.action, batch.evidence, readErr = legacy.ReadSessionChains(location, session)
 			if readErr == nil && len(batch.evidence) != 0 && len(batch.action) == 0 {
-				var bare bool
-				bare, readErr = legacy.IsBareEvidenceSession(location, session)
-				if bare {
-					bareSessions[session] = true
-					maps.Copy(bareStamps, stamps)
+				bareNames, readErr = legacy.BareEvidenceSessionShards(location, session)
+				if readErr == nil && len(bareNames) != 0 && !stampsCoverShards(stamps, bareNames) {
+					readErr = fmt.Errorf("%w: legacy shard list differs from discovery", recorder.ErrEvidenceChanged)
 				}
 			}
 			return readErr
@@ -150,28 +150,57 @@ func (v *verification) verifyLegacy(paths []string, excluded map[string]bool) (m
 		case err != nil:
 			v.failedLegacy(session, err)
 		case len(batch.action) != 0 || len(batch.evidence) != 0:
+			if len(bareNames) != 0 {
+				base, run := legacy.RunSessionBase(session)
+				if !run {
+					base = session
+				}
+				if bareStamps[base] == nil {
+					bareStamps[base] = make(map[string]string)
+				}
+				maps.Copy(bareStamps[base], stamps)
+			}
 			verifyBatch(batch)
 		default:
 			v.result.IgnoredFiles++
 		}
 	}
 	restartExcluded := maps.Clone(excluded)
-	if len(bareSessions) > 0 {
+	if len(bareStamps) > 0 {
 		if restartExcluded == nil {
 			restartExcluded = make(map[string]bool)
 		}
-		for _, path := range paths {
-			name := filepath.Base(path)
-			if session, _, ok := recorder.ParseEvidenceFilename(name); ok && bareSessions[session] {
+		for _, stamps := range bareStamps {
+			for name := range stamps {
 				restartExcluded[name] = true
 			}
 		}
 	}
-	for _, base := range sortedKeys(bases) {
+	basesInOrder := sortedKeys(bases)
+	restarts := make(map[string]string, len(bases))
+	for _, base := range basesInOrder {
 		dir := bases[base]
-		v.verifyLegacyContinuity(dir, base, keys, groupDirs[dir], restartExcluded, func() bool {
-			return stampsUnchanged(dir, bareStamps)
+		restarts[base] = v.legacyContinuityLabel(dir, base, keys, groupDirs[dir], restartExcluded, func() bool {
+			return stampsUnchanged(dir, bareStamps[base])
 		})
+	}
+	if len(basesInOrder) != 0 {
+		dir := bases[basesInOrder[0]]
+		for _, stamps := range bareStamps {
+			if !stampsUnchanged(dir, stamps) {
+				label := "RESTART CONTINUITY INCOMPLETE"
+				if v.opts.GenericLegacyLabels {
+					label = legacyInvalid
+				}
+				for _, base := range basesInOrder {
+					restarts[base] = label
+				}
+				break
+			}
+		}
+	}
+	for _, base := range basesInOrder {
+		v.recordLegacyContinuity(base, restarts[base])
 	}
 	v.checkLegacySelection(presented)
 	if err := v.verifyLegacyEndpoint(presented); err != nil {
@@ -241,6 +270,18 @@ func sessionStamps(paths []string, session string) map[string]string {
 	return stamps
 }
 
+func stampsCoverShards(stamps map[string]string, names []string) bool {
+	if len(stamps) != len(names) {
+		return false
+	}
+	for _, name := range names {
+		if _, ok := stamps[name]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
 func fileStamp(path string) string {
 	info, err := os.Lstat(path)
 	if err != nil {
@@ -264,7 +305,7 @@ func stampsUnchanged(dir string, stamps map[string]string) bool {
 	return true
 }
 
-func (v *verification) verifyLegacyContinuity(dir, base string, keys []string, grouped bool, excluded map[string]bool, settled func() bool) {
+func (v *verification) legacyContinuityLabel(dir, base string, keys []string, grouped bool, excluded map[string]bool, settled func() bool) string {
 	// A wrapper shard stays excluded only while it is the file that was read;
 	// a replacement under the same name is a change, not a pass.
 	var report legacy.BaseReport
@@ -277,7 +318,7 @@ func (v *verification) verifyLegacyContinuity(dir, base string, keys []string, g
 		changed = !settled()
 	}
 	if !changed && err == nil && report.Healthy() {
-		return
+		return ""
 	}
 	label := "RESTART CONTINUITY FAILED"
 	switch {
@@ -285,6 +326,13 @@ func (v *verification) verifyLegacyContinuity(dir, base string, keys []string, g
 		label = legacyInvalid
 	case err != nil || changed:
 		label = "RESTART CONTINUITY INCOMPLETE"
+	}
+	return label
+}
+
+func (v *verification) recordLegacyContinuity(base, label string) {
+	if label == "" {
+		return
 	}
 	v.addCode(codeLegacyInvalid, "")
 	v.result.Legacy = append(v.result.Legacy, LegacyResult{

@@ -15,12 +15,20 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
 
-// IsBareEvidenceSession recognizes only receipt-only compatibility input. Any
-// recorder metadata or mixed entry requires full recorder chain verification.
+// IsBareEvidenceSession recognizes receipt-only compatibility input.
 func IsBareEvidenceSession(location recorder.EvidenceLocation, session string) (bool, error) {
+	names, err := BareEvidenceSessionShards(location, session)
+	return len(names) > 0, err
+}
+
+// BareEvidenceSessionShards lists the shards read from a receipt-only
+// compatibility session. Recorder metadata or mixed entries return no list.
+func BareEvidenceSessionShards(location recorder.EvidenceLocation, session string) ([]string, error) {
 	notBare := errors.New("not a bare evidence receipt session")
 	seen := false
-	err := recorder.WalkSessionHistoryFiles(location, session, func(_ recorder.SessionHistoryShard, r io.Reader) error {
+	var names []string
+	err := recorder.WalkSessionHistoryFiles(location, session, func(shard recorder.SessionHistoryShard, r io.Reader) error {
+		names = append(names, shard.Name)
 		scanner := bufio.NewScanner(r)
 		scanner.Buffer(make([]byte, 0, 64<<10), 10<<20)
 		for scanner.Scan() {
@@ -47,7 +55,10 @@ func IsBareEvidenceSession(location recorder.EvidenceLocation, session string) (
 		return scanner.Err()
 	})
 	if errors.Is(err, notBare) {
-		return false, nil
+		return nil, nil
 	}
-	return seen && err == nil, err
+	if err != nil || !seen {
+		return nil, err
+	}
+	return names, nil
 }

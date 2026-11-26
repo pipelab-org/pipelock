@@ -272,7 +272,11 @@ impl Verifier<'_> {
                     continue;
                 }
                 if let Some((session, _)) = parse_evidence_filename(&name(path)) {
-                    sessions.insert(session, dir);
+                    sessions
+                        .entry(session)
+                        .or_insert_with(|| (dir, Vec::new()))
+                        .1
+                        .push(path.clone());
                     continue;
                 }
             }
@@ -325,9 +329,9 @@ impl Verifier<'_> {
             };
         }
         let mut ordinary = BTreeMap::new();
-        let mut bare_stamps: Vec<(PathBuf, String)> = Vec::new();
+        let mut bare_stamps: BTreeMap<String, Vec<(PathBuf, String)>> = BTreeMap::new();
         let mut bases = BTreeMap::new();
-        for (session, dir) in sessions {
+        for (session, (dir, paths)) in sessions {
             let base = run_session_base(&session).unwrap_or(&session);
             if dirs[dir] {
                 let ordinary = match ordinary.entry((dir, base.to_owned())) {
@@ -346,10 +350,19 @@ impl Verifier<'_> {
                 bases.insert(base.to_owned(), dir);
             }
             // Bind a wrapper's exclusion to the files as they were before the read.
-            let stamps = session_stamps(paths, &session);
-            let batch = read_bare_session(dir, &session).and_then(|bare| {
+            let stamps = session_stamps(&paths, &session);
+            let batch = probe_bare_session(dir, &session, |files| {
+                let bare = read_bare_files(files)?;
+                if bare.is_some() && !same_shard_names(files, &stamps) {
+                    return Err(VerifierError::Unavailable(
+                        "evidence changed during verification; no verdict reached".into(),
+                    ));
+                }
+                Ok(bare)
+            })
+            .and_then(|bare| {
                 if let Some(batch) = bare {
-                    bare_stamps.extend(stamps);
+                    bare_stamps.entry(base.into()).or_default().extend(stamps);
                     Ok((None, batch))
                 } else {
                     read_session_evidence(dir, &session).map_err(session_unavailable)
@@ -369,42 +382,49 @@ impl Verifier<'_> {
             endorsements: Vec::new(),
         };
         let bare_names = bare_stamps
-            .iter()
+            .values()
+            .flatten()
             .map(|(path, _)| name(path).into_owned())
             .collect::<BTreeSet<_>>();
-        // A wrapper shard stays excluded only while it is the file that was
-        // read; a replacement under the same name is a change, not a pass.
-        let settled = || stamps_unchanged(&bare_stamps);
-        for (base, dir) in bases {
-            let verify = if dirs[dir] {
-                verify_base_excluding_receipt_groups
-            } else {
-                verify_base
-            };
-            let checked = settled().then(|| {
-                with_recorder_file_exclusions(bare_names.clone(), || {
-                    verify(dir, &base, &legacy_opts)
-                })
-            });
-            let changed = checked.is_none() || !settled();
-            if !changed
-                && checked
-                    .as_ref()
-                    .is_some_and(|result| result.as_ref().is_ok_and(|report| report.healthy()))
-            {
-                continue;
+        // A wrapper shard stays excluded only while it is the file that was read.
+        let mut restarts = BTreeMap::new();
+        with_recorder_file_exclusions(bare_names, || {
+            for (base, dir) in &bases {
+                let settled = || {
+                    bare_stamps
+                        .get(base)
+                        .is_none_or(|stamps| stamps_unchanged(stamps))
+                };
+                let verify = if dirs[dir] {
+                    verify_base_excluding_receipt_groups
+                } else {
+                    verify_base
+                };
+                let checked = settled().then(|| verify(dir, base, &legacy_opts));
+                let label = match checked {
+                    Some(Ok(report)) if settled() => {
+                        if report.healthy() {
+                            continue;
+                        }
+                        "RESTART CONTINUITY FAILED"
+                    }
+                    _ => "RESTART CONTINUITY INCOMPLETE",
+                };
+                restarts.insert(base, label);
             }
+        });
+        if !bases.is_empty() && !bare_stamps.values().all(|stamps| stamps_unchanged(stamps)) {
+            for base in bases.keys() {
+                restarts.insert(base, "RESTART CONTINUITY INCOMPLETE");
+            }
+        }
+        for (base, verdict) in restarts {
             self.doc.add_code("LEGACY_INVALID", "");
             self.doc.legacy.push(LegacyRow {
                 format: ACTION,
-                chain: base,
+                chain: base.clone(),
                 class: "failure",
-                verdict: if changed || checked.is_some_and(|result| result.is_err()) {
-                    "RESTART CONTINUITY INCOMPLETE"
-                } else {
-                    "RESTART CONTINUITY FAILED"
-                }
-                .into(),
+                verdict: verdict.into(),
             });
         }
         for ((format, chain), item) in &presented {
@@ -566,11 +586,12 @@ impl Verifier<'_> {
     }
 }
 
-fn read_bare_session(
-    dir: &Path,
-    session: &str,
-) -> std::result::Result<Option<ExtractedReceipts>, bool> {
-    probe_bare_session(dir, session, read_bare_files)
+fn same_shard_names(files: &[PathBuf], stamps: &[(PathBuf, String)]) -> bool {
+    files.iter().map(|path| name(path)).collect::<BTreeSet<_>>()
+        == stamps
+            .iter()
+            .map(|(path, _)| name(path))
+            .collect::<BTreeSet<_>>()
 }
 
 fn session_unavailable(err: SessionReadError) -> bool {

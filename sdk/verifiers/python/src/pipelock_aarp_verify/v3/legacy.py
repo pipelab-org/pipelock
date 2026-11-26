@@ -253,9 +253,10 @@ class _LegacyVerifier:
             grouped = self._groups(root)
             index = recorder_index(root, exclude_groups=grouped)
             bases = set()
-            bare_names: dict[str, tuple[int, ...]] = {}
+            bare_stamps: dict[str, dict[str, tuple[int, ...]]] = defaultdict(dict)
             for session in sorted(selected & index.keys()):
-                if base := run_base(session):
+                base = run_base(session)
+                if base:
                     bases.add(base)
                 try:
                     # Bind a wrapper's exclusion to the files as they were
@@ -263,7 +264,7 @@ class _LegacyVerifier:
                     stamps = {path.name: _stamp(path) for _, path in index[session]}
                     batch = read_run(session, index[session], allow_bare_wrapper=True)
                     if batch.bare_wrapper:
-                        bare_names.update(stamps)
+                        bare_stamps[base or session].update(stamps)
                     if batch.outer_error:
                         raise ReceiptError(batch.outer_error)
                     if batch.action or batch.evidence:
@@ -273,18 +274,35 @@ class _LegacyVerifier:
                 except _ERRORS as exc:
                     self._fail(session, exc)
             marker = _recorder_file_exclusions.set(
-                _recorder_file_exclusions.get() | bare_names.keys()
+                _recorder_file_exclusions.get()
+                | {name for stamps in bare_stamps.values() for name in stamps}
             )
 
-            def settled(root: Path = root, stamps: dict = bare_names) -> bool:
+            def settled(stamps: dict[str, tuple[int, ...]], root: Path = root) -> bool:
                 try:
-                    return all(_stamp(root / name) == v for name, v in stamps.items())
+                    return all(
+                        _stamp(root / name) == stamp for name, stamp in stamps.items()
+                    )
                 except OSError:
                     return False
 
             try:
+                restarts = {}
                 for base in sorted(bases):
-                    self._continuity(root, base, grouped, settled)
+                    stamps = bare_stamps.get(base, {})
+                    restarts[base] = self._continuity(
+                        root, base, grouped, lambda stamps=stamps: settled(stamps)
+                    )
+                if bases and not all(
+                    settled(stamps) for stamps in bare_stamps.values()
+                ):
+                    restarts = dict.fromkeys(restarts, "RESTART CONTINUITY INCOMPLETE")
+                for base, label in restarts.items():
+                    if label:
+                        self.v.add("LEGACY_INVALID")
+                        self.v.result["legacy"].append(
+                            _legacy_row((_ACTION, base), label, False)
+                        )
             finally:
                 _recorder_file_exclusions.reset(marker)
         result = self.v.result["legacy"]
@@ -330,27 +348,18 @@ class _LegacyVerifier:
 
     def _continuity(
         self, root: Path, base: str, grouped: bool, settled: Callable[[], bool]
-    ) -> None:
-        # A wrapper shard stays excluded only while it is the file that was
-        # read; a replacement under the same name is a change, not a pass.
+    ) -> str:
+        # A wrapper shard stays excluded only while it is the file that was read.
         try:
-            healthy = (
-                settled()
-                and verify_base(
+            if settled():
+                healthy = verify_base(
                     root, base, tuple(sorted(self.keys)), exclude_groups=grouped
                 )["healthy"]
-            )
-            if healthy and settled():
-                return
-            label = (
-                "RESTART CONTINUITY FAILED"
-                if settled()
-                else "RESTART CONTINUITY INCOMPLETE"
-            )
+                if settled():
+                    return "" if healthy else "RESTART CONTINUITY FAILED"
         except _ERRORS:
-            label = "RESTART CONTINUITY INCOMPLETE"
-        self.v.add("LEGACY_INVALID")
-        self.v.result["legacy"].append(_legacy_row((_ACTION, base), label, False))
+            pass
+        return "RESTART CONTINUITY INCOMPLETE"
 
 
 def _stamp(path: Path) -> tuple[int, ...]:

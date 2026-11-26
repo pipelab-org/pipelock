@@ -209,13 +209,21 @@ function readLegacy(path: string): Batch {
   return batch;
 }
 
-function readBareEvidence(dir: string, session: string): Receipt[] | undefined {
+function readBareEvidence(
+  dir: string,
+  session: string,
+  discovered: readonly string[],
+): Receipt[] | undefined {
   // Apply Go's compatibility discriminator before reading recorder metadata.
   return withPinnedEvidenceDirectorySync(dir, () => {
     const evidence: Receipt[] = [];
     const notBare = Symbol("not bare evidence");
     try {
-      for (const file of sessionEvidenceFiles(".", session)) {
+      const files = sessionEvidenceFiles(".", session);
+      const expected = new Set(discovered.map((file) => basename(file)));
+      if (files.length !== expected.size || files.some((file) => !expected.has(basename(file))))
+        throw new Error("evidence changed during verification; no verdict reached");
+      for (const file of files) {
         forEachVerifierJSONLLine(basename(file), true, (raw) => {
           const line = trimGoSpace(raw);
           if (!line) return;
@@ -248,8 +256,8 @@ function readBareEvidence(dir: string, session: string): Receipt[] | undefined {
   });
 }
 
-function readSession(dir: string, session: string): Batch {
-  const bare = readBareEvidence(dir, session);
+function readSession(dir: string, session: string, discovered: readonly string[]): Batch {
+  const bare = readBareEvidence(dir, session, discovered);
   if (bare) return { action: [], evidence: bare, recorder: true, bare: true };
   return withPinnedEvidenceDirectorySync(dir, () => {
     const { lines, typed } = readSessionEvidence(".", session);
@@ -359,7 +367,7 @@ export async function verifyLegacy(
   readGroups = verifyReceiptGroups,
 ): Promise<Map<string, LegacyPresentation>> {
   const verifier = new LegacyVerifier(v);
-  const sessions = new Map<string, string>();
+  const sessions = new Map<string, { dir: string; paths: string[] }>();
   const groupDirs = new Map<string, boolean>();
   const bases = new Map<string, string>();
   for (const path of paths) {
@@ -370,7 +378,9 @@ export async function verifyLegacy(
       if (isGroupArtifact(name)) continue;
       const parsed = parseEvidenceFilename(name);
       if (parsed) {
-        sessions.set(parsed.session, dir);
+        const entry = sessions.get(parsed.session);
+        if (entry) entry.paths.push(path);
+        else sessions.set(parsed.session, { dir, paths: [path] });
         continue;
       }
     }
@@ -419,10 +429,9 @@ export async function verifyLegacy(
   }
 
   const ordinary = new Map<string, string[]>();
-  const bareSessions = new Set<string>();
-  const bareStamps = new Map<string, string>();
+  const bareStamps = new Map<string, Map<string, string>>();
   for (const session of [...sessions.keys()].sort(byteOrder)) {
-    const dir = sessions.get(session)!;
+    const { dir, paths: sessionPaths } = sessions.get(session)!;
     const base = runSessionBase(session);
     if (groupDirs.get(dir)) {
       const name = base ?? session;
@@ -433,13 +442,13 @@ export async function verifyLegacy(
     if (base !== undefined) bases.set(base, dir);
     try {
       // Bind a wrapper's exclusion to the files as they were before the read.
-      const stamps = paths
-        .filter((path) => parseEvidenceFilename(basename(path))?.session === session)
-        .map((path) => [path, fileStamp(path)] as const);
-      const batch = readSession(dir, session);
+      const stamps = sessionPaths.map((path) => [path, fileStamp(path)] as const);
+      const batch = readSession(dir, session, sessionPaths);
       if (batch.bare) {
-        bareSessions.add(session);
-        for (const [path, stamp] of stamps) bareStamps.set(path, stamp);
+        const scope = base ?? session;
+        const indexed = bareStamps.get(scope) ?? new Map<string, string>();
+        for (const [path, stamp] of stamps) indexed.set(path, stamp);
+        bareStamps.set(scope, indexed);
       }
       if (batch.action.length || batch.evidence.length) await verifier.verifyBatch(batch);
       else v.result.ignored_files++;
@@ -448,34 +457,41 @@ export async function verifyLegacy(
     }
   }
 
-  const restartExcluded = [
-    ...recorderExcludedNames(),
-    ...paths
-      .map((path) => basename(path))
-      .filter((name) => bareSessions.has(parseEvidenceFilename(name)?.session ?? "")),
-  ];
-  for (const base of [...bases.keys()].sort(byteOrder)) {
-    const dir = bases.get(base)!;
-    // A wrapper shard stays excluded only while it is the file that was read;
-    // a replacement under the same name is a change, not a pass.
-    const settled = (): boolean =>
-      [...bareStamps].every(([path, stamp]) => stamp !== "" && fileStamp(path) === stamp);
-    try {
-      const restart = settled()
-        ? await withRecorderFileExclusions(restartExcluded, () =>
-            verifyBase(dir, base, {
+  const restartExcluded = [...recorderExcludedNames()];
+  for (const stamps of bareStamps.values())
+    for (const path of stamps.keys()) restartExcluded.push(basename(path));
+
+  // A wrapper shard stays excluded only while it is the file that was read.
+  const settled = (stamps: ReadonlyMap<string, string> | undefined): boolean => {
+    if (stamps)
+      for (const [path, stamp] of stamps)
+        if (stamp === "" || fileStamp(path) !== stamp) return false;
+    return true;
+  };
+  const restartFailures = new Map<string, string>();
+  const incomplete = "RESTART CONTINUITY INCOMPLETE";
+  await withRecorderFileExclusions(restartExcluded, async () => {
+    for (const base of [...bases.keys()].sort(byteOrder)) {
+      const dir = bases.get(base)!;
+      const stamps = bareStamps.get(base);
+      try {
+        const restart = settled(stamps)
+          ? await verifyBase(dir, base, {
               trustedKeys: [...(v.opts.keys ?? [])],
               endorsements: [],
               excludeReceiptGroupSessions: groupDirs.get(dir),
-            }),
-          )
-        : undefined;
-      if (!restart || !settled()) failure(v, base, actionFormat, "RESTART CONTINUITY INCOMPLETE");
-      else if (!baseHealthy(restart)) failure(v, base, actionFormat, "RESTART CONTINUITY FAILED");
-    } catch {
-      failure(v, base, actionFormat, "RESTART CONTINUITY INCOMPLETE");
+            })
+          : undefined;
+        if (!restart || !settled(stamps)) restartFailures.set(base, incomplete);
+        else if (!baseHealthy(restart)) restartFailures.set(base, "RESTART CONTINUITY FAILED");
+      } catch {
+        restartFailures.set(base, incomplete);
+      }
     }
-  }
+  });
+  if (bases.size && ![...bareStamps.values()].every(settled))
+    for (const base of bases.keys()) restartFailures.set(base, incomplete);
+  for (const [base, verdict] of restartFailures) failure(v, base, actionFormat, verdict);
 
   for (const item of verifier.presented.values()) v.result.legacy.push(legacyVerdict(v, item));
   sortLegacy(v.result.legacy);
