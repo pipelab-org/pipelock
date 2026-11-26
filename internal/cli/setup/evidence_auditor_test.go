@@ -6,11 +6,15 @@ package setup
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/testreceipt"
 )
 
 func TestInitCmdInstallsEvidenceCorpusAuditorWithRenderedConsumer(t *testing.T) {
@@ -333,5 +337,49 @@ func assertRenderedFileContains(t *testing.T, path string, wants ...string) {
 		if !strings.Contains(string(data), want) {
 			t.Fatalf("rendered %s missing %q:\n%s", path, want, data)
 		}
+	}
+}
+
+func TestInitSkipsEvidenceCorpusAuditorForV3(t *testing.T) {
+	for _, tc := range []struct {
+		name, format string
+		populate     bool
+	}{
+		{name: "configured v3", format: "v3"},
+		{name: "existing v3 directory", populate: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if runtime.GOOS != "linux" {
+				t.Skip("init installs the auditor only on linux")
+			}
+			configDir := isolatedEvidenceAuditorInstall(t)
+			home, dir := t.TempDir(), t.TempDir()
+			if tc.populate {
+				testreceipt.V3(t, dir, false)
+			}
+			configPath := filepath.Join(home, "pipelock.yaml")
+			settings := fmt.Sprintf("mode: audit\nflight_recorder:\n  enabled: true\n  dir: %q\n", dir)
+			if tc.format != "" {
+				settings += fmt.Sprintf("  receipt_format: %s\n  signing_key_path: %q\n", tc.format, filepath.Join(home, "signer.key"))
+			}
+			if err := os.WriteFile(configPath, []byte(settings), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			var out bytes.Buffer
+			cmd := InitCmd()
+			cmd.SetOut(&out)
+			cmd.SetErr(&out)
+			cmd.SetArgs([]string{"--scan-home", home, "--output", configPath, "--skip-canary", "--skip-validate"})
+			if err := cmd.Execute(); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(filepath.Join(configDir, "systemd", "user", evidenceCorpusAuditorTimer)); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("auditor timer should be absent, stat: %v", err)
+			}
+			const guidance = "Check v3 evidence health with 'pipelock verify-receipt --chain <dir>'"
+			if strings.Count(out.String(), guidance) != 1 {
+				t.Errorf("want one line of verifier guidance, got:\n%s", out.String())
+			}
+		})
 	}
 }

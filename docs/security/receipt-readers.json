@@ -113,6 +113,12 @@
     "reason": "Selects and runs the receipt writer and gates legacy runtime evidence features."
   },
   {
+    "package": "internal/cli/setup",
+    "role": "refuses-v3",
+    "reason": "Init checks the recorder directory and skips the legacy evidence auditor for v3.",
+    "test": "TestInitSkipsEvidenceCorpusAuditorForV3"
+  },
+  {
     "package": "internal/cli/signing",
     "role": "v3-verifier",
     "reason": "Routes v3 to its verifier, refuses legacy-only whole-recorder options, and refuses v3 in transcript-root and receipt rotation endorse.",
