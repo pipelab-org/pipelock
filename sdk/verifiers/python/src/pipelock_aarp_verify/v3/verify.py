@@ -275,7 +275,7 @@ class Verification:
         self.db = db
         db.execute("""
             CREATE TABLE records (
-                stream TEXT, seq INTEGER, id TEXT, payload BLOB,
+                stream TEXT, seq INTEGER, id TEXT, kind TEXT, payload BLOB,
                 unknown INTEGER, body_code TEXT, damaged INTEGER,
                 PRIMARY KEY (stream, seq, id)
             ) WITHOUT ROWID
@@ -403,7 +403,7 @@ class Verification:
                 self.streams.setdefault(stream, _Stream())
                 self.db.execute(
                     """
-                    INSERT INTO records VALUES (?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO records VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT (stream, seq, id) DO UPDATE
                     SET damaged = min(damaged, excluded.damaged)
                 """,
@@ -411,6 +411,7 @@ class Verification:
                         record.stream,
                         record.seq,
                         record.id,
+                        record.kind,
                         payload,
                         unknown,
                         body_code,
@@ -544,8 +545,7 @@ class Verification:
         if not same_lineage and parent.body.get("lineage"):
             self.add("LINEAGE_MISMATCH", record=child.opening)
         found = self.db.execute(
-            "SELECT id,json_extract(payload, '$.kind') FROM records "
-            "WHERE stream=? AND seq=? AND seq<=?",
+            "SELECT id,kind FROM records WHERE stream=? AND seq=? AND seq<=?",
             (pin["stream"], pin["seq"], parent.limit),
         ).fetchone()
         if found is None:

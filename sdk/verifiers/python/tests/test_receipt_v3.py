@@ -120,6 +120,37 @@ sys.exit(main(["v3", *sys.argv[1:]]))
     assert '"verdict"' not in process.stdout
 
 
+def test_v3_predecessor_lookup_works_without_sqlite_json(monkeypatch):
+    import sqlite3
+
+    connect = sqlite3.connect
+
+    def without_json(*args, **kwargs):
+        db = connect(*args, **kwargs)
+
+        def authorize(operation, _table, function, _database, _trigger):
+            if operation == sqlite3.SQLITE_FUNCTION and function == "json_extract":
+                return sqlite3.SQLITE_DENY
+            return sqlite3.SQLITE_OK
+
+        db.set_authorizer(authorize)
+        return db
+
+    monkeypatch.setattr(sqlite3, "connect", without_json)
+    request_path = next(
+        path
+        for path in REQUESTS
+        if path.parent.name == "g04-absent-max-write-error-pin"
+    )
+    request = json.loads(request_path.read_bytes())
+    paths = [request_path.parent / name for name in request["inputs"]]
+    _, projection = verify_v3(paths, _options(request))
+    assert (
+        canonical_v3(projection) + b"\n"
+        == (request_path.parent / "projection.json").read_bytes()
+    )
+
+
 @pytest.mark.parametrize(
     ("vector", "status"),
     [("g08-pinned", 0), ("g08-unpinned-refused", 1), ("g01-empty-input", 3)],
