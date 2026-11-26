@@ -12,6 +12,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
+	"sync"
 	"testing"
 )
 
@@ -41,6 +43,7 @@ type writerReplayObservation struct {
 }
 
 type writerReplayFault struct {
+	mu                sync.Mutex
 	step              writerReplayStep
 	calls             []string
 	additionalFaultAt int
@@ -48,13 +51,34 @@ type writerReplayFault struct {
 
 var errWriterReplay = errors.New("injected receipt storage error")
 
-func (f *writerReplayFault) trip(operation string) bool {
+func (f *writerReplayFault) reset(step writerReplayStep, additional int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.step, f.additionalFaultAt, f.calls = step, additional, nil
+}
+
+func (f *writerReplayFault) failNext() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.additionalFaultAt = len(f.calls) + 1
+}
+
+func (f *writerReplayFault) operations() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.calls)
+}
+
+func (f *writerReplayFault) trip(operation string) (failed bool, landing string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.calls = append(f.calls, operation)
-	return f.step.FaultAt == len(f.calls) || f.step.ExtraFaultAt == len(f.calls) || f.additionalFaultAt == len(f.calls)
+	count := len(f.calls)
+	return f.step.FaultAt == count || f.step.ExtraFaultAt == count || f.additionalFaultAt == count, f.step.Landing
 }
 
 func (f *writerReplayFault) call(operation string, fn func() error) error {
-	if f.trip(operation) {
+	if failed, _ := f.trip(operation); failed {
 		return errWriterReplay
 	}
 	return fn()
@@ -66,10 +90,11 @@ type writerReplayFile struct {
 }
 
 func (f writerReplayFile) Write(data []byte) (int, error) {
-	if !f.fault.trip(replayWrite) {
+	failed, landing := f.fault.trip(replayWrite)
+	if !failed {
 		return f.StreamFile.Write(data)
 	}
-	switch f.fault.step.Landing {
+	switch landing {
 	case "full":
 	case "torn":
 		data = data[:len(data)/2]
@@ -232,13 +257,14 @@ func runWriterReplay(t *testing.T, base string, steps []writerReplayStep) []writ
 	var w *StreamWriter
 	defer func() { _ = abandonWriterReplay(w) }()
 	for _, step := range steps {
-		fault = writerReplayFault{step: step}
+		fault.reset(step, 0)
 		w, err = applyWriterReplayStep(t.Context(), opts, storage, w, step, root)
-		if len(fault.calls) < max(step.FaultAt, step.ExtraFaultAt) {
-			t.Fatalf("unreached storage fault %+v: %v", step, fault.calls)
+		calls := fault.operations()
+		if len(calls) < max(step.FaultAt, step.ExtraFaultAt) {
+			t.Fatalf("unreached storage fault %+v: %v", step, calls)
 		}
 		observation := observeWriterReplay(t, opts, root)
-		observation.Calls = fault.calls
+		observation.Calls = calls
 		if err != nil {
 			observation.Error = err.Error()
 		}

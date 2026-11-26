@@ -86,11 +86,11 @@ func (s *startupSessionVerification) authenticate(e recorder.Entry) (Receipt, bo
 
 func (s *startupSessionVerification) walkWithInventory(primary func(recorder.Entry) error) error {
 	var primaryErr error
-	s.inventoryErr = indexAELClaimsForSessionWithWalk(s.dir, s.session, s.currentGroup, s.previousGroup, s.trusted,
+	s.inventoryErr = indexAELClaimsForSessionBatch(s.dir, s.session, s.currentGroup, s.previousGroup, s.trusted,
 		func(run, session, groupID, signer string, completed bool) error {
 			s.claim = startupAELClaim{run: run, session: session, groupID: groupID, signer: signer, completed: completed}
 			return nil
-		}, nil, s, func(inventory func(recorder.Entry) error) error {
+		}, groupClaimScan{shared: s, walk: func(inventory func(recorder.Entry) error) error {
 			var inventoryErr error
 			visit := func(e recorder.Entry) error {
 				s.currentAuthenticated = false
@@ -144,7 +144,7 @@ func (s *startupSessionVerification) walkWithInventory(primary func(recorder.Ent
 				return err
 			}
 			return inventoryErr
-		})
+		}})
 	return primaryErr
 }
 

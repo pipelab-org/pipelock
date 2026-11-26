@@ -28,7 +28,7 @@ func (v *verification) recoverHolds(lineage string) ([]Action, error) {
 	}
 	holds := map[string]heldActionState{}
 	for stream := streams[root]; ; stream = stream.successors[0] {
-		err := walkRecords(v.ctx, v.store, stream.open.Stream, stream.limit, func(record stagedRecord) error {
+		err := v.store.walk(v.ctx, stream.open.Stream, stream.limit, func(record stagedRecord) error {
 			if record.Kind != kindAction {
 				return nil
 			}

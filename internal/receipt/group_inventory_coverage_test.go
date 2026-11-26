@@ -132,3 +132,51 @@ func TestGroupDirectoryFingerprintRejectsDamagedRunTree(t *testing.T) {
 		})
 	}
 }
+
+func TestGroupInventoryPropagatesUnreadableGenesis(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "evidence-proxy-0.jsonl")
+	if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0); err != nil {
+		t.Skipf("file permissions unavailable: %v", err)
+	}
+	if _, err := os.ReadFile(filepath.Clean(path)); !errors.Is(err, os.ErrPermission) {
+		t.Skip("filesystem does not enforce read permissions for this user")
+	}
+	if summary, err := VerifyReceiptGroups(dir, nil, nil); !recorder.IsEvidenceUnavailable(err) {
+		t.Fatalf("unreadable group inventory: %+v, %v", summary, err)
+	}
+}
+
+func TestGroupInventoryReportsOrphanWithoutAEL(t *testing.T) {
+	dir := t.TempDir()
+	id := strings.Repeat("a", 32)
+	name, err := ReceiptGroupFileName(id, "close")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, name), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var groupID string
+	summary, err := VerifyReceiptGroups(dir, nil, func(row ReceiptGroupResult) error {
+		groupID = row.GroupID
+		return nil
+	})
+	if err != nil || summary.Invalid != 1 || groupID != id {
+		t.Fatalf("orphan inventory did not identify its group: %+v, %q, %v", summary, groupID, err)
+	}
+}
+
+func TestScopedLegacyHistoryReportsUnavailableDirectory(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing")
+	err := walkLegacySessionHistory(path, "proxy", map[string]bool{"excluded.jsonl": true}, func(recorder.Entry) error {
+		t.Error("visited an entry from unavailable evidence")
+		return nil
+	})
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("scoped read reported %v, want missing directory", err)
+	}
+}

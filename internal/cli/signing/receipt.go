@@ -653,9 +653,9 @@ func verifyWholeRecorderFromFile(out io.Writer, name, path string, trustedKeys [
 		scan.add(e)
 		return nil
 	}); err != nil {
-		var torn *recorder.TornTailError
-		if errors.As(err, &torn) {
-			err = torn
+		var readErr *recorder.EvidenceFileReadError
+		if errors.As(err, &readErr) {
+			err = readErr.Unwrap()
 		}
 		return fmt.Errorf("whole-recorder verification failed: not a recorder file or recorder integrity error: %w", err)
 	}

@@ -81,6 +81,8 @@ func main() {
 	js.Global().Set("pipelockVerifyBundle", js.FuncOf(verifyBundle))
 	js.Global().Set("pipelockVerifyChain", js.FuncOf(verifyChain))
 	js.Global().Set("pipelockVerifyReceiptGroup", js.FuncOf(verifyReceiptGroup))
+	js.Global().Set("pipelockVerifyReceiptV3", js.FuncOf(verifyReceiptV3))
+	js.Global().Set("pipelockClaimsReceiptV3", js.FuncOf(claimsReceiptV3))
 	select {}
 }
 

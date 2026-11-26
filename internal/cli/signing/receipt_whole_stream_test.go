@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/receipt/receipttest"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
 
@@ -268,11 +269,11 @@ func conformanceRecorderSources(t *testing.T) []recorderSource {
 		if walkErr != nil || !d.IsDir() {
 			return walkErr
 		}
-		shards, _ := filepath.Glob(filepath.Join(path, "evidence-*.jsonl"))
-		if len(shards) == 0 {
+		dir := receipttest.LegacyCorpusDir(t, path)
+		if dir == "" {
 			return nil
 		}
-		src := recorderSource{name: strings.TrimPrefix(path, conformanceTestdata+"/"), dir: path, keys: [][]string{nil}}
+		src := recorderSource{name: strings.TrimPrefix(path, conformanceTestdata+"/"), dir: dir, keys: [][]string{nil}}
 		var keys []string
 		for _, dir := range []string{path, filepath.Dir(path), filepath.Dir(filepath.Dir(path))} {
 			for _, name := range []string{"signer-key.hex", "rotated-signer-key.hex", "signer.pub"} {

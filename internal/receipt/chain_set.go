@@ -62,6 +62,15 @@ type BaseVerifyOptions struct {
 	// ExcludeReceiptGroupSessions leaves gated shard runs to the signed group
 	// verifier instead of classifying each shard as an independent restart.
 	ExcludeReceiptGroupSessions bool
+	// ExcludedNames are immediate files claimed by another evidence profile.
+	ExcludedNames map[string]bool
+}
+
+func (opts BaseVerifyOptions) recorderIndex(dir string, groupSessions map[string]bool) (evidenceIndex, error) {
+	if opts.ExcludeReceiptGroupSessions {
+		return indexRecorderFilesExcludingGroupsSpill(dir, opts.ExcludedNames, groupSessions)
+	}
+	return indexRecorderFilesScoped(dir, opts.ExcludedNames)
 }
 
 // BaseChain is one chain of a base: a run session or the legacy base session.
@@ -168,7 +177,13 @@ func ResolveBaseSessions(dir, base string) ([]string, error) {
 // grouped shard is verified as part of its signed group and cannot be treated
 // as an independent passing run.
 func ResolveBaseSessionsExcludingReceiptGroups(dir, base string) ([]string, error) {
-	ix, err := indexRecorderFilesExcludingReceiptGroups(dir)
+	return ResolveLegacyBaseSessions(dir, base, nil)
+}
+
+// ResolveLegacyBaseSessions lists ordinary sessions with the same exclusions
+// used by mixed-profile verification.
+func ResolveLegacyBaseSessions(dir, base string, excluded map[string]bool) ([]string, error) {
+	ix, err := indexRecorderFilesExcludingGroupsSpill(dir, excluded, nil)
 	if err != nil {
 		return nil, fmt.Errorf("listing sessions: %w", err)
 	}
@@ -446,17 +461,13 @@ func readClaimFile(path string) ([]byte, os.FileInfo, error) {
 // successor listed in Unlinked, which is not a finding (see Unlinked).
 func VerifyBase(dir, base string, opts BaseVerifyOptions) (report BaseReport, retErr error) {
 	report = BaseReport{Base: base}
-	var ix evidenceIndex
-	var err error
-	if opts.ExcludeReceiptGroupSessions {
-		ix, err = indexRecorderFilesExcludingReceiptGroups(dir)
-	} else {
-		ix, err = indexRecorderFiles(dir)
-	}
+	groupSessions := map[string]bool{}
+	ix, err := opts.recorderIndex(dir, groupSessions)
 	if err != nil {
 		return report, fmt.Errorf("listing sessions: %w", err)
 	}
 	sessions := baseSessions(ix, base)
+	var links []chainLinkRecord
 	if !opts.LinksOnly {
 		before, err := fingerprintBaseShards(ix, sessions)
 		if err != nil {
@@ -467,16 +478,11 @@ func VerifyBase(dir, base string, opts BaseVerifyOptions) (report BaseReport, re
 			return report, err
 		}
 		defer func() {
-			var final evidenceIndex
-			var scanErr error
-			if opts.ExcludeReceiptGroupSessions {
-				final, scanErr = indexRecorderFilesExcludingReceiptGroups(dir)
-			} else {
-				final, scanErr = indexRecorderFiles(dir)
-			}
+			finalGroups := map[string]bool{}
+			final, scanErr := opts.recorderIndex(dir, finalGroups)
 			after, checkErr := fingerprintBaseShards(final, baseSessions(final, base))
 			endRoot, rootErr := os.Lstat(dir)
-			if scanErr != nil || checkErr != nil || after != before || rootErr != nil || !os.SameFile(root, endRoot) {
+			if scanErr != nil || checkErr != nil || after != before || groupMembershipChanged(base, links, groupSessions, finalGroups) || rootErr != nil || !os.SameFile(root, endRoot) {
 				detail := "evidence changed during verification; no verdict reached"
 				// Conclusions drawn from the changed inventory are void, but a
 				// per-read change finding already names what changed, and a
@@ -505,7 +511,7 @@ func VerifyBase(dir, base string, opts BaseVerifyOptions) (report BaseReport, re
 			}
 		}()
 	}
-	links, err := readChainLinkFiles(dir)
+	links, err = readChainLinkFiles(dir)
 	if err != nil {
 		return report, err
 	}
@@ -519,6 +525,10 @@ func VerifyBase(dir, base string, opts BaseVerifyOptions) (report BaseReport, re
 	scoped := make([]chainLinkRecord, 0, len(links))
 	need := make(map[string]bool)
 	for _, lf := range links {
+		if lf.seal != nil && lf.namePred == lf.seal.PredecessorSession &&
+			groupSessions[lf.seal.PredecessorSession] && groupSessions[lf.seal.SuccessorSession] {
+			continue
+		}
 		if lf.link != nil {
 			need[lf.link.PredecessorSession] = true
 			need[lf.link.SuccessorSession] = true
@@ -611,7 +621,7 @@ func VerifyBase(dir, base string, opts BaseVerifyOptions) (report BaseReport, re
 	endorsed := make(map[string]bool)
 	if !opts.LinksOnly {
 		betweenVerificationReads(dir)
-		reread := &evidenceReread{dir: dir}
+		reread := &evidenceReread{dir: dir, excluded: opts.ExcludedNames}
 		endorsable := make(map[string]bool)
 		crossUsed := make(map[int]bool)
 		for _, s := range sessions {
@@ -697,7 +707,7 @@ func VerifyBase(dir, base string, opts BaseVerifyOptions) (report BaseReport, re
 	// live recorders whose active shard grows; it makes no full-verification
 	// claim, so it does not refuse a directory that changed while it read.
 	if !opts.LinksOnly {
-		if err := checkShardSetUnchanged(dir, base, ix, sessions, links, data, addChanged, opts.ExcludeReceiptGroupSessions); err != nil {
+		if err := checkShardSetUnchanged(dir, base, ix, sessions, links, data, addChanged, opts); err != nil {
 			return report, err
 		}
 	}
@@ -706,6 +716,38 @@ func VerifyBase(dir, base string, opts BaseVerifyOptions) (report BaseReport, re
 		report.Chains = append(report.Chains, data[s].chain)
 	}
 	return report, nil
+}
+
+// groupMembershipChanged reports a changed gate only for the base's own
+// sessions and the endpoints of claims that can affect its report.
+func groupMembershipChanged(base string, links []chainLinkRecord, before, after map[string]bool) bool {
+	named := map[string]bool{}
+	for _, lf := range links {
+		if _, affectsBase := lf.baseSession(base); !affectsBase {
+			continue
+		}
+		named[lf.namePred] = true
+		if lf.link != nil {
+			named[lf.link.PredecessorSession], named[lf.link.SuccessorSession] = true, true
+		}
+		if lf.seal != nil {
+			named[lf.seal.PredecessorSession], named[lf.seal.SuccessorSession] = true, true
+		}
+	}
+	relevant := func(session string) bool {
+		return named[session] || isBaseChain(session, base)
+	}
+	for session := range before {
+		if relevant(session) && !after[session] {
+			return true
+		}
+	}
+	for session := range after {
+		if relevant(session) && !before[session] {
+			return true
+		}
+	}
+	return false
 }
 
 // fingerprintBaseShards binds even failed reads to their starting inventory.
@@ -980,14 +1022,8 @@ var errEvidenceChangedDuring = errors.New("evidence changed during verification"
 // This is best-effort detection for a recorder that should not be written
 // while it is verified. A same-size in-place rewrite of a shard by a process
 // with write access to dir can still go unseen.
-func checkShardSetUnchanged(dir, base string, ix evidenceIndex, sessions []string, links []chainLinkRecord, data map[string]*baseChainData, add func(kind, session, detail string), excludeGroups bool) error {
-	var final evidenceIndex
-	var err error
-	if excludeGroups {
-		final, err = indexRecorderFilesExcludingReceiptGroups(dir)
-	} else {
-		final, err = indexRecorderFiles(dir)
-	}
+func checkShardSetUnchanged(dir, base string, ix evidenceIndex, sessions []string, links []chainLinkRecord, data map[string]*baseChainData, add func(kind, session, detail string), opts BaseVerifyOptions) error {
+	final, err := opts.recorderIndex(dir, nil)
 	if err != nil {
 		return fmt.Errorf("re-listing sessions after verification: %w", err)
 	}
@@ -1098,16 +1134,17 @@ func shardIdentityChange(verified []os.FileInfo, paths []string) string {
 // verification reads, so a shard added or removed after the first reads is
 // seen.
 type evidenceReread struct {
-	dir  string
-	done bool
-	ix   evidenceIndex
-	err  error
+	excluded map[string]bool
+	dir      string
+	done     bool
+	ix       evidenceIndex
+	err      error
 }
 
 func (r *evidenceReread) index() (evidenceIndex, error) {
 	if !r.done {
 		r.done = true
-		r.ix, r.err = indexRecorderFiles(r.dir)
+		r.ix, r.err = indexRecorderFilesScoped(r.dir, r.excluded)
 	}
 	return r.ix, r.err
 }
@@ -1316,7 +1353,11 @@ func checkLinkedTail(pred *baseChainData, link ChainLink) error {
 
 // readSessionEntries reads every recorder entry of session, in shard order.
 func readSessionEntries(dir, session string) ([]recorder.Entry, error) {
-	ix, err := indexRecorderFiles(dir)
+	return readSessionEntriesScoped(dir, session, nil)
+}
+
+func readSessionEntriesScoped(dir, session string, excluded map[string]bool) ([]recorder.Entry, error) {
+	ix, err := indexRecorderFilesScoped(dir, excluded)
 	if err != nil {
 		return nil, err
 	}

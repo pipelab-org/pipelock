@@ -103,6 +103,8 @@ func TestLegacyBatchDiscrimination(t *testing.T) {
 		{"legacy recorder", "evidence-example-0.jsonl", signed, true, false, 0, 1},
 		{"operational recorder", "evidence-example-0.jsonl", operational, true, false, 0, 0},
 		{"unknown format", "unknown.jsonl", []byte("{}"), false, false, 0, 0},
+		{"oversized legacy line", "unknown.jsonl", bytes.Repeat([]byte{' '}, recorder.MaxEntryLineBytes+1), false, true, 0, 0},
+		{"oversized buffered record", "unknown.jsonl", bytes.Repeat([]byte{' '}, recorder.MaxEntryLineBytes+3), false, true, 0, 0},
 		{"mixed record types", "mixed.jsonl", bytes.Join([][]byte{compact.Bytes(), v2}, []byte{'\n'}), false, true, 0, 0},
 		{"invalid JSON", "bad.jsonl", []byte("{"), false, true, 0, 0},
 		{"invalid action", "bad.jsonl", []byte("{\"version\":1,\"action_record\":[]}"), false, true, 0, 0},
@@ -210,6 +212,23 @@ func TestLegacyDiagnosticLabels(t *testing.T) {
 	}
 }
 
+func TestFailedLegacyGroupInventoryDropsProvisionalRows(t *testing.T) {
+	v := verification{}
+	presented := map[legacyIdentity]legacyPresentation{}
+	grouped := v.verifyLegacyGroups(presented, func(visit func(legacy.ReceiptGroupResult) error) (legacy.ReceiptGroupInventoryResult, error) {
+		group := legacy.ReceiptGroupResult{
+			GroupID: "example", Verdict: legacy.GroupValid, CloseManifestSHA: strings.Repeat("a", 64), ShardCount: 1,
+		}
+		if err := visit(group); err != nil {
+			t.Fatal(err)
+		}
+		return legacy.ReceiptGroupInventoryResult{Groups: 1}, recorder.ErrEvidenceChanged
+	})
+	if !grouped || len(presented) != 0 || len(v.result.Legacy) != 1 || v.result.Legacy[0].Verdict != string(legacy.GroupIncomplete) {
+		t.Fatal("failed inventory published provisional group evidence")
+	}
+}
+
 func TestLegacyInvalidGroupInventoryLabel(t *testing.T) {
 	dir := t.TempDir()
 	stream := signedStream(t, 1, nil, &Cutover{Inventory: EmptyInventoryDigest()})
@@ -289,7 +308,7 @@ func TestLegacyEndpointPinsEvidenceChainOfSelectedSession(t *testing.T) {
 
 func TestLegacyContinuityReadFailure(t *testing.T) {
 	v := verification{}
-	v.verifyLegacyContinuity(filepath.Join(t.TempDir(), "missing"), "example", nil, false)
+	v.recordLegacyContinuity("example", v.legacyContinuityLabel(filepath.Join(t.TempDir(), "missing"), "example", nil, false, nil, func() bool { return true }))
 	if !hasFinding(v.result, codeLegacyInvalid) || len(v.result.Legacy) != 1 ||
 		v.result.Legacy[0].Verdict != "RESTART CONTINUITY INCOMPLETE" || v.result.Legacy[0].Class != legacyFailure {
 		t.Fatalf("continuity diagnostic: %+v", v.result)
@@ -499,26 +518,112 @@ func TestMixedDirectoryEndorsedRotation(t *testing.T) {
 	}
 }
 
-func TestLegacyPresentationContainsEarlierAction(t *testing.T) {
-	item := legacyPresentation{
-		InventoryChain:  InventoryChain{Record: "sha256:tail"},
-		actionPositions: map[int64]string{0: "first", 1: "middle", 2: "tail"},
-	}
+func TestLegacyPresentationCutoverPosition(t *testing.T) {
 	for _, tc := range []struct {
-		name, digest string
-		forked, want bool
+		name, format, digest string
+		seq                  int64
+		forked, rotated      bool
+		want                 int
 	}{
-		{"earlier record", "sha256:middle", false, true},
-		{"current tail", "sha256:tail", false, false},
-		{"unknown record", "sha256:other", false, false},
-		{"forked chain", "sha256:middle", true, false},
+		{"earlier action record after rotation", legacyAction, "sha256:middle", 1, false, true, 1},
+		{"current action tail", legacyAction, "sha256:tail", 0, false, true, 0},
+		{"unknown action record at same sequence", legacyAction, "sha256:other", 2, false, false, 0},
+		{"fork without an earlier record", legacyAction, "sha256:middle", 2, true, false, 0},
+		{"missing rotation boundary", legacyAction, "sha256:other", 0, false, false, 0},
+		{"unrotated chain pinned beyond its tail", legacyAction, "sha256:other", 3, false, false, -1},
+		{"rotated chain pinned beyond its tail", legacyAction, "sha256:other", 3, false, true, 0},
+		{"rotated chain with a missing earlier digest", legacyAction, "sha256:other", 1, false, true, 0},
+		{"earlier evidence record", legacyEvidence, "sha256:middle", 1, false, false, 1},
+		{"missing evidence genesis digest", legacyEvidence, "sha256:other", 0, false, false, 1},
+		{"later evidence sequence", legacyEvidence, "sha256:other", 3, false, false, -1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			p := item
-			p.forked = tc.forked
-			if got := p.containsEarlierAction(tc.digest); got != tc.want {
-				t.Fatalf("containsEarlierAction(%q) = %v, want %v", tc.digest, got, tc.want)
+			p := legacyPresentation{
+				InventoryChain: InventoryChain{Format: tc.format, Record: "sha256:tail", Seq: 2},
+				position:       2, positions: map[int64]string{0: "first", 1: "middle", 2: "tail"},
+				forked: tc.forked, rotated: tc.rotated,
+			}
+			if tc.name == "current action tail" || tc.name == "earlier action record after rotation" {
+				p.Seq = 0
+			}
+			if got := p.compareCutoverPosition(InventoryChain{Record: tc.digest, Seq: tc.seq}); got != tc.want {
+				t.Fatalf("cutover position = %d, want %d", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestBareWrapperExclusionFollowsTheFileThatWasRead(t *testing.T) {
+	const session = "example.run.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	dir := t.TempDir()
+	name := "evidence-" + session + "-0.jsonl"
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte("wrapper\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stamps := sessionStamps([]string{path}, session)
+	if len(stamps) != 1 || !stampsUnchanged(dir, stamps) {
+		t.Fatalf("a file nobody touched changed: %v", stamps)
+	}
+	replacement := filepath.Join(dir, "replacement")
+	if err := os.WriteFile(replacement, []byte("ordinary shard\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(replacement, path); err != nil {
+		t.Fatal(err)
+	}
+	if stampsUnchanged(dir, stamps) {
+		t.Fatal("a same-name replacement kept the wrapper's exclusion")
+	}
+	v := &verification{opts: Options{}, result: newResult(Options{})}
+	v.recordLegacyContinuity("example", v.legacyContinuityLabel(dir, "example", nil, false, map[string]bool{name: true}, func() bool { return stampsUnchanged(dir, stamps) }))
+	if len(v.result.Legacy) != 1 || v.result.Legacy[0].Verdict != "RESTART CONTINUITY INCOMPLETE" || !hasFinding(v.result, codeLegacyInvalid) {
+		t.Fatalf("replaced wrapper was not reported: %+v %+v", v.result.Legacy, v.result.Findings)
+	}
+}
+
+func TestLegacyDirectoryPreservesGroupAndBareWrapperVerdicts(t *testing.T) {
+	for _, name := range []string{
+		"g09-legacy-bare-evidence-under-run-name",
+		"g09-group-with-tampered-shard",
+		"g09-group-with-unclaimed-v3-content",
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := filepath.Join(corpusRoot, name)
+			recipe := readMutationRecipe(t, dir)
+			keys, err := DecodeKeys(recipe.Keys)
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := VerifyPaths(t.Context(), []string{dir}, Options{
+				Directory: true, Keys: keys, AllowPrefix: recipe.AllowPrefix, AllowUnpinned: recipe.AllowUnpinned,
+			})
+			if err != nil {
+				t.Fatalf("verify %s: %v", dir, err)
+			}
+			got, err := result.ResultBytes("projection")
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(dir, "projection.json")
+			want, err := os.ReadFile(filepath.Clean(path))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(got, want) {
+				t.Fatalf("verdict %q, exit %d: projection differs from %s", result.Verdict, result.ExitCode, path)
+			}
+		})
+	}
+}
+
+func TestMissingBareWrapperStampCannotKeepExclusion(t *testing.T) {
+	const session = "example"
+	dir := t.TempDir()
+	name := "evidence-" + session + "-0.jsonl"
+	path := filepath.Join(dir, name)
+	stamps := sessionStamps([]string{path}, session)
+	if len(stamps) != 1 || stampsUnchanged(dir, stamps) {
+		t.Fatal("a wrapper that could not be identified retained its exclusion")
 	}
 }

@@ -1968,10 +1968,14 @@ func receiptBytesFromEntry(entry recorder.Entry) ([]byte, error) {
 }
 
 func recorderFiles(dir, session string) ([]string, error) {
+	return recorderFilesScoped(dir, session, nil)
+}
+
+func recorderFilesScoped(dir, session string, excluded map[string]bool) ([]string, error) {
 	if dir == "" {
 		return nil, nil
 	}
-	ix, err := indexRecorderFiles(dir)
+	ix, err := indexRecorderFilesScoped(dir, excluded)
 	if err != nil {
 		return nil, err
 	}
@@ -2015,17 +2019,10 @@ func (ix evidenceIndex) files(session string) ([]string, error) {
 // read ceiling guards query paths that would otherwise present a partial view
 // as complete, while this index must see every shard to be correct at all.
 func indexRecorderFiles(dir string) (evidenceIndex, error) {
-	return indexRecorderFilesWithGroupFilter(dir, false)
+	return indexRecorderFilesScoped(dir, nil)
 }
 
-// indexRecorderFilesExcludingReceiptGroups filters each session before adding
-// it to the legacy index. A disk-backed name spool keeps historical group
-// filenames out of Go heap while retaining complete directory coverage.
-func indexRecorderFilesExcludingReceiptGroups(dir string) (evidenceIndex, error) {
-	return indexRecorderFilesExcludingGroupsSpill(dir)
-}
-
-func indexRecorderFilesWithGroupFilter(dir string, excludeGroups bool) (evidenceIndex, error) {
+func indexRecorderFilesScoped(dir string, excluded map[string]bool) (evidenceIndex, error) {
 	dirEntries, err := os.ReadDir(filepath.Clean(dir))
 	if err != nil {
 		return nil, fmt.Errorf("reading evidence directory: %w", err)
@@ -2044,10 +2041,6 @@ func indexRecorderFilesWithGroupFilter(dir string, excludeGroups bool) (evidence
 		if currentSession == "" || len(currentShards) == 0 {
 			return
 		}
-		if excludeGroups && isGroupSessionShards(currentShards) {
-			currentSession, currentShards = "", nil
-			return
-		}
 		bySession[currentSession] = append(bySession[currentSession], currentShards...)
 		currentSession, currentShards = "", nil
 	}
@@ -2056,7 +2049,7 @@ func indexRecorderFilesWithGroupFilter(dir string, excludeGroups bool) (evidence
 			continue
 		}
 		name := de.Name()
-		if !strings.HasSuffix(name, ".jsonl") {
+		if excluded[name] || !strings.HasSuffix(name, ".jsonl") {
 			continue
 		}
 		parsedSession, seqStart, ok := recorder.ParseEvidenceFilename(name)
@@ -2099,7 +2092,7 @@ func isGroupSessionShards(shards []indexedRecorderShard) bool {
 			continue
 		}
 		first, seen, err := firstGroupEvidenceEntry(shard.path)
-		return err != nil || seen && first.Type == recorder.GroupGateEntryType
+		return err == nil && seen && first.Type == recorder.GroupGateEntryType
 	}
 	return false
 }

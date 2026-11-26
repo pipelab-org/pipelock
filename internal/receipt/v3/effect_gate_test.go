@@ -262,7 +262,7 @@ func TestEffectGateDenialDeliveryDurability(t *testing.T) {
 			action := writerTestIntent("denial")
 			action.EffectBoundary = "downstream_delivery"
 			if tc.fail {
-				fault.additionalFaultAt = len(fault.calls) + 1
+				fault.failNext()
 			}
 			token, err := gate.AdmitDenialDelivery(t.Context(), action, PolicySnapshot{})
 			switch {

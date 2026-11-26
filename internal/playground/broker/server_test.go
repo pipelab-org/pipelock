@@ -1541,14 +1541,25 @@ func TestServer_RejectsURLShapedMachinePrivateIP(t *testing.T) {
 
 func TestServer_ReaperReleasesExpiredLease(t *testing.T) {
 	vm := newFakeVM(t, "reap-token")
-	vm.expiresAt = time.Now().Add(100 * time.Millisecond).UTC()
 	destroyed := make(chan string, 1)
 	provider := &serverFakeProvider{targets: []string{vm.targetHost(t)}, destroyedCh: destroyed}
 	srv, ts := newBrokerTestServer(t, provider, ServerConfig{ReapInterval: 10 * time.Millisecond})
-	status, _ := postBrokerSession(t, ts)
+	status, session := postBrokerSession(t, ts)
 	if status != http.StatusOK {
 		t.Fatalf("session status = %d, want 200", status)
 	}
+
+	// Expire the registered lease after session startup has finished.
+	srv.mu.Lock()
+	binding := srv.tokens[session.Token]
+	if binding != nil {
+		binding.deadline = time.Time{}
+	}
+	srv.mu.Unlock()
+	if binding == nil {
+		t.Fatal("started session has no registered lease")
+	}
+
 	expectDestroyed(t, destroyed)
 	if got := srv.cfg.Leases.ActiveLeases(); got != 0 {
 		t.Fatalf("active leases after reaper = %d, want 0", got)

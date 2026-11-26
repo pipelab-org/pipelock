@@ -222,7 +222,8 @@ func TestReceiptV3Corpus(t *testing.T) {
 	recipes = append(recipes, v3HistoryRecipes(t)...)
 	recipes = append(recipes, v3DecisionRecipes(t)...)
 	recipes = append(recipes, v3CutoverRecipes(t)...)
-	recipes = append(recipes, v3OperationalOnlyRecipe(t))
+	recipes = append(recipes, v3GroupRecipes(t)...)
+	recipes = append(recipes, v3OperationalOnlyRecipe(t), v3OperationalRecorderFileRecipe(t))
 	for _, recipe := range recipes {
 		t.Run(fmt.Sprintf("g%02d-%s", recipe.group, recipe.name), func(t *testing.T) {
 			v3RunRecipe(t, recipe)
@@ -298,6 +299,12 @@ func v3RunRecipe(t *testing.T, recipe v3Recipe) {
 	for _, f := range result.Findings {
 		if f.Class == "invalid" && recipe.code != f.Code && !slices.Contains(recipe.extraInvalid, f.Code) {
 			t.Fatalf("unexpected invalid finding %s for target %s", f.Code, recipe.code)
+		}
+	}
+	if recipe.name == "absent-max-write-error-pin" {
+		parent := result.Histories[0].Streams[0]
+		if parent.End != "closed" || parent.Tip == nil || parent.Tip.Seq != 1 || parent.UnconfirmedFrom != nil {
+			t.Fatal("an absent write-error pin changed the verified parent endpoint")
 		}
 	}
 	full, err := result.JSON()

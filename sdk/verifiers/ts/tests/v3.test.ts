@@ -1,0 +1,457 @@
+// Copyright 2026 Pipelock contributors
+// SPDX-License-Identifier: Apache-2.0
+
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  renameSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { createRequire, syncBuiltinESMExports } from "node:module";
+import { tmpdir } from "node:os";
+import { basename, dirname, join, resolve } from "node:path";
+import test from "node:test";
+import { canonicalV3, claimsV3Input, verifyV3Paths } from "../src/index.js";
+import { findPackageRoot } from "./paths.js";
+import { readV3Fixture, resignV3Fixture } from "./v3-fixtures.js";
+import { digest, limits } from "../src/v3/wire.js";
+import { discover } from "../src/v3/input.js";
+import { claimHold, Decision } from "../src/v3/decision.js";
+import { canonicalJSON, finding, newResult } from "../src/v3/result.js";
+import { Stage } from "../src/v3/store.js";
+
+test("receipt v3 canonical output rejects sparse arrays", () => {
+  const document = newResult({}, 0);
+  document.findings.length = 2;
+  assert.throws(() => canonicalV3(document), /sparse/i);
+  document.findings.length = 0;
+  assert.deepEqual(JSON.parse(canonicalV3(document)).findings, []);
+});
+
+const root = findPackageRoot(import.meta.url);
+const corpus = resolve(root, "../../conformance/testdata/v3");
+const cli = resolve(root, "dist/src/cli.js");
+
+interface Request {
+  inputs: string[];
+  keys: string[];
+  directory?: boolean;
+  legacy?: boolean;
+  format?: "v3";
+  allow_prefix?: boolean;
+  allow_unpinned?: boolean;
+  expect_lineage?: string;
+  accept_discontinuities?: string[];
+}
+
+test("shared v3 projections, legacy detection, and full-document order determinism", async (t) => {
+  let matched = 0;
+  let ordered = 0;
+  let full = 0;
+  let legacy = 0;
+  for (const vector of readdirSync(corpus).sort()) {
+    const dir = join(corpus, vector);
+    if (!existsSync(join(dir, "request.json"))) continue;
+    const request: Request = JSON.parse(readFileSync(join(dir, "request.json"), "utf8"));
+    await t.test(vector, async () => {
+      const paths = request.inputs.map((name) => join(dir, name));
+      if (request.legacy) {
+        assert.equal(claimsV3Input(paths[0]), false);
+        legacy++;
+        return;
+      }
+      const options = {
+        keys: request.keys,
+        directory: request.directory,
+        explicitV3: request.format === "v3",
+        allowPrefix: request.allow_prefix,
+        allowUnpinned: request.allow_unpinned,
+        expectLineage: request.expect_lineage,
+        acceptDiscontinuities: request.accept_discontinuities,
+      };
+      const compare = async (orderedPaths: string[], reverse = false) => {
+        if (!request.directory) return verifyV3Paths(orderedPaths, options);
+        const scratch = mkdtempSync(join(tmpdir(), "ts-v3-corpus-"));
+        try {
+          const names = reverse ? [...request.inputs].reverse() : request.inputs;
+          for (const name of names) {
+            const target = join(scratch, name);
+            mkdirSync(dirname(target), { recursive: true });
+            copyFileSync(join(dir, name), target);
+          }
+          return await verifyV3Paths([scratch], options);
+        } finally {
+          rmSync(scratch, { recursive: true });
+        }
+      };
+      const { result, projection } = await compare(paths);
+      if (vector === "g04-absent-max-write-error-pin") {
+        const parent = result.histories[0].streams[0];
+        assert.equal(parent.end, "closed");
+        assert.deepEqual(parent.tip, parent.last);
+        assert.equal(parent.unconfirmed_from, undefined);
+      }
+      if (paths.length > 1) {
+        const reverse = await compare([...paths].reverse(), true);
+        assert.equal(canonicalV3(reverse.result), canonicalV3(result));
+        ordered++;
+      }
+      const projected = canonicalV3(projection) + "\n";
+      if (canonicalV3(result) + "\n" === readFileSync(join(dir, "expect.json"), "utf8")) full++;
+      const coreProjection = join(dir, "projection.core.json");
+      assert.equal(
+        projected,
+        readFileSync(
+          existsSync(coreProjection) ? coreProjection : join(dir, "projection.json"),
+          "utf8",
+        ),
+      );
+      matched++;
+    });
+  }
+  t.diagnostic(
+    `projections ${matched}, same full documents as Go ${full}, order checks ${ordered}, legacy ${legacy}`,
+  );
+});
+
+function invoke(...args: string[]) {
+  return spawnSync(process.execPath, [cli, "v3", ...args], { encoding: "utf8" });
+}
+
+test("v3 CLI emits canonical JSON and maps proof and usage exits", () => {
+  for (const name of ["g01-bom", "g01-empty-input"]) {
+    const dir = join(corpus, name);
+    const fixture: Request = JSON.parse(readFileSync(join(dir, "request.json"), "utf8"));
+    for (const output of ["projection", "result"] as const) {
+      const command = invoke(
+        "--output",
+        output,
+        ...fixture.keys.flatMap((key) => ["--key", key]),
+        ...fixture.inputs.map((file) => join(dir, file)),
+      );
+      const bytes = readFileSync(
+        join(dir, output === "projection" ? "projection.json" : "expect.json"),
+        "utf8",
+      );
+      assert.equal(command.stdout, bytes);
+      assert.equal(command.status, JSON.parse(bytes).exit_code);
+      assert.equal(command.stderr, "");
+    }
+  }
+  for (const args of [
+    ["--unknown"],
+    ["--key"],
+    ["--key", "a".repeat(63)],
+    ["--key", "A".repeat(64)],
+    ["--accept-discontinuity", "not-a-digest"],
+    ["--allow-partial-history", "not-a-stream"],
+    ["--expect-lineage", "not-a-lineage"],
+    ["--expect-head", "not-a-head"],
+    ["--expect-seq", "not-a-seq"],
+    ["--output", "other"],
+    ["--format", "other"],
+    ["--format", "v3"],
+    ["--format", "v3", corpus],
+    ["--claims"],
+    ["--claims", "--output", "result", corpus],
+    ["--claims", join(corpus, "missing")],
+    [join(corpus, "missing")],
+  ]) {
+    const command = invoke(...args);
+    assert.equal(command.status, 2, JSON.stringify(args));
+    assert.equal(command.stdout, "");
+    assert.match(command.stderr, /^[^\n]+\n$/u);
+  }
+  const damaged = resolve(
+    corpus,
+    "g01-bom",
+    "11111111111111111111111111111111-0000000000000000.receipt-v3.jsonl",
+  );
+  const claimed = invoke("--claims", damaged);
+  assert.equal(claimed.status, 0);
+  assert.equal(claimed.stdout, "true\n");
+  assert.equal(claimed.stderr, "");
+});
+
+test("v3 CLI endpoint pins distinguish valid, invalid, and open histories", () => {
+  const dir = join(corpus, "g04-open-end");
+  const request: Request = JSON.parse(readFileSync(join(dir, "request.json"), "utf8"));
+  const expected = JSON.parse(readFileSync(join(dir, "expect.json"), "utf8"));
+  const { stream, tip } = expected.histories[0].streams[0];
+  const keys = request.keys.flatMap((key) => ["--key", key]);
+  const path = join(dir, request.inputs[0]);
+
+  assert.equal(invoke(...keys, path).status, 3);
+  assert.equal(invoke(...keys, "--allow-prefix", path).status, 0);
+  const proof = invoke(
+    ...keys,
+    "--expect-head",
+    `${stream}:${tip.seq}:${tip.record}`,
+    "--expect-seq",
+    `${stream}:${tip.seq}`,
+    path,
+  );
+  assert.equal(proof.status, 0);
+  assert.equal(JSON.parse(proof.stdout).verdict, "VALID");
+  const mismatch = invoke(...keys, "--expect-seq", `${stream}:${tip.seq + 1}`, path);
+  assert.equal(mismatch.status, 1);
+  assert.ok(
+    JSON.parse(mismatch.stdout).findings.some(
+      (f: { code: string }) => f.code === "EXPECTATION_NOT_MET",
+    ),
+  );
+  assert.equal(invoke(...keys, "--expect-head", `${stream}:01:${tip.record}`, path).status, 2);
+  assert.match(invoke("--help").stdout, /^Usage: pipelock-verifier-ts v3/u);
+});
+
+function fixture(name: string): { path: string; keys: string[] } {
+  const dir = join(corpus, name);
+  const request: Request = JSON.parse(readFileSync(join(dir, "request.json"), "utf8"));
+  return { path: join(dir, request.inputs[0]), keys: request.keys };
+}
+test("v3 appraises legal pieces after a missing predecessor", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ts-v3-partial-"));
+  t.after(() => rmSync(dir, { recursive: true }));
+  const stream = "1".repeat(32);
+  const path = join(dir, stream + "-0000000000000000.receipt-v3.jsonl");
+  const previous = readV3Fixture(fixture("g04-predecessor-absent").path)[0].payload.body
+    .previous as {
+    stream: string;
+  };
+  const pin = { ...previous, stream: "4".repeat(32) };
+  for (const [name, at] of [
+    ["g05-completed", 2],
+    ["g05-completed", 3],
+    ["g05-completed", 4],
+    ["g05-correcting-block", 3],
+    ["g05-retry-after-refusal", 1],
+  ] as const) {
+    const source = fixture(name);
+    const records = readV3Fixture(source.path);
+    const close = records.at(-1)!;
+    const action = records[at];
+    if (action.payload.body.attempt) action.payload.body.attempt = limits.integer;
+    delete records[0].payload.body.legacy_cutover;
+    records[0].payload.body.previous = pin;
+    writeFileSync(path, resignV3Fixture([records[0], action, close]));
+    const { result } = await verifyV3Paths([path], {
+      keys: source.keys,
+      allowPartialHistories: [stream],
+    });
+    assert.equal(result.verdict, "VALID, GAPS ACCEPTED", `${name} ${at}: ${canonicalV3(result)}`);
+    assert.deepEqual(result.counts, { scope: "not_appraised" });
+  }
+});
+
+test("v3 still verifies evidence when its decision index fills", async (t) => {
+  const { path, keys } = fixture("g05-completed");
+  const limit = limits.decisions;
+  try {
+    limits.decisions = 0;
+    const { result, projection } = await verifyV3Paths([path], { keys });
+    assert.equal(result.verdict, "INCOMPLETE");
+    assert.deepEqual(projection.finding_codes, ["DECISION_INDEX_FULL"]);
+    assert.equal(result.histories[0].streams[0].end, "closed");
+    assert.ok(result.limits.includes("L-DECISION-INDEX"));
+    assert.deepEqual(result.counts, { scope: "not_appraised" });
+    const dir = mkdtempSync(join(tmpdir(), "pipelock-v3-decision-limit-"));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const damaged = join(dir, basename(path));
+    writeFileSync(damaged, Buffer.concat([readFileSync(path), Buffer.from("torn tail")]));
+    const checked = await verifyV3Paths([damaged], { keys });
+    const codes = checked.result.findings.map((finding) => finding.code);
+    assert.ok(codes.includes("DECISION_INDEX_FULL"));
+    assert.ok(codes.includes("DATA_AFTER_CLOSE"));
+  } finally {
+    limits.decisions = limit;
+  }
+});
+
+test("v3 rejects missing or directory inputs even when filename claims v3", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "pipelock-v3-input-err-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const good = join(dir, "good.jsonl");
+  writeFileSync(good, "{}\n");
+  const absentV3 = join(dir, "absent.receipt-v3.jsonl");
+  const absentV4 = join(dir, "absent.receipt-v4.jsonl");
+  const dirV3 = join(dir, "dir.receipt-v3.jsonl");
+  mkdirSync(dirV3);
+
+  for (const args of [
+    ["--claims", absentV3],
+    ["--claims", absentV4],
+    ["--claims", dirV3],
+    [absentV3],
+    [absentV4],
+    [good, absentV3],
+    [good, absentV4],
+    [good, dirV3],
+  ]) {
+    const command = invoke(...args);
+    assert.equal(command.status, 2, JSON.stringify(args));
+    assert.equal(command.stdout, "", JSON.stringify(args));
+    assert.match(command.stderr, /^[^\n]+\n$/u, JSON.stringify(args));
+  }
+});
+
+test("v3 claims require the exact profile filename suffix", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "pipelock-v3-suffix-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "other.receipt-v3.jsonl\n");
+  writeFileSync(path, "{}\n");
+  assert.equal(claimsV3Input(path), false);
+});
+
+test("v3 canonical results reject unpaired surrogates", () => {
+  const result = newResult({}, 0);
+  for (const invalid of ["\ud800", "\udc00"]) {
+    assert.throws(() => canonicalV3({ ...result, [invalid]: 1 }), TypeError);
+    assert.throws(() => canonicalV3({ ...result, verdict: invalid } as typeof result), TypeError);
+  }
+  assert.match(
+    canonicalV3({ ...result, ["\ud83d\ude00"]: "\ud83d\ude00" } as typeof result),
+    /"😀":"😀"/u,
+  );
+});
+
+test("v3 canonical results reject non-finite numbers", () => {
+  for (const invalid of [NaN, Infinity, -Infinity]) {
+    assert.throws(() => canonicalV3(newResult({}, invalid)), TypeError);
+  }
+  assert.match(canonicalV3(newResult({}, 0)), /"ignored_files":0/u);
+});
+
+test("v3 canonical results omit undefined optional members", async () => {
+  const { path, keys } = fixture("g05-completed");
+  const { result } = await verifyV3Paths([path], { keys });
+  const expected = canonicalV3(result);
+  const stream = result.histories[0].streams[0];
+  assert.equal(stream.previous, undefined);
+  stream.previous = undefined;
+  assert.equal(canonicalV3(result), expected);
+});
+
+test("v3 verification holds the original option values across awaits", async () => {
+  const { path, keys } = fixture("g05-completed");
+  const { result } = await verifyV3Paths([path], { keys });
+  const stream = result.histories[0].streams[0];
+  const head = { stream: stream.stream, ...stream.tip! };
+  const opts = { keys, expectHeads: [head], allowPrefix: false };
+  const expected = await verifyV3Paths([path], opts);
+  const pending = verifyV3Paths([path], opts);
+  opts.allowPrefix = true;
+  head.record = "sha256:" + "0".repeat(64);
+  opts.expectHeads.push({ ...head, stream: "0".repeat(32) });
+  assert.deepEqual(await pending, expected);
+});
+
+test("v3 verification holds the original prefix policy across awaits", async () => {
+  const { path, keys } = fixture("g04-open-end");
+  const opts = { keys, allowPrefix: false };
+  const pending = verifyV3Paths([path], opts);
+  opts.allowPrefix = true;
+  assert.equal((await pending).result.exit_code, 3);
+  assert.equal((await verifyV3Paths([path], opts)).result.exit_code, 0);
+});
+
+test("v3 pending hold replay retains only its identity", () => {
+  const hold = "hold-".repeat(16384);
+  const action = {
+    action_id: "test",
+    action_type: "test",
+    phase: "hold",
+    verdict: "defer",
+    effect_boundary: "approval_prompt",
+    effect_relation: "before",
+    transport: "",
+    method: "",
+    target: "",
+    hold: { id: hold },
+  };
+  const matching = { ...action, phase: "resolution", verdict: "allow" };
+  const different = { ...matching, hold: { id: "other" } };
+  const pending = new Decision();
+  assert.ok(pending.advance(action, false));
+  assert.ok(!Object.values(pending).includes(hold));
+  assert.ok(!pending.advance(different, false));
+  assert.ok(pending.advance(matching, false));
+  const inferred = new Decision();
+  assert.ok(inferred.advance(matching, true));
+  assert.deepEqual(inferred, pending);
+});
+
+test("v3 hold ownership does not exhaust the decision index", () => {
+  const holds = new Map<string, string>();
+  const long = "h".repeat(1 << 16);
+  assert.equal(claimHold(holds, long, "first"), undefined);
+  assert.equal(claimHold(holds, long, "second"), "conflict");
+  assert.equal(claimHold(holds, long, "first"), undefined);
+  assert.equal(claimHold(holds, "other", "first"), undefined);
+  assert.equal(holds.size, 2);
+  assert.ok([...holds.keys()].every((key) => key.length < 100));
+});
+
+test("canonical JSON rejects undefined array elements", () => {
+  assert.throws(() => canonicalJSON([undefined]), /undefined/i);
+});
+
+test("explicit v3 treats inventory-shaped name as stream", () => {
+  const dir = mkdtempSync(join(tmpdir(), "v3-explicit-"));
+  try {
+    const path = join(dir, `receipt-v3-cutover-${"a".repeat(64)}.json`);
+    writeFileSync(path, "");
+    const result = discover([path], { explicitV3: true });
+    assert.equal(result.files.length, 1);
+    assert.equal(result.inventories.size, 0);
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+test("v3 resolution rejects an empty hold ID", () => {
+  const action = {
+    action_id: "test",
+    action_type: "test",
+    phase: "hold",
+    verdict: "defer",
+    effect_boundary: "approval_prompt",
+    effect_relation: "before",
+    transport: "",
+    method: "",
+    target: "",
+    hold: { id: "" },
+  };
+  const decision = new Decision();
+  assert.ok(decision.advance(action, false));
+  assert.equal(
+    decision.advance({ ...action, phase: "resolution", verdict: "allow" }, false),
+    false,
+  );
+});
+
+test("core directory defers lone chain-link and ael entries", async () => {
+  for (const extra of ["chain-link-alone.json", "ael"]) {
+    const dir = mkdtempSync(join(tmpdir(), "v3-core-"));
+    try {
+      const name = "11111111111111111111111111111111-0000000000000000.receipt-v3.jsonl";
+      copyFileSync(join(corpus, "g04-absent-max-write-error-pin", name), join(dir, name));
+      if (extra === "ael") mkdirSync(join(dir, extra));
+      else writeFileSync(join(dir, extra), "{}");
+      const { result } = await verifyV3Paths([dir], { directory: true, allowUnpinned: true });
+      assert.ok(
+        result.findings.some((f) => f.code === "USE_HOST_VERIFIER"),
+        extra,
+      );
+      const command = invoke("--allow-unpinned", "--", dir);
+      assert.match(command.stderr, /pipelock verify-receipt --chain <dir>/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+});

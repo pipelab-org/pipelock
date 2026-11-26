@@ -5,29 +5,17 @@ package v3
 
 import (
 	"crypto/ed25519"
-	"database/sql"
-	"encoding/json"
-	"errors"
+	"strings"
 	"testing"
 )
 
 func testDecisionIndexFinding(t *testing.T) {
 	ctx := t.Context()
-	store, err := newStore(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.close()
-	tx, err := store.BeginTx(ctx, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = tx.Rollback() }()
 	a := appraisal{
-		index:       decisionIndex{ctx: ctx, tx: tx, maxIDs: 1},
+		index:       decisionIndex{ctx: ctx, maxIDs: 1},
 		fullHistory: true,
 	}
-	verification := verification{ctx: ctx, store: store}
+	verification := verification{ctx: ctx}
 	if err := a.index.reset(); err != nil {
 		t.Fatal(err)
 	}
@@ -60,111 +48,6 @@ func testDecisionIndexFinding(t *testing.T) {
 		t.Fatal("disabled limit still drops a decision identifier")
 	}
 	requireMutation(t, codeDecisionIndexFull, baseline, verification.result)
-}
-
-func TestDecisionIndexUsesPreparedLookup(t *testing.T) {
-	ctx := t.Context()
-	store, err := newStore(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.close()
-	tx, err := store.BeginTx(ctx, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = tx.Rollback() }()
-	index := decisionIndex{ctx: ctx, tx: tx, disk: true}
-	if err := index.prepare(); err != nil {
-		t.Fatal(err)
-	}
-	for range 2 {
-		if err := index.remember("example", true); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := index.rememberID.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := index.remember("example", true); err == nil {
-		t.Fatal("remember succeeded after closing its prepared statement")
-	}
-}
-
-func TestDecisionIndexRejectsUnusableTransaction(t *testing.T) {
-	ctx := t.Context()
-	store, err := newStore(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.close()
-	tx, err := store.BeginTx(ctx, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	index := &decisionIndex{ctx: ctx, tx: tx, disk: true}
-	if err := index.prepare(); err != nil {
-		t.Fatal(err)
-	}
-	if err := tx.Rollback(); err != nil {
-		t.Fatal(err)
-	}
-	if err := index.prepare(); !errors.Is(err, sql.ErrTxDone) {
-		t.Fatalf("want closed transaction error from preparation, got %v", err)
-	}
-	for _, tc := range []struct {
-		name  string
-		check func() error
-	}{
-		{"reset", index.reset},
-		{"remember", func() error { return index.remember("decision", true) }},
-		{"opaque", func() error { _, err := index.opaque("decision"); return err }},
-		{"begin", index.beginSegment},
-		{"get", func() error { _, err := index.get("decision"); return err }},
-		{"put", func() error { return index.put("decision", pieceEntry{}) }},
-		{"each", func() error { return index.eachPiece(func(pieceEntry) {}) }},
-		{"shape", func() error { _, err := index.badShape(0, "decision"); return err }},
-		{"hold", func() error { _, err := index.holdOwner("hold", "decision"); return err }},
-		{"walk", func() error {
-			return walkRecords(ctx, tx, "stream", maxInteger, func(stagedRecord) error { return nil })
-		}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if err := tc.check(); err == nil {
-				t.Fatal("operation succeeded after rollback")
-			}
-		})
-	}
-	if _, err := decodePiece([]byte("[")); err == nil {
-		t.Fatal("accepted corrupt decision state")
-	}
-}
-
-func TestDecisionIndexRefusesMalformedPiece(t *testing.T) {
-	ctx := t.Context()
-	store, err := newStore(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.close()
-	tx, err := store.BeginTx(ctx, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		if err := tx.Rollback(); err != nil {
-			t.Error(err)
-		}
-	}()
-	if _, err := tx.ExecContext(ctx, "INSERT INTO decision_pieces VALUES (?, ?)", "decision", []byte("{")); err != nil {
-		t.Fatal(err)
-	}
-	index := decisionIndex{ctx: ctx, tx: tx, disk: true}
-	err = index.eachPiece(func(pieceEntry) { t.Error("appraised a malformed decision piece") })
-	var syntax *json.SyntaxError
-	if !errors.As(err, &syntax) {
-		t.Fatalf("iterate malformed decision piece: got %v, want a JSON syntax error", err)
-	}
 }
 
 func TestPieceShapeAndUnknownStart(t *testing.T) {
@@ -232,5 +115,91 @@ func TestAppraisalRejectsHoldCollisionsAndInvalidShapes(t *testing.T) {
 				t.Fatalf("expected fail-closed decision result: %+v, %v", result, err)
 			}
 		})
+	}
+}
+
+func TestMemoryDecisionIndexScopesShapesAndHoldOwnership(t *testing.T) {
+	index := decisionIndex{}
+	if err := index.reset(); err != nil {
+		t.Fatal(err)
+	}
+	const hold, action, other = "hold", "first", "second"
+	if err := index.rememberBadShape(1, action); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		segment int
+		action  string
+		bad     bool
+	}{
+		{1, action, true},
+		{2, action, false},
+		{1, other, false},
+	} {
+		got, err := index.badShape(tc.segment, tc.action)
+		if err != nil || got != tc.bad {
+			t.Fatalf("segment %d, %s: bad shape = %t, %v", tc.segment, tc.action, got, err)
+		}
+	}
+	for _, claim := range []string{action, other} {
+		if owner, err := index.holdOwner(hold, claim); err != nil || owner != action {
+			t.Fatalf("hold ownership changed after claim by %q: owner %q, %v", claim, owner, err)
+		}
+	}
+	if err := index.reset(); err != nil {
+		t.Fatal(err)
+	}
+	if bad, err := index.badShape(1, action); err != nil || bad {
+		t.Fatalf("malformed shape leaked across histories: %t, %v", bad, err)
+	}
+	if owner, err := index.holdOwner(hold, other); err != nil || owner != other {
+		t.Fatalf("hold ownership leaked across histories: %q, %v", owner, err)
+	}
+}
+
+func TestPendingHoldReplayRetainsOnlyIdentity(t *testing.T) {
+	hold := strings.Repeat("hold-", 16384)
+	pending := Action{Phase: "hold", Hold: &Hold{ID: hold}}
+	matching := Action{Phase: "resolution", Verdict: "allow", Hold: &Hold{ID: hold}}
+	different := Action{Phase: "resolution", Verdict: "allow", Hold: &Hold{ID: "other"}}
+	var piece, inferred decisionPiece
+	if !piece.advance(pending, false) || len(piece.HoldID) >= 100 {
+		t.Fatal("pending hold did not use a fixed-size identity")
+	}
+	if piece.advance(different, false) || !piece.advance(matching, false) {
+		t.Fatal("hold identity did not distinguish resolutions")
+	}
+	if !inferred.advance(matching, true) || inferred.HoldID != piece.HoldID {
+		t.Fatal("inferred hold used a different identity")
+	}
+}
+
+func TestResolutionRejectsEmptyHoldID(t *testing.T) {
+	var piece decisionPiece
+	pending := Action{Phase: "hold", Hold: &Hold{ID: ""}}
+	resolution := Action{Phase: "resolution", Verdict: "allow", Hold: &Hold{ID: ""}}
+	if !piece.advance(pending, false) {
+		t.Fatal("could not establish pending state")
+	}
+	if piece.advance(resolution, false) {
+		t.Fatal("accepted empty hold ID")
+	}
+}
+
+func TestHoldCardinalityDoesNotFillDecisionIndex(t *testing.T) {
+	index := decisionIndex{maxIDs: 1}
+	if err := index.reset(); err != nil {
+		t.Fatal(err)
+	}
+	if err := index.remember("decision", false); err != nil {
+		t.Fatal(err)
+	}
+	for _, hold := range []string{"first", "second"} {
+		if owner, err := index.holdOwner(hold, "decision"); err != nil || owner != "decision" {
+			t.Fatalf("hold %q: %q %v", hold, owner, err)
+		}
+	}
+	if index.full || len(index.holds) != 2 {
+		t.Fatalf("hold cardinality filled decision index: %+v", index)
 	}
 }

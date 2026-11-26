@@ -19,7 +19,7 @@ func TestGroupLegacySpillIndexOrdersShardsAndRejectsUnreadableInventory(t *testi
 			t.Fatal(err)
 		}
 	}
-	index, err := indexRecorderFilesExcludingGroupsSpill(dir)
+	index, err := indexRecorderFilesExcludingGroupsSpill(dir, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -28,7 +28,7 @@ func TestGroupLegacySpillIndexOrdersShardsAndRejectsUnreadableInventory(t *testi
 		filepath.Base(index["legacy"][1]) != "evidence-legacy-20.jsonl" {
 		t.Fatalf("legacy spill index omitted or misordered shards: %+v", index)
 	}
-	if _, err := indexRecorderFilesExcludingGroupsSpill(filepath.Join(dir, "missing")); err == nil {
+	if _, err := indexRecorderFilesExcludingGroupsSpill(filepath.Join(dir, "missing"), nil, nil); err == nil {
 		t.Fatal("missing evidence inventory accepted")
 	}
 }

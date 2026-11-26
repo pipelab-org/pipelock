@@ -26,3 +26,4 @@ pub mod signing;
 pub mod strict;
 pub mod types;
 pub mod util;
+pub mod v3;

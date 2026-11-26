@@ -498,7 +498,8 @@ func TestCutoverMembershipWithContestedOpener(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			v.contested = map[string][]stagedRecord{"example": {{Common: Common{Kind: tc.kind, Body: data}}}}
+			v.contestedLineages = map[string]bool{}
+			v.noteContestedOpener(stagedRecord{Common: Common{Kind: tc.kind, Body: data}})
 			if got := v.cutoverMembershipKnown(); got != tc.want {
 				t.Fatalf("cutover membership known = %t, want %t", got, tc.want)
 			}

@@ -1,0 +1,1 @@
+{"accepted":[],"completeness":"incomplete","exit_code":3,"finding_codes":["LEGACY_MEMBERSHIP_UNKNOWN","PREDECESSOR_NOT_PRESENTED"],"integrity":"ok","trust":{"keys":["sha256:7caeae303890ce69c78a9aeee2aa923894835d8942a42e6d8266e1ad72fd23c9","sha256:d833c007e59dfc2b10510e96938f9c95c3b72e629484ce53a1b33df7eebc3a13"],"mode":"pinned_keys"},"trust_state":"pinned","verdict":"INCOMPLETE"}

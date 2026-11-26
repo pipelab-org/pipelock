@@ -31,6 +31,8 @@ func v3RunWriterRecipes(t *testing.T) {
 	}{
 		{group: 5, name: "writer-rollover"},
 		{group: 7, name: "writer-completed-action"},
+		{group: 7, name: "writer-operational-strays"},
+		{group: 7, name: "writer-lone-chain-link"},
 		{group: 9, name: "writer-switch-legacy"},
 		{group: 9, name: "writer-switch-journal"},
 		{group: 9, name: "writer-switch-rotated-legacy", rotated: true},
@@ -115,6 +117,21 @@ func v3RunWriterRecipes(t *testing.T) {
 			if err := w.Close(t.Context(), nil); err != nil {
 				t.Fatal(err)
 			}
+			if tc.name == "writer-operational-strays" {
+				if err := os.Mkdir(filepath.Join(dir, "operational"), 0o750); err != nil {
+					t.Fatal(err)
+				}
+				for _, name := range []string{"operational/.keep", ".receipt-v3-tmp-leftover", "stray.txt"} {
+					if err := os.WriteFile(filepath.Join(dir, name), []byte("ignored\n"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if tc.name == "writer-lone-chain-link" {
+				if err := os.WriteFile(filepath.Join(dir, "chain-link-alone.json"), []byte("{}"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
 			recipe.files = v3ReadWrittenCorpus(t, dir)
 			v3RunRecipe(t, recipe)
 		})
@@ -182,22 +199,27 @@ func v3WriteCorpusAction(t *testing.T, writer *v3.StreamWriter) {
 
 func v3ReadWrittenCorpus(t *testing.T, dir string) []v3File {
 	t.Helper()
-	root, err := os.OpenRoot(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = root.Close() }()
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
 	var files []v3File
-	for _, entry := range entries {
-		data, err := root.ReadFile(entry.Name())
+	err := filepath.WalkDir(dir, func(path string, entry os.DirEntry, err error) error {
 		if err != nil {
-			t.Fatal(err)
+			return err
 		}
-		files = append(files, v3File{name: entry.Name(), bytes: data})
+		if entry.IsDir() {
+			return nil
+		}
+		name, err := filepath.Rel(dir, path)
+		if err != nil {
+			return err
+		}
+		data, err := os.ReadFile(filepath.Clean(path)) // #nosec G122 -- writer-created test directory, not shared with untrusted processes.
+		if err != nil {
+			return err
+		}
+		files = append(files, v3File{name: filepath.ToSlash(name), bytes: data})
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 	return files
 }

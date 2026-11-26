@@ -197,6 +197,7 @@ func observeRecovery(dir, predecessor, observerKey string, trusted []string) (Re
 }
 
 type recoveryObservationOptions struct {
+	excluded       map[string]bool
 	trusted        []string
 	signaturesOnly bool
 	groupBinding   *ReceiptGroupBinding
@@ -207,7 +208,7 @@ func observeRecoveryWithOptions(dir, predecessor, observerKey string, opts recov
 	if len(trusted) == 0 {
 		trusted = nil
 	}
-	files, err := recorderFiles(dir, predecessor)
+	files, err := recorderFilesScoped(dir, predecessor, opts.excluded)
 	if err != nil || len(files) == 0 {
 		return RecoverySeal{}, fmt.Errorf("recovery predecessor shards unavailable: %w", err)
 	}
@@ -492,10 +493,14 @@ func VerifyRecoveryBinding(dir string, seal RecoverySeal, trusted []string) erro
 }
 
 func verifyRecoveryBinding(dir string, seal RecoverySeal, trusted []string, signaturesOnly bool) error {
+	return verifyRecoveryBindingScoped(dir, seal, trusted, signaturesOnly, nil)
+}
+
+func verifyRecoveryBindingScoped(dir string, seal RecoverySeal, trusted []string, signaturesOnly bool, excluded map[string]bool) error {
 	if err := VerifyRecoverySeal(seal); err != nil {
 		return err
 	}
-	got, err := observeRecoveryWithOptions(dir, seal.PredecessorSession, seal.SuccessorSignerKey, recoveryObservationOptions{trusted: trusted, signaturesOnly: signaturesOnly})
+	got, err := observeRecoveryWithOptions(dir, seal.PredecessorSession, seal.SuccessorSignerKey, recoveryObservationOptions{trusted: trusted, signaturesOnly: signaturesOnly, excluded: excluded})
 	if err != nil {
 		return err
 	}
@@ -503,7 +508,7 @@ func verifyRecoveryBinding(dir string, seal RecoverySeal, trusted []string, sign
 	if got.Shard != seal.Shard || got.ShardSize != seal.ShardSize || got.ShardSHA256 != seal.ShardSHA256 || got.DamageOffset != seal.DamageOffset || got.LastGoodSeq != seal.LastGoodSeq || got.LastGoodHash != seal.LastGoodHash || got.PredecessorTailSeq != seal.PredecessorTailSeq || got.PredecessorTailHash != seal.PredecessorTailHash || got.PredecessorSignerKey != seal.PredecessorSignerKey {
 		return errors.New("recovery seal shard or prefix binding mismatch")
 	}
-	entries, err := readSessionEntries(dir, seal.SuccessorSession)
+	entries, err := readSessionEntriesScoped(dir, seal.SuccessorSession, excluded)
 	if err != nil {
 		return err
 	}
@@ -561,7 +566,7 @@ func checkRecoveryClaims(dir, base string, claims []chainLinkRecord, data map[st
 			// Doctor checks signatures and placement, not operator key trust.
 			trusted = nil
 		}
-		if err := verifyRecoveryBinding(dir, *s, trusted, opts.LinksOnly); err != nil {
+		if err := verifyRecoveryBindingScoped(dir, *s, trusted, opts.LinksOnly, opts.ExcludedNames); err != nil {
 			fail(err.Error())
 			continue
 		}

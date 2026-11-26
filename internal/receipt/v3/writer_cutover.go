@@ -63,7 +63,7 @@ func (w *StreamWriter) buildCutoverInventory(ctx context.Context, keys []ed25519
 	// Discover the whole directory under the writer lock. Use the legacy
 	// verifier's chain identities instead of the per-session inventory.
 	v := verification{ctx: ctx, opts: opts, result: newResult(opts), used: map[string]bool{}}
-	old, err := v.verifyLegacy(paths)
+	old, err := v.verifyLegacy(paths, nil)
 	if err != nil {
 		return Inventory{}, fmt.Errorf("verify legacy receipts before cutover: %w", err)
 	}

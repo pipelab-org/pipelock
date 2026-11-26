@@ -11,6 +11,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
+	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -48,7 +50,7 @@ func isGroupArtifact(name string) bool {
 	return strings.HasPrefix(name, "receipt-group-") && strings.HasSuffix(name, ".json")
 }
 
-func (v *verification) verifyLegacy(paths []string) (map[legacyIdentity]legacyPresentation, error) {
+func (v *verification) verifyLegacy(paths []string, excluded map[string]bool) (map[legacyIdentity]legacyPresentation, error) {
 	presented := map[legacyIdentity]legacyPresentation{}
 	if len(paths) == 0 {
 		v.checkLegacySelection(presented)
@@ -59,6 +61,7 @@ func (v *verification) verifyLegacy(paths []string) (map[legacyIdentity]legacyPr
 		keys = append(keys, hex.EncodeToString(key))
 	}
 	sessions := map[string]string{}
+	sessionPaths := map[string][]string{}
 	groupDirs := map[string]bool{}
 	positions := map[legacyIdentity]map[int64]string{}
 	bases := map[string]string{}
@@ -75,6 +78,7 @@ func (v *verification) verifyLegacy(paths []string) (map[legacyIdentity]legacyPr
 			}
 			if session, _, ok := recorder.ParseEvidenceFilename(name); ok {
 				sessions[session] = filepath.Dir(path)
+				sessionPaths[session] = append(sessionPaths[session], path)
 				continue
 			}
 		}
@@ -91,43 +95,12 @@ func (v *verification) verifyLegacy(paths []string) (map[legacyIdentity]legacyPr
 		}
 	}
 	for _, dir := range sortedKeys(groupDirs) {
-		summary, err := legacy.VerifyReceiptGroups(dir, keys, func(group legacy.ReceiptGroupResult) error {
-			if v.skip == codeLegacyGroupIncomplete && group.Verdict == legacy.GroupIncomplete {
-				group.Verdict = legacy.GroupValid
-			}
-			switch group.Verdict {
-			case legacy.GroupIncomplete:
-				v.addCode(codeLegacyGroupIncomplete, "")
-			case legacy.GroupInvalid:
-				v.addCode(codeLegacyInvalid, "")
-			}
-			head := group.CloseManifestSHA
-			if head == "" {
-				head = group.OpenManifestSHA
-			}
-			if head != "" && !strings.HasPrefix(head, "sha256:") {
-				head = "sha256:" + head
-			}
-			key := legacyIdentity{legacyGroup, group.GroupID}
-			presented[key] = legacyPresentation{InventoryChain: InventoryChain{
-				Format: key.format, Chain: key.chain, Seq: int64(group.ShardCount), Record: head,
-			}, verdict: string(group.Verdict)}
-			return nil
+		groupDirs[dir] = v.verifyLegacyGroups(presented, func(visit func(legacy.ReceiptGroupResult) error) (legacy.ReceiptGroupInventoryResult, error) {
+			return legacy.VerifyLegacyReceiptGroups(dir, keys, excluded, visit)
 		})
-		if err != nil {
-			verdict := legacy.GroupInvalid
-			code := codeLegacyInvalid
-			if recorder.IsEvidenceUnavailable(err) {
-				verdict, code = legacy.GroupIncomplete, codeLegacyGroupIncomplete
-			}
-			v.addCode(code, "")
-			v.result.Legacy = append(v.result.Legacy, LegacyResult{
-				Class: legacyFailure, Format: legacyGroup, Verdict: string(verdict),
-			})
-		}
-		groupDirs[dir] = summary.Groups != 0 || err != nil
 	}
 	ordinarySessions := map[string][]string{}
+	bareStamps := map[string]map[string]string{}
 	for _, session := range sortedKeys(sessions) {
 		dir := sessions[session]
 		if groupDirs[dir] {
@@ -138,7 +111,7 @@ func (v *verification) verifyLegacy(paths []string) (map[legacyIdentity]legacyPr
 			ordinary, cached := ordinarySessions[base]
 			if !cached {
 				var err error
-				ordinary, err = legacy.ResolveBaseSessionsExcludingReceiptGroups(dir, base)
+				ordinary, err = legacy.ResolveLegacyBaseSessions(dir, base, excluded)
 				if err != nil {
 					return nil, fmt.Errorf("list legacy receipt sessions: %w", err)
 				}
@@ -157,25 +130,77 @@ func (v *verification) verifyLegacy(paths []string) (map[legacyIdentity]legacyPr
 		if absErr != nil {
 			return nil, fmt.Errorf("resolve legacy receipt directory: %w", absErr)
 		}
-		location := recorder.EvidenceLocation{Root: root, Dir: root}
+		location := recorder.EvidenceLocation{Root: root, Dir: root, ExcludedNames: excluded}
 		batch := legacyBatch{recorder: true, session: session}
+		// Bind a wrapper's exclusion to the files as they were before the read.
+		stamps := sessionStamps(sessionPaths[session], session)
+		var bareNames []string
 		err := recorder.WithSessionHistorySnapshot(location, session, func() error {
 			var readErr error
 			batch.action, batch.evidence, readErr = legacy.ReadSessionChains(location, session)
+			if readErr == nil && len(batch.evidence) != 0 && len(batch.action) == 0 {
+				bareNames, readErr = legacy.BareEvidenceSessionShards(location, session)
+				if readErr == nil && len(bareNames) != 0 && !stampsCoverShards(stamps, bareNames) {
+					readErr = fmt.Errorf("%w: legacy shard list differs from discovery", recorder.ErrEvidenceChanged)
+				}
+			}
 			return readErr
 		})
 		switch {
 		case err != nil:
 			v.failedLegacy(session, err)
 		case len(batch.action) != 0 || len(batch.evidence) != 0:
+			if len(bareNames) != 0 {
+				base, run := legacy.RunSessionBase(session)
+				if !run {
+					base = session
+				}
+				if bareStamps[base] == nil {
+					bareStamps[base] = make(map[string]string)
+				}
+				maps.Copy(bareStamps[base], stamps)
+			}
 			verifyBatch(batch)
 		default:
 			v.result.IgnoredFiles++
 		}
 	}
-	for _, base := range sortedKeys(bases) {
+	restartExcluded := maps.Clone(excluded)
+	if len(bareStamps) > 0 {
+		if restartExcluded == nil {
+			restartExcluded = make(map[string]bool)
+		}
+		for _, stamps := range bareStamps {
+			for name := range stamps {
+				restartExcluded[name] = true
+			}
+		}
+	}
+	basesInOrder := sortedKeys(bases)
+	restarts := make(map[string]string, len(bases))
+	for _, base := range basesInOrder {
 		dir := bases[base]
-		v.verifyLegacyContinuity(dir, base, keys, groupDirs[dir])
+		restarts[base] = v.legacyContinuityLabel(dir, base, keys, groupDirs[dir], restartExcluded, func() bool {
+			return stampsUnchanged(dir, bareStamps[base])
+		})
+	}
+	if len(basesInOrder) != 0 {
+		dir := bases[basesInOrder[0]]
+		for _, stamps := range bareStamps {
+			if !stampsUnchanged(dir, stamps) {
+				label := "RESTART CONTINUITY INCOMPLETE"
+				if v.opts.GenericLegacyLabels {
+					label = legacyInvalid
+				}
+				for _, base := range basesInOrder {
+					restarts[base] = label
+				}
+				break
+			}
+		}
+	}
+	for _, base := range basesInOrder {
+		v.recordLegacyContinuity(base, restarts[base])
 	}
 	v.checkLegacySelection(presented)
 	if err := v.verifyLegacyEndpoint(presented); err != nil {
@@ -188,19 +213,126 @@ func (v *verification) verifyLegacy(paths []string) (map[legacyIdentity]legacyPr
 	return presented, nil
 }
 
-func (v *verification) verifyLegacyContinuity(dir, base string, keys []string, grouped bool) {
-	report, err := legacy.VerifyBase(dir, base, legacy.BaseVerifyOptions{
-		TrustedKeys: keys, ExcludeReceiptGroupSessions: grouped,
+type legacyGroupReader func(func(legacy.ReceiptGroupResult) error) (legacy.ReceiptGroupInventoryResult, error)
+
+func (v *verification) verifyLegacyGroups(presented map[legacyIdentity]legacyPresentation, read legacyGroupReader) bool {
+	var groups []legacy.ReceiptGroupResult
+	summary, err := read(func(group legacy.ReceiptGroupResult) error {
+		groups = append(groups, group)
+		return nil
 	})
-	if err == nil && report.Healthy() {
-		return
+	if err != nil {
+		verdict := legacy.GroupInvalid
+		code := codeLegacyInvalid
+		if recorder.IsEvidenceUnavailable(err) {
+			verdict, code = legacy.GroupIncomplete, codeLegacyGroupIncomplete
+		}
+		v.addCode(code, "")
+		v.result.Legacy = append(v.result.Legacy, LegacyResult{
+			Class: legacyFailure, Format: legacyGroup, Verdict: string(verdict),
+		})
+		return true
+	}
+	for _, group := range groups {
+		if v.skip == codeLegacyGroupIncomplete && group.Verdict == legacy.GroupIncomplete {
+			group.Verdict = legacy.GroupValid
+		}
+		switch group.Verdict {
+		case legacy.GroupIncomplete:
+			v.addCode(codeLegacyGroupIncomplete, "")
+		case legacy.GroupInvalid:
+			v.addCode(codeLegacyInvalid, "")
+		}
+		head := group.CloseManifestSHA
+		if head == "" {
+			head = group.OpenManifestSHA
+		}
+		if head != "" && !strings.HasPrefix(head, "sha256:") {
+			head = "sha256:" + head
+		}
+		key := legacyIdentity{legacyGroup, group.GroupID}
+		presented[key] = legacyPresentation{InventoryChain: InventoryChain{
+			Format: key.format, Chain: key.chain, Seq: int64(group.ShardCount), Record: head,
+		}, verdict: string(group.Verdict)}
+	}
+	return summary.Groups != 0
+}
+
+// sessionStamps records the identity of every presented shard of session.
+func sessionStamps(paths []string, session string) map[string]string {
+	stamps := map[string]string{}
+	for _, path := range paths {
+		name := filepath.Base(path)
+		if parsed, _, ok := recorder.ParseEvidenceFilename(name); ok && parsed == session {
+			stamps[name] = fileStamp(path)
+		}
+	}
+	return stamps
+}
+
+func stampsCoverShards(stamps map[string]string, names []string) bool {
+	if len(stamps) != len(names) {
+		return false
+	}
+	for _, name := range names {
+		if _, ok := stamps[name]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func fileStamp(path string) string {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return ""
+	}
+	identity, err := recorder.EvidenceMetadataIdentity(path, info)
+	if err != nil {
+		return ""
+	}
+	return fmt.Sprintf("%s:%d:%d", identity, info.Size(), info.ModTime().UnixNano())
+}
+
+// stampsUnchanged reports whether every excluded wrapper shard is still the
+// file that was read.
+func stampsUnchanged(dir string, stamps map[string]string) bool {
+	for name, stamp := range stamps {
+		if stamp == "" || fileStamp(filepath.Join(dir, name)) != stamp {
+			return false
+		}
+	}
+	return true
+}
+
+func (v *verification) legacyContinuityLabel(dir, base string, keys []string, grouped bool, excluded map[string]bool, settled func() bool) string {
+	// A wrapper shard stays excluded only while it is the file that was read;
+	// a replacement under the same name is a change, not a pass.
+	var report legacy.BaseReport
+	var err error
+	changed := !settled()
+	if !changed {
+		report, err = legacy.VerifyBase(dir, base, legacy.BaseVerifyOptions{
+			TrustedKeys: keys, ExcludeReceiptGroupSessions: grouped, ExcludedNames: excluded,
+		})
+		changed = !settled()
+	}
+	if !changed && err == nil && report.Healthy() {
+		return ""
 	}
 	label := "RESTART CONTINUITY FAILED"
 	switch {
 	case v.opts.GenericLegacyLabels:
 		label = legacyInvalid
-	case err != nil:
+	case err != nil || changed:
 		label = "RESTART CONTINUITY INCOMPLETE"
+	}
+	return label
+}
+
+func (v *verification) recordLegacyContinuity(base, label string) {
+	if label == "" {
+		return
 	}
 	v.addCode(codeLegacyInvalid, "")
 	v.result.Legacy = append(v.result.Legacy, LegacyResult{
@@ -333,22 +465,38 @@ func readLegacy(path string) (legacyBatch, bool, error) {
 	}
 	defer func() { _ = f.Close() }()
 	reader := bufio.NewReader(f)
+	var line []byte
 	var batch legacyBatch
 	var last *recorder.Entry
 	var entryMode string
 	for {
-		line, err := reader.ReadBytes('\n')
+		fragment, err := reader.ReadSlice('\n')
+		if len(line)+len(fragment) > recorder.MaxEntryLineBytes+2 {
+			return batch, false, errors.New("line exceeds recorder entry limit")
+		}
+		line = append(line, fragment...)
+		if errors.Is(err, bufio.ErrBufferFull) {
+			continue
+		}
 		if err != nil && !errors.Is(err, io.EOF) {
 			return batch, false, err
 		}
-		line = bytes.TrimSpace(line)
-		if len(line) == 0 {
+		payload := bytes.TrimSuffix(line, []byte{'\n'})
+		if len(payload) < len(line) {
+			payload = bytes.TrimSuffix(payload, []byte{'\r'})
+		}
+		if len(payload) > recorder.MaxEntryLineBytes {
+			return batch, false, errors.New("line exceeds recorder entry limit")
+		}
+		text := bytes.TrimSpace(payload)
+		line = line[:0]
+		if len(text) == 0 {
 			if errors.Is(err, io.EOF) {
 				break
 			}
 			continue
 		}
-		kind, parseErr := batch.add(line, &last, filepath.Base(path))
+		kind, parseErr := batch.add(text, &last, filepath.Base(path))
 		if parseErr != nil || entryMode != "" && entryMode != kind {
 			return batch, false, errors.New("malformed or mixed legacy record")
 		}
@@ -446,10 +594,12 @@ func (v *verification) legacyActions(batch legacyBatch, keys []string, presented
 			id = legacyHash(id)
 		}
 		key := legacyIdentity{legacyAction, id}
+		rotated := false
 		for pos, item := range chain {
 			if v.skip != codeLegacyInvalid {
 				walker.Add(item)
 			}
+			rotated = rotated || item.ActionRecord.KeyTransition != nil
 			hash, _ := item.ActionRecord.Hash()
 			// A verified key transition restarts chain_seq at zero.
 			// Detect competing records by position in the whole chain.
@@ -466,6 +616,7 @@ func (v *verification) legacyActions(batch legacyBatch, keys []string, presented
 		item := legacyPresentation{
 			InventoryChain: InventoryChain{Chain: key.chain, Format: key.format, Record: legacyHash(hash)},
 			verdict:        verdict, cliHead: result.RootHash, cliSeq: last.ChainSeq, session: batch.session,
+			rotated: rotated,
 		}
 		v.saveLegacy(presented, positions, item, uint64(len(chain))-1, v.skip == codeLegacyInvalid || result.Valid)
 		records = records[n:]
@@ -535,9 +686,7 @@ func (v *verification) saveLegacy(presented map[legacyIdentity]legacyPresentatio
 	item.position = int64(seq)
 	item.Seq = int64(item.cliSeq)
 	key := legacyIdentity{item.Format, item.Chain}
-	if item.Format == legacyAction {
-		item.actionPositions = positions[key]
-	}
+	item.positions = positions[key]
 	previous, exists := presented[key]
 	wasInvalid := previous.verdict == legacyInvalid
 	if !exists || item.position > previous.position {

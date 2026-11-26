@@ -144,3 +144,21 @@ Receipt-chain CLI verification returns 0 only when integrity verifies and the en
 A terminal signed `session_close` proves the action-chain endpoint when its run's `session_open` names a per-run recorder session (`<base>.run.<id>`). Chains written before Pipelock v3.6.0 recorded every run under one shared session and resumed it after each restart, so their closes don't prove the end; pin those or accept the prefix. A complete receipt-group close proves its group scope. `--expect-head HASH` or `--expect-seq N` checks an independently known final receipt hash or sequence. A signer key, restart link, or recovery seal alone doesn't prove an end. Mixed action/evidence input verifies both chains, with pins applied to the evidence chain. Use `receipt FILE --chain` for a file or `receipt DIR --group ID` for a group directory.
 
 JSON separates `integrity`, `end_proof` (`proven` and checked `evidence`), `scope`, and `status` from signer trust. Low-level prefix-verification APIs and signed formats retain their existing contracts. Provenance and single-receipt commands retain their existing exit codes. AARP chain mode returns `3` for a valid prefix unless an endpoint pin or `--allow-prefix` is supplied.
+
+### Receipt v3 verification
+
+Use the installed package to verify a v3 file set or an evidence directory. Mixed old-format and v3 evidence returns `USE_HOST_VERIFIER`; run `pipelock verify-receipt --chain <dir>`.
+
+    python -m pipelock_aarp_verify v3 --key "$PUBLIC_KEY_HEX" /path/to/evidence
+    python -m pipelock_aarp_verify v3 --claims /path/to/receipt.jsonl
+
+Use repeatable keys for histories that span a signer rotation. Add
+`--output projection` to emit the normative conformance projection. For a
+single file whose name does not identify the profile, pass `--format v3`.
+
+The library exposes
+`verify_v3(paths, V3Options(keys=(key_hex,), directory=True))`. It returns the
+full `verify_result` dictionary and the projection dictionary. `canonical_v3`
+encodes either document to canonical bytes. Verification and trust failures
+appear in `exit_code` and `findings`. Invalid options or unreadable inputs
+raise an exception.

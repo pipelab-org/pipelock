@@ -54,12 +54,32 @@ func TestEgressProbe_OpenTarget_ClassifiedOpen(t *testing.T) {
 func TestEgressProbe_RefusedTarget_NotBlocked(t *testing.T) {
 	t.Parallel()
 
-	// 127.0.0.1:1 -- port 1 is almost never listening; connection refused is
-	// the expected outcome on loopback. Refused means reachable, not blocked.
-	result := playground.ProbeDirectEgress(t.Context(), "127.0.0.1:1")
+	targets := closedLoopbackTargets(t, 1)
+	result := playground.ProbeDirectEgress(t.Context(), targets[0])
 	if result.Open || result.Blocked {
 		t.Fatalf("probe to a refused target must be Open=false Blocked=false, got: %+v", result)
 	}
+}
+
+// closedLoopbackTargets releases distinct OS-assigned ports for refusal tests.
+func closedLoopbackTargets(t *testing.T, count int) []string {
+	t.Helper()
+	listeners := make([]net.Listener, 0, count)
+	defer func() {
+		for _, ln := range listeners {
+			_ = ln.Close()
+		}
+	}()
+	targets := make([]string, 0, count)
+	for range count {
+		ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("listen for closed target: %v", err)
+		}
+		listeners = append(listeners, ln)
+		targets = append(targets, ln.Addr().String())
+	}
+	return targets
 }
 
 func TestEgressProbe_ContextCancelled_NotBlocked(t *testing.T) {
@@ -140,12 +160,8 @@ func TestSelfTest_DetectsOpenRoutes_WhenUncontained(t *testing.T) {
 func TestSelfTest_RefusedTargetsAreNotBlocked(t *testing.T) {
 	t.Parallel()
 
-	// Closed loopback ports are reachable enough to return ECONNREFUSED. That
-	// is not containment: packets left the process and came back with a refusal.
-	targets := []string{
-		"127.0.0.1:1",
-		"127.0.0.1:2",
-	}
+	// A connection refusal proves the target was reachable.
+	targets := closedLoopbackTargets(t, 2)
 
 	res := playground.RunContainmentSelfTest(t.Context(), targets)
 

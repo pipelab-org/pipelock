@@ -210,6 +210,7 @@ def markdown():
     ))
     out.extend(("### Findings", ""))
     out += table(("Code", "Class"), ((f"`{code}`", cls) for code, cls in REG["findings"].items()))
+    out.extend((f"`USE_HOST_VERIFIER`: {REG['finding_descriptions']['USE_HOST_VERIFIER']}", ""))
     out.extend(("### Limits", ""))
     out += table(("Limit", "Value"), ((name.replace("_", " "), f"{value:,}") for name, value in LIMITS.items()))
     out.extend(("### Effect-specific producers", ""))

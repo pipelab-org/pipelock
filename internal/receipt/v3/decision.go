@@ -138,7 +138,7 @@ func (p *decisionPiece) advance(a Action, unknownStart bool) bool {
 		if p.State != "" {
 			return false
 		}
-		p.State, p.HoldID = "pending", a.Hold.ID
+		p.State, p.HoldID = "pending", Digest([]byte(a.Hold.ID))
 		return true
 	case "resolution":
 		return p.resolve(a)
@@ -150,7 +150,7 @@ func (p *decisionPiece) advance(a Action, unknownStart bool) bool {
 func (p *decisionPiece) inferPrefix(a Action) bool {
 	switch a.Phase {
 	case "resolution":
-		p.HoldID, p.State = a.Hold.ID, "pending"
+		p.HoldID, p.State = Digest([]byte(a.Hold.ID)), "pending"
 		if a.Hold.Correction != nil {
 			p.FirstResolution, p.State = "allow", "outcome_unknown"
 		}
@@ -173,7 +173,7 @@ func (p *decisionPiece) inferPrefix(a Action) bool {
 }
 
 func (p *decisionPiece) resolve(a Action) bool {
-	if p.Attempt != 0 || p.HoldID == "" || a.Hold.ID != p.HoldID {
+	if p.Attempt != 0 || p.HoldID == "" || a.Hold.ID == "" || Digest([]byte(a.Hold.ID)) != p.HoldID {
 		return false
 	}
 	prior := p.FirstResolution

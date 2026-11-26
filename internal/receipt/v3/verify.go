@@ -6,7 +6,6 @@ package v3
 import (
 	"bufio"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,32 +16,33 @@ import (
 )
 
 type verification struct {
-	ctx       context.Context
-	opts      Options
-	result    Result
-	store     *recordStore
-	keys      map[string]validatedKey
-	trusted   map[string]bool
-	used      map[string]bool
-	streams   map[string]*verifiedStream
-	contested map[string][]stagedRecord
-	histories map[string][]*verifiedStream
-	skip      string
+	ctx               context.Context
+	opts              Options
+	result            Result
+	store             *recordStore
+	keys              map[string]validatedKey
+	trusted           map[string]bool
+	used              map[string]bool
+	streams           map[string]*verifiedStream
+	contestedLineages map[string]bool
+	histories         map[string][]*verifiedStream
+	skip              string
 
 	actionVersionNeeded int64
 }
 
 type verifiedStream struct {
-	open       stagedRecord
-	body       StreamOpen
-	last       stagedRecord
-	limit      int64
-	contenders []stagedRecord
-	successors []*verifiedStream
-	missing    bool
-	segment    int
-	broken     bool
-	summary    StreamResult
+	open                stagedRecord
+	body                StreamOpen
+	last                stagedRecord
+	limit               int64
+	confirmedWriteError bool
+	forked              bool
+	successors          []*verifiedStream
+	missing             bool
+	segment             int
+	broken              bool
+	summary             StreamResult
 }
 
 type tornFile struct {
@@ -88,13 +88,20 @@ func verifyPaths(ctx context.Context, paths []string, opts Options, skip string)
 }
 
 func verifyPathsInspect(ctx context.Context, paths []string, opts Options, skip string, inspect func(*verification) error) (Result, error) {
+	return verifyPathsWithCutover(ctx, paths, opts, skip, inspect, nil, nil)
+}
+
+func verifyPathsWithCutover(ctx context.Context, paths []string, opts Options, skip string, inspect func(*verification) error, cutover func(*verification, []string, map[string][]string, []inputFile) (map[string]stagedRecord, error), discovery func([]string, Options, string) ([]inputFile, []string, map[string][]string, int, error)) (Result, error) {
 	if err := opts.validate(); err != nil {
 		return Result{}, err
 	}
 	if opts.ExplicitV3 && len(paths) != 1 {
 		return Result{}, errors.New("explicit v3 format requires exactly one file")
 	}
-	files, legacy, inventories, ignored, err := discover(paths, opts, skip)
+	if discovery == nil {
+		discovery = discover
+	}
+	files, legacy, inventories, ignored, err := discovery(paths, opts, skip)
 	if err != nil {
 		return Result{}, err
 	}
@@ -106,7 +113,7 @@ func verifyPathsInspect(ctx context.Context, paths []string, opts Options, skip 
 	v := verification{
 		ctx: ctx, opts: opts, result: newResult(opts), store: store, skip: skip,
 		keys: map[string]validatedKey{}, trusted: map[string]bool{}, used: map[string]bool{},
-		streams: map[string]*verifiedStream{}, contested: map[string][]stagedRecord{},
+		streams: map[string]*verifiedStream{}, contestedLineages: map[string]bool{},
 		histories: map[string][]*verifiedStream{},
 	}
 	v.result.IgnoredFiles = ignored
@@ -128,7 +135,10 @@ func verifyPathsInspect(ctx context.Context, paths []string, opts Options, skip 
 	if err := v.verifySuccession(); err != nil {
 		return Result{}, err
 	}
-	cutoverEnds, err := v.verifyCutover(legacy, inventories, len(files) > 0)
+	if cutover == nil {
+		cutover = (*verification).verifyCutover
+	}
+	cutoverEnds, err := cutover(&v, legacy, inventories, files)
 	if err != nil {
 		return Result{}, err
 	}
@@ -197,29 +207,25 @@ func (v *verification) discoverKey(input inputFile) error {
 }
 
 func (v *verification) stageFiles(files []inputFile) error {
-	tx, err := v.store.BeginTx(v.ctx, nil)
-	if err != nil {
-		return fmt.Errorf("start record staging: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-	const insert = `INSERT INTO records (stream,seq,id,payload,unknown,body_code,after_damage) VALUES (?,?,?,?,?,?,?)
-ON CONFLICT (stream,seq,id) DO UPDATE SET after_damage = min(after_damage,excluded.after_damage)`
-	stmt, err := tx.PrepareContext(v.ctx, insert)
-	if err != nil {
-		return fmt.Errorf("prepare record staging: %w", err)
-	}
-	defer func() { _ = stmt.Close() }()
+	return v.store.stage(v.ctx, func(write recordWriter) error {
+		return v.stageInputFiles(files, write)
+	})
+}
+
+func (v *verification) stageInputFiles(files []inputFile, write recordWriter) error {
 	maxStarts := map[string]int64{}
 	var tails []tornFile
 	for _, file := range files {
-		state, err := v.stageFile(file, stmt)
+		state, err := v.stageFile(file, write)
 		if err != nil {
 			return err
 		}
 		if !state.complete {
 			continue
 		}
-		maxStarts[state.stream] = max(maxStarts[state.stream], state.start)
+		if previous, ok := maxStarts[state.stream]; !ok || previous < state.start {
+			maxStarts[state.stream] = state.start
+		}
 		if state.torn {
 			tails = append(tails, tornFile{state.start, state.last})
 		}
@@ -237,13 +243,10 @@ ON CONFLICT (stream,seq,id) DO UPDATE SET after_damage = min(after_damage,exclud
 			v.add(tail.last.finding(codeTornTail))
 		}
 	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit staged records: %w", err)
-	}
 	return nil
 }
 
-func (v *verification) stageFile(input inputFile, stmt *sql.Stmt) (fileState, error) {
+func (v *verification) stageFile(input inputFile, write recordWriter) (fileState, error) {
 	state := fileState{stream: input.stream, start: input.start}
 	if v.skip == codeFileLayout && input.code == "" {
 		state = fileState{start: -1}
@@ -278,7 +281,7 @@ func (v *verification) stageFile(input inputFile, stmt *sql.Stmt) (fileState, er
 			}
 			return state, nil
 		}
-		if !v.stageLine(line, &state, offset, stmt, &err) {
+		if !v.stageLine(line, &state, offset, write, &err) {
 			state.broken = true
 			state.afterDamage = true
 			if err != nil {
@@ -288,7 +291,7 @@ func (v *verification) stageFile(input inputFile, stmt *sql.Stmt) (fileState, er
 	}
 }
 
-func (v *verification) stageLine(line []byte, state *fileState, offset int64, stmt *sql.Stmt, outErr *error) bool {
+func (v *verification) stageLine(line []byte, state *fileState, offset int64, write recordWriter, outErr *error) bool {
 	record, code := parseLine(line, v.skip)
 	if code != "" {
 		v.addCode(code, state.stream)
@@ -308,9 +311,8 @@ func (v *verification) stageLine(line []byte, state *fileState, offset int64, st
 		if state.start < 0 {
 			state.stream, state.start = record.Stream, record.Seq-offset
 		}
-		state.complete = true
 	}
-	if v.skip != codeStreamOrder && !state.broken && (record.Stream != state.stream || record.Seq != state.start+offset) {
+	if v.skip != codeStreamOrder && (record.Stream != state.stream || !state.broken && record.Seq != state.start+offset) {
 		v.add(item.finding(codeStreamOrder))
 		return false
 	}
@@ -323,9 +325,11 @@ func (v *verification) stageLine(line []byte, state *fileState, offset int64, st
 		return false
 	}
 	unknown, code := checkBody(record, v.skip)
+	state.complete = true
 	state.last = item
 	v.addStream(state.stream)
-	if _, err := stmt.ExecContext(v.ctx, record.Stream, record.Seq, record.ID, record.Payload, unknown, code, state.afterDamage); err != nil {
+	item.unknown, item.bodyCode, item.afterDamage = unknown, code, state.afterDamage
+	if err := write(v.ctx, item, record.Payload); err != nil {
 		*outErr = fmt.Errorf("stage verified record: %w", err)
 		return false
 	}
@@ -530,16 +534,28 @@ func (v *verification) verifyStream(id string, s *verifiedStream) error {
 		s.summary.Records++
 		return nil
 	}
-	err := walkRecords(v.ctx, v.store, id, maxInteger, func(current stagedRecord) error {
-		if len(s.contenders) != 0 {
-			if current.Seq == s.contenders[0].Seq {
-				s.contenders = append(s.contenders, current)
+	var contested []string
+	reportContender := func(record stagedRecord) {
+		v.add(record.finding(codeFork))
+		if record.Seq == 0 {
+			contested = append(contested, record.id)
+			v.noteContestedOpener(record)
+		}
+	}
+	err := v.store.walk(v.ctx, id, maxInteger, func(current stagedRecord) error {
+		if s.forked {
+			if current.Seq == s.limit+1 {
+				reportContender(current)
 			}
 			return nil
 		}
 		if previous.id != "" {
 			if previous.Seq == current.Seq && v.skip != codeFork {
-				s.contenders = []stagedRecord{previous, current}
+				s.forked = true
+				s.limit = current.Seq - 1
+				reportContender(previous)
+				reportContender(current)
+				previous = stagedRecord{}
 				return nil
 			}
 			if err := publish(previous); err != nil {
@@ -552,20 +568,8 @@ func (v *verification) verifyStream(id string, s *verifiedStream) error {
 	if err != nil {
 		return err
 	}
-	if len(s.contenders) > 0 {
-		s.limit = s.contenders[0].Seq - 1
-		for _, record := range s.contenders {
-			v.add(record.finding(codeFork))
-		}
-		if s.limit < 0 {
-			v.contested[id] = s.contenders
-			ids := make([]string, 0, len(s.contenders))
-			for _, candidate := range s.contenders {
-				ids = append(ids, candidate.id)
-			}
-			v.result.ContestedStreams = append(v.result.ContestedStreams, ContestedStream{Records: ids, Stream: id})
-		}
-		return nil
+	if len(contested) > 0 {
+		v.result.ContestedStreams = append(v.result.ContestedStreams, ContestedStream{Records: contested, Stream: id})
 	}
 	if previous.id != "" {
 		return publish(previous)

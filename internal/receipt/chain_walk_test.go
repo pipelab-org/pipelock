@@ -16,6 +16,7 @@ import (
 	"time"
 
 	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/receipt/receipttest"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
 
@@ -26,16 +27,21 @@ import (
 
 const walkConformanceTestdata = "../../sdk/conformance/testdata"
 
-// corpusDirs lists every conformance directory holding recorder shards.
-func corpusDirs(t *testing.T) []string {
+type corpusDir struct {
+	source string
+	legacy string
+}
+
+// corpusDirs lists conformance directories holding legacy recorder shards.
+func corpusDirs(t *testing.T) []corpusDir {
 	t.Helper()
-	var dirs []string
+	var dirs []corpusDir
 	err := filepath.WalkDir(walkConformanceTestdata, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil || !d.IsDir() {
 			return walkErr
 		}
-		if shards, _ := filepath.Glob(filepath.Join(path, "evidence-*.jsonl")); len(shards) > 0 {
-			dirs = append(dirs, path)
+		if dir := receipttest.LegacyCorpusDir(t, path); dir != "" {
+			dirs = append(dirs, corpusDir{source: path, legacy: dir})
 		}
 		return nil
 	})
@@ -133,7 +139,8 @@ func trustVariants(c namedChain) [][]string {
 func receiptChains(t *testing.T) []namedChain {
 	t.Helper()
 	var chains []namedChain
-	for _, dir := range corpusDirs(t) {
+	for _, src := range corpusDirs(t) {
+		dir := src.legacy
 		sessions, err := recorder.ListSessions(dir)
 		if err != nil {
 			continue
@@ -143,7 +150,7 @@ func receiptChains(t *testing.T) []namedChain {
 			if err != nil || len(rs) == 0 {
 				continue
 			}
-			chains = append(chains, namedChain{name: dir + " " + s, receipts: rs, keys: corpusKeys(dir), session: s, endorse: corpusEndorsements(dir)})
+			chains = append(chains, namedChain{name: dir + " " + s, receipts: rs, keys: corpusKeys(src.source), session: s, endorse: corpusEndorsements(src.source)})
 		}
 	}
 	pubA, privA := generateTestKey(t)
@@ -253,12 +260,13 @@ func TestEndorsedChainWalkerMatchesVerifyChainWithEndorsementsAtEveryPrefix(t *t
 func TestEvidenceChainWalkerMatchesVerifyEvidenceChainTrusted(t *testing.T) {
 	t.Parallel()
 	checked := 0
-	for _, dir := range corpusDirs(t) {
+	for _, src := range corpusDirs(t) {
+		dir := src.legacy
 		sessions, err := recorder.ListSessions(dir)
 		if err != nil {
 			continue
 		}
-		keys := corpusKeys(dir)
+		keys := corpusKeys(src.source)
 		for _, s := range sessions {
 			result, err := recorder.QuerySession(dir, s, nil)
 			if err != nil {
@@ -307,7 +315,8 @@ func TestEvidenceChainWalkerMatchesVerifyEvidenceChainTrusted(t *testing.T) {
 func TestWholeRecorderWalkerMatchesVerifyWholeRecorderEntries(t *testing.T) {
 	t.Parallel()
 	failures := map[string]int{}
-	for _, dir := range corpusDirs(t) {
+	for _, src := range corpusDirs(t) {
+		dir := src.legacy
 		sessions, err := recorder.ListSessions(dir)
 		if err != nil {
 			continue
@@ -380,7 +389,7 @@ func baseOptionVariants(dir string) []BaseVerifyOptions {
 	return opts
 }
 
-func compareVerifyBase(t *testing.T, label, dir string) int {
+func compareVerifyBase(t *testing.T, label, dir string, options []BaseVerifyOptions) int {
 	t.Helper()
 	bases, err := ContinuityBases(dir)
 	if err != nil {
@@ -391,7 +400,7 @@ func compareVerifyBase(t *testing.T, label, dir string) int {
 	}
 	compared := 0
 	for _, base := range bases {
-		for _, opts := range baseOptionVariants(dir) {
+		for _, opts := range options {
 			got, gotErr := VerifyBase(dir, base, opts)
 			want, wantErr := legacyVerifyBase(dir, base, opts)
 			if fmt.Sprint(gotErr) != fmt.Sprint(wantErr) || !reflect.DeepEqual(got, want) {
@@ -415,8 +424,8 @@ func containsBase(list []string, s string) bool {
 func TestVerifyBaseStreamingMatchesInMemoryOnCorpus(t *testing.T) {
 	t.Parallel()
 	compared := 0
-	for _, dir := range corpusDirs(t) {
-		compared += compareVerifyBase(t, dir, dir)
+	for _, src := range corpusDirs(t) {
+		compared += compareVerifyBase(t, src.source, src.legacy, baseOptionVariants(src.source))
 	}
 	if compared < 50 {
 		t.Fatalf("compared only %d VerifyBase reports", compared)
@@ -472,13 +481,14 @@ func relinkShardLines(lines []string) []string {
 func TestVerifyBaseStreamingMatchesInMemoryUnderMutation(t *testing.T) {
 	t.Parallel()
 	findings := map[string]int{}
-	for _, dir := range corpusDirs(t) {
+	for _, src := range corpusDirs(t) {
 		switch {
-		case strings.HasSuffix(dir, "run-chains/valid"), strings.HasSuffix(dir, "run-chains/key-rotated"),
-			strings.HasSuffix(dir, "run-chains/link-appended"), strings.HasSuffix(dir, "parity/rotated"):
+		case strings.HasSuffix(src.source, "run-chains/valid"), strings.HasSuffix(src.source, "run-chains/key-rotated"),
+			strings.HasSuffix(src.source, "run-chains/link-appended"), strings.HasSuffix(src.source, "parity/rotated"):
 		default:
 			continue
 		}
+		dir := src.legacy
 		shards, _ := filepath.Glob(filepath.Join(dir, "evidence-*.jsonl"))
 		for _, shard := range shards {
 			raw, err := os.ReadFile(filepath.Clean(shard))
@@ -509,8 +519,9 @@ func TestVerifyBaseStreamingMatchesInMemoryUnderMutation(t *testing.T) {
 					if err := os.WriteFile(filepath.Join(mutated, filepath.Base(shard)), []byte(data), 0o600); err != nil {
 						t.Fatal(err)
 					}
-					compareVerifyBase(t, fmt.Sprintf("%s %s %s-%d", dir, filepath.Base(shard), op.name, i), mutated)
-					if report, err := VerifyBase(mutated, "proxy", BaseVerifyOptions{TrustedKeys: corpusKeys(dir)}); err == nil {
+					compareVerifyBase(t, fmt.Sprintf("%s %s %s-%d", src.source, filepath.Base(shard), op.name, i),
+						mutated, baseOptionVariants(mutated))
+					if report, err := VerifyBase(mutated, "proxy", BaseVerifyOptions{TrustedKeys: corpusKeys(src.source)}); err == nil {
 						for _, f := range report.Findings {
 							findings[f.Kind]++
 						}

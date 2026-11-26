@@ -22,13 +22,13 @@ type wasmGroupAELBatchIndex struct {
 	torn           []groupBatchTorn
 }
 
-func newGroupAELBatchIndex(dir string, trusted []string) (groupAELBatchIndex, error) {
+func newGroupAELBatchIndexScoped(dir string, trusted []string, excluded map[string]bool) (groupAELBatchIndex, error) {
 	index := &wasmGroupAELBatchIndex{
 		claims: make(map[string]wasmGroupAELClaim), sessions: make(map[string][]string),
 		tailCounts: make(map[string]int),
 	}
 	evidenceNames := make(map[wasmEvidenceNameKey]string)
-	if err := walkInventoryNames(dir, func(name string) error {
+	if err := walkLegacyInventoryNames(dir, excluded, func(name string) error {
 		session, seq, ok := evidencename.Parse(name)
 		if !ok {
 			return nil
@@ -42,7 +42,7 @@ func newGroupAELBatchIndex(dir string, trusted []string) (groupAELBatchIndex, er
 	}); err != nil {
 		return nil, err
 	}
-	if err := walkInventoryNames(dir, func(name string) error {
+	if err := walkLegacyInventoryNames(dir, excluded, func(name string) error {
 		session, seq, ok := evidencename.Parse(name)
 		if !ok || seq != 0 {
 			return nil
@@ -54,7 +54,7 @@ func newGroupAELBatchIndex(dir string, trusted []string) (groupAELBatchIndex, er
 			index.claims[run] = wasmGroupAELClaim{session: session, groupID: groupID, signer: signer, completed: completed}
 			index.sessions[groupID] = append(index.sessions[groupID], session)
 			return nil
-		}, index.addTorn)
+		}, groupClaimScan{onTorn: index.addTorn, excluded: excluded})
 	}); err != nil {
 		return nil, err
 	}

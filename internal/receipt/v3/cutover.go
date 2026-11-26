@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 	"slices"
 	"strings"
 )
@@ -54,30 +55,45 @@ type legacyIdentity struct {
 
 type legacyPresentation struct {
 	InventoryChain
-	verdict         string
-	cliHead         string
-	cliSeq          uint64
-	session         string
-	forked          bool
-	position        int64
-	actionPositions map[int64]string
+	verdict   string
+	cliHead   string
+	cliSeq    uint64
+	session   string
+	forked    bool
+	rotated   bool
+	position  int64
+	positions map[int64]string
 }
 
-func (p legacyPresentation) containsEarlierAction(digest string) bool {
-	if p.Record == digest || p.forked {
-		return false
-	}
-	hash := strings.TrimPrefix(digest, "sha256:")
-	for _, observed := range p.actionPositions {
-		if observed == hash {
-			return true
+func (p legacyPresentation) compareCutoverPosition(row InventoryChain) int {
+	if p.Record != row.Record && !p.forked {
+		for position, observed := range p.positions {
+			if position >= 0 && position < p.position && legacyHash(observed) == row.Record {
+				return 1
+			}
+		}
+		// A key rotation resets the signed sequence within the same chain, so
+		// once the presented chain crosses one, a missing action digest cannot
+		// be ordered by it. Without a rotation the order is reliable: a pin
+		// beyond the presented tail is truncation, and a pin at or before it
+		// that the chain never recorded is a different head.
+		if p.Format == legacyAction && (p.rotated || p.Seq >= row.Seq) {
+			return 0
 		}
 	}
-	return false
+	return cmp.Compare(p.Seq, row.Seq)
 }
 
-func (v *verification) verifyCutover(oldFiles []string, inventories map[string][]string, claimed bool) (map[string]stagedRecord, error) {
-	old, err := v.verifyLegacy(oldFiles)
+func (v *verification) verifyCutover(oldFiles []string, inventories map[string][]string, files []inputFile) (map[string]stagedRecord, error) {
+	claimed := len(files) != 0
+	var excluded map[string]bool
+	if claimed && v.opts.Directory {
+		excluded = make(map[string]bool, len(files))
+		for _, file := range files {
+			excluded[filepath.Base(file.path)] = true
+		}
+	}
+	old, err := v.verifyLegacy(oldFiles, excluded)
 	if err != nil {
 		return nil, err
 	}
@@ -122,13 +138,13 @@ func (v *verification) verifyCutover(oldFiles []string, inventories map[string][
 			key := legacyIdentity{row.Format, row.Chain}
 			listed[key] = true
 			actual, presented := old[key]
-			extended := actual.Seq > row.Seq || actual.containsEarlierAction(row.Record)
+			position := actual.compareCutoverPosition(row)
 			switch {
 			case v.skip != codeLegacyChainNotPresented && !presented:
 				v.add(stream.open.finding(codeLegacyChainNotPresented))
-			case v.skip != codeLegacyExtendedAfterCutover && extended:
+			case v.skip != codeLegacyExtendedAfterCutover && position > 0:
 				v.add(stream.open.finding(codeLegacyExtendedAfterCutover))
-			case v.skip != codeLegacyChainTruncated && !extended && actual.Seq < row.Seq:
+			case v.skip != codeLegacyChainTruncated && position < 0:
 				v.add(stream.open.finding(codeLegacyChainTruncated))
 			case v.skip != codeLegacyChainHeadMismatch && (actual.forked || actual.Record != row.Record):
 				v.add(stream.open.finding(codeLegacyChainHeadMismatch))
@@ -179,18 +195,24 @@ func (v *verification) cutoverMembershipKnown() bool {
 			return false
 		}
 	}
-	for _, candidates := range v.contested {
-		for _, candidate := range candidates {
-			if candidate.Kind != kindStreamOpen {
-				continue
-			}
-			body, err := unmarshalBody[StreamOpen](candidate)
-			if err != nil || candidate.unknown || body.Previous == nil || !roots[body.Lineage] {
-				return false
-			}
+	for lineage := range v.contestedLineages {
+		if !roots[lineage] {
+			return false
 		}
 	}
 	return true
+}
+
+func (v *verification) noteContestedOpener(candidate stagedRecord) {
+	if candidate.Kind != kindStreamOpen {
+		return
+	}
+	body, err := unmarshalBody[StreamOpen](candidate)
+	lineage := body.Lineage
+	if err != nil || candidate.unknown || body.Previous == nil {
+		lineage = ""
+	}
+	v.contestedLineages[lineage] = true
 }
 
 func readInventory(path string, pin Cutover, skip string) (Inventory, string, error) {
@@ -252,13 +274,18 @@ func decodeInventory(input io.Reader, chains int64) (Inventory, string, bool) {
 	}
 	_, _ = io.WriteString(h, "{\"chains\":[")
 	inventory.Chains = []InventoryChain{}
+	// Only an inventory a stream pins is compared row by row. An unreferenced
+	// one (chains < 0) is validated in constant memory: the ordering check needs
+	// the previous row and the pin check needs the count.
+	retain := chains >= 0
+	var previous InventoryChain
+	var n int64
 	for d.More() {
 		var row InventoryChain
 		if err := d.Decode(&row); err != nil || !validLegacyRow(row) {
 			return Inventory{}, "", false
 		}
-		n := len(inventory.Chains)
-		if chains >= 0 && int64(n) >= chains || n > 0 && compareLegacy(inventory.Chains[n-1], row) >= 0 {
+		if chains >= 0 && n >= chains || n > 0 && compareLegacy(previous, row) >= 0 {
 			return Inventory{}, "", false
 		}
 		if n > 0 {
@@ -267,9 +294,13 @@ func decodeInventory(input io.Reader, chains int64) (Inventory, string, bool) {
 		// The row's fields appear in canonical order and valid values
 		// contain only ASCII characters that need no escaping.
 		_, _ = fmt.Fprintf(h, "{\"chain\":%q,\"format\":%q,\"record\":%q,\"seq\":%d}", row.Chain, row.Format, row.Record, row.Seq)
-		inventory.Chains = append(inventory.Chains, row)
+		previous = row
+		n++
+		if retain {
+			inventory.Chains = append(inventory.Chains, row)
+		}
 	}
-	if !token(json.Delim(']')) || chains >= 0 && int64(len(inventory.Chains)) != chains {
+	if !token(json.Delim(']')) || chains >= 0 && n != chains {
 		return Inventory{}, "", false
 	}
 	_, _ = io.WriteString(h, "]")

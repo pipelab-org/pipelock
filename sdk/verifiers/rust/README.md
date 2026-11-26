@@ -118,6 +118,24 @@ callers handling untrusted JSON should use `run_receipt` or
 `util::parse_json_text` before verification; an independently constructed
 `serde_json::Value` cannot retain duplicate keys or original numeric spelling.
 
+## Receipt v3
+
+Supply v3 receipt files or one evidence directory. Repeat `--key` for each pinned Ed25519 public key in lowercase hex. Mixed old-format and v3 evidence returns `USE_HOST_VERIFIER`; run `pipelock verify-receipt --chain <dir>`.
+
+```text
+pipelock-verifier-rs v3 --key HEX --output projection EVIDENCE_DIR
+pipelock-verifier-rs v3 --claims PATH
+```
+
+The default output is the full `verify_result` document. Use `--output projection`
+for the canonical subset used by the shared conformance corpus. Each form writes
+one canonical JSON line and exits with the document's `exit_code`.
+
+Rust callers can use `pipelock_verifier_rs::v3::verify_paths(&paths, &options)`.
+Set `Options::directory` when passing a directory. The returned
+`VerificationResult` provides `json()`, `projection()`, and `exit_code()`.
+`v3::claims_input` exposes the same detector as `v3 --claims`.
+
 ## Receipt-chain endpoints
 
 Receipt-chain CLI verification returns 0 only when integrity verifies and the end is proven for the declared scope. A valid open prefix returns 3 with `VALID PREFIX, END UNPROVEN`. Invalid evidence returns 1. `--allow-prefix` returns 0 for that prefix while preserving the label and JSON status; it never accepts a broken chain or a mismatching pin.

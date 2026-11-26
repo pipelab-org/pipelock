@@ -1,0 +1,1 @@
+{"directory":true,"check":"legacy-fork-unknown-membership","finding":"LEGACY_MEMBERSHIP_UNKNOWN","inputs":["33333333333333333333333333333333-0000000000000000.receipt-v3.jsonl","activation-receipts.jsonl","redaction-receipts.jsonl"],"keys":["7e2842a7af53aef0949fbb5613e0c5c2080f33a17720103ab9ac64ef6fb59a49","d2ba0b3426fe6fc96e593249a5b02d22e3167cd233af72ab77660be3334c0e17"]}

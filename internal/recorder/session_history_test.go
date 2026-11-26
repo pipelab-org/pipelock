@@ -295,36 +295,6 @@ func TestWalkSessionHistoryFailsClosed(t *testing.T) {
 			t.Fatalf("error = %v, want ErrEvidenceRefused", err)
 		}
 	})
-	t.Run("malformed entry", func(t *testing.T) {
-		dir := t.TempDir()
-		if err := os.WriteFile(filepath.Join(dir, "evidence-bad-0.jsonl"), []byte("{not json}\n"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := collectHistory(t, historyLocation(t, dir), "bad", 4); err == nil || !strings.Contains(err.Error(), "parsing entry") {
-			t.Fatalf("error = %v", err)
-		}
-	})
-	t.Run("unsupported version", func(t *testing.T) {
-		dir := t.TempDir()
-		es := historyEntries(t, "old", 0, 1, "s")
-		es[0].Version = 99
-		if err := os.WriteFile(filepath.Join(dir, "evidence-old-0.jsonl"), historyLines(t, es), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := collectHistory(t, historyLocation(t, dir), "old", 4); err == nil || !strings.Contains(err.Error(), "unsupported entry version") {
-			t.Fatalf("error = %v", err)
-		}
-	})
-	t.Run("schema violation", func(t *testing.T) {
-		dir := t.TempDir()
-		es := historyEntries(t, "schema", 0, 1, "bad\x00summary")
-		if err := os.WriteFile(filepath.Join(dir, "evidence-schema-0.jsonl"), historyLines(t, es), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := collectHistory(t, historyLocation(t, dir), "schema", 4); err == nil {
-			t.Fatal("schema violation accepted")
-		}
-	})
 	t.Run("symlinked shard", func(t *testing.T) {
 		dir := t.TempDir()
 		target := filepath.Join(t.TempDir(), "elsewhere.jsonl")
@@ -357,6 +327,43 @@ func TestWalkSessionHistoryFailsClosed(t *testing.T) {
 			t.Fatalf("error = %v", err)
 		}
 	})
+}
+
+func TestWalkSessionHistoryEntryErrorsMatchQuery(t *testing.T) {
+	const session = "history"
+	unsupported := historyEntries(t, session, 0, 1, "s")
+	unsupported[0].Version = 99
+	invalidSchema := historyEntries(t, session, 0, 1, "bad\x00summary")
+	sizeError := fmt.Sprintf("exceeds %d-byte recorder entry limit", MaxEntryLineBytes)
+	for _, tc := range []struct {
+		name  string
+		line  string
+		cause string
+	}{
+		{"wire line limit", strings.Repeat("x", maxEntryWireLineBytes) + "\n", sizeError},
+		{"payload line limit", strings.Repeat("x", MaxEntryLineBytes+1) + "\n", sizeError},
+		{"malformed entry", "{not json}\n", "parsing entry:"},
+		{"unsupported version", string(historyLines(t, unsupported)), "unsupported entry version"},
+		{"invalid schema", string(historyLines(t, invalidSchema)), "summary cannot contain NUL"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "evidence-"+session+"-0.jsonl")
+			// A blank line still counts toward the physical line number.
+			if err := os.WriteFile(path, []byte("\r\n"+tc.line), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			location := historyLocation(t, dir)
+			_, want := QuerySessionResolved(location, session, nil)
+			if want == nil || !strings.Contains(want.Error(), "line 2:") || !strings.Contains(want.Error(), tc.cause) {
+				t.Fatalf("query error = %v, want line 2 and %q", want, tc.cause)
+			}
+			got := WalkSessionHistoryResolved(location, session, func(Entry) error { return nil })
+			if got == nil || got.Error() != want.Error() {
+				t.Fatalf("streaming error = %v, want %v", got, want)
+			}
+		})
+	}
 }
 
 func TestWalkSessionHistoryInterruptedReads(t *testing.T) {
@@ -567,5 +574,22 @@ func TestPerFileHistoryReadersHaveNoBudget(t *testing.T) {
 	defer func() { _ = f.Close() }()
 	if err := WalkHistoryEntriesFromReader(f, func(Entry) error { return nil }); !errors.Is(err, ErrTornTail) {
 		t.Fatalf("torn reader error = %v", err)
+	}
+}
+
+func TestWalkResolvedHistorySkipsClaimedShards(t *testing.T) {
+	const session = "example"
+	dir := t.TempDir()
+	writeHistoryShard(t, dir, session, 0, 1)
+	claimed := writeHistoryShard(t, dir, session, 1, 1)
+	location := historyLocation(t, dir)
+	location.ExcludedNames = map[string]bool{filepath.Base(claimed): true}
+	var sequences []uint64
+	err := WalkSessionHistoryResolved(location, session, func(entry Entry) error {
+		sequences = append(sequences, entry.Sequence)
+		return nil
+	})
+	if err != nil || len(sequences) != 1 || sequences[0] != 0 {
+		t.Fatalf("scoped walk saw sequences %v: %v", sequences, err)
 	}
 }

@@ -12,12 +12,96 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"testing/iotest"
 
 	contract "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
 )
+
+func TestCallerOptionsParse(t *testing.T) {
+	stream := strings.Repeat("1", 32)
+	headID := Digest(nil)
+	key := strings.Repeat("ab", ed25519.PublicKeySize)
+	caller := CallerOptions{
+		Keys:                  []string{key},
+		ExpectHeads:           []string{stream + ":2:" + headID},
+		ExpectSequences:       []string{stream + ":1"},
+		AcceptDiscontinuities: []string{headID},
+		AllowPartialHistories: []string{stream},
+		ExpectLineage:         stream,
+		Format:                "v3",
+		AllowPrefix:           true,
+		AllowUnpinned:         true,
+	}
+	want := Options{
+		Keys:                  []ed25519.PublicKey{bytes.Repeat([]byte{0xab}, ed25519.PublicKeySize)},
+		ExpectHeads:           []Head{{Stream: stream, Position: Position{Record: headID, Seq: 2}}},
+		ExpectSequences:       []Sequence{{Stream: stream, Seq: 1}},
+		AcceptDiscontinuities: []string{headID},
+		AllowPartialHistories: []string{stream},
+		ExpectLineage:         stream,
+		ExplicitV3:            true,
+		AllowPrefix:           true,
+		AllowUnpinned:         true,
+	}
+	got, err := caller.Parse(1)
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("caller options lost or altered a verification requirement: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name      string
+		caller    CallerOptions
+		fileCount int
+		want      string
+	}{
+		{"unknown format", CallerOptions{Format: "unknown"}, 1, "format must be v3"},
+		{"multiple files", CallerOptions{Format: "v3"}, 2, "requires exactly one file"},
+		{"explicit format with directory", CallerOptions{Format: "v3", Directory: true}, 1, "only to a single file"},
+		{"short key", CallerOptions{Keys: []string{"ab"}}, 1, "lowercase hexadecimal"},
+		{"uppercase key", CallerOptions{Keys: []string{strings.ToUpper(key)}}, 1, "lowercase hexadecimal"},
+		{"malformed key", CallerOptions{Keys: []string{strings.Repeat("z", len(key))}}, 1, "decode public key"},
+		{"malformed head", CallerOptions{ExpectHeads: []string{stream + ":2"}}, 1, "expected head"},
+		{"malformed sequence", CallerOptions{ExpectSequences: []string{stream + ":01"}}, 1, "expected sequence"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := tc.caller.Parse(tc.fileCount); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Parse error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestCallerResultBytes(t *testing.T) {
+	result := UseHostVerifier(Options{AllowUnpinned: true, AllowPrefix: true})
+	if result.Counts.Scope != "not_appraised" {
+		t.Fatalf("browser fallback appraisal scope = %q", result.Counts.Scope)
+	}
+	for _, tc := range []struct {
+		output    string
+		canonical func() ([]byte, error)
+	}{
+		{"result", result.JSON},
+		{"projection", result.Projection},
+		{"unknown", nil},
+	} {
+		t.Run(tc.output, func(t *testing.T) {
+			data, err := result.ResultBytes(tc.output)
+			if tc.canonical == nil {
+				if IsV3Output(tc.output) || err == nil || data != nil {
+					t.Fatalf("unsupported output was accepted: %v", err)
+				}
+				return
+			}
+			want, canonicalErr := tc.canonical()
+			if !IsV3Output(tc.output) || err != nil || canonicalErr != nil || !bytes.Equal(data, append(want, '\n')) {
+				t.Fatalf("output differs from the canonical document with a terminal newline: %v, %v", err, canonicalErr)
+			}
+		})
+	}
+}
 
 func TestCallerPins(t *testing.T) {
 	stream := strings.Repeat("1", 32)
@@ -66,7 +150,11 @@ func TestCallerPins(t *testing.T) {
 func TestInputClaims(t *testing.T) {
 	dir := t.TempDir()
 	profile := filepath.Join(dir, "example.jsonl")
-	if err := os.WriteFile(profile, []byte(profilePrefix), 0o600); err != nil {
+	if err := os.WriteFile(profile, []byte(contract.ProfileEnvelopePrefix), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	contentDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(contentDir, "activation-receipts.jsonl"), []byte(contract.ProfileEnvelopePrefix), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	unknownProfile := filepath.Join(dir, "example.receipt-v4.jsonl")
@@ -80,6 +168,7 @@ func TestInputClaims(t *testing.T) {
 		{"filename", unknownProfile, false, true, false},
 		{"content", profile, false, true, false},
 		{"directory", dir, true, true, false},
+		{"directory content", contentDir, true, true, false},
 		{"empty directory", t.TempDir(), true, false, false},
 		{"missing directory", filepath.Join(dir, "absent"), true, false, true},
 		{"missing file", filepath.Join(dir, "absent"), false, false, true},
@@ -155,72 +244,6 @@ func TestVerificationReadErrors(t *testing.T) {
 	}
 }
 
-func TestVerifierRefusesScratchDatabaseFailures(t *testing.T) {
-	ctx := t.Context()
-	store, err := newStore(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.close()
-	stream := signedStream(t, 1, nil, &Cutover{Inventory: EmptyInventoryDigest()})
-	path := stream.write(t.TempDir())
-	file, _ := identify(path)
-	v := verification{
-		ctx: ctx, store: store,
-		keys: map[string]validatedKey{Digest(stream.public()): validateKey(stream.public())},
-		used: map[string]bool{}, streams: map[string]*verifiedStream{},
-	}
-	stmt, err := store.PrepareContext(ctx, "SELECT 1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := stmt.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := v.stageFile(file, stmt); err == nil || !strings.Contains(err.Error(), "stage verified record") {
-		t.Fatalf("staging did not propagate the write failure: %v", err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-	for _, tc := range []struct {
-		name  string
-		check func() error
-	}{
-		{"stage", func() error { return v.stageFiles([]inputFile{file}) }},
-		{"appraise", v.appraiseDecisions},
-		{"predecessor", func() error {
-			parent := &verifiedStream{limit: maxInteger}
-			child := &verifiedStream{body: StreamOpen{Previous: &Previous{Stream: stream.id}}}
-			return v.checkPin(parent, child)
-		}},
-		{"broken stream", v.verifyStreams},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if err := tc.check(); err == nil {
-				t.Fatal("verification used a closed scratch database")
-			}
-		})
-	}
-}
-
-func TestAppraisalRefusesMissingDecisionIndex(t *testing.T) {
-	ctx := t.Context()
-	store, err := newStore(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.close()
-	if _, err := store.ExecContext(ctx, "DROP TABLE decision_ids"); err != nil {
-		t.Fatal(err)
-	}
-	v := verification{ctx: ctx, store: store}
-	if err := v.appraiseDecisions(); err == nil || !strings.Contains(err.Error(), "prepare decision index") ||
-		!strings.Contains(err.Error(), "no such table: decision_ids") {
-		t.Fatalf("decision appraisal error = %v, want missing index diagnostic", err)
-	}
-}
-
 func TestRecordStagingRefusesDisappearedEvidence(t *testing.T) {
 	ctx := t.Context()
 	store, err := newStore(ctx)
@@ -244,35 +267,6 @@ func TestRecordStagingRefusesDisappearedEvidence(t *testing.T) {
 	}
 }
 
-func TestWalkRecordsRefusesMalformedScratchRows(t *testing.T) {
-	for _, tc := range []struct {
-		name             string
-		payload, unknown string
-	}{
-		{"column type", "{}", "unreadable"},
-		{"payload", "{", "0"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			store, err := newStore(t.Context())
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer store.close()
-			const insert = "INSERT INTO records (stream,seq,id,payload,unknown,body_code) VALUES (?,0,'record',?,?, '')"
-			if _, err := store.ExecContext(t.Context(), insert, "stream", tc.payload, tc.unknown); err != nil {
-				t.Fatal(err)
-			}
-			err = walkRecords(t.Context(), store, "stream", maxInteger, func(stagedRecord) error {
-				t.Fatal("passed a corrupt record to verification")
-				return nil
-			})
-			if err == nil {
-				t.Fatal("bad scratch data produced no error")
-			}
-		})
-	}
-}
-
 func TestResultCanonicalStrings(t *testing.T) {
 	raw, err := canonicalJSON(map[string]string{
 		"string": "quote\": slash/ <>& \\ \b\f\n\r\t\x01\u2028\u2029",
@@ -286,13 +280,6 @@ func TestResultCanonicalStrings(t *testing.T) {
 	}
 	if _, err := canonicalJSON(make(chan struct{})); err == nil {
 		t.Fatal("serialized an unsupported result value")
-	}
-}
-
-func TestScratchDirectoryCreationFailure(t *testing.T) {
-	parent := filepath.Join(t.TempDir(), "missing")
-	if _, err := newStoreIn(t.Context(), parent); err == nil || !strings.Contains(err.Error(), "scratch directory") {
-		t.Fatalf("unexpected scratch-directory result: %v", err)
 	}
 }
 
@@ -432,4 +419,129 @@ func TestValidateLegacyOptions(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestExplicitV3InventoryNameIsStream(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "receipt-v3-cutover-"+strings.Repeat("a", 64)+".json")
+	files, legacy, inventory, _, err := discover([]string{path}, Options{ExplicitV3: true}, "")
+	if err != nil || len(files) != 1 || len(legacy) != 0 || len(inventory) != 0 {
+		t.Fatalf("explicit v3: files=%v legacy=%v inventory=%v err=%v", files, legacy, inventory, err)
+	}
+}
+
+func TestCoreLoneChainLinkNeedsHost(t *testing.T) {
+	dir := t.TempDir()
+	name := "11111111111111111111111111111111-0000000000000000.receipt-v3.jsonl"
+	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "sdk", "conformance", "testdata", "v3", "g04-absent-max-write-error-pin", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, name), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "chain-link-alone.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := verifyCorePaths(t.Context(), []string{dir}, Options{Directory: true, AllowUnpinned: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range result.Findings {
+		if f.Code == codeUseHostVerifier {
+			return
+		}
+	}
+	t.Fatalf("missing core fallback: %+v", result.Findings)
+}
+
+// verifyCorePaths is a test-only reference for verifiers that do not read old formats.
+func verifyCorePaths(ctx context.Context, paths []string, opts Options) (Result, error) {
+	return verifyPathsWithCutover(ctx, paths, opts, "", nil, func(v *verification, old []string, inventories map[string][]string, files []inputFile) (map[string]stagedRecord, error) {
+		host := false
+		if len(files) != 0 {
+			for _, path := range old {
+				if !opts.Directory || legacyCandidate(filepath.Base(path)) || coreExtraCandidate(filepath.Base(path)) {
+					host = true
+				}
+			}
+			for id := range inventories {
+				if id != EmptyInventoryDigest() {
+					host = true
+				}
+			}
+			for _, stream := range v.streams {
+				if c := stream.body.LegacyCutover; c != nil && c.Inventory != EmptyInventoryDigest() {
+					host = true
+				}
+			}
+
+		}
+		if host {
+			v.addCode(codeUseHostVerifier, "")
+			return map[string]stagedRecord{}, nil
+		}
+		return v.verifyCutover(old, inventories, files)
+	}, coreDiscover)
+}
+
+// In addition to legacyCandidate, continuity and AEL discovery use these names:
+// chain_set.go:358; internal/ael/emitter.go:138; group_inventory.go:83.
+func coreExtraCandidate(name string) bool {
+	return name == "ael" || strings.HasPrefix(name, "chain-link-") && strings.HasSuffix(name, ".json")
+}
+
+func coreDiscover(paths []string, opts Options, skip string) ([]inputFile, []string, map[string][]string, int, error) {
+	if !opts.Directory {
+		if opts.ExplicitV3 {
+			return discover(paths, opts, skip)
+		}
+		var selected, old []string
+		hasV3 := false
+		for _, path := range paths {
+			if _, ok := identify(path); ok {
+				hasV3 = true
+				selected = append(selected, path)
+				continue
+			}
+			if _, ok := inventoryID(filepath.Base(path)); ok {
+				selected = append(selected, path)
+				continue
+			}
+			old = append(old, path)
+		}
+		if !hasV3 {
+			return discover(paths, opts, skip)
+		}
+		files, _, inventories, ignored, err := discover(selected, Options{}, skip)
+		return files, old, inventories, ignored, err
+	}
+	dir, entries, err := readInputDirectory(paths[0])
+	if err != nil {
+		return nil, nil, nil, 0, err
+	}
+	var selected, old []string
+	ignored := 0
+	for _, entry := range entries {
+		name := entry.Name()
+		path := filepath.Join(dir, name)
+		_, v3 := identify(path)
+		if !v3 && (legacyCandidate(name) || coreExtraCandidate(name)) {
+			if name != "ael" && !entry.Type().IsRegular() {
+				return nil, nil, nil, 0, errors.New("evidence path is not a regular file")
+			}
+			old = append(old, path)
+			continue
+		}
+		_, inventory := inventoryID(name)
+		if v3 || inventory {
+			if !entry.Type().IsRegular() {
+				return nil, nil, nil, 0, errors.New("evidence path is not a regular file")
+			}
+			selected = append(selected, path)
+		} else {
+			ignored++
+		}
+	}
+	files, _, inventories, _, err := discover(selected, Options{}, skip)
+	return files, old, inventories, ignored, err
 }

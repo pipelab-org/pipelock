@@ -57,6 +57,7 @@ pub fn run(args: &[String]) -> Result<i32> {
         "chain" => run_chain_command(rest),
         "group" => run_group_command(rest),
         "receipt" => run_receipt_command(rest),
+        "v3" => crate::v3::run(rest),
         "provenance" => run_provenance_command(rest),
         _ => Err(VerifierError::Usage(format!(
             "unknown command {command}\n{}",
@@ -983,7 +984,7 @@ fn usage(command: Option<&str>) -> String {
         Some("provenance") => {
             "Usage: pipelock-verifier-rs provenance PATH [--allow-incomplete]".to_string()
         }
-        _ => "Usage: pipelock-verifier-rs {aarp|audit-packet|chain|group|provenance|receipt} PATH [flags]"
+        _ => "Usage: pipelock-verifier-rs {aarp|audit-packet|chain|group|provenance|receipt|v3} PATH [flags]"
             .to_string(),
     }
 }

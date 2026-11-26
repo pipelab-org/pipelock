@@ -920,11 +920,13 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
 name = "pipelock-verifier-rs"
-version = "0.6.16"
+version = "0.6.17"
 dependencies = [
  "base64 0.23.1",
+ "curve25519-dalek",
  "data-encoding",
  "ed25519-dalek",
+ "getrandom 0.3.4",
  "hex",
  "hmac",
  "html-escape",

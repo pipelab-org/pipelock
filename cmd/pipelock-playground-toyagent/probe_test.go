@@ -70,9 +70,16 @@ func TestRunProbe_OpenAndRefused(t *testing.T) {
 	}()
 	openTarget := ln.Addr().String()
 
-	// ... and a port nothing listens on. Connection refused is reachable, not
-	// kernel containment.
-	const closedTarget = "127.0.0.1:1"
+	// Bind and release an ephemeral port so the test controls which target
+	// returns connection refused.
+	closed, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen for closed target: %v", err)
+	}
+	closedTarget := closed.Addr().String()
+	if err := closed.Close(); err != nil {
+		t.Fatalf("close target listener: %v", err)
+	}
 
 	var out, errOut bytes.Buffer
 	if err := runProbe(t.Context(), &out, &errOut, openTarget+", "+closedTarget); err != nil {

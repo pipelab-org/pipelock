@@ -18,7 +18,7 @@ func (v *verification) verifySuccession() error {
 		if p := stream.body.Previous; p != nil {
 			parent := v.streams[p.Stream]
 			switch {
-			case parent == nil || parent.open.id == "" && len(parent.contenders) == 0:
+			case parent == nil || parent.open.id == "" && !parent.forked:
 				if v.skip != codePredecessorNotPresented {
 					stream.missing = true
 					v.add(stream.open.finding(codePredecessorNotPresented))
@@ -51,10 +51,7 @@ func (v *verification) checkPin(parent, child *verifiedStream) error {
 	if v.skip != codeLineageMismatch && !sameLineage && parent.body.Lineage != "" {
 		v.add(child.open.finding(codeLineageMismatch))
 	}
-	var id, kind string
-	err := v.store.QueryRowContext(v.ctx,
-		"SELECT id, json_extract(payload, '$.kind') FROM records WHERE stream=? AND seq=? AND seq<=?",
-		pin.Stream, pin.Seq, parent.limit).Scan(&id, &kind)
+	id, kind, err := v.store.pin(v.ctx, pin.Stream, pin.Seq, parent.limit)
 	if err != nil {
 		// The pin was physically absent or beyond the verified shared prefix.
 		if errors.Is(err, sql.ErrNoRows) {
@@ -81,12 +78,13 @@ func (v *verification) checkPin(parent, child *verifiedStream) error {
 		}
 		return nil
 	}
-	if v.skip == codeUnconfirmed || len(parent.successors) != 1 || !sameLineage || len(parent.contenders) > 0 {
+	if v.skip == codeUnconfirmed || len(parent.successors) != 1 || !sameLineage || parent.forked {
 		return nil
 	}
 	parent.limit = pin.Seq
+	parent.confirmedWriteError = true
 	if parent.last.Seq > pin.Seq {
-		if err := walkRecords(v.ctx, v.store, pin.Stream, parent.last.Seq, func(record stagedRecord) error {
+		if err := v.store.walk(v.ctx, pin.Stream, parent.last.Seq, func(record stagedRecord) error {
 			if record.Seq > pin.Seq {
 				v.add(record.finding(codeUnconfirmed))
 			}
@@ -108,7 +106,7 @@ func (s *verifiedStream) setSummary() {
 	}
 	s.summary.End = "open"
 	switch {
-	case len(s.contenders) > 0:
+	case s.forked:
 		s.summary.End = "forked"
 	case s.last.Kind == kindStreamClose:
 		s.summary.End = "closed"
@@ -116,14 +114,14 @@ func (s *verifiedStream) setSummary() {
 	switch {
 	case len(s.successors) > 1:
 		s.summary.Tip = nil
-	case len(s.successors) == 1 && len(s.contenders) == 0:
+	case len(s.successors) == 1 && !s.forked:
 		child := s.successors[0]
 		pin := child.body.Previous
 		switch {
 		case pin.Ended == "unsealed" && s.last.id == pin.Record && s.last.Seq == pin.Seq &&
 			s.last.Kind != kindStreamClose && s.body.Lineage == child.body.Lineage:
 			s.summary.End = "superseded_unsealed"
-		case pin.Ended == "write_error" && s.limit == pin.Seq:
+		case pin.Ended == "write_error" && s.confirmedWriteError:
 			s.summary.End = "superseded_write_error"
 			s.summary.Tip = &Position{pin.Record, pin.Seq}
 			s.summary.Records = pin.Seq + 1
@@ -146,7 +144,7 @@ func (v *verification) segments(members []*verifiedStream) []segment {
 		if member.body.Previous == nil {
 			rootCount++
 		}
-		if len(member.contenders) == 0 && len(member.successors) == 1 {
+		if !member.forked && len(member.successors) == 1 {
 			child := member.successors[0]
 			if child.body.Lineage == member.body.Lineage {
 				next[member] = child
@@ -172,7 +170,7 @@ func (v *verification) segments(members []*verifiedStream) []segment {
 	}
 	forked := false
 	for _, member := range members {
-		forked = forked || len(member.contenders) != 0 || len(member.successors) > 1
+		forked = forked || member.forked || len(member.successors) > 1
 		if !hasParent[member] {
 			appendFrom(member)
 		}
