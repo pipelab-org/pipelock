@@ -18,6 +18,7 @@ import (
 	"testing/iotest"
 
 	contract "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/evidencename"
 )
 
 func TestCallerOptionsParse(t *testing.T) {
@@ -150,11 +151,11 @@ func TestCallerPins(t *testing.T) {
 func TestInputClaims(t *testing.T) {
 	dir := t.TempDir()
 	profile := filepath.Join(dir, "example.jsonl")
-	if err := os.WriteFile(profile, []byte(contract.ProfileEnvelopePrefix), 0o600); err != nil {
+	if err := os.WriteFile(profile, []byte(evidencename.ReceiptProfilePrefix), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	contentDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(contentDir, "activation-receipts.jsonl"), []byte(contract.ProfileEnvelopePrefix), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(contentDir, "activation-receipts.jsonl"), []byte(evidencename.ReceiptProfilePrefix), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	unknownProfile := filepath.Join(dir, "example.receipt-v4.jsonl")

@@ -4,10 +4,13 @@
 package evidencename
 
 import (
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/iotest"
 )
 
 func TestReceiptProfileVersion(t *testing.T) {
@@ -110,5 +113,28 @@ func TestReceiptProfileEntryIgnoresDirectories(t *testing.T) {
 	}
 	if got := ReceiptProfileEntry(entries); got != "" {
 		t.Fatalf("directory claimed its parent as %q", got)
+	}
+}
+
+func TestProbeReceiptContentErrorsAndShortInput(t *testing.T) {
+	readErr := errors.New("profile prefix read failed")
+	for _, tc := range []struct {
+		name  string
+		input io.Reader
+		want  bool
+		err   error
+	}{
+		{"envelope", strings.NewReader(ReceiptProfilePrefix + "v3+json"), true, nil},
+		{"legacy", strings.NewReader(strings.Repeat("x", len(ReceiptProfilePrefix))), false, nil},
+		{"partial", strings.NewReader(ReceiptProfilePrefix[:len(ReceiptProfilePrefix)-1]), false, nil},
+		{"empty", strings.NewReader(""), false, nil},
+		{"read error", iotest.ErrReader(readErr), false, readErr},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ProbeReceiptContent(tc.input)
+			if got != tc.want || !errors.Is(err, tc.err) {
+				t.Fatalf("got (%v, %v), want (%v, %v)", got, err, tc.want, tc.err)
+			}
+		})
 	}
 }

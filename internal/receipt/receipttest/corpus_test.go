@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/luckyPipewrench/pipelock/internal/contract/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/evidencename"
 )
 
 func TestLegacyCorpusDirKeepsLegacyFilesInMixedFixture(t *testing.T) {
@@ -18,7 +18,7 @@ func TestLegacyCorpusDirKeepsLegacyFilesInMixedFixture(t *testing.T) {
 	files := map[string]string{
 		"evidence-proxy-0.jsonl":            "legacy recorder",
 		"evidence-proxy-0.receipt-v3.jsonl": "malformed profile claim",
-		"evidence-proxy-1.jsonl":            receipt.ProfileEnvelopePrefix,
+		"evidence-proxy-1.jsonl":            evidencename.ReceiptProfilePrefix,
 		"signer.pub":                        "fixture signer",
 	}
 	for name, data := range files {
