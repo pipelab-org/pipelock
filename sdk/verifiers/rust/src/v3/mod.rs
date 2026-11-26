@@ -541,6 +541,25 @@ fn run_cli(args: &[String]) -> Result<i32> {
         };
         flags += 1;
         match flag {
+            "-h" | "--help" if inline.is_none() => {
+                print!(
+                    "Usage: pipelock-verifier-rs v3 [OPTIONS] [PATH ...]\n\
+                     \nOptions:\n\
+                       --key KEY                      Trust a signer key (repeatable)\n\
+                       --allow-unpinned               Accept unpinned signers\n\
+                       --allow-prefix                 Accept a verified prefix\n\
+                       --accept-discontinuity VALUE   Accept a specified discontinuity\n\
+                       --allow-partial-history VALUE  Accept a specified partial history\n\
+                       --expect-lineage ID            Require the specified lineage\n\
+                       --expect-head STREAM:SEQ:ID    Require a stream head\n\
+                       --expect-seq STREAM:SEQ        Require a stream sequence\n\
+                       --format v3                   Select receipt v3 explicitly\n\
+                       --output result|projection     Select the JSON document\n\
+                       --claims                      Test whether one file claims v3\n\
+                       -h, --help                    Show this help\n"
+                );
+                return Ok(0);
+            }
             "--claims" if inline.is_none() => claims = true,
             "--allow-unpinned" if inline.is_none() => options.allow_unpinned = true,
             "--allow-prefix" if inline.is_none() => options.allow_prefix = true,

@@ -120,6 +120,26 @@ impl Drop for TestDirectory {
 }
 
 #[test]
+fn v3_help_does_not_open_evidence() {
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_pipelock-verifier-rs"))
+        .args(["v3", "missing-evidence", "--help"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0));
+    assert!(output.stderr.is_empty());
+    let help = String::from_utf8(output.stdout).unwrap();
+    for flag in [
+        "--key",
+        "--allow-prefix",
+        "--format",
+        "--output",
+        "--claims",
+    ] {
+        assert!(help.contains(flag), "missing {flag}");
+    }
+}
+
+#[test]
 fn cli_status_and_usage_errors() {
     use std::process::Command;
 
