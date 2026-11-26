@@ -5,6 +5,7 @@ package v3
 
 import (
 	"crypto/ed25519"
+	"strings"
 	"testing"
 )
 
@@ -153,5 +154,22 @@ func TestMemoryDecisionIndexScopesShapesAndHoldOwnership(t *testing.T) {
 	}
 	if owner, err := index.holdOwner(hold, other); err != nil || owner != other {
 		t.Fatalf("hold ownership leaked across histories: %q, %v", owner, err)
+	}
+}
+
+func TestPendingHoldReplayRetainsOnlyIdentity(t *testing.T) {
+	hold := strings.Repeat("hold-", 16384)
+	pending := Action{Phase: "hold", Hold: &Hold{ID: hold}}
+	matching := Action{Phase: "resolution", Verdict: "allow", Hold: &Hold{ID: hold}}
+	different := Action{Phase: "resolution", Verdict: "allow", Hold: &Hold{ID: "other"}}
+	var piece, inferred decisionPiece
+	if !piece.advance(pending, false) || len(piece.HoldID) >= 100 {
+		t.Fatal("pending hold did not use a fixed-size identity")
+	}
+	if piece.advance(different, false) || !piece.advance(matching, false) {
+		t.Fatal("hold identity did not distinguish resolutions")
+	}
+	if !inferred.advance(matching, true) || inferred.HoldID != piece.HoldID {
+		t.Fatal("inferred hold used a different identity")
 	}
 }

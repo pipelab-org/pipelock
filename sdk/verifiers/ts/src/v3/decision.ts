@@ -99,7 +99,9 @@ function effect(a: Action): string {
   return JSON.stringify([a.action_type, a.transport, a.method, a.target, a.effect_boundary]);
 }
 
-class Decision {
+const holdIdentity = (hold: string): string => digest(Buffer.from(hold));
+
+export class Decision {
   state = "";
   failed = false;
   private hold = "";
@@ -124,7 +126,7 @@ class Decision {
       case "hold":
         if (this.state) return false;
         this.state = "pending";
-        this.hold = a.hold!.id;
+        this.hold = holdIdentity(a.hold!.id);
         return true;
       case "resolution":
         return this.resolve(a);
@@ -135,7 +137,7 @@ class Decision {
 
   private inferPrefix(a: Action): boolean {
     if (a.phase === "resolution") {
-      this.hold = a.hold!.id;
+      this.hold = holdIdentity(a.hold!.id);
       this.state = "pending";
       if (a.hold!.correction !== undefined) {
         this.firstResolution = "allow";
@@ -161,7 +163,7 @@ class Decision {
   }
 
   private resolve(a: Action): boolean {
-    if (this.attemptNumber || !this.hold || a.hold!.id !== this.hold) return false;
+    if (this.attemptNumber || !this.hold || holdIdentity(a.hold!.id) !== this.hold) return false;
     const prior = this.firstResolution;
     if (
       prior === "ask" ||
@@ -277,7 +279,7 @@ export function claimHold(
   action: string,
   max: number,
 ): "conflict" | "full" | undefined {
-  const key = digest(Buffer.from(hold));
+  const key = holdIdentity(hold);
   const owner = holds.get(key);
   if (owner !== undefined) return owner === action ? undefined : "conflict";
   if (holds.size >= max) return "full";

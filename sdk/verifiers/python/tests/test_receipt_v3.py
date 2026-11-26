@@ -377,6 +377,23 @@ def test_ordinary_legacy_ignores_unrelated_symlink(tmp_path):
     assert result["findings"] == control["findings"]
 
 
+def test_pending_hold_replay_retains_only_identity():
+    from pipelock_aarp_verify.v3.decision import _Piece
+
+    hold = "hold-" * 16384
+    pending = {"phase": "hold", "hold": {"id": hold}}
+    matching = {"phase": "resolution", "verdict": "allow", "hold": {"id": hold}}
+    different = {**matching, "hold": {"id": hold + "other"}}
+    piece = _Piece()
+    assert piece.advance(pending, False)
+    assert len(piece.hold) < 100
+    assert not piece.advance(different, False)
+    assert piece.advance(matching, False)
+    inferred = _Piece()
+    assert inferred.advance(matching, True)
+    assert inferred.hold == piece.hold
+
+
 def test_mixed_group_directory(tmp_path):
     from pipelock_aarp_verify import verify_receipt_groups
     from pipelock_aarp_verify.legacy_directory import recorder_index

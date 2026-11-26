@@ -154,7 +154,7 @@ impl Decision {
             }
             "hold" if self.state.is_empty() => {
                 self.state = "pending";
-                self.hold = action.hold.unwrap().into();
+                self.hold = digest(action.hold.unwrap().as_bytes());
                 true
             }
             "resolution" => self.resolve(action),
@@ -166,7 +166,7 @@ impl Decision {
     fn infer_prefix(&mut self, action: &Action<'_>) -> bool {
         match action.phase {
             "resolution" => {
-                self.hold = action.hold.unwrap().into();
+                self.hold = digest(action.hold.unwrap().as_bytes());
                 self.state = "pending";
                 if action.correction.is_some() {
                     self.first_resolution = "allow".into();
@@ -200,7 +200,12 @@ impl Decision {
     }
 
     fn resolve(&mut self, action: &Action<'_>) -> bool {
-        if self.attempt != 0 || self.hold.is_empty() || action.hold != Some(&self.hold) {
+        if self.attempt != 0
+            || self.hold.is_empty()
+            || action
+                .hold
+                .is_none_or(|id| digest(id.as_bytes()) != self.hold)
+        {
             return false;
         }
         let prior = &self.first_resolution;
@@ -555,6 +560,22 @@ mod tests {
 
         body["attempt"] = json!(1);
         assert!(!Action::new(&body).valid(true));
+    }
+
+    #[test]
+    fn pending_hold_replay_retains_only_identity() {
+        let hold = "hold-".repeat(16384);
+        let pending = json!({"phase":"hold","hold":{"id":hold}});
+        let matching = json!({"phase":"resolution","verdict":"allow","hold":{"id":hold}});
+        let different = json!({"phase":"resolution","verdict":"allow","hold":{"id":"other"}});
+        let mut decision = Decision::default();
+        assert!(decision.advance(&Action::new(&pending), false));
+        assert!(decision.hold.len() < 100);
+        assert!(!decision.advance(&Action::new(&different), false));
+        assert!(decision.advance(&Action::new(&matching), false));
+        let mut inferred = Decision::default();
+        assert!(inferred.advance(&Action::new(&matching), true));
+        assert_eq!(inferred.hold, decision.hold);
     }
 
     #[test]

@@ -9,7 +9,7 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from .wire import KINDS, LIMITS, REGISTRY, Document
+from .wire import KINDS, LIMITS, REGISTRY, Document, digest
 
 if TYPE_CHECKING:
     from .verify import Verification, _Stream
@@ -123,7 +123,7 @@ class _Piece:
             case "hold":
                 if self.state:
                     return False
-                self.state, self.hold = "pending", action["hold"]["id"]
+                self.state, self.hold = "pending", digest(action["hold"]["id"].encode())
             case "resolution":
                 return self._resolve(action)
             case _:
@@ -133,7 +133,7 @@ class _Piece:
     def _infer_prefix(self, action: Document) -> bool:
         phase = action["phase"]
         if phase == "resolution":
-            self.hold, self.state = action["hold"]["id"], "pending"
+            self.hold, self.state = digest(action["hold"]["id"].encode()), "pending"
             if "correction" in action["hold"]:
                 self.first_resolution, self.state = "allow", "outcome_unknown"
         elif phase in ("intent", "outcome"):
@@ -159,7 +159,11 @@ class _Piece:
 
     def _resolve(self, action: Document) -> bool:
         verdict = action["verdict"]
-        if self.number or not self.hold or action["hold"]["id"] != self.hold:
+        if (
+            self.number
+            or not self.hold
+            or digest(action["hold"]["id"].encode()) != self.hold
+        ):
             return False
         prior = self.first_resolution
         if (

@@ -23,7 +23,7 @@ import { findPackageRoot } from "./paths.js";
 import { readV3Fixture, resignV3Fixture } from "./v3-fixtures.js";
 import { digest, limits } from "../src/v3/wire.js";
 import { readInventory } from "../src/v3/cutover.js";
-import { claimHold } from "../src/v3/decision.js";
+import { claimHold, Decision } from "../src/v3/decision.js";
 import { verifyLegacy } from "../src/v3/legacy.js";
 import { finding, newResult } from "../src/v3/result.js";
 import { Stage } from "../src/v3/store.js";
@@ -490,6 +490,32 @@ test("v3 does not exclude a replaced bare wrapper from restart continuity", asyn
     syncBuiltinESMExports();
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("v3 pending hold replay retains only its identity", () => {
+  const hold = "hold-".repeat(16384);
+  const action = {
+    action_id: "test",
+    action_type: "test",
+    phase: "hold",
+    verdict: "defer",
+    effect_boundary: "approval_prompt",
+    effect_relation: "before",
+    transport: "",
+    method: "",
+    target: "",
+    hold: { id: hold },
+  };
+  const matching = { ...action, phase: "resolution", verdict: "allow" };
+  const different = { ...matching, hold: { id: "other" } };
+  const pending = new Decision();
+  assert.ok(pending.advance(action, false));
+  assert.ok(!Object.values(pending).includes(hold));
+  assert.ok(!pending.advance(different, false));
+  assert.ok(pending.advance(matching, false));
+  const inferred = new Decision();
+  assert.ok(inferred.advance(matching, true));
+  assert.deepEqual(inferred, pending);
 });
 
 test("v3 hold ownership shares the decision index budget", () => {
