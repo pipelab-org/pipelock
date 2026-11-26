@@ -412,38 +412,40 @@ fn cutover_reports_invalid_legacy_restart_and_group_inventory() {
     let request: Value =
         serde_json::from_slice(&fs::read(corpus.join("request.json")).unwrap()).unwrap();
     let options: Options = serde_json::from_value(request.clone()).unwrap();
-    let dir = TestDirectory::new();
-    for file in request["inputs"].as_array().unwrap() {
-        let file = file.as_str().unwrap();
-        if file.starts_with("chain-link-") {
-            fs::write(dir.0.join(file), b"{}").unwrap();
-        } else {
-            fs::copy(corpus.join(file), dir.0.join(file)).unwrap();
+    for expected in ["RESTART CONTINUITY FAILED", "GROUP_INVALID"] {
+        let dir = TestDirectory::new();
+        for file in request["inputs"].as_array().unwrap() {
+            let file = file.as_str().unwrap();
+            if expected == "RESTART CONTINUITY FAILED" && file.starts_with("chain-link-") {
+                fs::write(dir.0.join(file), b"{}").unwrap();
+            } else {
+                fs::copy(corpus.join(file), dir.0.join(file)).unwrap();
+            }
         }
+        if expected == "GROUP_INVALID" {
+            fs::create_dir(dir.0.join("ael")).unwrap();
+            fs::write(dir.0.join("receipt-group-unknown.json"), b"{}").unwrap();
+        }
+        let result = verify_paths(std::slice::from_ref(&dir.0), &options).unwrap();
+        let doc: Value = serde_json::from_slice(result.json()).unwrap();
+        assert!(
+            doc["legacy"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| row["class"] == "failure" && row["verdict"] == expected),
+            "missing failure row: {expected}"
+        );
+        assert_eq!(doc["verdict"], "INVALID", "{expected}");
+        assert!(
+            doc["findings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|finding| finding["code"] == "LEGACY_INVALID"),
+            "missing finding: {expected}"
+        );
     }
-    fs::create_dir(dir.0.join("ael")).unwrap();
-    fs::write(dir.0.join("receipt-group-unknown.json"), b"{}").unwrap();
-    let result = verify_paths(std::slice::from_ref(&dir.0), &options).unwrap();
-    let doc: Value = serde_json::from_slice(result.json()).unwrap();
-    let rows = doc["legacy"].as_array().unwrap();
-    assert!(
-        rows.iter()
-            .any(|row| row["verdict"] == "RESTART CONTINUITY FAILED"),
-        "{doc}"
-    );
-    assert!(
-        rows.iter().any(|row| row["verdict"] == "GROUP_INVALID"),
-        "{doc}"
-    );
-    assert_eq!(doc["verdict"], "INVALID", "{doc}");
-    assert!(
-        doc["findings"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|finding| finding["code"] == "LEGACY_INVALID"),
-        "{doc}"
-    );
 }
 
 #[test]
