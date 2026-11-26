@@ -129,7 +129,7 @@ func (v *verification) verifyLegacy(paths []string, excluded map[string]bool) (m
 		if absErr != nil {
 			return nil, fmt.Errorf("resolve legacy receipt directory: %w", absErr)
 		}
-		location := recorder.EvidenceLocation{Root: root, Dir: root, ExcludedNames: excluded}
+		location := recorder.EvidenceLocation{Root: root, Dir: root, ExcludedNames: excluded, ReadMode: recorder.MixedReceiptProfiles}
 		batch := legacyBatch{recorder: true, session: session}
 		// Bind a wrapper's exclusion to the files as they were before the read.
 		stamps := sessionStamps(sessionPaths[session], session)
@@ -313,7 +313,7 @@ func (v *verification) legacyContinuityLabel(dir, base string, keys []string, gr
 	if !changed {
 		report, err = legacy.VerifyBase(dir, base, legacy.BaseVerifyOptions{
 			TrustedKeys: keys, ExcludeReceiptGroupSessions: grouped, ExcludedNames: excluded,
-		})
+		}, recorder.MixedReceiptProfiles)
 		changed = !settled()
 	}
 	if !changed && err == nil && report.Healthy() {

@@ -26,8 +26,11 @@ type wasmIndexedRecorderFile struct {
 // ordering as the native disk index. In the browser the input archive is
 // already limited to 4096 entries, so sorting this bounded slice is safe.
 func indexRecorderFilesExcludingGroupsSpill(dir string, excluded, groupSessions map[string]bool) (evidenceIndex, error) {
-	entries, truncated, err := recorder.ReadEvidenceLocationEntriesBounded(
-		recorder.EvidenceLocation{Root: dir, Dir: dir}, maxWASMReceiptInventoryEntries)
+	location := recorder.EvidenceLocation{Root: dir, Dir: dir, ExcludedNames: excluded}
+	if len(excluded) != 0 {
+		location = recorder.EvidenceLocation{Root: dir, Dir: dir, ExcludedNames: excluded, ReadMode: recorder.MixedReceiptProfiles}
+	}
+	entries, truncated, err := recorder.ReadEvidenceLocationEntriesBounded(location, maxWASMReceiptInventoryEntries)
 	if err != nil {
 		return nil, err
 	}

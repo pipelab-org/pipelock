@@ -180,6 +180,9 @@ func ResolveBaseSessions(dir, base string) ([]string, error) {
 // grouped shard is verified as part of its signed group and cannot be treated
 // as an independent passing run.
 func ResolveBaseSessionsExcludingReceiptGroups(dir, base string) ([]string, error) {
+	if err := recorder.RefuseReceiptDirectory(dir); err != nil {
+		return nil, err
+	}
 	return ResolveLegacyBaseSessions(dir, base, nil)
 }
 
@@ -467,6 +470,9 @@ func readClaimFile(path string) ([]byte, os.FileInfo, error) {
 // successor listed in Unlinked, which is not a finding (see Unlinked).
 func VerifyBase(dir, base string, opts BaseVerifyOptions, modes ...recorder.EvidenceReadMode) (report BaseReport, retErr error) {
 	report = BaseReport{Base: base}
+	if err := recorder.RefuseReceiptDirectory(dir, modes...); err != nil {
+		return report, err
+	}
 	groupSessions := map[string]bool{}
 	ix, err := opts.recorderIndex(dir, groupSessions)
 	if err != nil {

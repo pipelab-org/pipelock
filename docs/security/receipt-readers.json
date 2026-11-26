@@ -6,6 +6,12 @@
     "test": "TestLegacyVerifierCommandsRefuseV3"
   },
   {
+    "package": "cmd/pipelock-verifier-wasm",
+    "role": "v3-verifier",
+    "reason": "Verifies v3 streams and mixed evidence folders in the browser.",
+    "test": "internal/evidence/readerinventory:TestBrowserVerifierBuildsForWasm"
+  },
+  {
     "package": "enterprise/cli",
     "role": "refuses-v3",
     "reason": "Coverage certificate generation only reads legacy receipt chains.",
@@ -232,6 +238,12 @@
     "role": "refuses-v3",
     "reason": "Reads legacy receipt chains and groups, and refuses receipt-profile evidence without format-aware dispatch.",
     "test": "internal/evidence/receiptinput:TestLegacyEvidenceChokePoints"
+  },
+  {
+    "package": "internal/receipt/receipttest",
+    "role": "test-fixture",
+    "reason": "Projects legacy files from mixed receipt fixtures.",
+    "test": "TestLegacyCorpusDirKeepsLegacyFilesInMixedFixture"
   },
   {
     "package": "internal/receipt/v3",

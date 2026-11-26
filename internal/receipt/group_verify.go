@@ -93,8 +93,8 @@ func verifyGroupAELWithIndex(dir string, open ReceiptGroupOpen, trusted []string
 	return verifyGroupAELInventoryMode(dir, open, trusted, incomplete)
 }
 
-func verifyReceiptGroupWithIndex(dir, groupID string, trusted []string, index groupAELBatchIndex, modes ...recorder.EvidenceReadMode) ReceiptGroupResult {
-	return verifyReceiptGroupWithContext(dir, groupID, trusted, index, nil, modes...)
+func verifyReceiptGroupWithIndex(dir, groupID string, trusted []string, index groupAELBatchIndex) ReceiptGroupResult {
+	return verifyReceiptGroupWithContext(dir, groupID, trusted, index, nil)
 }
 
 func verifyReceiptGroupWithContext(dir, groupID string, trusted []string, index groupAELBatchIndex, ceremony *startupGroupVerification) ReceiptGroupResult {
@@ -292,7 +292,11 @@ func verifyReceiptGroupScoped(dir, groupID string, trusted []string, scope group
 		return result
 	}
 	// Recorder location discovery walks beyond the group inventory's AEL paths.
-	if _, err := recorder.ResolveEvidenceLocation(dir, ""); err != nil {
+	var modes []recorder.EvidenceReadMode
+	if len(scope.excluded) != 0 {
+		modes = append(modes, recorder.MixedReceiptProfiles)
+	}
+	if _, err := recorder.ResolveEvidenceLocation(dir, "", modes...); err != nil {
 		result.setReadError(err)
 		return result
 	}
@@ -327,6 +331,9 @@ type ReceiptGroupInventoryResult struct {
 // callers must not present an earlier GROUP_VALID as an overall pass if this
 // function returns an error or a non-valid group count.
 func VerifyReceiptGroups(dir string, trusted []string, visit func(ReceiptGroupResult) error) (ReceiptGroupInventoryResult, error) {
+	if err := recorder.RefuseReceiptDirectory(dir); err != nil {
+		return ReceiptGroupInventoryResult{}, err
+	}
 	return VerifyLegacyReceiptGroups(dir, trusted, nil, visit)
 }
 

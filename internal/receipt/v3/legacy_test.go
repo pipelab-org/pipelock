@@ -611,7 +611,7 @@ func TestLegacyDirectoryPreservesGroupAndBareWrapperVerdicts(t *testing.T) {
 				t.Fatal(err)
 			}
 			if !bytes.Equal(got, want) {
-				t.Fatalf("verdict %q, exit %d: projection differs from %s", result.Verdict, result.ExitCode, path)
+				t.Fatalf("verdict %q, exit %d: projection differs from %s: %s; legacy: %+v", result.Verdict, result.ExitCode, path, got, result.Legacy)
 			}
 		})
 	}

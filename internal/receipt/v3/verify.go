@@ -92,7 +92,7 @@ func VerifyPathsWithActions(ctx context.Context, paths []string, opts Options, v
 		}
 		for _, lineage := range sortedKeys(v.histories) {
 			for _, stream := range v.histories[lineage] {
-				err := walkRecords(ctx, v.store, stream.open.Stream, stream.limit, func(r stagedRecord) error {
+				err := v.store.walk(ctx, stream.open.Stream, stream.limit, func(r stagedRecord) error {
 					if r.Kind != kindAction {
 						return nil
 					}

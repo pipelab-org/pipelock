@@ -189,6 +189,7 @@ type displayBudgetCaller struct {
 // budget, a stopped offline ceremony, ingress of one artifact with its own
 // size contract, or the writer's rotation size.
 var allowedDisplayBudgetCallers = map[displayBudgetCaller]string{
+	{"internal/evidence/receiptinput/input.go", "RefuseTree", "recorder.MaxEvidenceReadDirectoryEntries"}: "fail-closed preflight tree limit",
 	// Dashboard and operator displays: a bounded page, refusing past the budget.
 	{"enterprise/dashboard/readmodel.go", "ReceiptActionDetail", "receipt.ExtractReceiptsFromSessionDirWithLimits"}:    "dashboard read model",
 	{"enterprise/dashboard/readmodel.go", "Session", "receipt.ExtractReceiptsFromSessionDirWithLimits"}:                "dashboard read model",

@@ -245,9 +245,9 @@ func (c *startupGroupVerification) prepareShards(open ReceiptGroupOpen, hash str
 	joined.Wait()
 }
 
-func verifyGroupShardHeadUsing(dir string, open ReceiptGroupOpen, hash string, index int, c *startupGroupVerification, modes ...recorder.EvidenceReadMode) (ReceiptGroupShardHead, error) {
+func verifyGroupShardHeadUsing(dir string, open ReceiptGroupOpen, hash string, index int, c *startupGroupVerification) (ReceiptGroupShardHead, error) {
 	if c == nil {
-		return verifyGroupShardHeadWithSession(dir, open, hash, index, nil, modes...)
+		return verifyGroupShardHeadWithSession(dir, open, hash, index, nil)
 	}
 	if err := c.walkOptions().Check(); err != nil {
 		return ReceiptGroupShardHead{}, err

@@ -19,11 +19,12 @@ func TestMixedReceiptProfileOptIns(t *testing.T) {
 	// Entries bind the caller as well as the opted-in function. Allow internal
 	// mode propagation only in the recorder's own implementation.
 	want := map[string]int{
-		"internal/receipt/v3/legacy.go:verifyLegacy:VerifyReceiptGroups":                       1,
-		"internal/receipt/v3/legacy.go:verifyLegacy:ResolveBaseSessionsExcludingReceiptGroups": 1,
-		"internal/receipt/v3/legacy.go:verifyLegacy:EvidenceLocation":                          1,
-		"internal/receipt/v3/legacy.go:verifyLegacyContinuity:VerifyBase":                      1,
-		"internal/receipt/v3/command/command.go:ResolveDirectory:ResolveEvidenceLocation":      1,
+		"internal/receipt/group_inventory.go:walkLegacySessionHistory:ResolveEvidenceLocation":                1,
+		"internal/receipt/group_legacy_index_wasm.go:indexRecorderFilesExcludingGroupsSpill:EvidenceLocation": 1,
+		"internal/receipt/group_verify.go:verifyReceiptGroupScoped:append":                                    1,
+		"internal/receipt/v3/legacy.go:verifyLegacy:EvidenceLocation":                                         1,
+		"internal/receipt/v3/legacy.go:legacyContinuityLabel:VerifyBase":                                      1,
+		"internal/receipt/v3/command/command.go:ResolveDirectory:ResolveEvidenceLocation":                     1,
 	}
 	got := make(map[string]int)
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {

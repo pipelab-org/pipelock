@@ -15,7 +15,6 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/ael"
 	"github.com/luckyPipewrench/pipelock/internal/evidencename"
-	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	_ "modernc.org/sqlite"
 )
 
@@ -102,10 +101,7 @@ func (index *sqliteGroupAELBatchIndex) build(dir string, trusted []string, exclu
 		if !ok || seq != 0 {
 			return nil
 		}
-		walk := func(visit func(recorder.Entry) error) error {
-			return recorder.WalkSessionHistory(dir, session, visit, modes...)
-		}
-		return indexAELClaimsForSessionWithWalk(dir, session, "", "", trusted, func(run, session, groupID, signer string, completed bool) error {
+		return indexAELClaimsForSessionBatch(dir, session, "", "", trusted, func(run, session, groupID, signer string, completed bool) error {
 			_, err := index.db.ExecContext(ctx, `INSERT INTO claims(run, session, group_id, signer, completed) VALUES (?, ?, ?, ?, ?)`, run, session, groupID, signer, completed)
 			return claimInsertError(err, run)
 		}, groupClaimScan{onTorn: index.addTorn, excluded: excluded})

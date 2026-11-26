@@ -52,6 +52,14 @@ func TestReceiptReaderInventory(t *testing.T) {
 		collectPackages(t, root, tags, packages, importers, tests, source)
 	}
 
+	wasm := exec.CommandContext(t.Context(), "go", "list", "./cmd/pipelock-verifier-wasm") // #nosec G204 -- fixed Go target.
+	wasm.Dir = root
+	wasm.Env = append(os.Environ(), "GOOS=js", "GOARCH=wasm")
+	if output, err := wasm.CombinedOutput(); err != nil {
+		t.Fatalf("list browser verifier: %v\n%s", err, output)
+	}
+	packages["cmd/pipelock-verifier-wasm"] = true
+
 	registered := make(map[string]bool, len(registry))
 	for _, entry := range registry {
 		if registered[entry.Package] {
@@ -156,9 +164,7 @@ func isReceiptEvidenceImport(path string) bool {
 	return strings.HasPrefix(rel, "internal/receipt/") || strings.HasPrefix(rel, "internal/evidence/")
 }
 
-// The browser verifier is built for js/wasm, which cannot link the receipt v3
-// verifier's SQLite driver. A reader refusal helper that imports v3 breaks that
-// artifact at build time.
+// The browser verifier must remain free of SQLite dependencies on js/wasm.
 func TestBrowserVerifierBuildsForWasm(t *testing.T) {
 	root := filepath.Join("..", "..", "..")
 	cmd := exec.CommandContext(t.Context(), "go", "list", "-deps", "./cmd/pipelock-verifier-wasm") // #nosec G204 -- Go tool, fixed arguments.
@@ -168,7 +174,9 @@ func TestBrowserVerifierBuildsForWasm(t *testing.T) {
 	if err != nil {
 		t.Fatalf("browser verifier dependency graph does not resolve for js/wasm: %v\n%s", err, output)
 	}
-	if strings.Contains(string(output), "pipelock/internal/receipt/v3\n") {
-		t.Fatal("browser verifier imports internal/receipt/v3, which needs SQLite")
+	for _, dependency := range strings.Fields(string(output)) {
+		if strings.Contains(strings.ToLower(dependency), "sqlite") {
+			t.Fatalf("browser verifier imports SQLite dependency %q", dependency)
+		}
 	}
 }
