@@ -1190,7 +1190,7 @@ export async function verifyBase(
   return withBaseHistorySnapshot(
     dir,
     base,
-    (ix) => verifyBaseInner(dir, base, opts, ix),
+    (ix, links) => verifyBaseInner(dir, base, opts, ix, links),
     opts.excludeReceiptGroupSessions,
   );
 }
@@ -1202,20 +1202,21 @@ export async function verifyBase(
 export async function withBaseHistorySnapshot<T>(
   dir: string,
   base: string,
-  consume: (ix: EvidenceIndex) => Promise<T>,
+  consume: (ix: EvidenceIndex, links?: ChainLinkRecord[]) => Promise<T>,
   excludeGroups = false,
 ): Promise<T> {
   const used = indexRecorderFiles(dir, excludeGroups);
-  const before = baseInventory(dir, base, true, excludeGroups ? used : undefined);
+  const before = baseInventory(dir, base, true, used);
+  const links = excludeGroups ? await readChainLinkFiles(dir) : undefined;
   try {
-    return await consume(used);
+    return await consume(used, links);
   } finally {
     let changed = true;
     try {
-      const final = excludeGroups ? indexRecorderFiles(dir, true) : undefined;
+      const final = indexRecorderFiles(dir, excludeGroups);
       changed =
         baseInventory(dir, base, true, final) !== before ||
-        (final !== undefined && groupMembershipChanged(dir, base, used.groups, final.groups));
+        (links !== undefined && groupMembershipChanged(base, links, used.groups, final.groups));
     } catch {
       // Unavailable final inventory cannot support either verdict.
     }
@@ -1223,18 +1224,34 @@ export async function withBaseHistorySnapshot<T>(
   }
 }
 
-// Only this base's sessions and the predecessors its link files name can change
-// how this report reads the directory; a group another base opens cannot.
+function affectsBase(claim: ChainLinkRecord, base: string): boolean {
+  return [
+    claim.namePred,
+    claim.link?.predecessor_session,
+    claim.link?.successor_session,
+    claim.recoverySeal?.predecessor_session,
+    claim.recoverySeal?.successor_session,
+  ].some((session) => session !== undefined && isBaseChain(session, base));
+}
+
+// A group gate matters if the report reads that session or a relevant claim
+// refers to it, including a recovery seal whose endpoints are both gated.
 function groupMembershipChanged(
-  dir: string,
   base: string,
+  links: ChainLinkRecord[],
   before: ReadonlySet<string>,
   after: ReadonlySet<string>,
 ): boolean {
   const named = new Set<string>();
-  for (const name of readdirSync(dir)) {
-    const predecessor = chainLinkFilePredecessor(name);
-    if (predecessor !== undefined) named.add(predecessor);
+  for (const claim of links) {
+    if (!affectsBase(claim, base)) continue;
+    named.add(claim.namePred);
+    for (const link of [claim.link, claim.recoverySeal]) {
+      if (link) {
+        named.add(link.predecessor_session);
+        named.add(link.successor_session);
+      }
+    }
   }
   const relevant = (session: string): boolean => named.has(session) || isBaseChain(session, base);
   for (const session of before) if (relevant(session) && !after.has(session)) return true;
@@ -1250,17 +1267,22 @@ function baseInventory(
 ): string {
   const root = statSync(dir, { bigint: true });
   const items: unknown[] = [[root.dev.toString(), root.ino.toString()]];
-  for (const name of readdirSync(dir).sort()) {
+  const relevant = (session: string): boolean =>
+    baseMode ? isBaseChain(session, base) : session === base;
+  const names = readdirSync(dir).filter((name) => {
+    if (baseMode && chainLinkFilePredecessor(name) !== undefined) return true;
+    if (ordinary) return false;
     const parsed = parseEvidenceFilename(name);
-    if (
-      !(
-        parsed !== undefined &&
-        (!ordinary || ordinary.files.has(parsed.session)) &&
-        (baseMode ? isBaseChain(parsed.session, base) : parsed.session === base)
-      ) &&
-      !(baseMode && chainLinkFilePredecessor(name) !== undefined)
-    )
-      continue;
+    return parsed !== undefined && relevant(parsed.session);
+  });
+  if (ordinary) {
+    for (const [session, paths] of ordinary.files) {
+      if (!relevant(session)) continue;
+      for (const file of paths) names.push(path.basename(file));
+      for (const name of ordinary.symlinks.get(session) ?? []) names.push(name);
+    }
+  }
+  for (const name of names.sort()) {
     const info = lstatSync(path.join(dir, name), { bigint: true });
     items.push(
       [name, info.dev, info.ino, info.mode, info.size, info.mtimeNs, info.ctimeNs].map(String),
@@ -1274,10 +1296,11 @@ async function verifyBaseInner(
   base: string,
   opts: BaseVerifyOptions,
   ix: EvidenceIndex,
+  snapshotLinks?: ChainLinkRecord[],
 ): Promise<BaseReport> {
   const report: BaseReport = { base, chains: [], findings: [] };
   const sessions = sortedSessions(ix).filter((s) => isBaseChain(s, base));
-  const links = await readChainLinkFiles(dir);
+  const links = snapshotLinks ?? (await readChainLinkFiles(dir));
   const add = (kind: string, session: string, detail: string): void => {
     report.findings.push({ kind, session, detail });
   };
@@ -1291,15 +1314,7 @@ async function verifyBaseInner(
       ix.groups.has(seal.successor_session)
     )
       return false;
-    return (
-      isBaseChain(lf.namePred, base) ||
-      (lf.link !== undefined &&
-        (isBaseChain(lf.link.predecessor_session, base) ||
-          isBaseChain(lf.link.successor_session, base))) ||
-      (lf.recoverySeal !== undefined &&
-        (isBaseChain(lf.recoverySeal.predecessor_session, base) ||
-          isBaseChain(lf.recoverySeal.successor_session, base)))
-    );
+    return affectsBase(lf, base);
   });
 
   const data = new Map<string, BaseChainData>();

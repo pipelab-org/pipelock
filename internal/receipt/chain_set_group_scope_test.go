@@ -98,7 +98,10 @@ func TestFirstGroupEvidenceEntrySkipsLeadingBlankLines(t *testing.T) {
 func TestGroupMembershipChangeIncludesNamedPredecessor(t *testing.T) {
 	const predecessor = "other.run.0123456789abcdef0123456789abcdef"
 	const unrelated = "other.run.1123456789abcdef0123456789abcdef"
-	links := []chainLinkRecord{{namePred: predecessor}}
+	links := []chainLinkRecord{
+		{namePred: predecessor, link: &ChainLink{PredecessorSession: predecessor, SuccessorSession: "proxy"}},
+		{namePred: unrelated},
+	}
 	if !groupMembershipChanged("proxy", links, map[string]bool{predecessor: true}, nil) {
 		t.Fatal("losing the gate of a named predecessor did not invalidate the restart snapshot")
 	}

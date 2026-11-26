@@ -478,9 +478,13 @@ def _gate_shard(directory, session):
     (directory / f"evidence-{session}-0.jsonl").write_text(json.dumps(entry) + "\n")
 
 
-def _verify_with_group_opened_during_reads(tmp_path, monkeypatch, session):
+def _verify_with_group_opened_during_reads(
+    tmp_path, monkeypatch, session, *, link=False
+):
     directory = tmp_path / "evidence"
     shutil.copytree(RUNS / "valid", directory)
+    if link:
+        (directory / f"chain-link-{session}.json").write_text("{}")
     read = chain_set.read_run
 
     def publish(*args, **kwargs):
@@ -496,7 +500,9 @@ def test_unrelated_group_opened_during_verification_is_not_a_change(
     tmp_path, monkeypatch
 ):
     session = "other.run." + "0123456789abcdef" * 2
-    report = _verify_with_group_opened_during_reads(tmp_path, monkeypatch, session)
+    report = _verify_with_group_opened_during_reads(
+        tmp_path, monkeypatch, session, link=True
+    )
     assert report["healthy"], report["findings"]
 
 

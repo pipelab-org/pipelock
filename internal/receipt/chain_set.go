@@ -718,15 +718,21 @@ func VerifyBase(dir, base string, opts BaseVerifyOptions) (report BaseReport, re
 	return report, nil
 }
 
-// groupMembershipChanged reports whether a session this verification relied
-// on gained or lost its receipt-group gate. Only the base's own sessions and
-// the predecessors named by link files count: a recovery seal is skipped only
-// when its named predecessor and successor are both gated. A group another
-// base opens changes nothing this report read.
+// groupMembershipChanged reports a changed gate only for the base's own
+// sessions and the endpoints of claims that can affect its report.
 func groupMembershipChanged(base string, links []chainLinkRecord, before, after map[string]bool) bool {
 	named := map[string]bool{}
 	for _, lf := range links {
+		if _, affectsBase := lf.baseSession(base); !affectsBase {
+			continue
+		}
 		named[lf.namePred] = true
+		if lf.link != nil {
+			named[lf.link.PredecessorSession], named[lf.link.SuccessorSession] = true, true
+		}
+		if lf.seal != nil {
+			named[lf.seal.PredecessorSession], named[lf.seal.SuccessorSession] = true, true
+		}
 	}
 	relevant := func(session string) bool {
 		return named[session] || isBaseChain(session, base)

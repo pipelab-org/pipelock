@@ -421,12 +421,7 @@ def _snapshot(
                 info.st_ctime_ns,
             )
         )
-    # Group membership matters only for this base's sessions and the
-    # predecessors its link files name; a group another base opens changes
-    # nothing this report read.
-    named = {_LINK_FILE.fullmatch(p.name)[1] for p in links}
-    relevant = frozenset(s for s in groups if s in named or _in_base(s, base))
-    return index, links, (tuple(stamps), relevant), groups
+    return index, links, tuple(stamps), groups
 
 
 def verify_base(
@@ -470,6 +465,7 @@ def verify_base(
 
     successors: dict[str, list[str]] = defaultdict(list)
     recoveries = []
+    claim_sessions: set[str] = set()
     for path in links:
         named = _LINK_FILE.fullmatch(path.name)[1]
         recovery = False
@@ -498,6 +494,7 @@ def verify_base(
         pred, succ = value["predecessor_session"], value["successor_session"]
         if not any(_in_base(s, base) for s in (succ, pred, named)):
             continue
+        claim_sessions.update((succ, pred, named))
         if recovery:
             if named == pred and pred in groups and succ in groups:
                 continue
@@ -571,7 +568,11 @@ def verify_base(
             if nonces.setdefault(nonce, session) != session:
                 add("duplicate_run_nonce", session)
     try:
-        changed = _snapshot(root, base, exclude_groups)[2] != stamps
+        _, _, final_stamps, final_groups = _snapshot(root, base, exclude_groups)
+        changed = final_stamps != stamps or any(
+            session in claim_sessions or _in_base(session, base)
+            for session in groups ^ final_groups
+        )
     except _READ_FAILURES:
         changed = True
     if changed:

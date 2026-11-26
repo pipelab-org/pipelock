@@ -486,6 +486,7 @@ test("a group another base opens during verification is not a change", async () 
     cpSync(join(FIXTURES, "valid"), dir, { recursive: true });
     const opts = { trustedKeys: [KEY], endorsements: [], excludeReceiptGroupSessions: true };
     const other = "other.run." + "0123456789abcdef".repeat(2);
+    writeFileSync(join(dir, `chain-link-${other}.json`), "{}");
     const pending = verifyBase(dir, "proxy", opts);
     writeFileSync(join(dir, `evidence-${other}-0.jsonl`), gateLine(other));
     assert.ok(baseHealthy(await pending), "an unrelated group does not alter the proxy report");
@@ -495,6 +496,47 @@ test("a group another base opens during verification is not a change", async () 
     await assert.rejects(changed, noVerdict, "a group of the base itself does");
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a newly listed shard cannot be omitted from the base snapshot", async (t) => {
+  const fs = createRequire(import.meta.url)("node:fs") as typeof import("node:fs");
+  const list = fs.readdirSync;
+  for (const excludeReceiptGroupSessions of [false, true]) {
+    const dir = mkdtempSync(join(tmpdir(), "pipelock-ts-shard-listing-"));
+    try {
+      cpSync(join(FIXTURES, "valid"), dir, { recursive: true });
+      const existing = readdirSync(dir).find((name) => /^evidence-proxy.*-0\.jsonl$/u.test(name))!;
+      assert.ok(existing);
+      const added = join(dir, existing.replace(/-0\.jsonl$/u, "-987.jsonl"));
+      let inserted = false;
+      t.mock.method(fs, "readdirSync", (...args: unknown[]) => {
+        const listed = Reflect.apply(list, fs, args);
+        if (
+          !inserted &&
+          args[0] === dir &&
+          (args[1] as { withFileTypes?: boolean })?.withFileTypes
+        ) {
+          inserted = true;
+          writeFileSync(added, "");
+        }
+        return listed;
+      });
+      syncBuiltinESMExports();
+      await assert.rejects(
+        verifyBase(dir, "proxy", {
+          trustedKeys: [KEY],
+          endorsements: [],
+          excludeReceiptGroupSessions,
+        }),
+        noVerdict,
+      );
+      assert.ok(inserted);
+    } finally {
+      t.mock.restoreAll();
+      syncBuiltinESMExports();
+      rmSync(dir, { recursive: true, force: true });
+    }
   }
 });
 
