@@ -331,6 +331,18 @@ def test_oversized_cutover_inventory_row(tmp_path, capsys):
     assert result["finding_codes"] == ["CUTOVER_INVENTORY_MISMATCH"]
 
 
+def test_ordinary_legacy_ignores_unrelated_symlink(tmp_path):
+    vector = VECTORS / "g09-legacy-prefix"
+    request = json.loads((vector / "request.json").read_bytes())
+    for name in request["inputs"]:
+        shutil.copyfile(vector / name, tmp_path / name)
+    control, _ = verify_v3([tmp_path], _options(request))
+    (tmp_path / "latest").symlink_to("missing")
+    result, _ = verify_v3([tmp_path], _options(request))
+    assert result["legacy"] == control["legacy"]
+    assert result["findings"] == control["findings"]
+
+
 def test_mixed_group_directory(tmp_path):
     from pipelock_aarp_verify import verify_receipt_groups
     from pipelock_aarp_verify.legacy_directory import recorder_index

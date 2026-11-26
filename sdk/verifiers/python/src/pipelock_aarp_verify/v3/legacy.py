@@ -28,6 +28,7 @@ from ..legacy_directory import (
     evidence_chain_valid,
     read_legacy_file,
     read_run,
+    receipt_group_evidence_present,
     recorder_index,
     run_base,
     verify_receipt_groups,
@@ -295,6 +296,8 @@ class _LegacyVerifier:
 
     def _groups(self, root: Path) -> bool:
         try:
+            if not receipt_group_evidence_present(root):
+                return False
             reports = verify_receipt_groups(root, sorted(self.keys))
         except (OSError, ValueError) as exc:
             verdict, code = (

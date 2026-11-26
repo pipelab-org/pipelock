@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 from collections import defaultdict
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -126,6 +127,21 @@ def _missing(path: Path) -> bool:
         path.lstat()
     except FileNotFoundError:
         return True
+    return False
+
+
+def receipt_group_evidence_present(root: Path) -> bool:
+    for path in root.iterdir():
+        if path.name in _recorder_file_exclusions.get():
+            continue
+        if path.name.startswith("receipt-group-"):
+            return True
+        parsed = _parse_evidence_filename(path.name)
+        if parsed is None or parsed[1] != 0 or not stat.S_ISREG(path.lstat().st_mode):
+            continue
+        first = _first_entry(path)
+        if first and first["type"] == _GATE_ENTRY_TYPE:
+            return True
     return False
 
 
