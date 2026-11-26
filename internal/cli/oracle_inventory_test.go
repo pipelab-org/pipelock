@@ -20,10 +20,19 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/testreceipt"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
+	"github.com/spf13/cobra"
 )
 
 func TestReceiptCommandTreeOracle(t *testing.T) {
 	root := cli.ExportRootCmd()
+	testreceipt.RunReceiptCommandOracle(t, root, func(args []string, out io.Writer) int {
+		return executeReceiptProbe(t, args, out, 5*time.Second)
+	}, receiptCommandProbes(t, root), oraclePathExclusions)
+}
+
+func receiptCommandProbes(t *testing.T, root *cobra.Command) map[string][]testreceipt.ReceiptProbe {
+	t.Helper()
 	dir := func(args ...string) testreceipt.ReceiptProbe {
 		return testreceipt.ReceiptProbe{Args: args, Directory: true}
 	}
@@ -72,20 +81,23 @@ func TestReceiptCommandTreeOracle(t *testing.T) {
 		plans["dashboard rebuild-read-model"] = []testreceipt.ReceiptProbe{dir("--receipt-dir", "$dir", "--output", "$tmp/index.json")}
 		plans["dashboard serve"] = []testreceipt.ReceiptProbe{dir("--receipt-dir", "$dir", "--listen", "127.0.0.1:0", "--auth-token-file", tokenPath)}
 	}
-	testreceipt.RunReceiptCommandOracle(t, root, func(args []string, out io.Writer) int {
-		cmd := cli.ExportRootCmd()
-		cmd.SetArgs(args)
-		cmd.SetOut(out)
-		cmd.SetErr(out)
-		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-		defer cancel()
-		err := cmd.ExecuteContext(ctx)
-		if err == nil {
-			return 0
-		}
-		_, _ = fmt.Fprintln(out, err)
-		return cliutil.ExitCodeOf(err)
-	}, plans, oraclePathExclusions)
+	return plans
+}
+
+func executeReceiptProbe(t *testing.T, args []string, out io.Writer, deadline time.Duration) int {
+	t.Helper()
+	cmd := cli.ExportRootCmd()
+	cmd.SetArgs(args)
+	cmd.SetOut(out)
+	cmd.SetErr(out)
+	ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(deadline))
+	defer cancel()
+	err := cmd.ExecuteContext(ctx)
+	if err == nil {
+		return 0
+	}
+	_, _ = fmt.Fprintln(out, err)
+	return cliutil.ExitCodeOf(err)
 }
 
 func prepareOracleDashboard(t *testing.T) string {
