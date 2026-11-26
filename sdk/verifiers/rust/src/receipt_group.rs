@@ -49,24 +49,8 @@ pub(crate) fn receipt_group_evidence_present(dir: &Path) -> Result<bool, String>
         if start != 0 {
             continue;
         }
-        let metadata = fs::symlink_metadata(entry.path()).map_err(|e| e.to_string())?;
-        if !metadata.is_file() || metadata.file_type().is_symlink() {
-            // The legacy verifier reports invalid shard files in its normal verdict.
-            continue;
-        }
-        let file = open_checked_regular(&entry.path(), &metadata)?;
-        let mut reader = BufReader::new(file.take((1 << 20) + 1));
-        let mut first = Vec::new();
-        reader
-            .read_until(b'\n', &mut first)
-            .map_err(|e| e.to_string())?;
-        if first.last() != Some(&b'\n') {
-            continue;
-        }
-        if let Ok(value) = serde_json::from_slice::<Value>(&first[..first.len() - 1]) {
-            if value.get("type").and_then(Value::as_str) == Some("receipt_group_v1") {
-                return Ok(true);
-            }
+        if first_group_gate(&entry.path())?.is_some() {
+            return Ok(true);
         }
     }
     Ok(false)
@@ -359,9 +343,7 @@ fn has_group_open(dir: &Path, id: &str) -> crate::util::Result<bool> {
 
 /// Read a complete first group gate even if a later recorder write is torn.
 pub(crate) fn first_group_gate(path: &Path) -> Result<Option<Value>, String> {
-    let Ok(metadata) = fs::symlink_metadata(path) else {
-        return Ok(None);
-    };
+    let metadata = fs::symlink_metadata(path).map_err(unavailable_read)?;
     if !metadata.is_file() || metadata.file_type().is_symlink() {
         return Ok(None);
     }
@@ -2586,6 +2568,17 @@ mod inventory_tests {
         let dir = std::env::temp_dir().join(format!("pipelock-first-gate-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let entry = r#"{"v":1,"seq":0,"type":"receipt_group_v1","session_id":"x","detail":{"group_id":"g"}}"#;
+        let orphan = dir.join("evidence-x-0.jsonl");
+        std::fs::write(&orphan, format!("\n \t\n{entry}\n")).unwrap();
+        let mut reports = Vec::new();
+        let summary = super::verify_receipt_groups(&dir, &[], |report| {
+            reports.push(report);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(summary.invalid, 1);
+        assert_eq!(reports[0].verdict, "GROUP_INVALID");
+        std::fs::remove_file(orphan).unwrap();
         let gated = dir.join("gated");
         std::fs::write(&gated, format!("\n \t\n{entry}\n")).unwrap();
         let found = super::first_group_gate(&gated).unwrap().unwrap();

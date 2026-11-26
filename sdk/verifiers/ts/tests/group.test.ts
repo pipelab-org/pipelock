@@ -994,6 +994,18 @@ test("group evidence probe reads only the first recorder line", () => {
     assert.equal(receiptGroupEvidencePresent(dir), false);
     rmSync(unterminated);
 
+    const blank = join(dir, "evidence-blank-0.jsonl");
+    const gate = JSON.stringify({
+      v: 1,
+      seq: 0,
+      type: "receipt_group_v1",
+      session_id: "blank",
+      detail: {},
+    });
+    writeFileSync(blank, "\n \t\n" + gate + "\n");
+    assert.equal(receiptGroupEvidencePresent(dir), true);
+    rmSync(blank);
+
     const oversizedLine = join(dir, "evidence-ov.run.00000000000000000000000000000004-0.jsonl");
     writeFileSync(oversizedLine, `{"type":"receipt_group_v1","pad":"${"x".repeat(1 << 20)}"}\n`);
     assert.equal(receiptGroupEvidencePresent(dir), false);

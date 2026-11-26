@@ -465,11 +465,18 @@ export function receiptGroupEvidencePresent(dir: string): boolean {
     }
     const end = raw.indexOf(0x0a);
     if (end < 0) continue;
+    let firstLine: string;
     try {
-      const first = object(
-        parseJSONStrict(decodeUTF8(raw.subarray(0, end), "first recorder entry")),
-        "first recorder entry",
-      );
+      firstLine = decodeUTF8(raw.subarray(0, end), "first recorder entry");
+    } catch {
+      continue;
+    }
+    if (!trimGoSpace(firstLine)) {
+      if (firstRecorderGroupGate(child, true)) return true;
+      continue;
+    }
+    try {
+      const first = object(parseJSONStrict(firstLine), "first recorder entry");
       if (first.type === "receipt_group_v1") return true;
     } catch {
       // A malformed legacy first entry belongs to the legacy verifier.
