@@ -42,14 +42,30 @@ func audienceAPIEndpointAllowed(candidate credentialAudienceCandidate, host, tar
 		// https://www.googleapis.com/discovery/v1/apis/gmail/v1/rest
 		// https://www.googleapis.com/discovery/v1/apis/drive/v3/rest
 		// https://www.googleapis.com/discovery/v1/apis/storage/v1/rest
+		// Google publishes these coding-client backend authorities; the client
+		// source publishes the v1internal RPC namespace and Clearcut /log.
+		// Source: https://docs.cloud.google.com/docs/security/compliance/deploy-antigravity-us-public-sector#disable_optional_apis
+		// Source: https://github.com/google-gemini/gemini-cli/blob/main/packages/core/src/code_assist/server.ts
+		// Source: https://github.com/google-gemini/gemini-cli/blob/main/packages/core/src/telemetry/clearcut-logger/clearcut-logger.ts
+		// Source: https://www.googleapis.com/discovery/v1/apis/oauth2/v2/rest
 		var prefix string
 		switch host {
 		case "gmail.googleapis.com":
 			prefix = "/gmail/v1"
 		case "www.googleapis.com":
+			if path == "/oauth2/v2/userinfo" || path == "/userinfo/v2/me" {
+				return true
+			}
 			prefix = "/drive/v3"
 		case "storage.googleapis.com":
 			prefix = "/storage/v1"
+		case "cloudcode-pa.googleapis.com", "daily-cloudcode-pa.googleapis.com":
+			method, found := strings.CutPrefix(path, "/v1internal:")
+			return found && method != "" && !strings.Contains(method, "/")
+		case "aicode.googleapis.com":
+			return path == "/v1alpha:fetchConfig"
+		case "play.googleapis.com":
+			return path == "/log"
 		default:
 			return false
 		}

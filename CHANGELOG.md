@@ -21,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Google OAuth access tokens in Bearer Authorization headers no longer trigger DLP findings on the compiled Google coding-client API, telemetry, and user-info routes; other destinations and query/body copies remain scanned.
+
 - The built-in Together AI Key pattern now matches Together's `tgp_v1_` keys. The old `tok_` shape had no publisher source and, matched case-insensitively, flagged Google OAuth access tokens in `Authorization` headers whose body happened to contain `Tok_` followed by 40 letters and digits. Configs that copied the old preset regex should take the new one from `configs/`.
 - TLS interception now works in `pipelock sandbox` and `pipelock guard`. Both commands stop before launching the workload if the configured CA can't be loaded. Before, every intercepted HTTPS tunnel they served failed after the `200` response. `pipelock diagnose`, `pipelock verify-install` and `pipelock assess run` now also stop with an error when interception is on and the CA can't be loaded, instead of running against a proxy that would fail those tunnels; `diagnose` used to report success in that case.
 - `pipelock contain doctor` no longer passes its DNS check on any `403` or `5xx` response. It passes only on Pipelock's SSRF refusal or a plain `502` dial failure, and reports the check as inconclusive when a proxy policy such as a port restriction, domain block, kill switch, or strict mode stops the probe before it reaches DNS handling.
