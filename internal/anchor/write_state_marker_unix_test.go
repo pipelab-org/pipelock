@@ -100,19 +100,29 @@ func TestWriteStateMarkerRejectsTempFileWriteFailure(t *testing.T) {
 	assertNoTempStateMarkers(t, dir)
 }
 
-// writeStateMarkerUnderZeroFileSizeLimit runs in the child process only. The
-// lowered limit dies with the process, so nothing is restored.
+// writeStateMarkerUnderZeroFileSizeLimit runs in the child process only. It
+// restores the limit when the test ends: a coverage build writes its coverage
+// files as the child exits, and a zero limit would fail that write and the
+// child with it.
 func writeStateMarkerUnderZeroFileSizeLimit(t *testing.T, dir string) {
 	t.Helper()
 	signal.Ignore(syscall.SIGXFSZ)
-	var limited syscall.Rlimit
-	if err := syscall.Getrlimit(syscall.RLIMIT_FSIZE, &limited); err != nil {
+	var original syscall.Rlimit
+	if err := syscall.Getrlimit(syscall.RLIMIT_FSIZE, &original); err != nil {
 		t.Fatalf("Getrlimit: %v", err)
 	}
+	limited := original
 	limited.Cur = 0
 	if err := syscall.Setrlimit(syscall.RLIMIT_FSIZE, &limited); err != nil {
 		t.Fatalf("Setrlimit: %v", err)
 	}
+	t.Cleanup(func() {
+		// Raising the soft limit back up to the unchanged hard limit needs
+		// no privilege.
+		if err := syscall.Setrlimit(syscall.RLIMIT_FSIZE, &original); err != nil {
+			t.Errorf("restore RLIMIT_FSIZE: %v", err)
+		}
+	})
 
 	err := WriteStateMarker(dir, StateMarker{
 		SessionID:    "proxy",
