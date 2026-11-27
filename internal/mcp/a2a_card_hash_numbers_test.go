@@ -34,6 +34,17 @@ func TestHashAgentCard_DistinguishesIntegersAbove2Pow53(t *testing.T) {
 			`{"maximum":1e400,"const":9007199254740992.0}`,
 			`{"maximum":1e400,"const":9007199254740993.0}`,
 		},
+		// An integer literal past float64's range must fall back the same way.
+		"beside an out-of-range integer": {
+			`{"maximum":` + strings.Repeat("9", 400) + `,"const":9007199254740992.0}`,
+			`{"maximum":` + strings.Repeat("9", 400) + `,"const":9007199254740993.0}`,
+		},
+		// A duplicate key drops the earlier value from the decoded map, but
+		// json.Unmarshal still refused its overflow.
+		"beside a replaced out-of-range number": {
+			`{"maximum":1e400,"maximum":1,"const":9007199254740992.0}`,
+			`{"maximum":1e400,"maximum":1,"const":9007199254740993.0}`,
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if HashAgentCard(card(pair[0])) == HashAgentCard(card(pair[1])) {
@@ -74,6 +85,10 @@ func TestCanonicalizeJSON_KeepsFloatSpellingForRepresentableNumbers(t *testing.T
 		// would compact it.
 		`{"maximum": 1e400, "const": 9007199254740992.0}`,
 		`[1.5, {"deep": [-1E+999]}]`,
+		`{"maximum": ` + strings.Repeat("9", 400) + `, "const": 1.5}`,
+		`{"maximum": 1e400, "maximum": 1, "const": 1.5}`,
+		`{"tiny": 1e-400, "kept": 2.50}`,
+		`{"a": [1, 2,]}`,
 	} {
 		if got, want := canonicalizeJSON(json.RawMessage(raw)), legacy(raw); !bytes.Equal(got, want) {
 			t.Errorf("canonicalizeJSON(%s) = %s, want legacy %s", raw, got, want)

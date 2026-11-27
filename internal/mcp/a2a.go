@@ -759,6 +759,9 @@ func canonicalizeJSON(raw json.RawMessage) []byte {
 	if len(raw) == 0 {
 		return nil
 	}
+	if !jsonNumbersFitFloat64(raw) {
+		return raw // a number float64 cannot hold: hash raw bytes, as before
+	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
 	var v interface{}
@@ -768,53 +771,59 @@ func canonicalizeJSON(raw json.RawMessage) []byte {
 	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
 		return raw // trailing data: hash raw bytes, as json.Unmarshal refused it
 	}
-	normalized, ok := canonicalJSONNumbers(v)
-	if !ok {
-		return raw // a number float64 cannot hold: hash raw bytes, as before
-	}
 	// json.Marshal sorts map keys deterministically in Go.
-	canonical, err := json.Marshal(normalized)
+	canonical, err := json.Marshal(canonicalJSONNumbers(v))
 	if err != nil {
 		return raw
 	}
 	return canonical
 }
 
+// jsonNumbersFitFloat64 reports whether every number in raw converts to a
+// float64. json.Unmarshal refused a document holding any number outside that
+// range, integer or not, and kept refusing when a later duplicate key replaced
+// the value. Reading tokens rather than a decoded value checks those replaced
+// numbers too. Accepting such a document here would keep an unconvertible
+// literal while rounding its neighbours, so two documents differing only in a
+// rounded neighbour would share a canonical form. A syntax error reports true
+// and is left to the decode that follows.
+func jsonNumbersFitFloat64(raw json.RawMessage) bool {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			return true
+		}
+		if n, ok := tok.(json.Number); ok {
+			if _, err := n.Float64(); err != nil {
+				return false
+			}
+		}
+	}
+}
+
 // canonicalJSONNumbers keeps an integer literal's exact digits and spells any
 // other number through float64, the form canonicalizeJSON always used for it.
-// It reports false when a non-integer number is outside float64's range. The
-// caller must then hash the raw bytes: keeping that literal while rounding
-// its neighbours would let two documents that differ only in a rounded
-// neighbour share a canonical form.
-func canonicalJSONNumbers(v interface{}) (interface{}, bool) {
+// jsonNumbersFitFloat64 has already proved every number converts.
+func canonicalJSONNumbers(v interface{}) interface{} {
 	switch t := v.(type) {
 	case map[string]interface{}:
 		for k, e := range t {
-			n, ok := canonicalJSONNumbers(e)
-			if !ok {
-				return nil, false
-			}
-			t[k] = n
+			t[k] = canonicalJSONNumbers(e)
 		}
 	case []interface{}:
 		for i, e := range t {
-			n, ok := canonicalJSONNumbers(e)
-			if !ok {
-				return nil, false
-			}
-			t[i] = n
+			t[i] = canonicalJSONNumbers(e)
 		}
 	case json.Number:
 		if !strings.ContainsAny(string(t), ".eE") {
-			return t, true
+			return t
 		}
-		f, err := t.Float64()
-		if err != nil {
-			return nil, false
-		}
-		return f, true
+		f, _ := t.Float64() // range checked by jsonNumbersFitFloat64
+		return f
 	}
-	return v, true
+	return v
 }
 
 // writeBool writes a capability boolean to the hash. nil = 0, false = 1, true = 2.
