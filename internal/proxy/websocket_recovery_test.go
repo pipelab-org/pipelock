@@ -206,18 +206,36 @@ func TestWSRelayCompletionMetrics(t *testing.T) {
 			p.recordWSRelayCompletion(tc.stats, tc.revoked)
 			rec := httptest.NewRecorder()
 			p.metrics.PrometheusHandler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
-			for suffix, want := range map[string]int{"blocked": tc.blocked, "completed": tc.completed} {
-				line := "pipelock_ws_connections_total{result=\"" + suffix + "\"} " + strconv.Itoa(want)
-				if want == 0 {
-					if strings.Contains(rec.Body.String(), strings.TrimSuffix(line, "0")+"1") {
-						t.Fatalf("unexpected metric: %s", rec.Body.String())
-					}
-					continue
-				}
-				if !strings.Contains(rec.Body.String(), line) {
-					t.Fatalf("metric missing %s: %s", line, rec.Body.String())
+			for result, want := range map[string]int{"blocked": tc.blocked, "completed": tc.completed} {
+				if got := wsConnectionsCounter(t, rec.Body.String(), result); got != float64(want) {
+					t.Fatalf("pipelock_ws_connections_total{result=%q} = %v, want %d\n%s", result, got, want, rec.Body.String())
 				}
 			}
 		})
 	}
+}
+
+// wsConnectionsCounter parses one pipelock_ws_connections_total sample from a
+// Prometheus text exposition. An absent label set reads as zero, the value a
+// counter that was never incremented reports.
+func wsConnectionsCounter(t *testing.T, exposition, result string) float64 {
+	t.Helper()
+	prefix := "pipelock_ws_connections_total{result=\"" + result + "\"} "
+	found := false
+	var value float64
+	for _, line := range strings.Split(exposition, "\n") {
+		rest, ok := strings.CutPrefix(line, prefix)
+		if !ok {
+			continue
+		}
+		if found {
+			t.Fatalf("duplicate sample for result=%q:\n%s", result, exposition)
+		}
+		v, err := strconv.ParseFloat(strings.TrimSpace(rest), 64)
+		if err != nil {
+			t.Fatalf("unparseable sample %q: %v", line, err)
+		}
+		found, value = true, v
+	}
+	return value
 }
