@@ -3132,6 +3132,8 @@ tool_chain_detection:
 
 Ships with 10 built-in patterns covering reconnaissance, credential theft, data staging, persistence, and exfiltration chains. The built-in lethal-trifecta detector watches for `untrusted_source -> sensitive_source -> external_sink` sequences. Use `sensitivity_labels` when your tool names do not carry enough semantic signal for the keyword fallback, and use `pattern_overrides.lethal-trifecta` to change that detector's action.
 
+`tool_categories` patterns and `sensitivity_labels` values match the identity Pipelock records for each call. An ordinary tool keeps its own name. An A2A method is recorded as `a2a:` plus its method name, such as `a2a:message/send`. A tool whose own name starts with `a2a:` or `tool:` gets a `tool:` prefix, so a tool named `a2a:message/send` is recorded as `tool:a2a:message/send` and can't match an entry meant for the A2A method. If an entry names a tool like that directly, write it in the `tool:` form. Globs follow Go's `filepath.Match`, where `*` doesn't match `/`.
+
 ## Cross-Request Exfiltration Detection
 
 Detects secrets split across multiple requests within a session. Two independent mechanisms (entropy budget and fragment reassembly) can run together or separately. Entropy-budget findings are heuristic and do not feed adaptive scoring; fragment-reassembly DLP findings remain concrete signals.
