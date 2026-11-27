@@ -3094,7 +3094,7 @@ Allow and block decisions carry the field on the transports marked Yes above, su
 
 Known gaps, where an event for a tagged request has no `correlation_id`:
 
-- MCP HTTP listener refusals before header vetting: Origin, authentication, Host, HTTP method, protocol headers, scanner availability, and server identity checks. These events omit the unvetted client value. Later header-DLP, tool-policy, and response refusals carry the vetted value.
+- MCP HTTP listener refusals before header vetting omit the client value. Examples include Origin and CORS preflight checks, authentication, Host validation, admission protocol headers, and scanner unavailability. Later server-identity, header-DLP, tool-policy, and response refusals carry the value if it passes vetting.
 
 - MCP stdio, and stdio to an HTTP or WebSocket upstream: no inbound request headers exist.
 - CONNECT passthrough: headers inside the encrypted tunnel are not visible.
