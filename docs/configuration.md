@@ -3094,7 +3094,7 @@ Allow and block decisions carry the field on the transports marked Yes above, su
 
 Known gaps, where an event for a tagged request has no `correlation_id`:
 
-- MCP HTTP listener refusals before header vetting: Origin, authentication, Host, HTTP method, protocol headers, scanner availability, and server identity checks. These events omit the unvetted client value. Later header-DLP, tool-policy, and response refusals carry the vetted value.
+- MCP HTTP listener refusals before header vetting omit the client value. Examples include Origin and CORS preflight checks, authentication, Host validation, admission protocol headers, and scanner unavailability. Later server-identity, header-DLP, tool-policy, and response refusals carry the value if it passes vetting.
 
 - MCP stdio, and stdio to an HTTP or WebSocket upstream: no inbound request headers exist.
 - CONNECT passthrough: headers inside the encrypted tunnel are not visible.
@@ -3131,6 +3131,8 @@ tool_chain_detection:
 | `custom_patterns` | `[]` | Custom attack sequences |
 
 Ships with 10 built-in patterns covering reconnaissance, credential theft, data staging, persistence, and exfiltration chains. The built-in lethal-trifecta detector watches for `untrusted_source -> sensitive_source -> external_sink` sequences. Use `sensitivity_labels` when your tool names do not carry enough semantic signal for the keyword fallback, and use `pattern_overrides.lethal-trifecta` to change that detector's action.
+
+`tool_categories` patterns and `sensitivity_labels` values match the identity Pipelock records for each call. An ordinary tool keeps its own name. An A2A method is recorded as `a2a:` plus its method name, such as `a2a:message/send`. A tool whose own name starts with `a2a:` or `tool:` gets a `tool:` prefix, so a tool named `a2a:message/send` is recorded as `tool:a2a:message/send` and an exact entry for the A2A method doesn't match it. If an entry names a tool like that directly, write it in the `tool:` form. A glob can match both identities: `*:message/send` matches `a2a:message/send` and `tool:a2a:message/send`, so use exact entries where the two must stay apart. Globs follow Go's `filepath.Match`. On Linux and macOS `*` doesn't match `/`, so `a2a:*` misses `a2a:message/send` and `a2a:*/*` matches it. On Windows the separator is `\`, so `*` also matches `/` and `a2a:*` matches every A2A method.
 
 ## Cross-Request Exfiltration Detection
 

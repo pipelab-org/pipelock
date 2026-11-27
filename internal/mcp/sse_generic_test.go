@@ -17,6 +17,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/cardtest"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
@@ -883,16 +884,22 @@ func TestScanGenericSSEStream_EmptyStream(t *testing.T) {
 }
 
 func TestScanGenericSSEStream_FinalEventWithoutBlankLine(t *testing.T) {
-	// SSEReader returns the trailing partial event on EOF without a final
-	// blank line. Ensure we still scan and forward it.
-	body := "data: final\n"
+	// The event-stream format discards an event the stream ends inside, so it
+	// must not be forwarded with a terminator the origin never sent. A
+	// complete event before it is still delivered, and the truncation is
+	// reported rather than presented as a clean end.
+	body := "data: first\n\ndata: final\n"
 
 	var out bytes.Buffer
-	if err := ScanGenericSSEStream(context.Background(), strings.NewReader(body), &out, nil, testA2AScanner(t), enabledSSECfg()); err != nil {
-		t.Fatalf("expected clean stream, got %v", err)
+	err := ScanGenericSSEStream(context.Background(), strings.NewReader(body), &out, nil, testA2AScanner(t), enabledSSECfg())
+	if !errors.Is(err, transport.ErrIncompleteResponse) {
+		t.Fatalf("expected incomplete stream, got %v", err)
 	}
-	if !strings.Contains(out.String(), "final") {
-		t.Errorf("expected trailing event forwarded, got %q", out.String())
+	if !strings.Contains(out.String(), "first") {
+		t.Errorf("complete event not forwarded: %q", out.String())
+	}
+	if strings.Contains(out.String(), "final") {
+		t.Errorf("unfinished trailing event forwarded: %q", out.String())
 	}
 }
 

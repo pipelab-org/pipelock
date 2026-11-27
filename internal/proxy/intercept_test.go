@@ -890,6 +890,10 @@ type interceptRequestOptions struct {
 	Agent         string
 	ActorAuth     envelope.ActorAuth
 	IssuerRuntime *issuerCookieRuntime
+	// AllowIncompleteResponse returns nil instead of failing the test when
+	// the proxy aborts the client connection before a complete response
+	// header, as it does for a broken unscanned stream.
+	AllowIncompleteResponse bool
 }
 
 // interceptAndRequestWithRecorder is like interceptAndRequest but accepts a
@@ -947,6 +951,9 @@ func interceptAndRequestWithRecorder(t *testing.T, opts interceptRequestOptions)
 
 	resp, err := http.ReadResponse(bufio.NewReader(tlsConn), opts.Request)
 	if err != nil {
+		if opts.AllowIncompleteResponse {
+			return nil
+		}
 		t.Fatalf("read response: %v", err)
 	}
 	t.Cleanup(func() { _ = resp.Body.Close() })

@@ -619,6 +619,15 @@ func RunHTTPListenerProxy(
 			_, _ = w.Write(resp)
 			return
 		}
+		// Per-request audit logger carrying the vetted correlation tag, so
+		// every event this HTTP request emits can be matched to the client's
+		// tag. The JSON-RPC id is client-chosen and not unique, so it cannot
+		// key this; the logger copy is scoped to this request instead. Vet it
+		// as soon as the scanner is ready so later refusals, including a
+		// server identity refusal, carry it.
+		requestBaseOpts.AuditLogger = baseOpts.AuditLogger.WithCorrelation(
+			audit.CorrelationIDFromHeader(r.Context(), r.Header, opts.CorrelationHeader, reqScanner))
+		w.opts.AuditLogger = requestBaseOpts.AuditLogger
 		if opts.ServerIdentityHeadersFn != nil {
 			// Use the same header merger as the actual upstream request. Bind only
 			// operator/client-selected headers, not transport-generated framing.
@@ -649,13 +658,6 @@ func RunHTTPListenerProxy(
 			}
 			requestBaseOpts = requestBaseOpts.withServerIdentity(identity)
 		}
-		// Per-request audit logger carrying the vetted correlation tag, so
-		// every event this HTTP request emits can be matched to the client's
-		// tag. The JSON-RPC id is client-chosen and not unique, so it cannot
-		// key this; the logger copy is scoped to this request instead.
-		requestBaseOpts.AuditLogger = baseOpts.AuditLogger.WithCorrelation(
-			audit.CorrelationIDFromHeader(r.Context(), r.Header, opts.CorrelationHeader, reqScanner))
-		w.opts.AuditLogger = requestBaseOpts.AuditLogger
 		fullRequestBaseOpts := requestBaseOpts
 		reset := listenerClients.resetUpstreamToolDriftStateIfRequested(opts.toolCfg(), io.Discard)
 		reportReset := reset.Result == ResetAuthorityAccepted

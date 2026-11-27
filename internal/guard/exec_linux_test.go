@@ -57,6 +57,30 @@ func TestPrepareExecutionCAFilesCheckPhysicalFloor(t *testing.T) {
 	t.Fatal("CA declaration absent from outcomes")
 }
 
+func TestPrepareExecutionSkipsDirectoryCACandidate(t *testing.T) {
+	root := t.TempDir()
+	directory := filepath.Join(root, "ca-bundle.crt")
+	if err := os.Mkdir(directory, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	original := executionCAPaths
+	executionCAPaths = []string{directory}
+	t.Cleanup(func() { executionCAPaths = original })
+	p, err := PrepareExecution(config.Defaults(), "", root, "", "", os.Getuid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = p.Close() }()
+	for _, outcome := range p.Outcomes() {
+		if outcome.DeclaredPath == directory {
+			t.Fatalf("directory CA candidate was declared: %+v", outcome)
+		}
+	}
+	if !p.Complete() {
+		t.Fatalf("execution plan incomplete with a directory CA candidate: %+v", p.Outcomes())
+	}
+}
+
 func TestReadExecEnvironmentOwnsInheritedDescriptor(t *testing.T) {
 	reader, writer, err := os.Pipe()
 	if err != nil {
