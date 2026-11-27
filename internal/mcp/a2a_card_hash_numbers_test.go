@@ -28,6 +28,12 @@ func TestHashAgentCard_DistinguishesIntegersAbove2Pow53(t *testing.T) {
 		"just above 2^53": {`{"maximum":9007199254740993}`, `{"maximum":9007199254740992}`},
 		"far above 2^53":  {`{"limit":123456789012345678901234567890}`, `{"limit":123456789012345678901234567891}`},
 		"nested in array": {`{"enum":[1,18446744073709551617]}`, `{"enum":[1,18446744073709551616]}`},
+		// 1e400 cannot become a float64. Keeping it while rounding the const
+		// values would give both documents one canonical form.
+		"beside an out-of-range number": {
+			`{"maximum":1e400,"const":9007199254740992.0}`,
+			`{"maximum":1e400,"const":9007199254740993.0}`,
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if HashAgentCard(card(pair[0])) == HashAgentCard(card(pair[1])) {
@@ -64,6 +70,10 @@ func TestCanonicalizeJSON_KeepsFloatSpellingForRepresentableNumbers(t *testing.T
 		`not json`,
 		`{"a":1} trailing`,
 		`{"a":1e400}`,
+		// Whitespace shows whether the raw bytes were kept: a re-marshal
+		// would compact it.
+		`{"maximum": 1e400, "const": 9007199254740992.0}`,
+		`[1.5, {"deep": [-1E+999]}]`,
 	} {
 		if got, want := canonicalizeJSON(json.RawMessage(raw)), legacy(raw); !bytes.Equal(got, want) {
 			t.Errorf("canonicalizeJSON(%s) = %s, want legacy %s", raw, got, want)

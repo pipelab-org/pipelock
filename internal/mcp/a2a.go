@@ -768,8 +768,12 @@ func canonicalizeJSON(raw json.RawMessage) []byte {
 	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
 		return raw // trailing data: hash raw bytes, as json.Unmarshal refused it
 	}
+	normalized, ok := canonicalJSONNumbers(v)
+	if !ok {
+		return raw // a number float64 cannot hold: hash raw bytes, as before
+	}
 	// json.Marshal sorts map keys deterministically in Go.
-	canonical, err := json.Marshal(canonicalJSONNumbers(v))
+	canonical, err := json.Marshal(normalized)
 	if err != nil {
 		return raw
 	}
@@ -778,25 +782,39 @@ func canonicalizeJSON(raw json.RawMessage) []byte {
 
 // canonicalJSONNumbers keeps an integer literal's exact digits and spells any
 // other number through float64, the form canonicalizeJSON always used for it.
-func canonicalJSONNumbers(v interface{}) interface{} {
+// It reports false when a non-integer number is outside float64's range. The
+// caller must then hash the raw bytes: keeping that literal while rounding
+// its neighbours would let two documents that differ only in a rounded
+// neighbour share a canonical form.
+func canonicalJSONNumbers(v interface{}) (interface{}, bool) {
 	switch t := v.(type) {
 	case map[string]interface{}:
 		for k, e := range t {
-			t[k] = canonicalJSONNumbers(e)
+			n, ok := canonicalJSONNumbers(e)
+			if !ok {
+				return nil, false
+			}
+			t[k] = n
 		}
 	case []interface{}:
 		for i, e := range t {
-			t[i] = canonicalJSONNumbers(e)
+			n, ok := canonicalJSONNumbers(e)
+			if !ok {
+				return nil, false
+			}
+			t[i] = n
 		}
 	case json.Number:
 		if !strings.ContainsAny(string(t), ".eE") {
-			return t
+			return t, true
 		}
-		if f, err := t.Float64(); err == nil {
-			return f
+		f, err := t.Float64()
+		if err != nil {
+			return nil, false
 		}
+		return f, true
 	}
-	return v
+	return v, true
 }
 
 // writeBool writes a capability boolean to the hash. nil = 0, false = 1, true = 2.
