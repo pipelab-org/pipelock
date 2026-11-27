@@ -132,9 +132,13 @@ func (sr *SSEReader) ReadMessage() ([]byte, error) {
 	if err := sr.scanner.Err(); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrIncompleteResponse, err)
 	}
+	// The event-stream format discards an event the stream ends inside: only
+	// a blank line dispatches it. Returning it would let the proxy re-emit,
+	// with a terminator, an event the origin never completed and a direct
+	// client would never see. Report the truncation instead of a clean end so
+	// callers abort rather than wait for a reply that is not coming.
 	if hasData {
-		joined := strings.Join(data, "\n")
-		return []byte(joined), nil
+		return nil, fmt.Errorf("%w: stream ended inside an unfinished event", ErrIncompleteResponse)
 	}
 	return nil, io.EOF
 }

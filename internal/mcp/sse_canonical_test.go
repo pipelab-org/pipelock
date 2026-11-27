@@ -21,6 +21,7 @@ func TestCanonicalSSEEventText_MultilineDataUsesPerLineDataFields(t *testing.T) 
 		"data: ",
 		"data: third",
 		"",
+		"",
 	}, "\n")))
 
 	event, err := reader.ReadMessage()

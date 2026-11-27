@@ -9,8 +9,10 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash"
+	"io"
 	"mime"
 	"regexp"
 	"sort"
@@ -747,20 +749,81 @@ func writeFramed(h hash.Hash, b []byte) {
 // canonicalizeJSON parses JSON and re-serializes with sorted keys.
 // Returns the original bytes if parsing fails (preserves fail-closed: hash
 // still changes if the raw bytes change, which is conservative).
+//
+// Numbers are decoded without float64 rounding, so two values that differ
+// only in an integer above 2^53 hash differently. Integer literals keep their
+// exact digits; every other number is spelled through float64 as before. An
+// integer up to 2^53 prints the same either way, so only integers above it
+// change their canonical form.
 func canonicalizeJSON(raw json.RawMessage) []byte {
 	if len(raw) == 0 {
 		return nil
 	}
+	if !jsonNumbersFitFloat64(raw) {
+		return raw // a number float64 cannot hold: hash raw bytes, as before
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
 	var v interface{}
-	if err := json.Unmarshal(raw, &v); err != nil {
+	if err := dec.Decode(&v); err != nil {
 		return raw // unparseable: hash raw bytes (conservative)
 	}
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		return raw // trailing data: hash raw bytes, as json.Unmarshal refused it
+	}
 	// json.Marshal sorts map keys deterministically in Go.
-	canonical, err := json.Marshal(v)
+	canonical, err := json.Marshal(canonicalJSONNumbers(v))
 	if err != nil {
 		return raw
 	}
 	return canonical
+}
+
+// jsonNumbersFitFloat64 reports whether every number in raw converts to a
+// float64. json.Unmarshal refused a document holding any number outside that
+// range, integer or not, and kept refusing when a later duplicate key replaced
+// the value. Reading tokens rather than a decoded value checks those replaced
+// numbers too. Accepting such a document here would keep an unconvertible
+// literal while rounding its neighbours, so two documents differing only in a
+// rounded neighbour would share a canonical form. A syntax error reports true
+// and is left to the decode that follows.
+func jsonNumbersFitFloat64(raw json.RawMessage) bool {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			return true
+		}
+		if n, ok := tok.(json.Number); ok {
+			if _, err := n.Float64(); err != nil {
+				return false
+			}
+		}
+	}
+}
+
+// canonicalJSONNumbers keeps an integer literal's exact digits and spells any
+// other number through float64, the form canonicalizeJSON always used for it.
+// jsonNumbersFitFloat64 has already proved every number converts.
+func canonicalJSONNumbers(v interface{}) interface{} {
+	switch t := v.(type) {
+	case map[string]interface{}:
+		for k, e := range t {
+			t[k] = canonicalJSONNumbers(e)
+		}
+	case []interface{}:
+		for i, e := range t {
+			t[i] = canonicalJSONNumbers(e)
+		}
+	case json.Number:
+		if !strings.ContainsAny(string(t), ".eE") {
+			return t
+		}
+		f, _ := t.Float64() // range checked by jsonNumbersFitFloat64
+		return f
+	}
+	return v
 }
 
 // writeBool writes a capability boolean to the hash. nil = 0, false = 1, true = 2.

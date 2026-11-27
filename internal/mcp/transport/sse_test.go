@@ -230,23 +230,52 @@ func TestSSEReader_IDWithNULLIgnored(t *testing.T) {
 }
 
 func TestSSEReader_DataWithoutNewlineTerminator(t *testing.T) {
-	// Stream ends without a final blank line but has accumulated data.
-	// Should still return the event.
-	input := "data: final"
-	r := NewSSEReader(strings.NewReader(input))
-
-	msg, err := r.ReadMessage()
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	// The event-stream format dispatches an event only at a blank line, so
+	// one the stream ends inside is discarded, never returned. The reader
+	// reports the truncation instead of a clean end of stream.
+	for name, input := range map[string]string{
+		"only event":           "data: final",
+		"after complete event": "data: first\n\ndata: final",
+		"trailing newline":     "data: first\n\ndata: final\n",
+		"multi-line data":      "data: first\n\ndata: a\ndata: b\n",
+		"carriage return":      "data: first\r\n\r\ndata: final\r",
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := NewSSEReader(strings.NewReader(input))
+			var got []string
+			var err error
+			for {
+				var msg []byte
+				msg, err = r.ReadMessage()
+				if err != nil {
+					break
+				}
+				got = append(got, string(msg))
+			}
+			if !errors.Is(err, ErrIncompleteResponse) || errors.Is(err, io.EOF) {
+				t.Fatalf("final error = %v, want ErrIncompleteResponse", err)
+			}
+			for _, msg := range got {
+				if strings.Contains(msg, "final") || strings.Contains(msg, "a\nb") {
+					t.Fatalf("unfinished event returned: %q", got)
+				}
+			}
+			if strings.HasPrefix(name, "only") != (len(got) == 0) {
+				t.Fatalf("complete events = %q", got)
+			}
+		})
 	}
-	if string(msg) != "final" {
-		t.Errorf("got %q, want %q", string(msg), "final")
-	}
+}
 
-	// Next read should return io.EOF.
-	_, err = r.ReadMessage()
-	if !errors.Is(err, io.EOF) {
-		t.Errorf("expected io.EOF after unterminated event, got %v", err)
+func TestSSEReader_PendingFieldsWithoutDataEndCleanly(t *testing.T) {
+	// Fields that never produce data dispatch nothing, so their end is a
+	// clean end of stream.
+	r := NewSSEReader(strings.NewReader("data: done\n\nevent: ping\nid: 7"))
+	if msg, err := r.ReadMessage(); err != nil || string(msg) != "done" {
+		t.Fatalf("first event = %q, %v", msg, err)
+	}
+	if _, err := r.ReadMessage(); !errors.Is(err, io.EOF) {
+		t.Fatalf("expected io.EOF, got %v", err)
 	}
 }
 

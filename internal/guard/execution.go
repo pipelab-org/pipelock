@@ -95,8 +95,24 @@ var runtimeDevices = []string{"/dev/null", "/dev/zero", "/dev/urandom"}
 // ExecutionCAFiles returns the existing CA bundle declarations shared by the
 // outer sandbox and final Guard policy. Both layers resolve these as exact
 // files, so a symlink does not grant its target's containing directory.
+//
+// The candidates are optional well-known locations, so only those whose
+// target is a regular file are returned. A directory or other non-file entry
+// at one of these paths is not a CA bundle, and declaring it as an exact file
+// would make both layers reject the whole launch. Skipping it grants nothing;
+// each returned path is still resolved and validated as a file by its layer.
 func ExecutionCAFiles() []string {
-	return existingExecutionPaths(executionCAPaths)
+	return regularExecutionFiles(executionCAPaths)
+}
+
+func regularExecutionFiles(paths []string) []string {
+	out := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() {
+			out = append(out, path)
+		}
+	}
+	return out
 }
 
 var executionCAPaths = []string{

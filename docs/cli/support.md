@@ -2,6 +2,8 @@
 
 `pipelock support bundle` collects a secret-redacted diagnostics archive (`.tar.gz`) that can be attached when filing a bug report or support issue. The command omits raw config and referenced file contents, redacts known secret fields, and DLP-scans included audit-log lines before writing the archive. Review bundles before sharing them outside your support boundary, especially when logs are included.
 
+During an incident, preserve the configured flight recorder directory and original audit logs separately. The bundle contains diagnostics and may include a redacted log tail. See [Incident response and rollback](../guides/incident-response.md) for the order of steps.
+
 ```sh
 pipelock support bundle
 pipelock support bundle --config pipelock.yaml

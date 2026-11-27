@@ -17,9 +17,10 @@ import (
 func TestSSEReaderLineEndingsMatchEventStreamFormat(t *testing.T) {
 	const bom = "\xef\xbb\xbf"
 	for _, tc := range []struct {
-		name, in string
-		want     []string
-		wantType string
+		name, in       string
+		want           []string
+		wantType       string
+		wantIncomplete bool
 	}{
 		{name: "lf", in: "data: a\n\ndata: b\n\n", want: []string{"a", "b"}},
 		{name: "crlf", in: "data: a\r\n\r\ndata: b\r\n\r\n", want: []string{"a", "b"}},
@@ -27,7 +28,9 @@ func TestSSEReaderLineEndingsMatchEventStreamFormat(t *testing.T) {
 		{name: "mixed", in: "data: a\r\ndata: b\rdata: c\n\n", want: []string{"a\nb\nc"}},
 		{name: "comment_then_lone_cr", in: ": note\rdata: a\n\n", want: []string{"a"}},
 		{name: "event_then_lone_cr", in: "event: x\rdata: a\n\n", want: []string{"a"}, wantType: "x"},
-		{name: "cr_at_eof", in: "data: a\r", want: []string{"a"}},
+		// A CR at EOF still ends its line, but the event it ends is
+		// unfinished without a blank line, so it is reported, not returned.
+		{name: "cr_at_eof", in: "data: a\n\ndata: b\r", want: []string{"a"}, wantIncomplete: true},
 		{name: "leading_bom", in: bom + "data: a\n\n", want: []string{"a"}},
 		{name: "leading_bom_alone", in: bom + "\ndata: a\n\n", want: []string{"a"}},
 		{name: "only_first_bom_ignored", in: bom + "data: a\n\n" + bom + "data: b\n\n", want: []string{"a"}},
@@ -48,6 +51,12 @@ func TestSSEReaderLineEndingsMatchEventStreamFormat(t *testing.T) {
 				for {
 					msg, err := sr.ReadMessage()
 					if errors.Is(err, io.EOF) {
+						if tc.wantIncomplete {
+							t.Fatal("clean end of stream, want an incomplete event")
+						}
+						break
+					}
+					if tc.wantIncomplete && errors.Is(err, ErrIncompleteResponse) {
 						break
 					}
 					if err != nil {

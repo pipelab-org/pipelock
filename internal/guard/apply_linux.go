@@ -18,6 +18,15 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/landlockcompat"
 )
 
+// We do not use Go-Landlock because Guard needs two things its high-level API
+// doesn't provide, so it drives landlock/syscall directly:
+//
+//   - Rules are added from descriptors Guard already opened and checked with
+//     RESOLVE_NO_SYMLINKS|RESOLVE_NO_MAGICLINKS (prepare_linux.go). The library
+//     opens each rule path again from its string, which would undo that check.
+//   - The shipped path, ApplyForExec, restricts the single calling thread and
+//     then execs, without TSYNC.
+
 // handledAccessFS is the set of operations the ruleset MEDIATES.
 //
 // This mask, not the per-path grants, is what decides whether an operation is
