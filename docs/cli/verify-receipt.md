@@ -5,7 +5,8 @@ Verify a signed receipt, a chain, a whole recorder, or a receipt group. Pin the 
 ```bash
 pipelock verify-receipt receipt.json --key signer.pub
 pipelock verify-receipt --chain evidence --whole-recorder --key signer.pub
-pipelock verify-receipt --chain evidence --session proxy --allow-prefix --key signer.pub
+pipelock verify-receipt --chain evidence --session proxy.run.<id> --key signer.pub
+pipelock verify-receipt --chain evidence --session proxy --allow-prefix --key signer.pub  # legacy shared session from older releases
 ```
 
 Chain verification reports integrity and endpoint proof separately. A terminal signed session close proves an action-chain end, and a transcript root covered by its trailing signed checkpoint proves a whole-recorder end, when the run recorded under its own per-run session. A complete group close proves the group scope. `--expect-head HASH` or `--expect-seq N` pins an independently known receipt endpoint. Restart links and recovery seals don't prove an end. Mixed v1/v2 input verifies both chains; endpoint pins apply to v2. A pin must select one run when the directory has several.
