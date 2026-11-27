@@ -455,3 +455,24 @@ test("core directory defers lone chain-link and ael entries", async () => {
     }
   }
 });
+
+test("claimed directory does not accept a nested receipt profile", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "v3-nested-"));
+  try {
+    const name = "11111111111111111111111111111111-0000000000000000.receipt-v3.jsonl";
+    copyFileSync(join(corpus, "g04-absent-max-write-error-pin", name), join(dir, name));
+    const leaf = join(dir, "mid", "leaf");
+    mkdirSync(leaf, { recursive: true });
+    copyFileSync(join(corpus, "g04-absent-max-write-error-pin", name), join(leaf, name));
+    await assert.rejects(
+      () => verifyV3Paths([dir], { directory: true, allowUnpinned: true }),
+      (error: Error) => {
+        assert.match(error.message, /pipelock verify-receipt --chain/u);
+        assert.ok(error.message.includes(leaf), error.message);
+        return true;
+      },
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
