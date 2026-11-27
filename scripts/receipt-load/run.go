@@ -26,10 +26,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/luckyPipewrench/pipelock/internal/config"
-
 	"github.com/luckyPipewrench/pipelock/internal/ael"
-	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
@@ -47,7 +44,6 @@ type options struct {
 	warmup          int
 	concurrency     int
 	chains          int
-	receiptFormat   string
 	seed            uint64
 	window          time.Duration
 	readyTimeout    time.Duration
@@ -56,7 +52,6 @@ type options struct {
 	verifyTimeout   time.Duration
 	restartAfter    int
 	restartBefore   *recorderObservation
-	restartV3       *v3.StreamResult
 }
 
 // runMode runs one recorder mode end to end and always writes result.json once
@@ -77,7 +72,7 @@ func runMode(ctx context.Context, opt options, mode string) (*result, error) {
 	_, _ = rand.Read(nonce)
 	plan.runNonce = hex.EncodeToString(nonce)
 	res := &result{
-		SchemaVersion: resultSchemaVersion, Mode: mode, ReceiptChains: opt.chains, ReceiptFormat: opt.receiptFormat,
+		SchemaVersion: resultSchemaVersion, Mode: mode, ReceiptChains: opt.chains,
 		Requests: opt.requests, WarmupRequests: opt.warmup, Concurrency: opt.concurrency,
 		Performance: performanceReport{Verdict: perfInvalid, Reasons: []string{"measurement did not complete"}},
 		Integrity:   integrityReport{Verdict: verdictFail, Reasons: []string{"integrity was not evaluated"}},
@@ -252,33 +247,20 @@ func execute(ctx context.Context, opt options, mode string, dirs runDirs, plan w
 			return fmt.Errorf("restart stop failed within %s budget: %s (elapsed %.6fs)", opt.shutdownTimeout, rep.Shutdown.Error, rep.StopSeconds)
 		}
 		if mode != modeOff {
-			if opt.receiptFormat == config.ReceiptFormatV3 {
-				verifyCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), verificationTimeout(opt))
-				var result v3.Result
-				rep.Verify, result = verifyLoadV3(verifyCtx, dirs, new(v3LoadCounts))
-				cancel()
-				if rep.Verify.Exit == 0 {
-					opt.restartV3 = v3LoadTip(result.Histories[0].Streams)
-				}
-			} else {
-				if err := checkReceiptFormat(dirs.recorder, config.ReceiptFormatLegacy); err != nil {
-					return err
-				}
-				opt.restartBefore, err = scanRecorder(dirs.recorder, plan, sink.addr())
-				if err != nil {
-					return fmt.Errorf("scan before restart: %w", err)
-				}
-				verifyCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), verificationTimeout(opt))
-				rep.Verify = verifyRecorder(verifyCtx, opt.binary, dirs, childEnv, opt.restartBefore)
-				cancel()
-				opt.restartBefore = &recorderObservation{opens: opt.restartBefore.opens, closes: opt.restartBefore.closes}
+			opt.restartBefore, err = scanRecorder(dirs.recorder, plan, sink.addr())
+			if err != nil {
+				return fmt.Errorf("scan before restart: %w", err)
 			}
+			verifyCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), verificationTimeout(opt))
+			rep.Verify = verifyRecorder(verifyCtx, opt.binary, dirs, childEnv, opt.restartBefore)
+			cancel()
 			if err := os.Rename(filepath.Join(dirs.root, "verify.txt"), filepath.Join(dirs.root, "verify-before-restart.txt")); err != nil {
 				return fmt.Errorf("preserve pre-restart verification: %w", err)
 			}
 			if rep.Verify.Exit != 0 {
 				return fmt.Errorf("verification before restart exited %d", rep.Verify.Exit)
 			}
+			opt.restartBefore = &recorderObservation{opens: opt.restartBefore.opens, closes: opt.restartBefore.closes}
 		}
 		if err := ctx.Err(); err != nil {
 			return err
@@ -403,7 +385,7 @@ func prepareConfig(ctx context.Context, opt options, mode string, dirs runDirs, 
 	if err != nil {
 		return "", err
 	}
-	effective, err := applyConfig(base, configParams{mode: mode, chains: opt.chains, dirs: dirs, destinations: opt.destinationPlan, receiptFormat: opt.receiptFormat})
+	effective, err := applyConfig(base, configParams{mode: mode, chains: opt.chains, dirs: dirs, destinations: opt.destinationPlan})
 	if err != nil {
 		return "", err
 	}
@@ -582,16 +564,10 @@ func (s *sampler) close() {
 // receipt the proxy will ever write is on disk, then evaluates integrity and
 // folds in the shutdown and offline verification results.
 func finishIntegrity(ctx context.Context, opt options, mode string, dirs runDirs, env []string, plan workload, sink *sink, warm, measured phaseResult, end time.Time, shutdown shutdownReport, perf *performanceReport) integrityReport {
-	if mode != modeOff && opt.receiptFormat == config.ReceiptFormatV3 {
-		return finishV3Integrity(ctx, opt, dirs, plan, sink, shutdown)
-	}
 	var obs *recorderObservation
 	var scanErr error
 	if _, statErr := os.Stat(dirs.recorder); statErr == nil {
-		scanErr = checkReceiptFormat(dirs.recorder, config.ReceiptFormatLegacy)
-		if scanErr == nil {
-			obs, scanErr = scanRecorder(dirs.recorder, plan, sink.addr())
-		}
+		obs, scanErr = scanRecorder(dirs.recorder, plan, sink.addr())
 	} else if mode != modeOff {
 		scanErr = fmt.Errorf("recorder directory missing: %w", statErr)
 	}

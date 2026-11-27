@@ -23,8 +23,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/luckyPipewrench/pipelock/internal/config"
-
 	"gopkg.in/yaml.v3"
 )
 
@@ -506,11 +504,10 @@ func sha256File(path string) (string, error) {
 
 // configParams are the settings the harness forces on the generated config.
 type configParams struct {
-	mode          string
-	chains        int
-	receiptFormat string
-	dirs          runDirs
-	destinations  *destinationPlan
+	mode         string
+	chains       int
+	dirs         runDirs
+	destinations *destinationPlan
 }
 
 // configReport is the effective config the child ran with. SHA256 hashes the
@@ -571,14 +568,7 @@ func applyConfig(base []byte, p configParams) ([]byte, error) {
 		snapshot = map[string]any{}
 		cfg["dashboard_snapshot"] = snapshot
 	}
-	if p.mode != modeOff && p.receiptFormat == config.ReceiptFormatV3 {
-		fr["receipt_format"] = config.ReceiptFormatV3
-		delete(fr, "anchor")
-		delete(fr, "evidence_health")
-		snapshot["enabled"] = false
-	} else {
-		snapshot["path"] = filepath.Join(p.dirs.root, "dashboard-runtime-snapshot.json")
-	}
+	snapshot["path"] = filepath.Join(p.dirs.root, "dashboard-runtime-snapshot.json")
 	rules, err := configSection(cfg, "rules")
 	if err != nil {
 		rules = map[string]any{}
