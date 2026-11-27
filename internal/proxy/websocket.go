@@ -1871,7 +1871,13 @@ func (r *wsRelay) run(ctx context.Context) wsRelayStats {
 	// Without this, a client that disconnected left the upstream reader
 	// waiting out the full idle timeout, holding the upstream socket and the
 	// scanner for that long.
-	stopUpstreamWake := context.AfterFunc(ctx, func() { wakeRelayConn(r.upstreamConn) })
+	stopUpstreamWake := context.AfterFunc(ctx, func() {
+		if r.clientClosing.Load() {
+			_ = r.upstreamConn.SetReadDeadline(r.closeGraceDeadline())
+			return
+		}
+		wakeRelayConn(r.upstreamConn)
+	})
 	defer stopUpstreamWake()
 	stopClientWake := context.AfterFunc(ctx, func() { wakeRelayConn(r.clientConn) })
 	defer stopClientWake()
@@ -2984,7 +2990,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 		if r.clientClosing.Load() {
 			// Keep the context live for the close reply, bounded by the close
 			// grace. Revocation still cancels the parent and stops both pumps.
-			wakeRelayConnUntil(r.upstreamConn, r.closeGraceDeadline())
+			_ = r.upstreamConn.SetReadDeadline(r.closeGraceDeadline())
 		} else if !r.receiptShard.NativeLease.Stopping() {
 			cancel()
 		}
@@ -3179,9 +3185,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 		if hdr.OpCode.IsControl() {
 			if hdr.OpCode == ws.OpClose {
 				// Forward close frame to upstream, then exit.
-				r.closeGraceDeadline()
-				r.clientClosing.Store(true)
-				r.writeUpstreamClose(ws.StatusNormalClosure, "client closed")
+				r.startUpstreamCloseGrace()
 				return
 			}
 			if ctx.Err() != nil {
@@ -3895,7 +3899,10 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 				if hdr.Masked {
 					ws.Cipher(payload, hdr.Mask, 0)
 				}
-				r.writeUpstreamClosingPong(payload)
+				if err := r.writeUpstreamClosingPong(ctx, payload); err != nil {
+					r.upstreamCancelled = true
+					return
+				}
 			}
 			continue
 		}

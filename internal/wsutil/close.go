@@ -64,6 +64,11 @@ func WriteCloseFrame(conn net.Conn, code ws.StatusCode, reason string) {
 
 // WriteClientCloseFrame sends a masked close frame (client-to-server per RFC 6455).
 func WriteClientCloseFrame(conn net.Conn, code ws.StatusCode, reason string) {
+	WriteClientCloseFrameUntil(conn, code, reason, time.Now().Add(5*time.Second))
+}
+
+// WriteClientCloseFrameUntil sends a masked Close using the caller's deadline.
+func WriteClientCloseFrameUntil(conn net.Conn, code ws.StatusCode, reason string, deadline time.Time) {
 	if projector, ok := conn.(CloseFrameProjector); ok {
 		code, reason = projector.ProjectCloseFrame(code, reason)
 	}
@@ -87,6 +92,6 @@ func WriteClientCloseFrame(conn net.Conn, code ws.StatusCode, reason string) {
 	})
 	buf.Write(payload)
 
-	_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	_ = conn.SetWriteDeadline(deadline)
 	_, _ = conn.Write(buf.Bytes())
 }

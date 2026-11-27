@@ -15,7 +15,9 @@ import (
 	"github.com/gobwas/ws"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -214,11 +216,86 @@ func TestWSRelayClientCloseDoesNotForwardData(t *testing.T) {
 
 type cancelPayloadConn struct {
 	net.Conn
-	reader    *bytes.Reader
-	cancel    context.CancelFunc
-	writes    int
-	written   bytes.Buffer
-	deadlines []time.Time
+	reader         *bytes.Reader
+	cancel         context.CancelFunc
+	writes         int
+	written        bytes.Buffer
+	deadlines      []time.Time
+	writeDeadlines []time.Time
+}
+
+func TestWSRelayClosingPingHonorsStopAfterPayload(t *testing.T) {
+	for _, stop := range []string{"cancel", "kill_switch", "capacity"} {
+		t.Run(stop, func(t *testing.T) {
+			cfg := testScannerConfig()
+			p := newTestProxyWithConfig(t, cfg)
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			var shard receipt.EmitOpts
+			stopRelay := cancel
+			switch stop {
+			case "kill_switch":
+				p.ks = killswitch.New(cfg)
+				stopRelay = func() { p.ks.SetAPI(true) }
+			case "capacity":
+				_, emitter, _ := newNativeCapacityProxy(t, 16)
+				lease, err := emitter.ReserveNativeRecords(1)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(lease.Release)
+				shard.NativeLease = lease
+				stopRelay = func() {
+					if excess, err := emitter.ReserveNativeRecords(32); err == nil {
+						excess.Release()
+						t.Fatal("capacity reservation unexpectedly succeeded")
+					}
+					if !lease.Stopping() {
+						t.Fatal("capacity did not stop")
+					}
+				}
+			}
+			var wire bytes.Buffer
+			if err := ws.WriteFrame(&wire, ws.NewPingFrame([]byte("close grace"))); err != nil {
+				t.Fatal(err)
+			}
+			source := &cancelPayloadConn{reader: bytes.NewReader(wire.Bytes()), cancel: stopRelay}
+			relay := &wsRelay{proxy: p, cfg: cfg, upstreamConn: source, clientConn: &cancelPayloadConn{}, maxMsg: 1024, receiptShard: shard}
+			relay.clientClosing.Store(true)
+			_, _, _, blocked := relay.upstreamToClient(ctx, cancel, time.Second)
+			if relay.panicked.Load() || blocked != (stop == "kill_switch") {
+				t.Fatalf("unexpected stop outcome: blocked=%v panic=%v", blocked, relay.panicked.Load())
+			}
+			for source.written.Len() > 0 {
+				frame, err := ws.ReadFrame(&source.written)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if frame.Header.OpCode != ws.OpClose || stop != "kill_switch" {
+					t.Errorf("upstream received opcode %v after %s", frame.Header.OpCode, stop)
+				}
+			}
+		})
+	}
+}
+
+func TestWSRelayClientCloseWriteUsesGraceDeadline(t *testing.T) {
+	cfg := testScannerConfig()
+	p := newTestProxyWithConfig(t, cfg)
+	var wire bytes.Buffer
+	if err := ws.WriteFrame(&wire, ws.MaskFrameInPlace(ws.NewCloseFrame(nil))); err != nil {
+		t.Fatal(err)
+	}
+	source := &cancelPayloadConn{reader: bytes.NewReader(wire.Bytes()), cancel: func() {}}
+	sink := &cancelPayloadConn{}
+	relay := &wsRelay{proxy: p, cfg: cfg, clientConn: source, upstreamConn: sink, maxMsg: 1024}
+	_, _, _, blocked := relay.clientToUpstream(t.Context(), func() {}, time.Second)
+	if blocked || relay.panicked.Load() || sink.writes != 1 || !relay.clientClosing.Load() {
+		t.Fatalf("client Close did not start the closing handshake: blocked=%v writes=%d", blocked, sink.writes)
+	}
+	if len(sink.writeDeadlines) == 0 || !sink.writeDeadlines[0].Equal(relay.closeGraceDeadline()) {
+		t.Fatalf("Close write deadlines = %v, want first deadline %v", sink.writeDeadlines, relay.closeGraceDeadline())
+	}
 }
 
 func TestWSRelayClientCloseGraceExpired(t *testing.T) {
@@ -249,8 +326,11 @@ func (c *cancelPayloadConn) SetReadDeadline(d time.Time) error {
 	c.deadlines = append(c.deadlines, d)
 	return nil
 }
-func (*cancelPayloadConn) SetWriteDeadline(time.Time) error { return nil }
-func (*cancelPayloadConn) Close() error                     { return nil }
+func (c *cancelPayloadConn) SetWriteDeadline(d time.Time) error {
+	c.writeDeadlines = append(c.writeDeadlines, d)
+	return nil
+}
+func (*cancelPayloadConn) Close() error { return nil }
 
 // A credential collected before the scan context ended is still a policy
 // block. Only a cancel with nothing found is a quiet teardown, and a deadline
