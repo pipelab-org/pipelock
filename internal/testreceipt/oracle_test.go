@@ -4,6 +4,7 @@
 package testreceipt
 
 import (
+	"errors"
 	"io"
 	"maps"
 	"os"
@@ -46,6 +47,15 @@ func TestOracleSubprocess(t *testing.T) {
 		if mode == "stale" {
 			plans["missing"] = []ReceiptProbe{{Args: []string{"$file"}}}
 		}
+		exclusions := map[string]string{}
+		if mode == "overlap" {
+			exclusions["read"] = "covered elsewhere"
+		}
+		if mode == "transcript" {
+			root = &cobra.Command{Use: "example"}
+			root.AddCommand(&cobra.Command{Use: "transcript-root <path>", Run: func(*cobra.Command, []string) {}})
+			plans = map[string][]ReceiptProbe{"transcript-root": {{Args: []string{"$file"}}}}
+		}
 		RunReceiptCommandOracle(t, root, func(args []string, out io.Writer) int {
 			if _, err := os.ReadFile(filepath.Clean(args[1])); err != nil {
 				t.Fatal(err)
@@ -55,7 +65,7 @@ func TestOracleSubprocess(t *testing.T) {
 			}
 			_, _ = io.WriteString(out, "use pipelock verify-receipt")
 			return 1
-		}, plans, nil)
+		}, plans, exclusions)
 		return
 	}
 	for _, tc := range []struct {
@@ -66,6 +76,8 @@ func TestOracleSubprocess(t *testing.T) {
 		{"refusal", "", false},
 		{"unclassified", "classify path-taking command read", true},
 		{"stale", "stale receipt oracle probe for missing", true},
+		{"overlap", "has both a probe and an exclusion", true},
+		{"transcript", "transcript-root did not identify the refused operation", true},
 	} {
 		t.Run(tc.mode, func(t *testing.T) {
 			binary, err := os.Executable()
@@ -138,5 +150,84 @@ func TestNestedReceiptProbeResult(t *testing.T) {
 				t.Fatalf("error = %v, want error %t", err, tc.wantErr)
 			}
 		})
+	}
+}
+
+func TestOracleDiagnosticRedaction(t *testing.T) {
+	if got := oracleDiagnostic("secret payloadType bytes"); got != "command printed receipt bytes" {
+		t.Fatal(got)
+	}
+	if got := oracleDiagnostic(strings.Repeat("x", 400)); len(got) != 380 {
+		t.Fatalf("length %d", len(got))
+	}
+}
+
+func TestReceiptProbeConfigAndExplicitLocation(t *testing.T) {
+	fixture := oracleFixtures(t)[3]
+	runReceiptProbe(t, func(args []string, out io.Writer) int {
+		if len(args) != 7 || args[0] != "read" || args[1] != "--config" || args[3] != "--dir" || args[4] != fixture.dir || args[5] != "--location" || args[6] != "child" {
+			t.Fatalf("args: %v", args)
+		}
+		data, err := os.ReadFile(filepath.Clean(args[2]))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(data), fixture.dir) || !strings.Contains(string(data), fixture.keyFile) {
+			t.Fatalf("config: %s", data)
+		}
+		_, _ = io.WriteString(out, `{"kind":"verify_result","verdict":"VALID","exit_code":0}`)
+		return 0
+	}, "read", ReceiptProbe{Args: []string{"--config", "$config", "--dir", "$dir"}, Directory: true}, fixture, "child")
+}
+
+func TestReceiptOracleExplicitLocation(t *testing.T) {
+	root := &cobra.Command{Use: "example"}
+	cmd := &cobra.Command{Use: "read <dir>", Run: func(*cobra.Command, []string) {}}
+	cmd.Flags().String("location", "", "location")
+	root.AddCommand(cmd)
+	locations := 0
+	RunReceiptCommandOracle(t, root, func(args []string, out io.Writer) int {
+		if slices.Contains(args, "--location") {
+			locations++
+		}
+		_, _ = io.WriteString(out, "use pipelock verify-receipt")
+		return 1
+	}, map[string][]ReceiptProbe{"read": {{Args: []string{"$dir"}, Directory: true}}}, nil)
+	if locations != 1 {
+		t.Fatalf("explicit locations = %d", locations)
+	}
+}
+
+func TestV3FixtureVariants(t *testing.T) {
+	EachV3(t, func(t *testing.T, dir, path string) {
+		data, err := os.ReadFile(filepath.Clean(path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if filepath.Dir(path) != dir {
+			t.Fatalf("path %s", path)
+		}
+		damaged := strings.HasSuffix(t.Name(), "/damaged")
+		if got := string(data) == "damaged first line\n"; got != damaged {
+			t.Fatalf("damaged = %t", got)
+		}
+	})
+}
+
+func TestRequiresV3Refusal(t *testing.T) {
+	for _, suffix := range []string{"<path>", "--chain <path>"} {
+		RequiresV3Refusal(t, errors.New("read: receipt v3 evidence is not supported by reader in this release; use 'pipelock verify-receipt "+suffix+"'"), "read", "reader")
+	}
+}
+
+func TestVisitPathCommandsEvidenceFlag(t *testing.T) {
+	root := &cobra.Command{Use: "example"}
+	cmd := &cobra.Command{Use: "read", Run: func(*cobra.Command, []string) {}}
+	cmd.Flags().String("evidence-source", "", "evidence file path")
+	root.AddCommand(cmd)
+	found := false
+	VisitPathCommands(root, func(*cobra.Command) { found = true })
+	if !found {
+		t.Fatal("evidence flag was not discovered")
 	}
 }
