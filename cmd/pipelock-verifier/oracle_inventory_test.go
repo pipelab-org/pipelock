@@ -30,5 +30,6 @@ func receiptCommandProbes() map[string][]testreceipt.ReceiptProbe {
 		"receipt":      {file, {Args: []string{"$file", "--recheck-source", "$tmp/source"}}},
 		"replay":       {file},
 		"verify-run":   {{Args: []string{"$dir"}, Directory: true}},
+		"v3":           {{Args: []string{"$file", "--key", "$pub"}}, {Args: []string{"$dir", "--key", "$pub"}, Directory: true}},
 	}
 }
