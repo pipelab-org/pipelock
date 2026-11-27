@@ -375,3 +375,39 @@ func TestWSRelayClientTextResultKeepsFindingsAfterContextEnds(t *testing.T) {
 		})
 	}
 }
+
+// Both closing guards answer through one helper: a Ping is answered upstream
+// with a masked Pong carrying exactly the payload passed in (the bytes as
+// received, captured before any scan), and every other frame is discarded.
+func TestWSRelayAnswerPingDuringClientClose(t *testing.T) {
+	cfg := testScannerConfig()
+	p := newTestProxyWithConfig(t, cfg)
+	for _, tc := range []struct {
+		op       ws.OpCode
+		wantPong bool
+	}{{ws.OpPing, true}, {ws.OpPong, false}, {ws.OpText, false}, {ws.OpBinary, false}} {
+		t.Run(opCodeLabel(tc.op), func(t *testing.T) {
+			upstream := &cancelPayloadConn{}
+			relay := &wsRelay{proxy: p, cfg: cfg, upstreamConn: upstream, clientConn: &cancelPayloadConn{}}
+			deadline := time.Now().Add(time.Minute)
+			relay.clientCloseDeadline.Store(&deadline)
+			relay.clientClosing.Store(true)
+			if !relay.answerPingDuringClientClose(t.Context(), tc.op, []byte("as received")) {
+				t.Fatal("helper asked the relay to stop")
+			}
+			if !tc.wantPong {
+				if upstream.writes != 0 {
+					t.Fatalf("frame %v produced an upstream write", tc.op)
+				}
+				return
+			}
+			reply, err := ws.ReadFrame(&upstream.written)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if reply.Header.OpCode != ws.OpPong || !reply.Header.Masked || string(ws.UnmaskFrame(reply).Payload) != "as received" {
+				t.Fatalf("upstream reply = %+v %q, want masked Pong echoing the received payload", reply.Header, ws.UnmaskFrame(reply).Payload)
+			}
+		})
+	}
+}

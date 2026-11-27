@@ -3892,17 +3892,11 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 				r.upstreamCancelled = true
 				return
 			}
-			// RFC 6455 section 5.5.2: an endpoint answers a Ping until it has
-			// received a Close; having sent one does not exempt it. The Pong
-			// returns upstream's own payload and is never forwarded.
-			if hdr.OpCode == ws.OpPing {
-				if hdr.Masked {
-					ws.Cipher(payload, hdr.Mask, 0)
-				}
-				if err := r.writeUpstreamClosingPong(ctx, payload); err != nil {
-					r.upstreamCancelled = true
-					return
-				}
+			if hdr.OpCode == ws.OpPing && hdr.Masked {
+				ws.Cipher(payload, hdr.Mask, 0)
+			}
+			if !r.answerPingDuringClientClose(ctx, hdr.OpCode, payload) {
+				return
 			}
 			continue
 		}
@@ -3935,6 +3929,13 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 				r.writeClientClose(ws.StatusNormalClosure, "upstream closed")
 				return
 			}
+			// A Ping can pass the closing check above and then cross the
+			// client's Close while it is scanned. Answer it with the payload as
+			// received, not a value the scan may have rewritten.
+			var receivedPing []byte
+			if hdr.OpCode == ws.OpPing {
+				receivedPing = append([]byte(nil), payload...)
+			}
 			payload, responseBlocked := r.enforceUpstreamTextPayload(ctx, log, payload, false)
 			if responseBlocked {
 				blocked = true
@@ -3945,6 +3946,9 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 				return
 			}
 			if r.clientClosing.Load() {
+				if !r.answerPingDuringClientClose(ctx, hdr.OpCode, receivedPing) {
+					return
+				}
 				continue
 			}
 			// Forward Ping/Pong to client (proxy is SERVER to client, no masking).

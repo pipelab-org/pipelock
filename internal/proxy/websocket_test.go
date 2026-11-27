@@ -4276,12 +4276,12 @@ func TestWSProxyOversizedControlFrame_ServerSide(t *testing.T) {
 		t.Fatalf("write: %v", writeErr)
 	}
 
-	// The relay closes only the upstream side for an oversized upstream
-	// control frame, so the client sees the connection end without a Close.
-	// It must end before the deadline and deliver nothing.
-	_ = conn.SetReadDeadline(time.Now().Add(testwait.Deadline(10 * time.Second)))
-	_, _, endErr := wsutil.ReadServerData(conn)
-	requireWSClosed(t, endErr)
+	// The relay currently closes only the upstream side for an oversized
+	// upstream control frame, so the client sees the connection end without a
+	// Close. It must end before the deadline and deliver nothing; the only
+	// Close accepted is the protocol-error close the client side would get if
+	// the relay also closed it.
+	requireWSEndWithoutData(t, conn, ws.StatusProtocolError)
 }
 
 func TestWSProxyInjectionAsk_ServerSide(t *testing.T) {

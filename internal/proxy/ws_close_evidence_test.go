@@ -28,54 +28,143 @@ func requireWSCloseCode(t *testing.T, conn net.Conn, want ws.StatusCode) {
 	}
 }
 
-func wsCloseEvidence(conn net.Conn, want ws.StatusCode, wait time.Duration) error {
-	// ReadServerData answers a Close with its own Close, so bound the write too.
-	_ = conn.SetDeadline(time.Now().Add(wait))
-	msg, op, err := wsutil.ReadServerData(conn)
-	var closed wsutil.ClosedError
-	if !errors.As(err, &closed) {
-		return fmt.Errorf("want WebSocket close %d, got op=%v msg=%q err=%T %w", want, op, msg, err, err)
+// requireWSEndWithoutData requires the connection to end before the deadline
+// with nothing delivered: a bare EOF, or a Close carrying allowed. Any other
+// Close code, a data message or a deadline fails.
+func requireWSEndWithoutData(t *testing.T, conn net.Conn, allowed ws.StatusCode) {
+	t.Helper()
+	if err := wsEndEvidence(conn, allowed, testwait.Deadline(10*time.Second)); err != nil {
+		t.Fatal(err)
 	}
-	if closed.Code != want {
-		return fmt.Errorf("WebSocket close code = %d (%q), want %d", closed.Code, closed.Reason, want)
+}
+
+// wsServerEnd is what ended a server stream: a Close frame (closed true) or a
+// read error. Control frames before it are skipped; a data frame is reported.
+type wsServerEnd struct {
+	closed bool
+	code   ws.StatusCode
+	reason string
+	data   *ws.Header
+	err    error
+}
+
+// readWSServerEnd reads server frames without answering them. Validating a
+// received Close must not depend on writing the Close reply, which fails when
+// the peer closes right after sending its own.
+func readWSServerEnd(conn net.Conn, wait time.Duration) wsServerEnd {
+	_ = conn.SetReadDeadline(time.Now().Add(wait))
+	for {
+		frame, err := ws.ReadFrame(conn)
+		if err != nil {
+			return wsServerEnd{err: err}
+		}
+		if frame.Header.Masked {
+			frame = ws.UnmaskFrame(frame)
+		}
+		switch frame.Header.OpCode {
+		case ws.OpClose:
+			code, reason := ws.ParseCloseFrameData(frame.Payload)
+			return wsServerEnd{closed: true, code: code, reason: reason}
+		case ws.OpPing, ws.OpPong:
+			continue
+		default:
+			header := frame.Header
+			return wsServerEnd{data: &header}
+		}
+	}
+}
+
+func wsCloseEvidence(conn net.Conn, want ws.StatusCode, wait time.Duration) error {
+	end := readWSServerEnd(conn, wait)
+	switch {
+	case end.data != nil:
+		return fmt.Errorf("want WebSocket close %d, got a data frame (op=%v)", want, end.data.OpCode)
+	case !end.closed:
+		return fmt.Errorf("want WebSocket close %d, got err=%T %w", want, end.err, end.err)
+	case end.code != want:
+		return fmt.Errorf("WebSocket close code = %d (%q), want %d", end.code, end.reason, want)
 	}
 	return nil
 }
 
-// The evidence check accepts only the expected Close. Everything else a block
-// assertion used to accept must fail it.
-func TestWSCloseEvidenceRejectsEverythingButTheExpectedClose(t *testing.T) {
-	closeFrame := func(code ws.StatusCode) func(net.Conn) {
-		return func(c net.Conn) {
-			_ = ws.WriteFrame(c, ws.NewCloseFrame(ws.NewCloseFrameBody(code, "")))
-			_, _ = io.Copy(io.Discard, c) // accept the client's Close reply
-		}
+func wsEndEvidence(conn net.Conn, allowed ws.StatusCode, wait time.Duration) error {
+	end := readWSServerEnd(conn, wait)
+	switch {
+	case end.data != nil:
+		return fmt.Errorf("want the connection to end without data, got a data frame (op=%v)", end.data.OpCode)
+	case end.closed && end.code != allowed:
+		return fmt.Errorf("WebSocket close code = %d (%q), want EOF or %d", end.code, end.reason, allowed)
+	case !end.closed && !errors.Is(end.err, io.EOF):
+		return fmt.Errorf("want EOF or WebSocket close %d, got err=%T %w", allowed, end.err, end.err)
 	}
+	return nil
+}
+
+// wsTestCloseThenDisconnect sends one Close and disconnects without reading
+// the reply.
+func wsTestCloseThenDisconnect(code ws.StatusCode) func(net.Conn) {
+	return func(c net.Conn) {
+		_ = ws.WriteFrame(c, ws.NewCloseFrame(ws.NewCloseFrameBody(code, "")))
+		_ = c.Close()
+	}
+}
+
+func runWSEvidenceCase(t *testing.T, server func(net.Conn), check func(net.Conn) error, wantErr string) {
+	t.Helper()
+	client, srv := net.Pipe()
+	t.Cleanup(func() { _ = client.Close(); _ = srv.Close() })
+	go server(srv)
+	err := check(client)
+	if wantErr == "" {
+		if err != nil {
+			t.Fatalf("expected outcome rejected: %v", err)
+		}
+		return
+	}
+	if err == nil || !strings.Contains(err.Error(), wantErr) {
+		t.Fatalf("err = %v, want it to contain %q", err, wantErr)
+	}
+}
+
+// The evidence check accepts only the expected Close, including one the peer
+// sends just before disconnecting. Everything else a block assertion used to
+// accept must fail it.
+func TestWSCloseEvidenceRejectsEverythingButTheExpectedClose(t *testing.T) {
+	check := func(c net.Conn) error { return wsCloseEvidence(c, ws.StatusPolicyViolation, 200*time.Millisecond) }
 	for _, tc := range []struct {
 		name    string
 		server  func(net.Conn)
 		wantErr string
 	}{
-		{name: "expected close", server: closeFrame(ws.StatusPolicyViolation)},
-		{name: "other close code", server: closeFrame(ws.StatusNormalClosure), wantErr: "close code = 1000"},
+		{name: "expected close", server: wsTestCloseThenDisconnect(ws.StatusPolicyViolation)},
+		{name: "expected close after ping", server: func(c net.Conn) {
+			_ = ws.WriteFrame(c, ws.NewPingFrame([]byte("p")))
+			wsTestCloseThenDisconnect(ws.StatusPolicyViolation)(c)
+		}},
+		{name: "other close code", server: wsTestCloseThenDisconnect(ws.StatusNormalClosure), wantErr: "close code = 1000"},
 		{name: "bare disconnect", server: func(c net.Conn) { _ = c.Close() }, wantErr: "want WebSocket close"},
 		{name: "silent until deadline", server: func(net.Conn) {}, wantErr: "want WebSocket close"},
-		{name: "data message", server: func(c net.Conn) { _ = wsutil.WriteServerMessage(c, ws.OpText, []byte("forwarded")) }, wantErr: "want WebSocket close"},
+		{name: "data message", server: func(c net.Conn) { _ = wsutil.WriteServerMessage(c, ws.OpText, []byte("forwarded")) }, wantErr: "got a data frame"},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			client, server := net.Pipe()
-			t.Cleanup(func() { _ = client.Close(); _ = server.Close() })
-			go tc.server(server)
-			err := wsCloseEvidence(client, ws.StatusPolicyViolation, 200*time.Millisecond)
-			if tc.wantErr == "" {
-				if err != nil {
-					t.Fatalf("expected close rejected: %v", err)
-				}
-				return
-			}
-			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-				t.Fatalf("err = %v, want it to contain %q", err, tc.wantErr)
-			}
-		})
+		t.Run(tc.name, func(t *testing.T) { runWSEvidenceCase(t, tc.server, check, tc.wantErr) })
+	}
+}
+
+// The end-without-data check accepts a bare EOF or the one allowed Close code
+// and rejects any other Close, delivered data and a deadline.
+func TestWSEndEvidenceAcceptsOnlyEOFOrTheAllowedClose(t *testing.T) {
+	check := func(c net.Conn) error { return wsEndEvidence(c, ws.StatusProtocolError, 200*time.Millisecond) }
+	for _, tc := range []struct {
+		name    string
+		server  func(net.Conn)
+		wantErr string
+	}{
+		{name: "bare disconnect", server: func(c net.Conn) { _ = c.Close() }},
+		{name: "allowed close", server: wsTestCloseThenDisconnect(ws.StatusProtocolError)},
+		{name: "other close code", server: wsTestCloseThenDisconnect(ws.StatusPolicyViolation), wantErr: "want EOF or 1002"},
+		{name: "silent until deadline", server: func(net.Conn) {}, wantErr: "want EOF or WebSocket close 1002"},
+		{name: "data message", server: func(c net.Conn) { _ = wsutil.WriteServerMessage(c, ws.OpText, []byte("forwarded")) }, wantErr: "got a data frame"},
+	} {
+		t.Run(tc.name, func(t *testing.T) { runWSEvidenceCase(t, tc.server, check, tc.wantErr) })
 	}
 }

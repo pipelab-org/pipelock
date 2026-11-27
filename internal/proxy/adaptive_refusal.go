@@ -255,6 +255,23 @@ func (r *wsRelay) startUpstreamCloseGrace() {
 	plwsutil.WriteClientCloseFrameUntil(r.upstreamConn, code, reason, deadline)
 }
 
+// answerPingDuringClientClose handles an upstream frame that arrives while
+// the client's Close is pending. RFC 6455 section 5.5.2: an endpoint answers a
+// Ping until it has received a Close, and having sent one does not exempt it.
+// The Pong echoes the Ping payload as received and is never forwarded to the
+// client; every other frame is discarded. It reports false when the relay must
+// stop because the Pong could not be written.
+func (r *wsRelay) answerPingDuringClientClose(ctx context.Context, op ws.OpCode, payload []byte) bool {
+	if op != ws.OpPing {
+		return true
+	}
+	if err := r.writeUpstreamClosingPong(ctx, payload); err != nil {
+		r.upstreamCancelled = true
+		return false
+	}
+	return true
+}
+
 func (r *wsRelay) writeUpstreamClosingPong(ctx context.Context, payload []byte) error {
 	r.upstreamControlMu.Lock()
 	defer r.upstreamControlMu.Unlock()
