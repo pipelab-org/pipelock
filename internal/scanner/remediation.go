@@ -835,6 +835,29 @@ func unscannedEncodingGuidance() RemediationGuidance {
 	}
 }
 
+// subdomainReasonGuidance covers the subdomain refusals that
+// subdomain_entropy_threshold does not govern. The table entry's threshold
+// advice is right only for the label-entropy score: the encoded-label signals
+// and the malformed-host refusal ignore the threshold, so naming it there would
+// send the operator to a setting that changes nothing.
+func subdomainReasonGuidance(reason string) (RemediationGuidance, bool) {
+	switch {
+	case strings.HasPrefix(reason, subdomainEncodedLabelReasonPrefix),
+		strings.HasPrefix(reason, subdomainEncodedChunksReasonPrefix):
+		return RemediationGuidance{
+			OperatorKnob: "Add the host to `fetch_proxy.monitoring.subdomain_entropy_exclusions` (exact or `*.example.com` wildcard) only if every name under it may carry encoded-looking labels; the exclusion is checked before this signal. " +
+				"It comes from hex, base32 or chunked DNS labels rather than the entropy score, so raising `fetch_proxy.monitoring.subdomain_entropy_threshold` does not lift it.",
+			AgentReason: highEntropyAgentReason,
+		}, true
+	case reason == publicSuffixLookupFailedReason:
+		return RemediationGuidance{
+			OperatorKnob: "The hostname has an empty label or an invalid public suffix, so its registrable domain cannot be determined and the request is refused. Correct the hostname in the URL; `fetch_proxy.monitoring.subdomain_entropy_threshold` does not govern this refusal.",
+			AgentReason:  "Request blocked: the destination hostname is malformed.",
+		}, true
+	}
+	return RemediationGuidance{}, false
+}
+
 func guidanceForResult(label, reason string) (g RemediationGuidance, ok bool) {
 	nested := reason
 	reason = stripNestedURLReasonPrefix(reason)
@@ -937,6 +960,11 @@ func guidanceForResult(label, reason string) (g RemediationGuidance, ok bool) {
 				OperatorKnob: "Reduce the request body size, or raise `request_body_scanning.max_body_bytes` only to the largest verified body this route needs. Bodies over this ceiling block regardless of `request_body_scanning.action`.",
 				AgentReason:  protectiveCeilingAgentReason,
 			}, true
+		}
+		return GuidanceFor(label)
+	case ScannerSubdomainEntropy:
+		if g, ok := subdomainReasonGuidance(reason); ok {
+			return g, true
 		}
 		return GuidanceFor(label)
 	case AuditKillSwitch:
