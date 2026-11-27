@@ -1,48 +1,54 @@
 # Incident response and rollback
 
-This guide is the order of operations when an agent may have misbehaved through Pipelock, or when a Pipelock change needs to be undone. Each step names the command, who consumes its output, and what it can't tell you. The linked reference pages have the full flags and edge cases.
+Use this guide when an agent may have misbehaved through Pipelock or when a Pipelock change needs to be undone. The linked references cover command options and deployment-specific remedies.
 
-Commands assume `pipelock run` unless a step says otherwise. Pipelock only sees traffic routed through it, so nothing here covers an agent that reached the network another way. Containment (`pipelock contain`) is what blocks that path on supported Linux hosts.
+Commands assume `pipelock run` unless a step says otherwise. Pipelock only sees traffic routed through it. On supported Linux hosts, configured and verified [host containment](../contain-cli.md) can block direct egress for managed agent workloads.
 
 ## 1. Stop agent traffic
 
-The kill switch denies normal traffic while any one of its sources is active. Use whichever source you can reach fastest:
+The kill switch denies normal traffic while any source is active. Use a source you can reach:
 
 | Source | How to activate | Notes |
 |---|---|---|
-| API | `curl -X POST http://<api_listen>/api/v1/killswitch -H "Authorization: Bearer $KILL_SWITCH_TOKEN" -H "Content-Type: application/json" -d '{"active": true}'` | Needs `kill_switch.api_token` or `api_token_file`. Set `kill_switch.api_listen` so the agent can't reach the API on the proxy port. |
-| Signal | `kill -USR1 <pipelock pid>` | Toggles the signal source. Sending it again turns that source off. |
-| Sentinel file | Create the file named by `kill_switch.sentinel_file` | Removing the file clears that source. |
-| Config | Set `kill_switch.enabled: true` and reload | Denies all traffic from that point. |
+| API | Send an authenticated `POST /api/v1/killswitch` with JSON `{"active": true}`. See [Kill Switch API](siem-integration.md#kill-switch-api). | Requires a configured bearer token. The API uses the proxy listener unless `kill_switch.api_listen` was set at startup. Restrict a dedicated listener to operators. |
+| Signal | On Unix, send `kill -USR1` to the running daemon's PID. | This toggles the signal source. Use it only when you know that source is off. |
+| Sentinel file | Create the file named by `kill_switch.sentinel_file`. | Removing the file clears that source. |
+| Config | Set `kill_switch.enabled: true` and reload the daemon. | Check that the reload applied the setting. HTTP exemptions still apply. |
 
-Standalone `pipelock mcp proxy` supports only the config and sentinel-file sources. The API and SIGUSR1 belong to `pipelock run`.
+Standalone `pipelock mcp proxy` supports the config and sentinel-file sources. Use an already configured sentinel for a running instance. The kill-switch API and SIGUSR1 toggle belong to `pipelock run`. A standalone proxy reads its configuration at startup.
 
-Check the result with `curl http://<api_listen>/api/v1/killswitch/status -H "Authorization: Bearer $KILL_SWITCH_TOKEN"`, which lists every source and whether it's active.
+When the API is available, check for HTTP 200 and `active: true` from authenticated `GET /api/v1/killswitch/status`. Its `sources` map reports each source. The POST response reports only the API source. Send the bearer token over a trusted admin connection and load the Authorization header from a protected file, for example with `curl --header @/path/to/admin-headers`. Avoid putting the token in command arguments or shell history.
 
-Limits: configured exemptions (`health_exempt`, `api_exempt`, `allowlist_ips`) still apply on the HTTP front door. A deferred MCP call that already claimed its upstream send can't be recalled. See [Kill Switch](../configuration.md#kill-switch) for the exemption rules and the Conductor-driven sources.
+Check that a harmless request through the affected agent's route is denied by the kill switch. A status response reports the controller's state. HTTP front-door exemptions (`health_exempt`, `api_exempt`, `allowlist_ips`) can still apply. Calls already sent upstream can have effects, and a deferred MCP call that already claimed its upstream send can't be recalled. If you can't confirm the affected path is blocked, or the agent has a direct path, stop or isolate the workload at its supervisor or network boundary. See [Kill Switch](../configuration.md#kill-switch) for the exemption rules and the Conductor-driven sources.
 
 ## 2. Preserve evidence
 
-Don't delete, rotate or rewrite the flight recorder directory (`flight_recorder.dir`) or the audit log (`logging.file`) until you've copied them somewhere safe.
+Preserve a restricted copy of the configured flight recorder directory (`flight_recorder.dir`) and audit logs. Use `logging.file` for file output or the service's log collector for stdout. Copy what you can before restarting, rotating or changing the deployment. Record when and where you collected it. If a writer was active during collection, capture the final tail after it stops and treat the earlier copy as potentially incomplete.
 
-- `pipelock evidence doctor DIR` reads a flight-recorder directory without changing it and reports structural damage such as chain gaps, forked hashes and missing genesis records. It exits nonzero when it finds damage.
-- `pipelock verify-receipt --chain DIR` checks the receipt signatures and chain. A valid result shows the receipts were signed by the recorder's key and the chain is unbroken. It says nothing about traffic that didn't pass through Pipelock. See [verify-receipt](../cli/verify-receipt.md) and [Receipt verification](receipt-verification.md) for key pinning and per-run chains.
-- `pipelock support bundle --config <config>` writes a secret-redacted diagnostics archive for a bug report or support request. It's built for sharing, so it omits raw config and file contents. It isn't evidence of what happened; keep the recorder and audit log for that. See [support bundle](../cli/support.md).
+- `pipelock evidence doctor DIR` gives investigators a read-only structural check for chain gaps, forked hashes and missing genesis records. Damage or an incomplete scan exits nonzero. A clean report can't establish signer trust or show that every run or restart link was retained.
+- `pipelock verify-receipt --chain DIR --session SESSION --key TRUSTED_SIGNER.pub` lets investigators check the selected receipt chain against an independently trusted public key. Select the affected run or session base and supply trusted keys for rotated signers as needed. Exit 3 means the prefix verified and the endpoint remains unproven. Use `--whole-recorder` to verify recorder entries as well as receipts. Even a proven endpoint covers only what was recorded in the selected scope. See [verify-receipt](../cli/verify-receipt.md) and [Receipt verification](receipt-verification.md).
+- `pipelock support bundle --config CONFIG` writes a redacted diagnostics archive for support. It includes a configuration summary and may include a redacted audit-log tail. Keep the original recorder data and logs separately, and review the bundle before sharing it. See [support bundle](../cli/support.md).
 
 ## 3. Find out what happened
 
-- `pipelock logs --file <audit log> --filter blocked` shows the blocked events. `--filter` also takes `allowed`, `error` and `anomaly`.
-- `pipelock explain <url>` replays a URL through the scanner with your config and names the scanner that blocked it and the setting that applies. See [explain](../cli/explain.md).
-- `pipelock session list`, `pipelock session inspect` and `pipelock session explain` show which sessions adaptive enforcement escalated and why. `pipelock adaptive status` shows the escalation state. These use the admin API and need the API token, passed with `--api-token` or `PIPELOCK_KILLSWITCH_API_TOKEN`. See [session](../cli/session.md) and [adaptive](../cli/adaptive.md).
+- `pipelock logs --file AUDIT_LOG --filter blocked` finds blocked entries in a JSONL audit log. For a historical request ID, use `pipelock explain event REQUEST_ID --config CONFIG --log AUDIT_LOG` to read the recorded outcome. A missing terminal event can leave the outcome unknown.
+- `pipelock explain --config CONFIG URL` evaluates the URL against the offline scanning layers using the supplied config. It doesn't fetch the URL, resolve DNS or reproduce the historical decision. Without `--config` it uses built-in defaults. See [explain](../cli/explain.md).
+- `pipelock session list`, `pipelock session inspect KEY` and `pipelock session explain KEY` let the operator inspect current session enforcement and its recorded reasons. `pipelock adaptive status` shows current escalation state and requires session profiling. These use the authenticated admin API. Resolve its URL and token using protected configuration or the environment. See [session](../cli/session.md) and [adaptive](../cli/adaptive.md).
 
 ## 4. Recover
 
-- Fix the config, then run `pipelock reload`. It reloads the daemon's configured file and reports the activation verdict the daemon actually reached. See [reload](../cli/reload.md).
-- `pipelock session recover` walks through one session interactively. `pipelock session release` lowers a session's airlock tier, and `pipelock session terminate` tears a session down. Terminate is destructive. `pipelock adaptive flush` resets adaptive state without a config reload.
-- Turn the kill switch off by clearing every source you activated: send `{"active": false}` to the API, send SIGUSR1 again, remove the sentinel file, or set `kill_switch.enabled: false` and reload. Traffic stays denied while any source is still active, so check the status endpoint afterward.
+- Fix the daemon's configured file, then use the authenticated `pipelock reload` command to check its activation verdict. A restart-required verdict can leave some changes pending. If the connection fails or the request is cancelled, query `pipelock reload --status` before retrying. See [reload](../cli/reload.md).
+- Use [session recovery](../cli/session.md#typical-airlock-recovery-workflow) to repair one session. `pipelock session recover KEY` walks through inspection and an action. Use `reset` when a destination score or `block_all` is still denying traffic, and `release` to lower the airlock tier. `terminate` cuts the session's in-flight connections and resets enforcement state. Preserve diagnostics before clearing state. `pipelock adaptive flush` resets shared burst tracking and adaptive state across identity sessions, skipping ephemeral MCP invocation sessions.
 
 ## 5. Roll back Pipelock
 
-- `pipelock update --rollback` restores the previous binary that `pipelock update` saved as `<binary>.bak`. `pipelock update --version vX.Y.Z` downloads and verifies a specific release instead, and aborts without changing the binary if verification fails. See [update](../cli/update.md), including what to do if a rollback stops partway on Windows.
-- After a rollback on a contained host, run `sudo pipelock contain verify` and `sudo pipelock contain doctor` to confirm the boundary is installed and usable. See [contain](../contain-cli.md).
-- For an Enterprise fleet managed by Conductor, follow [Conductor recovery](../cli/conductor-recovery.md) and the [Conductor operator runbook](conductor-operator-runbook.md). A fleet policy rollback has its own signing and versioning rules.
+- Keep affected workloads stopped or independently isolated during a restart. The API and signal sources belong to the old process. Ensure the replacement starts with the intended config and any kill source you still need.
+- `pipelock update --rollback` restores the local `<binary>.bak`. Use it only if you trust that backup. `pipelock update --version vX.Y.Z` verifies a downloaded release before replacement. See [update](../cli/update.md) for backup rotation and Windows recovery. Check the deployed executable's `--version`, restart the service that uses it, and check the running instance before resuming workloads. The version line identifies the executable and doesn't authenticate it.
+- For a contain-managed host, follow [contain upgrade](../contain-cli.md#pipelock-contain-upgrade) to install a verified release and reconcile the integrity pin, or follow the documented `contain install --pipelock-binary` path for an independently verified local binary. [Contain rollback](../contain-cli.md#pipelock-contain-rollback) removes the installed containment controls. Preserve evidence and keep workloads isolated before using it to undo a containment install.
+- For an Enterprise fleet managed by Conductor, follow [Conductor recovery](../cli/conductor-recovery.md) and the [Conductor operator runbook](conductor-operator-runbook.md#recovery-operations). A fleet policy rollback has its own signing and versioning rules.
+
+## 6. Resume traffic
+
+While the affected workloads are stopped or independently isolated, clear only the kill sources you intended to release. Send `{"active": false}` to clear the API source, send SIGUSR1 only if the signal source is active, remove the sentinel file to clear that source, or apply `kill_switch.enabled: false` by reload or standalone proxy restart. Check the status endpoint where available. An active source keeps the switch engaged.
+
+On a contain-managed host, run `sudo pipelock contain verify` and `sudo pipelock contain doctor` with the deployed port to check the boundary and the live runtime. Doctor needs to exercise traffic through the proxy. Keep workloads isolated if verification fails or is incomplete. Before resuming workloads, confirm expected behavior with harmless allowed and denied requests through the affected path.
