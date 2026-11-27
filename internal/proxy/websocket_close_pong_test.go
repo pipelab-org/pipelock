@@ -31,7 +31,7 @@ func pingAfterCloseServer(t *testing.T, gotPong chan<- bool) (string, func()) {
 			if upgradeErr != nil {
 				return
 			}
-			defer conn.Close() //nolint:errcheck // test
+			defer func() { _ = conn.Close() }()
 			for {
 				frame, readErr := ws.ReadFrame(conn)
 				if readErr != nil {
