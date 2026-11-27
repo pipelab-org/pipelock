@@ -10,6 +10,7 @@ import (
 	"net/url"
 
 	"github.com/gobwas/ws"
+	"github.com/gobwas/ws/wsutil"
 
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -228,5 +229,18 @@ func (r *wsRelay) writeClientClose(code ws.StatusCode, reason string) {
 
 func (r *wsRelay) writeUpstreamClose(code ws.StatusCode, reason string) {
 	code, reason = r.refusalClose(code, reason)
+	r.upstreamControlMu.Lock()
+	defer r.upstreamControlMu.Unlock()
 	plwsutil.WriteClientCloseFrame(r.upstreamConn, code, reason)
+}
+
+// writeUpstreamClosingPong answers an upstream Ping received during the
+// client's close grace. The client relay can still be writing its Close, so
+// the two frames share a lock, and the write is bounded by the same grace
+// deadline that bounds the wait for upstream's Close.
+func (r *wsRelay) writeUpstreamClosingPong(payload []byte) {
+	r.upstreamControlMu.Lock()
+	defer r.upstreamControlMu.Unlock()
+	_ = r.upstreamConn.SetWriteDeadline(r.closeGraceDeadline())
+	_ = wsutil.WriteClientMessage(r.upstreamConn, ws.OpPong, payload)
 }

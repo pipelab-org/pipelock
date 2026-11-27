@@ -91,6 +91,7 @@ type wsRelay struct {
 	upstreamCancelled   bool
 	panicked            atomic.Bool               // either pump can panic; read after both return
 	clientClosing       atomic.Bool               // client sent Close; only the upstream Close reply may follow
+	upstreamControlMu   sync.Mutex                // serializes relay-originated Close and Pong frames to upstream
 	clientCloseDeadline atomic.Pointer[time.Time] // one grace deadline, never renewed by discarded frames
 	// reqPolicyHeaders and reqPolicyPath are the handshake route inputs reused
 	// for per-frame request_policy evaluation, so a frame is judged against the
@@ -3886,6 +3887,15 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 			if !time.Now().Before(r.closeGraceDeadline()) {
 				r.upstreamCancelled = true
 				return
+			}
+			// RFC 6455 section 5.5.2: an endpoint answers a Ping until it has
+			// received a Close; having sent one does not exempt it. The Pong
+			// returns upstream's own payload and is never forwarded.
+			if hdr.OpCode == ws.OpPing {
+				if hdr.Masked {
+					ws.Cipher(payload, hdr.Mask, 0)
+				}
+				r.writeUpstreamClosingPong(payload)
 			}
 			continue
 		}

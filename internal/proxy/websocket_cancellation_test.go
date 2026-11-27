@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"slices"
 	"testing"
 	"time"
 
@@ -185,6 +186,27 @@ func TestWSRelayClientCloseDoesNotForwardData(t *testing.T) {
 				if !source.deadlines[i].Equal(source.deadlines[1]) {
 					t.Fatal("intervening frame extended the close grace")
 				}
+			}
+			// RFC 6455 section 5.5.2: until upstream's Close arrives, each Ping
+			// is answered upstream with a masked Pong echoing its payload; no
+			// other frame produces an upstream write.
+			var pongs []string
+			for source.written.Len() > 0 {
+				reply, err := ws.ReadFrame(&source.written)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if reply.Header.OpCode != ws.OpPong || !reply.Header.Masked {
+					t.Fatalf("unexpected upstream frame during close grace: %+v", reply.Header)
+				}
+				pongs = append(pongs, string(ws.UnmaskFrame(reply).Payload))
+			}
+			want := []string(nil)
+			if op == ws.OpPing {
+				want = []string{"after close", "another discarded frame"}
+			}
+			if !slices.Equal(pongs, want) {
+				t.Fatalf("upstream Pongs = %q, want %q", pongs, want)
 			}
 		})
 	}
