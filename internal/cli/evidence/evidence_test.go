@@ -1503,3 +1503,30 @@ func TestExpireCmd_ErrorPaths(t *testing.T) {
 		})
 	}
 }
+
+func TestEvidenceServeHandlerRefusesNewReceiptProfiles(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		profileAtRoot bool
+	}{{"root", true}, {"location", false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			location := filepath.Join(root, "child")
+			if err := os.Mkdir(location, 0o750); err != nil {
+				t.Fatal(err)
+			}
+			target := location
+			if tc.profileAtRoot {
+				target = root
+			}
+			if err := os.WriteFile(filepath.Join(target, "stream.receipt-v3.jsonl"), nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			response := httptest.NewRecorder()
+			evidenceServeHandler(recorder.EvidenceLocation{Root: root, Dir: location}, "session").ServeHTTP(response, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil))
+			if response.Code != http.StatusUnprocessableEntity || !strings.Contains(response.Body.String(), "receipt v3 evidence") {
+				t.Fatalf("status %d body %q", response.Code, response.Body.String())
+			}
+		})
+	}
+}

@@ -159,3 +159,36 @@ func TestReceiptInputRefuseTreeBudget(t *testing.T) {
 		})
 	}
 }
+
+func TestReceiptInputTreeExtraCandidate(t *testing.T) {
+	const command, reader = "example", "the example reader"
+	root := t.TempDir()
+	file := filepath.Join(root, "custom.log")
+	v3, _ := testreceipt.V3(t, t.TempDir(), false)
+	data, err := os.ReadFile(filepath.Clean(v3))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(file, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := receiptinput.RefuseTree(root, command, reader); err != nil {
+		t.Fatalf("unselected file: %v", err)
+	}
+	testreceipt.RequiresV3Refusal(t, receiptinput.RefuseTree(root, command, reader, func(name string) bool { return name == "custom.log" }), command, reader)
+	testreceipt.RequiresV3Refusal(t, receiptinput.RefuseTree(file, command, reader), command, reader)
+	if err := receiptinput.RefuseTree(filepath.Join(root, "missing"), command, reader); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing: %v", err)
+	}
+}
+
+func TestReceiptInputRefuseLocationAndPayloadBoundaries(t *testing.T) {
+	const command, reader = "example", "the example reader"
+	missing := filepath.Join(t.TempDir(), "missing")
+	if err := receiptinput.RefuseLocation(missing, command, reader); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing location: %v", err)
+	}
+	if err := receiptinput.RefusePayload([]byte("{}"), command, reader); err != nil {
+		t.Fatalf("unterminated legacy line: %v", err)
+	}
+}

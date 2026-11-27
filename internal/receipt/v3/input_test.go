@@ -557,3 +557,58 @@ func TestDiscoveryRejectsProfileNamedDirectory(t *testing.T) {
 		t.Fatalf("discover = %v, want non-regular evidence error", err)
 	}
 }
+
+func TestNestedReceiptProfileDiscovery(t *testing.T) {
+	root := t.TempDir()
+	child := filepath.Join(root, "child")
+	nested := filepath.Join(child, "nested")
+	if err := os.MkdirAll(nested, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := nestedReceiptProfile(root, entries); err != nil || got != "" {
+		t.Fatalf("empty tree: %q, %v", got, err)
+	}
+	if err := os.WriteFile(filepath.Join(nested, "stream.receipt-v3.jsonl"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := nestedReceiptProfile(root, entries); err != nil || got != nested {
+		t.Fatalf("nested profile: %q, %v", got, err)
+	}
+	if _, _, _, _, err := discover([]string{root}, Options{Directory: true}, ""); err == nil || !strings.Contains(err.Error(), "outside this directory verification") {
+		t.Fatalf("discover: %v", err)
+	}
+	if err := os.RemoveAll(child); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := nestedReceiptProfile(root, entries); err == nil {
+		t.Fatal("removed child accepted")
+	}
+}
+
+func TestNestedReceiptProfilePropagatesUnidentifiedContent(t *testing.T) {
+	root := t.TempDir()
+	child := filepath.Join(root, "child")
+	if err := os.Mkdir(child, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(child, "evidence-proxy-0.jsonl"), []byte(strings.Repeat(" ", (64<<10)+1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := nestedReceiptProfile(root, entries); !errors.Is(err, evidencename.ErrReceiptContentUnidentified) {
+		t.Fatalf("nested profile: %v", err)
+	}
+	if _, _, _, _, err := discover([]string{root}, Options{Directory: true}, ""); !errors.Is(err, evidencename.ErrReceiptContentUnidentified) {
+		t.Fatalf("discover: %v", err)
+	}
+	if !ClaimsContent([]byte("  "+evidencename.ReceiptProfilePrefix)) || ClaimsContent([]byte("{}")) {
+		t.Fatal("content claim mismatch")
+	}
+}

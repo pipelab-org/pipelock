@@ -4,16 +4,20 @@
 package diag
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 
 	"github.com/luckyPipewrench/pipelock/internal/testreceipt"
 )
@@ -273,6 +277,101 @@ func TestDoctorFlightRecorderExplicitV3RequiresRuntimeConfig(t *testing.T) {
 			check := checkDoctorFlightRecorder(cfg)
 			if check.Status != doctorStatusFail || check.Enforcing || !strings.Contains(check.Detail, "signing_key_path") {
 				t.Fatalf("explicit v3 without %s = %+v, want configuration failure", missing, check)
+			}
+		})
+	}
+}
+
+func TestCheckDoctorFlightRecorderRejectsInvalidEvidenceLocation(t *testing.T) {
+	t.Run("file instead of directory", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "file")
+		if err := os.WriteFile(path, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg := config.Defaults()
+		cfg.FlightRecorder.Enabled = true
+		cfg.FlightRecorder.Dir = path
+		check := checkDoctorFlightRecorder(cfg)
+		if check.Status != doctorStatusFail || !strings.Contains(check.Detail, "not a directory") {
+			t.Fatalf("check: %+v", check)
+		}
+	})
+	t.Run("legacy configured with v3 evidence", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "stream.receipt-v3.jsonl"), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg := config.Defaults()
+		cfg.FlightRecorder.Enabled = true
+		cfg.FlightRecorder.Dir = dir
+		cfg.FlightRecorder.ReceiptFormat = config.ReceiptFormatLegacy
+		check := checkDoctorFlightRecorder(cfg)
+		if check.Status != doctorStatusFail || !strings.Contains(check.Detail, "requires a new evidence directory") {
+			t.Fatalf("check: %+v", check)
+		}
+	})
+}
+
+func TestLogsRejectsReceiptAndOversizedInput(t *testing.T) {
+	for _, tc := range []struct{ name, filename, content, want string }{
+		{"profile name", "stream.receipt-v3.jsonl", "{}\n", "receipt v3 evidence"},
+		{"profile content", "audit.log", "  {\"payloadType\":\"application/vnd.pipelock.receipt.v3+json\"}\n", "receipt v3 evidence"},
+		{"oversized legacy line", "audit.log", strings.Repeat("x", 70<<10), "oversized line"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), tc.filename)
+			if err := os.WriteFile(path, []byte(tc.content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cmd := logsRoot()
+			cmd.SetOut(io.Discard)
+			cmd.SetErr(io.Discard)
+			cmd.SetArgs([]string{"logs", "--file", path})
+			err := cmd.Execute()
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("got %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestLogsFollowRejectsReceiptAndOversizedInput(t *testing.T) {
+	for _, tc := range []struct{ name, content, want string }{
+		{"receipt", "{\"payloadType\":\"application/vnd.pipelock.receipt.v3+json\"}", "receipt v3 evidence"},
+		{"oversized", strings.Repeat("x", 70<<10), "oversized line"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "audit.log")
+			if err := os.WriteFile(path, []byte("ready\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			cmd := logsRoot()
+			cmd.SetContext(ctx)
+			output := &lockedStringWriter{}
+			cmd.SetOut(output)
+			cmd.SetErr(io.Discard)
+			cmd.SetArgs([]string{"logs", "--file", path, "--follow"})
+			done := make(chan error, 1)
+			go func() { done <- cmd.Execute() }()
+			waitForLogOutput(t, output, done, cancel, "ready")
+			file, err := os.OpenFile(filepath.Clean(path), os.O_APPEND|os.O_WRONLY, 0o600)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, writeErr := file.WriteString(tc.content)
+			closeErr := file.Close()
+			if writeErr != nil || closeErr != nil {
+				t.Fatalf("append: %v, close: %v", writeErr, closeErr)
+			}
+			select {
+			case err := <-done:
+				if err == nil || !strings.Contains(err.Error(), tc.want) {
+					t.Fatalf("got %v, want %q", err, tc.want)
+				}
+			case <-time.After(testwait.Deadline(5 * time.Second)):
+				t.Fatal("follow did not reject input")
 			}
 		})
 	}

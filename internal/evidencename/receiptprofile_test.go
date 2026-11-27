@@ -149,3 +149,48 @@ func TestRefuseReceiptNameNormalizesPath(t *testing.T) {
 		t.Fatalf("RefuseReceiptName(%q) = %v, want receipt refusal", path, err)
 	}
 }
+
+func TestReceiptProfileRefusalAndSplit(t *testing.T) {
+	for _, directory := range []bool{false, true} {
+		err := UnsupportedReceiptProfile(directory)
+		if !errors.Is(err, ErrReceiptProfile) || strings.Contains(err.Error(), "--chain") != directory {
+			t.Fatalf("directory=%t: %v", directory, err)
+		}
+	}
+	for _, tc := range []struct {
+		name, input, line string
+		eof, refused      bool
+		advance           int
+	}{
+		{"complete legacy", "{}\nnext", "{}", false, false, 3},
+		{"partial legacy", "{}", "", false, false, 0},
+		{"final legacy", "{}", "{}", true, false, 2},
+		{"complete profile", ReceiptProfilePrefix + "v3\n", "", false, true, 0},
+		{"partial profile", ReceiptProfilePrefix + "v3", "", false, true, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			advance, line, err := SplitLegacyJSONLines([]byte(tc.input), tc.eof)
+			if advance != tc.advance || string(line) != tc.line || errors.Is(err, ErrReceiptProfile) != tc.refused || (err != nil && !tc.refused) {
+				t.Fatalf("got advance=%d line=%q err=%v", advance, line, err)
+			}
+		})
+	}
+	if err := RefuseReceiptName("legacy.jsonl"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestReceiptProfileEntryFindsFile(t *testing.T) {
+	dir := t.TempDir()
+	const name = "stream.receipt-v3.jsonl"
+	if err := os.WriteFile(filepath.Join(dir, name), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := ReceiptProfileEntry(entries); got != name {
+		t.Fatalf("got %q, want %q", got, name)
+	}
+}

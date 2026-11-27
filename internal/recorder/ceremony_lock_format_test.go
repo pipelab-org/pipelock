@@ -191,3 +191,23 @@ func TestBoundedInventoryChecksRemainingReceiptContent(t *testing.T) {
 		t.Fatalf("bounded inventory error = %v, want receipt refusal", err)
 	}
 }
+
+func TestRefuseReceiptDirectory(t *testing.T) {
+	dir := t.TempDir()
+	if err := RefuseReceiptDirectory(dir); err != nil {
+		t.Fatalf("empty directory: %v", err)
+	}
+	if err := RefuseReceiptDirectory(filepath.Join(dir, "missing")); err == nil {
+		t.Fatal("missing directory accepted")
+	}
+	path := filepath.Join(dir, "stream.receipt-v3.jsonl")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := RefuseReceiptDirectory(dir); err == nil || !strings.Contains(err.Error(), "receipt") {
+		t.Fatalf("profile directory: %v", err)
+	}
+	if err := RefuseReceiptDirectory(dir, MixedReceiptProfiles); err != nil {
+		t.Fatalf("mixed mode: %v", err)
+	}
+}
