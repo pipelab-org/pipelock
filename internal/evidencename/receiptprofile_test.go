@@ -81,23 +81,27 @@ func TestProbeReceiptContentWhitespaceLimit(t *testing.T) {
 	for _, tc := range []struct {
 		name, whitespace string
 		want             bool
+		unidentified     bool
 	}{
-		{"at limit", strings.Repeat(" ", limit), true},
-		{"past limit", strings.Repeat(" ", limit+1), false},
-		{"unicode past byte limit", strings.Repeat("\u2002", limit/3+1), false},
+		{"at limit", strings.Repeat(" ", limit), true, false},
+		{"past limit", strings.Repeat(" ", limit+1), false, true},
+		{"unicode past byte limit", strings.Repeat("\u2002", limit/3+1), false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			claimed, err := ProbeReceiptContent(strings.NewReader(tc.whitespace + ReceiptProfilePrefix))
-			if err != nil || claimed != tc.want {
-				t.Fatalf("claimed=%t, err=%v, want %t", claimed, err, tc.want)
+			if claimed != tc.want || errors.Is(err, ErrReceiptContentUnidentified) != tc.unidentified ||
+				(err != nil && !tc.unidentified) {
+				t.Fatalf("claimed=%t, err=%v, want %t (unidentified %t)", claimed, err, tc.want, tc.unidentified)
 			}
 		})
 	}
+	// Past the budget the probe refuses rather than calling the input legacy,
+	// and it still reads only the bounded prefix.
 	const size = 1 << 20
 	r := strings.NewReader(strings.Repeat(" ", size))
 	claimed, err := ProbeReceiptContent(r)
-	if err != nil || claimed || size-r.Len() > limit+len(ReceiptProfilePrefix) {
-		t.Fatalf("claimed=%t, err=%v, read %d bytes; want a bounded negative probe", claimed, err, size-r.Len())
+	if !errors.Is(err, ErrReceiptContentUnidentified) || claimed || size-r.Len() > limit+len(ReceiptProfilePrefix) {
+		t.Fatalf("claimed=%t, err=%v, read %d bytes; want a bounded refusal", claimed, err, size-r.Len())
 	}
 }
 

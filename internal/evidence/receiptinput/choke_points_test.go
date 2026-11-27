@@ -15,6 +15,7 @@ import (
 
 	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/evidence/receiptinput"
+	"github.com/luckyPipewrench/pipelock/internal/evidencename"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	v3 "github.com/luckyPipewrench/pipelock/internal/receipt/v3"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
@@ -234,8 +235,10 @@ func TestOversizedWhitespaceRejectedByLegacyDecoder(t *testing.T) {
 	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if claimed, err := receiptinput.Claims(path); claimed || err != nil {
-		t.Fatalf("profile probe = %t, %v; want an unclaimed legacy input", claimed, err)
+	// Whitespace past the probe budget leaves the format unidentified, which
+	// refuses the input instead of handing it to a legacy decoder.
+	if claimed, err := receiptinput.Claims(path); claimed || !errors.Is(err, evidencename.ErrReceiptContentUnidentified) {
+		t.Fatalf("profile probe = %t, %v; want an unidentified-format refusal", claimed, err)
 	}
 	if _, _, err := recorder.ReadHeadEntriesBounded(path, 1, int64(len(data))); err == nil || !strings.Contains(err.Error(), "recorder entry limit") {
 		t.Fatalf("legacy decoder error = %v, want line limit refusal", err)

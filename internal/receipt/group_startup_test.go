@@ -215,6 +215,14 @@ func TestStartupParallelJoinAndBudget(t *testing.T) {
 				}()
 				select {
 				case <-entered:
+				case err := <-done:
+					// Discovery probes each shard's format before verification,
+					// so an unreadable shard can refuse the group before any
+					// worker starts. That is still a refusal.
+					if failure != "unreadable" || err == nil {
+						t.Fatalf("group load finished before the slow shard started: %v", err)
+					}
+					return
 				case <-time.After(testwait.Deadline(time.Second)):
 					t.Fatal("slow shard did not start")
 				}

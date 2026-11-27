@@ -107,6 +107,10 @@ func SplitLegacyJSONLines(data []byte, atEOF bool) (int, []byte, error) {
 	return advance, line, err
 }
 
+// ErrReceiptContentUnidentified reports evidence whose leading whitespace
+// exceeds the probe budget, so its format cannot be identified.
+var ErrReceiptContentUnidentified = errors.New("evidence file begins with more than 64 KiB of whitespace; its receipt format cannot be identified")
+
 // ProbeReceiptContent reads the identifying prefix after at most 64 KiB of
 // leading whitespace. Record size and content still belong to the decoder.
 func ProbeReceiptContent(r io.Reader) (bool, error) {
@@ -124,7 +128,8 @@ func ProbeReceiptContent(r io.Reader) (bool, error) {
 		if unicode.IsSpace(ch) {
 			leadingWhitespace += size
 			if leadingWhitespace > maxLeadingWhitespace {
-				return false, nil
+				// Unidentified content must not be treated as legacy evidence.
+				return false, ErrReceiptContentUnidentified
 			}
 			continue
 		}
