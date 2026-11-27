@@ -185,6 +185,44 @@ func startsWithProfile(path string) (bool, error) {
 	return evidencename.ProbeReceiptContent(f)
 }
 
+// nestedReceiptProfile reports the first descendant directory claimed by the
+// receipt profile. Symlinks are not directories (DirEntry.IsDir does not
+// follow them), so the walk stays on the tree the operator named.
+func nestedReceiptProfile(root string, entries []os.DirEntry) (string, error) {
+	pending := make([]string, 0)
+	for _, entry := range entries {
+		if entry.IsDir() {
+			pending = append(pending, filepath.Join(root, entry.Name()))
+		}
+	}
+	seen := make(map[string]struct{}, len(pending))
+	for len(pending) > 0 {
+		path := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		seen[path] = struct{}{}
+		children, err := os.ReadDir(path)
+		if err != nil {
+			return "", fmt.Errorf("read evidence directory: %w", err)
+		}
+		claimed, err := receiptinput.ClaimsDirectory(path, children)
+		if err != nil {
+			return "", err
+		}
+		if claimed {
+			return path, nil
+		}
+		for _, child := range children {
+			if child.IsDir() {
+				pending = append(pending, filepath.Join(path, child.Name()))
+			}
+		}
+	}
+	return "", nil
+}
+
 func readInputDirectory(path string) (string, []os.DirEntry, error) {
 	dir, err := filepath.EvalSymlinks(path)
 	if err != nil {
@@ -219,6 +257,17 @@ func discover(paths []string, opts Options, skip string) (files []inputFile, leg
 			} else {
 				ignored++
 			}
+		}
+		// A claimed root is verified from its own files. A descendant directory
+		// that holds a receipt profile is a separate location; counting it as
+		// ignored and reporting the root VALID would present a partial tree as
+		// complete. The same claim rule as every other reader applies here.
+		nested, nestErr := nestedReceiptProfile(dir, entries)
+		if nestErr != nil {
+			return nil, nil, nil, 0, nestErr
+		}
+		if nested != "" {
+			return nil, nil, nil, 0, fmt.Errorf("receipt profile in %s is outside this directory verification; run 'pipelock verify-receipt --chain %s' with the trusted signer key", nested, nested)
 		}
 	}
 	ordered := slices.Clone(paths)

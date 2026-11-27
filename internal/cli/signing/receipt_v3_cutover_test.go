@@ -133,3 +133,48 @@ func TestVerifyReceiptCmd_NestedV3ChainGuidance(t *testing.T) {
 		t.Fatalf("nested chain diagnostic = %v, want verifier guidance naming %s", err, child)
 	}
 }
+
+// A root stream must not verify as VALID while a descendant receipt-profile
+// file stays outside that verification. Nested-only roots already refuse;
+// a claimed root used to return before descendant locations were discovered.
+func TestVerifyReceiptCmd_ClaimedRootDoesNotHideNestedProfile(t *testing.T) {
+	root := t.TempDir()
+	_, pub := testreceipt.V3(t, root, false)
+	child := filepath.Join(root, "child")
+	if err := os.Mkdir(child, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	testreceipt.V3(t, child, true)
+	cmd := VerifyReceiptCmd()
+	cmd.SetArgs([]string{"--chain", root, "--key", hex.EncodeToString(pub)})
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	err := cmd.ExecuteContext(t.Context())
+	if err == nil || !strings.Contains(err.Error(), "pipelock verify-receipt --chain "+child) {
+		t.Fatalf("claimed root hid nested receipt-profile damage: %v", err)
+	}
+	var result v3.Result
+	if json.Unmarshal(out.Bytes(), &result) == nil && result.Verdict == "VALID" && result.ExitCode == 0 {
+		t.Fatal("verdict VALID over a tree with an unverified nested receipt profile")
+	}
+}
+
+func TestVerifyReceiptCmd_ClaimedRootDoesNotHideDeeperNestedProfile(t *testing.T) {
+	root := t.TempDir()
+	_, pub := testreceipt.V3(t, root, false)
+	leaf := filepath.Join(root, "mid", "leaf")
+	if err := os.MkdirAll(leaf, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	testreceipt.V3(t, leaf, true)
+	cmd := VerifyReceiptCmd()
+	cmd.SetArgs([]string{"--chain", root, "--key", hex.EncodeToString(pub)})
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	err := cmd.ExecuteContext(t.Context())
+	if err == nil || !strings.Contains(err.Error(), "pipelock verify-receipt --chain "+leaf) {
+		t.Fatalf("claimed root hid a deeper nested receipt profile: %v", err)
+	}
+}
