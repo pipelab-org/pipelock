@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -15,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/testexec"
 	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
@@ -53,9 +53,7 @@ func useStandInHelm(t *testing.T, script string) {
 		t.Skip("stand-in helm is a POSIX shell script")
 	}
 	stub := filepath.Join(t.TempDir(), "helm")
-	if err := os.WriteFile(stub, []byte(script), 0o700); err != nil { // #nosec G306 -- test stand-in must be executable.
-		t.Fatal(err)
-	}
+	testexec.WriteExecutable(t, stub, []byte(script), 0o700)
 	originalBinary := helmBinary
 	helmBinary = stub
 	t.Cleanup(func() { helmBinary = originalBinary })
