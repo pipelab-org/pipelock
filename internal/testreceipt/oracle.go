@@ -206,7 +206,9 @@ func runReceiptProbe(t *testing.T, run func([]string, io.Writer) int, name strin
 	}
 	// The verifier prints its diagnostic after its report on failures.
 	if line, _, _ := strings.Cut(out.String(), "\n"); json.Unmarshal([]byte(line), &result) == nil && result.Kind == "verify_result" {
-		validReceiptProbeResult(t, code, result.ExitCode, result.Verdict, fixture.name)
+		if err := receiptProbeResultError(code, result.ExitCode, result.Verdict, fixture.name, probe.Directory, location); err != nil {
+			t.Fatal(err)
+		}
 		return
 	}
 	if code == 0 || !strings.Contains(out.String(), "pipelock verify-receipt") {
@@ -219,21 +221,25 @@ func runReceiptProbe(t *testing.T, run func([]string, io.Writer) int, name strin
 	}
 }
 
-func validReceiptProbeResult(t *testing.T, code int, reportCode *int, verdict, fixture string) {
-	t.Helper()
+func receiptProbeResultError(code int, reportCode *int, verdict, fixture string, directory bool, location string) error {
 	if reportCode == nil || code != *reportCode || verdict == "" {
-		t.Fatalf("v3 verdict %q does not explain exit %d", verdict, code)
+		return fmt.Errorf("v3 verdict %q does not explain exit %d", verdict, code)
 	}
 	switch fixture {
 	case "signed":
 		if verdict != "VALID" || code != 0 {
-			t.Fatalf("signed fixture verdict = %q, exit %d", verdict, code)
+			return fmt.Errorf("signed fixture verdict = %q, exit %d", verdict, code)
 		}
 	case "damaged", "renamed":
 		if code == 0 {
-			t.Fatalf("%s fixture incorrectly verified as %q", fixture, verdict)
+			return fmt.Errorf("%s fixture incorrectly verified as %q", fixture, verdict)
+		}
+	case "nested":
+		if directory && location == "" && code == 0 {
+			return fmt.Errorf("nested directory incorrectly verified as %q", verdict)
 		}
 	}
+	return nil
 }
 
 func oracleDiagnostic(output string) string {

@@ -67,6 +67,19 @@ func refuseReceiptDirectoryEntries(dir string, entries []fs.DirEntry, mode Evide
 		if name := evidencename.ReceiptProfileEntry(entries); name != "" {
 			return legacyEvidenceFormatError(filepath.Join(dir, name))
 		}
+		for _, entry := range entries {
+			if entry.IsDir() || !entry.Type().IsRegular() || !evidencename.IsLegacyReceiptCandidate(entry.Name()) {
+				continue
+			}
+			path := filepath.Join(dir, entry.Name())
+			claimed, err := fileClaimsReceiptProfile(path)
+			if err != nil {
+				return &fs.PathError{Op: "probe evidence format", Path: path, Err: err}
+			}
+			if claimed {
+				return legacyEvidenceFormatError(path)
+			}
+		}
 	}
 	return nil
 }
@@ -191,7 +204,7 @@ func discoverEvidenceLocations(root string, beforeRootOpen, afterRootOpen func()
 		if !entryInfo.IsDir() {
 			return nil
 		}
-		hasEvidence, readErr := directoryHasEvidenceFiles(rootFS, relPath, mode)
+		hasEvidence, readErr := directoryHasEvidenceFiles(rootFS, relPath, filepath.Join(cleanRoot, filepath.FromSlash(relPath)), mode)
 		if readErr != nil {
 			return fmt.Errorf("read evidence directory %q: %w", relPath, readErr)
 		}
@@ -357,12 +370,12 @@ func validateEvidenceRootComponents(cleanRoot string) (fs.FileInfo, error) {
 	return rootInfo, nil
 }
 
-func directoryHasEvidenceFiles(rootFS fs.FS, dir string, mode EvidenceReadMode) (bool, error) {
+func directoryHasEvidenceFiles(rootFS fs.FS, dir, absoluteDir string, mode EvidenceReadMode) (bool, error) {
 	entries, err := fs.ReadDir(rootFS, dir)
 	if err != nil {
 		return false, err
 	}
-	if err := refuseReceiptDirectoryEntries(dir, entries, mode); err != nil {
+	if err := refuseReceiptDirectoryEntries(absoluteDir, entries, mode); err != nil {
 		return false, err
 	}
 	for _, entry := range entries {

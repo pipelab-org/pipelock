@@ -138,3 +138,10 @@ func TestProbeReceiptContentErrorsAndShortInput(t *testing.T) {
 		})
 	}
 }
+
+func TestRefuseReceiptNameNormalizesPath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "stream.receipt-v3.jsonl") + string(filepath.Separator) + "."
+	if err := RefuseReceiptName(path); !errors.Is(err, ErrReceiptProfile) {
+		t.Fatalf("RefuseReceiptName(%q) = %v, want receipt refusal", path, err)
+	}
+}

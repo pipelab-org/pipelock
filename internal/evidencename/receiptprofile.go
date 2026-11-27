@@ -79,7 +79,7 @@ func ReceiptProfileEntry(entries []fs.DirEntry) string {
 
 // RefuseReceiptName checks the name of a file a legacy reader would open.
 func RefuseReceiptName(path string) error {
-	if ClaimsReceiptName(filepath.Base(path)) {
+	if ClaimsReceiptName(filepath.Base(filepath.Clean(path))) {
 		return fmt.Errorf("%q: %w", path, UnsupportedReceiptProfile(false))
 	}
 	return nil

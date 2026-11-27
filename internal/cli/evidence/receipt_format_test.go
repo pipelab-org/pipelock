@@ -7,15 +7,17 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
+	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
 
-	"github.com/luckyPipewrench/pipelock/internal/evidence/receiptinput"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/testreceipt"
 	"github.com/luckyPipewrench/pipelock/internal/verification"
 )
@@ -98,15 +100,29 @@ func TestEvidenceCommandsRefuseV3RootWithLegacySubdirAndNestedV3Doctor(t *testin
 }
 
 func TestRepairGroupTransitionGuardRunsUnderCeremonyLock(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("requires Linux evidence directory locking")
+	}
 	dir := t.TempDir()
-	testreceipt.V3(t, dir, false)
+	guardErr := errors.New("guard invoked")
+	called := false
 	seed := sha256.Sum256([]byte("repair-guard-key"))
 	key := ed25519.NewKeyFromSeed(seed[:])
 	_, err := receipt.RepairReceiptGroupTransitionWithGuard(
 		dir, strings.Repeat("a", 32), key, nil, verification.Options{Context: t.Context()},
 		func(lockedDir string) error {
-			return receiptinput.Refuse(lockedDir, "evidence repair-group-transition", "the legacy evidence reader")
+			called = true
+			lock, lockErr := recorder.AcquireEvidenceCeremonyLock(lockedDir)
+			if lockErr == nil {
+				_ = lock.Close()
+				t.Error("guard ran without the ceremony lock")
+			} else if !strings.Contains(lockErr.Error(), "still in use") {
+				t.Errorf("cannot verify ceremony lock: %v", lockErr)
+			}
+			return guardErr
 		},
 	)
-	testreceipt.RequiresV3Refusal(t, err, "evidence repair-group-transition", "the legacy evidence reader")
+	if !called || !errors.Is(err, guardErr) {
+		t.Fatalf("guard called=%t, error=%v", called, err)
+	}
 }

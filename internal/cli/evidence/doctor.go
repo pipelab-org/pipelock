@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/evidence/receiptinput"
+	"github.com/luckyPipewrench/pipelock/internal/evidencename"
 
 	"github.com/spf13/cobra"
 
@@ -315,11 +316,16 @@ func runEvidenceDoctorSnapshot(dir string, afterScan func()) (evidenceDoctorRepo
 	if err != nil {
 		// Discovery failures leave the corpus unavailable, without establishing
 		// corruption. Preserve a nonzero result and a zero health metric.
+		kind := "directory_read_error"
+		var pathErr *os.PathError
+		if errors.As(err, &pathErr) && evidencename.IsLegacyReceiptCandidate(filepath.Base(pathErr.Path)) {
+			kind = "file_read_unavailable"
+		}
 		return evidenceDoctorReport{
 			Dir:            cleanDir,
 			ReadIncomplete: true,
 			Findings: []evidenceDoctorFinding{{
-				Kind:    "directory_read_error",
+				Kind:    kind,
 				Message: "discover evidence locations: " + err.Error(),
 			}},
 		}, nil

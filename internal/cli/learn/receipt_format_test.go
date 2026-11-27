@@ -136,3 +136,62 @@ func TestLearnCompileAgentRefusesNestedAndRenamedV3(t *testing.T) {
 		})
 	}
 }
+
+func TestLearnReceiptOutputFormatAndLock(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("requires Linux evidence directory locking")
+	}
+	for _, tc := range []struct {
+		name        string
+		output      string
+		content     string
+		missing     bool
+		wantRefusal bool
+	}{
+		{"reserved name", "stream.receipt-v3.jsonl", "", false, true},
+		{"renamed content", "custom.jsonl", "{\"payloadType\":\"application/vnd.pipelock.receipt.v3\"}\n", false, true},
+		{"new directory", "ordinary.jsonl", "", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if tc.missing {
+				dir = filepath.Join(dir, "new")
+			}
+			output := filepath.Join(dir, tc.output)
+			if tc.content != "" {
+				if err := os.WriteFile(output, []byte(tc.content), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			called := false
+			write := func() error {
+				called = true
+				lock, lockErr := recorder.AcquireEvidenceCeremonyLock(dir)
+				if lockErr == nil {
+					_ = lock.Close()
+					t.Error("write ran without the ceremony lock")
+				} else if !strings.Contains(lockErr.Error(), "still in use") {
+					t.Errorf("cannot verify lock: %v", lockErr)
+				}
+				return nil
+			}
+			var err error
+			if tc.missing {
+				err = withLegacyReceiptDirectory("learn ratify", dir, write)
+			} else {
+				err = withLegacyReceiptOutput("learn ratify", output, "", write)
+			}
+			if tc.wantRefusal {
+				testreceipt.RequiresV3Refusal(t, err, "learn ratify", "learn lifecycle receipts")
+				if !strings.Contains(err.Error(), "pipelock verify-receipt --chain") {
+					t.Fatalf("missing directory verifier guidance: %v", err)
+				}
+				if called {
+					t.Fatal("write called for receipt profile")
+				}
+			} else if err != nil || !called {
+				t.Fatalf("write called=%t, err=%v", called, err)
+			}
+		})
+	}
+}

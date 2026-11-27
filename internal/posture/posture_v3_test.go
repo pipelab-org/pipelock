@@ -56,7 +56,8 @@ func TestCollectFlightRecorderEvidenceRefusesReceiptProfile(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if capsule, err := Emit(cfg, Options{SigningKey: priv}); err == nil || capsule != nil {
+			if capsule, err := Emit(cfg, Options{SigningKey: priv}); capsule != nil ||
+				!errors.Is(err, receiptinput.ErrUnsupported) || !strings.Contains(err.Error(), "pipelock verify-receipt --chain") {
 				t.Fatalf("Emit() signed a capsule over receipt-profile evidence: %v", err)
 			}
 		})

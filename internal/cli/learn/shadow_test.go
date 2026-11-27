@@ -411,8 +411,12 @@ func TestRunShadowDoesNotEmitReceiptsWhenReportWriteFails(t *testing.T) {
 	if err == nil {
 		t.Fatal("runShadow succeeded, want report write error")
 	}
-	if _, statErr := os.Stat(filepath.Clean(recorderDir)); !os.IsNotExist(statErr) {
-		t.Fatalf("recorder dir stat = %v, want no receipt side effect", statErr)
+	entries, readErr := os.ReadDir(filepath.Clean(recorderDir))
+	if readErr != nil && !os.IsNotExist(readErr) {
+		t.Fatalf("read recorder dir: %v", readErr)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("report failure emitted receipt files: %v", entries)
 	}
 }
 

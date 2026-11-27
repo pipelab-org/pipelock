@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 
 	"github.com/luckyPipewrench/pipelock/internal/evidence/receiptinput"
+	"github.com/luckyPipewrench/pipelock/internal/evidencename"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
 
@@ -19,17 +20,34 @@ func withLegacyReceiptOutput(command, output, fallback string, write func() erro
 	if !filepath.IsAbs(output) {
 		return write()
 	}
-	return withLegacyReceiptDirectory(command, filepath.Dir(output), write)
+	const reader = "learn lifecycle receipts"
+	if evidencename.ClaimsReceiptName(filepath.Base(filepath.Clean(output))) {
+		return receiptinput.UnsupportedDirectory(command, reader)
+	}
+	// Lifecycle output requires a provisioned parent; preserve that contract.
+	if _, err := existingLifecycleReceiptPath(output); err != nil {
+		return err
+	}
+	return withLegacyReceiptDirectory(command, filepath.Dir(output), func() error {
+		if err := receiptinput.Refuse(output, command, reader); errors.Is(err, receiptinput.ErrUnsupported) {
+			return receiptinput.UnsupportedDirectory(command, reader)
+		} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return write()
+	})
 }
 
 func withLegacyReceiptDirectory(command, dir string, write func() error) error {
 	const reader = "learn lifecycle receipts"
 	check := func() error { return receiptinput.RefuseTree(dir, command, reader) }
 	if err := check(); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return write()
+		if !errors.Is(err, os.ErrNotExist) {
+			return err
 		}
-		return err
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			return err
+		}
 	}
 	resolved, err := filepath.EvalSymlinks(dir)
 	if err != nil {
