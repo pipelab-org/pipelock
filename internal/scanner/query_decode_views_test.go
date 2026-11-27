@@ -83,6 +83,10 @@ func TestQueryDecodeViewsDNSNames(t *testing.T) {
 	}
 }
 
+// knownSecretURLReason is the reason prefix the URL scanner gives a
+// configured secrets_file match.
+const knownSecretURLReason = "known secret leak detected"
+
 func TestQueryDecodeViewsKnownSecrets(t *testing.T) {
 	secret := "Zq7Lm2Xc9Vb4" + "Nn8Kp3Rt6Wy1"
 	sc := knownSecretEncodingScanner(t, []string{secret})
@@ -95,8 +99,9 @@ func TestQueryDecodeViewsKnownSecrets(t *testing.T) {
 			if r := sc.ScanRequestBodyTextForDLP(t.Context(), `{"note":"`+nested+`"}`); r.Clean {
 				t.Errorf("known secret body: prefix %q was not detected", prefix)
 			}
-			if r := sc.Scan(t.Context(), "https://api.vendor.example/?q="+url.QueryEscape(nested)); r.Allowed {
-				t.Errorf("known secret URL: prefix %q was not detected", prefix)
+			if r := sc.Scan(t.Context(), "https://api.vendor.example/?q="+url.QueryEscape(nested)); r.Allowed ||
+				r.Scanner != ScannerDLP || !strings.Contains(r.Reason, knownSecretURLReason) {
+				t.Errorf("known secret URL: prefix %q not detected as a known secret: allowed=%v scanner=%s reason=%q", prefix, r.Allowed, r.Scanner, r.Reason)
 			}
 		}
 	}
@@ -137,8 +142,8 @@ func TestQueryDecodeViewsKnownSecretCasePreservation(t *testing.T) {
 func TestQueryDecodeViewsParserFloor(t *testing.T) {
 	sc := newEncodedCredentialScanner(t, true)
 	for _, value := range []string{hex.EncodeToString([]byte(githubClassicToken())), base64.RawURLEncoding.EncodeToString([]byte(githubClassicToken()))} {
-		if r := sc.ScanURLCoreFloor("https://api.vendor.example/?q=" + value + "#%zz"); r.Allowed {
-			t.Error("malformed URL discarded credential view")
+		if r := sc.ScanURLCoreFloor("https://api.vendor.example/?q=" + value + "#%zz"); r.Allowed || r.Scanner != ScannerCoreDLP {
+			t.Errorf("malformed URL discarded credential view: allowed=%v scanner=%s reason=%q", r.Allowed, r.Scanner, r.Reason)
 		}
 	}
 }
@@ -218,8 +223,9 @@ func TestQueryDecodeViewsKnownSecretMinimum(t *testing.T) {
 	if result := sc.ScanRequestBodyTextForDLP(t.Context(), body); result.Clean {
 		t.Error("body lost short secret carrier")
 	}
-	if result := sc.Scan(t.Context(), "https://api.vendor.example/?q="+url.QueryEscape(body)); result.Allowed {
-		t.Error("URL lost short secret carrier")
+	if result := sc.Scan(t.Context(), "https://api.vendor.example/?q="+url.QueryEscape(body)); result.Allowed ||
+		result.Scanner != ScannerDLP || !strings.Contains(result.Reason, knownSecretURLReason) {
+		t.Errorf("URL lost short secret carrier: allowed=%v scanner=%s reason=%q", result.Allowed, result.Scanner, result.Reason)
 	}
 	views := sc.decodedKnownSecretViews(encoded, nil)
 	if len(views) == 0 {
