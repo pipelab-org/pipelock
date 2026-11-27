@@ -900,6 +900,27 @@ func TestExpireCmd_RetentionDisabledIsNoOp(t *testing.T) {
 	}
 }
 
+func TestExpireCmd_RefusesReceiptProfileDirectory(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	profile := filepath.Join(dir, "stream.receipt-v3.jsonl")
+	if err := os.WriteFile(profile, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	cmd := Cmd()
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"expire", "--receipt-dir", dir, "--retention-days", "1"})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "pipelock verify-receipt") {
+		t.Fatalf("expire on a receipt-profile directory = %v, want verifier guidance", err)
+	}
+	if _, statErr := os.Stat(profile); statErr != nil {
+		t.Fatalf("receipt-profile file changed: %v", statErr)
+	}
+}
+
 func writeExpireTestFile(t *testing.T, dir, name string) string {
 	t.Helper()
 	path := filepath.Join(dir, name)

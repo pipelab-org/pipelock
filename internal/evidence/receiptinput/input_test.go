@@ -182,6 +182,17 @@ func TestReceiptInputTreeExtraCandidate(t *testing.T) {
 	}
 }
 
+func TestReceiptInputRefuseLocationAllowsLegacyEvidence(t *testing.T) {
+	dir := t.TempDir()
+	line := `{"v":2,"seq":0,"ts":"2026-01-01T00:00:00Z","session_id":"sess-1","type":"request"}` + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "evidence-sess-1-0.jsonl"), []byte(line), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := receiptinput.RefuseLocation(dir, "example", "the example reader"); err != nil {
+		t.Fatalf("legacy-only location refused: %v", err)
+	}
+}
+
 func TestReceiptInputRefuseLocationAndPayloadBoundaries(t *testing.T) {
 	const command, reader = "example", "the example reader"
 	missing := filepath.Join(t.TempDir(), "missing")
