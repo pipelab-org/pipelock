@@ -51,7 +51,5 @@ func TestWSProxy_BenchCrossMessage_GitHubToken(t *testing.T) {
 	// joinLabeledWSCrossMessageSuffixes("part1: ghp_ABCDEFGHIJKLMN",
 	// "part2: OPQRSTUVWXYZabcdef12") yields "ghp_" + 34 alphanumeric chars,
 	// which matches the Benchmark GitHub Token pattern's {30,} length.
-	if _, _, err := wsutil.ReadServerData(conn); err == nil {
-		t.Fatal("expected connection closed on cross-message labeled GitHub PAT, got nil — pipelock allowed the split-key exfiltration")
-	}
+	requireWSCloseCode(t, conn, ws.StatusPolicyViolation)
 }

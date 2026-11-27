@@ -109,7 +109,7 @@ func exerciseLicensedSSE(t *testing.T, revoke bool) {
 		}
 		return
 	}
-	if err == nil && strings.Contains(ev, "two") {
+	if ev != "" {
 		t.Fatalf("paid-profile forward SSE stream delivered post-revocation event %q", ev)
 	}
 	var timeout net.Error

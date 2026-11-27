@@ -184,8 +184,17 @@ func revocationReceiptConnectionConfig(cfg *config.Config) {
 
 // Frames arriving while revocation wakes a blocked read must not become DLP findings.
 func TestWSReceiptsAfterRevocation(t *testing.T) {
-	for _, op := range []ws.OpCode{ws.OpText, ws.OpPing} {
-		t.Run(opCodeLabel(op), func(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		op     ws.OpCode
+		closed bool
+	}{
+		{"text", ws.OpText, false},
+		{"control", ws.OpPing, false},
+		{"closed_text", ws.OpText, true},
+		{"closed_control", ws.OpPing, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			backend, stop := wsEchoServer(t)
 			defer stop()
 			addr, p, cleanup := setupWSProxyDefaultWithProxy(t, revocationReceiptConnectionConfig)
@@ -203,15 +212,21 @@ func TestWSReceiptsAfterRevocation(t *testing.T) {
 			if !p.SetLicenseRevoked(p.CurrentConfig(), true) {
 				t.Fatal("revocation not published")
 			}
-			if err := wsutil.WriteClientMessage(conn, op, []byte("plain2")); err != nil {
-				t.Fatal(err)
+			if tc.closed {
+				_ = conn.Close()
 			}
-			if err := conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
-				t.Fatal(err)
-			}
-			_, _, readErr := wsutil.ReadServerData(conn)
-			if !errors.Is(readErr, io.EOF) && !errors.Is(readErr, net.ErrClosed) {
-				t.Errorf("revocation must close without a policy frame: %v", readErr)
+			// Revocation may close the socket before this final frame is written.
+			// The signed outcome below must still establish the revocation reason.
+			if err := wsutil.WriteClientMessage(conn, tc.op, []byte("plain2")); err != nil {
+				t.Logf("post-revocation write: %v", err)
+			} else {
+				if err := conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+					t.Fatal(err)
+				}
+				_, _, readErr := wsutil.ReadServerData(conn)
+				if !errors.Is(readErr, io.EOF) && !errors.Is(readErr, net.ErrClosed) {
+					t.Errorf("revocation must close without a policy frame: %v", readErr)
+				}
 			}
 			testwait.For(t, 3*time.Second, func() bool {
 				entries, err := os.ReadDir(rph.dir)

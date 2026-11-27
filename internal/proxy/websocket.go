@@ -91,6 +91,7 @@ type wsRelay struct {
 	upstreamCancelled   bool
 	panicked            atomic.Bool               // either pump can panic; read after both return
 	clientClosing       atomic.Bool               // client sent Close; only the upstream Close reply may follow
+	upstreamControlMu   sync.Mutex                // serializes relay-originated Close and Pong frames to upstream
 	clientCloseDeadline atomic.Pointer[time.Time] // one grace deadline, never renewed by discarded frames
 	// reqPolicyHeaders and reqPolicyPath are the handshake route inputs reused
 	// for per-frame request_policy evaluation, so a frame is judged against the
@@ -1870,7 +1871,13 @@ func (r *wsRelay) run(ctx context.Context) wsRelayStats {
 	// Without this, a client that disconnected left the upstream reader
 	// waiting out the full idle timeout, holding the upstream socket and the
 	// scanner for that long.
-	stopUpstreamWake := context.AfterFunc(ctx, func() { wakeRelayConn(r.upstreamConn) })
+	stopUpstreamWake := context.AfterFunc(ctx, func() {
+		if r.clientClosing.Load() {
+			_ = r.upstreamConn.SetReadDeadline(r.closeGraceDeadline())
+			return
+		}
+		wakeRelayConn(r.upstreamConn)
+	})
 	defer stopUpstreamWake()
 	stopClientWake := context.AfterFunc(ctx, func() { wakeRelayConn(r.clientConn) })
 	defer stopClientWake()
@@ -2983,7 +2990,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 		if r.clientClosing.Load() {
 			// Keep the context live for the close reply, bounded by the close
 			// grace. Revocation still cancels the parent and stops both pumps.
-			wakeRelayConnUntil(r.upstreamConn, r.closeGraceDeadline())
+			_ = r.upstreamConn.SetReadDeadline(r.closeGraceDeadline())
 		} else if !r.receiptShard.NativeLease.Stopping() {
 			cancel()
 		}
@@ -3178,9 +3185,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 		if hdr.OpCode.IsControl() {
 			if hdr.OpCode == ws.OpClose {
 				// Forward close frame to upstream, then exit.
-				r.closeGraceDeadline()
-				r.clientClosing.Store(true)
-				r.writeUpstreamClose(ws.StatusNormalClosure, "client closed")
+				r.startUpstreamCloseGrace()
 				return
 			}
 			if ctx.Err() != nil {
@@ -3887,6 +3892,12 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 				r.upstreamCancelled = true
 				return
 			}
+			if hdr.OpCode == ws.OpPing && hdr.Masked {
+				ws.Cipher(payload, hdr.Mask, 0)
+			}
+			if !r.answerPingDuringClientClose(ctx, hdr.OpCode, payload) {
+				return
+			}
 			continue
 		}
 
@@ -3918,6 +3929,13 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 				r.writeClientClose(ws.StatusNormalClosure, "upstream closed")
 				return
 			}
+			// A Ping can pass the closing check above and then cross the
+			// client's Close while it is scanned. Answer it with the payload as
+			// received, not a value the scan may have rewritten.
+			var receivedPing []byte
+			if hdr.OpCode == ws.OpPing {
+				receivedPing = append([]byte(nil), payload...)
+			}
 			payload, responseBlocked := r.enforceUpstreamTextPayload(ctx, log, payload, false)
 			if responseBlocked {
 				blocked = true
@@ -3928,6 +3946,9 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 				return
 			}
 			if r.clientClosing.Load() {
+				if !r.answerPingDuringClientClose(ctx, hdr.OpCode, receivedPing) {
+					return
+				}
 				continue
 			}
 			// Forward Ping/Pong to client (proxy is SERVER to client, no masking).

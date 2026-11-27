@@ -5,11 +5,14 @@ package proxy
 
 import (
 	"bufio"
+	"context"
 	"net"
 	"net/http"
 	"net/url"
+	"time"
 
 	"github.com/gobwas/ws"
+	"github.com/gobwas/ws/wsutil"
 
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -211,7 +214,7 @@ func (r *wsRelay) refusalClose(code ws.StatusCode, reason string) (ws.StatusCode
 func (r *wsRelay) writeKillSwitchClose() {
 	plwsutil.WriteCloseFrame(unprojectedConn(r.clientConn), ws.StatusPolicyViolation,
 		blockInfoFor(blockreason.KillSwitchActive, "kill_switch").WithRequestID(r.requestID).CloseFramePayload())
-	plwsutil.WriteClientCloseFrame(unprojectedConn(r.upstreamConn), ws.StatusPolicyViolation, "kill switch active")
+	r.writeUpstreamCloseFrame(unprojectedConn(r.upstreamConn), ws.StatusPolicyViolation, "kill switch active")
 }
 
 func unprojectedConn(conn net.Conn) net.Conn {
@@ -228,5 +231,55 @@ func (r *wsRelay) writeClientClose(code ws.StatusCode, reason string) {
 
 func (r *wsRelay) writeUpstreamClose(code ws.StatusCode, reason string) {
 	code, reason = r.refusalClose(code, reason)
-	plwsutil.WriteClientCloseFrame(r.upstreamConn, code, reason)
+	r.writeUpstreamCloseFrame(r.upstreamConn, code, reason)
+}
+
+func (r *wsRelay) writeUpstreamCloseFrame(conn net.Conn, code ws.StatusCode, reason string) {
+	r.upstreamControlMu.Lock()
+	defer r.upstreamControlMu.Unlock()
+	if r.clientClosing.Load() {
+		plwsutil.WriteClientCloseFrameUntil(conn, code, reason, r.closeGraceDeadline())
+		return
+	}
+	plwsutil.WriteClientCloseFrame(conn, code, reason)
+}
+
+// Publish closing while holding the writer lock so any Pong uses the Close
+// write's deadline, including when upstream sent its Ping before seeing Close.
+func (r *wsRelay) startUpstreamCloseGrace() {
+	code, reason := r.refusalClose(ws.StatusNormalClosure, "client closed")
+	r.upstreamControlMu.Lock()
+	defer r.upstreamControlMu.Unlock()
+	deadline := r.closeGraceDeadline()
+	r.clientClosing.Store(true)
+	plwsutil.WriteClientCloseFrameUntil(r.upstreamConn, code, reason, deadline)
+}
+
+// answerPingDuringClientClose handles an upstream frame that arrives while
+// the client's Close is pending. RFC 6455 section 5.5.2: an endpoint answers a
+// Ping until it has received a Close, and having sent one does not exempt it.
+// The Pong echoes the Ping payload as received and is never forwarded to the
+// client; every other frame is discarded. It reports false when the relay must
+// stop because the Pong could not be written.
+func (r *wsRelay) answerPingDuringClientClose(ctx context.Context, op ws.OpCode, payload []byte) bool {
+	if op != ws.OpPing {
+		return true
+	}
+	if err := r.writeUpstreamClosingPong(ctx, payload); err != nil {
+		r.upstreamCancelled = true
+		return false
+	}
+	return true
+}
+
+func (r *wsRelay) writeUpstreamClosingPong(ctx context.Context, payload []byte) error {
+	r.upstreamControlMu.Lock()
+	defer r.upstreamControlMu.Unlock()
+	// The stop can arrive while reading the Ping or waiting for the Close
+	// write. Let the relay loop handle terminal state and keep its audit path.
+	if ctx.Err() != nil || r.receiptShard.NativeLease.Stopping() ||
+		(r.proxy.ks != nil && r.proxy.ks.IsActive()) || !time.Now().Before(r.closeGraceDeadline()) {
+		return nil
+	}
+	return wsutil.WriteClientMessage(r.upstreamConn, ws.OpPong, payload)
 }

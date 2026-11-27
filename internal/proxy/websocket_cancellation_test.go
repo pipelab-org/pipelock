@@ -8,13 +8,16 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/gobwas/ws"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -186,17 +189,113 @@ func TestWSRelayClientCloseDoesNotForwardData(t *testing.T) {
 					t.Fatal("intervening frame extended the close grace")
 				}
 			}
+			// RFC 6455 section 5.5.2: until upstream's Close arrives, each Ping
+			// is answered upstream with a masked Pong echoing its payload; no
+			// other frame produces an upstream write.
+			var pongs []string
+			for source.written.Len() > 0 {
+				reply, err := ws.ReadFrame(&source.written)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if reply.Header.OpCode != ws.OpPong || !reply.Header.Masked {
+					t.Fatalf("unexpected upstream frame during close grace: %+v", reply.Header)
+				}
+				pongs = append(pongs, string(ws.UnmaskFrame(reply).Payload))
+			}
+			want := []string(nil)
+			if op == ws.OpPing {
+				want = []string{"after close", "another discarded frame"}
+			}
+			if !slices.Equal(pongs, want) {
+				t.Fatalf("upstream Pongs = %q, want %q", pongs, want)
+			}
 		})
 	}
 }
 
 type cancelPayloadConn struct {
 	net.Conn
-	reader    *bytes.Reader
-	cancel    context.CancelFunc
-	writes    int
-	written   bytes.Buffer
-	deadlines []time.Time
+	reader         *bytes.Reader
+	cancel         context.CancelFunc
+	writes         int
+	written        bytes.Buffer
+	deadlines      []time.Time
+	writeDeadlines []time.Time
+}
+
+func TestWSRelayClosingPingHonorsStopAfterPayload(t *testing.T) {
+	for _, stop := range []string{"cancel", "kill_switch", "capacity"} {
+		t.Run(stop, func(t *testing.T) {
+			cfg := testScannerConfig()
+			p := newTestProxyWithConfig(t, cfg)
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			var shard receipt.EmitOpts
+			stopRelay := cancel
+			switch stop {
+			case "kill_switch":
+				p.ks = killswitch.New(cfg)
+				stopRelay = func() { p.ks.SetAPI(true) }
+			case "capacity":
+				_, emitter, _ := newNativeCapacityProxy(t, 16)
+				lease, err := emitter.ReserveNativeRecords(1)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(lease.Release)
+				shard.NativeLease = lease
+				stopRelay = func() {
+					if excess, err := emitter.ReserveNativeRecords(32); err == nil {
+						excess.Release()
+						t.Fatal("capacity reservation unexpectedly succeeded")
+					}
+					if !lease.Stopping() {
+						t.Fatal("capacity did not stop")
+					}
+				}
+			}
+			var wire bytes.Buffer
+			if err := ws.WriteFrame(&wire, ws.NewPingFrame([]byte("close grace"))); err != nil {
+				t.Fatal(err)
+			}
+			source := &cancelPayloadConn{reader: bytes.NewReader(wire.Bytes()), cancel: stopRelay}
+			relay := &wsRelay{proxy: p, cfg: cfg, upstreamConn: source, clientConn: &cancelPayloadConn{}, maxMsg: 1024, receiptShard: shard}
+			relay.clientClosing.Store(true)
+			_, _, _, blocked := relay.upstreamToClient(ctx, cancel, time.Second)
+			if relay.panicked.Load() || blocked != (stop == "kill_switch") {
+				t.Fatalf("unexpected stop outcome: blocked=%v panic=%v", blocked, relay.panicked.Load())
+			}
+			for source.written.Len() > 0 {
+				frame, err := ws.ReadFrame(&source.written)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if frame.Header.OpCode != ws.OpClose || stop != "kill_switch" {
+					t.Errorf("upstream received opcode %v after %s", frame.Header.OpCode, stop)
+				}
+			}
+		})
+	}
+}
+
+func TestWSRelayClientCloseWriteUsesGraceDeadline(t *testing.T) {
+	cfg := testScannerConfig()
+	p := newTestProxyWithConfig(t, cfg)
+	var wire bytes.Buffer
+	if err := ws.WriteFrame(&wire, ws.MaskFrameInPlace(ws.NewCloseFrame(nil))); err != nil {
+		t.Fatal(err)
+	}
+	source := &cancelPayloadConn{reader: bytes.NewReader(wire.Bytes()), cancel: func() {}}
+	sink := &cancelPayloadConn{}
+	relay := &wsRelay{proxy: p, cfg: cfg, clientConn: source, upstreamConn: sink, maxMsg: 1024}
+	_, _, _, blocked := relay.clientToUpstream(t.Context(), func() {}, time.Second)
+	if blocked || relay.panicked.Load() || sink.writes != 1 || !relay.clientClosing.Load() {
+		t.Fatalf("client Close did not start the closing handshake: blocked=%v writes=%d", blocked, sink.writes)
+	}
+	if len(sink.writeDeadlines) == 0 || !sink.writeDeadlines[0].Equal(relay.closeGraceDeadline()) {
+		t.Fatalf("Close write deadlines = %v, want first deadline %v", sink.writeDeadlines, relay.closeGraceDeadline())
+	}
 }
 
 func TestWSRelayClientCloseGraceExpired(t *testing.T) {
@@ -227,8 +326,12 @@ func (c *cancelPayloadConn) SetReadDeadline(d time.Time) error {
 	c.deadlines = append(c.deadlines, d)
 	return nil
 }
-func (*cancelPayloadConn) SetWriteDeadline(time.Time) error { return nil }
-func (*cancelPayloadConn) Close() error                     { return nil }
+
+func (c *cancelPayloadConn) SetWriteDeadline(d time.Time) error {
+	c.writeDeadlines = append(c.writeDeadlines, d)
+	return nil
+}
+func (*cancelPayloadConn) Close() error { return nil }
 
 // A credential collected before the scan context ended is still a policy
 // block. Only a cancel with nothing found is a quiet teardown, and a deadline
@@ -269,6 +372,42 @@ func TestWSRelayClientTextResultKeepsFindingsAfterContextEnds(t *testing.T) {
 			}
 			if blocked != tc.wantBlocked {
 				t.Fatalf("blocked = %v, want %v", blocked, tc.wantBlocked)
+			}
+		})
+	}
+}
+
+// Both closing guards answer through one helper: a Ping is answered upstream
+// with a masked Pong carrying exactly the payload passed in (the bytes as
+// received, captured before any scan), and every other frame is discarded.
+func TestWSRelayAnswerPingDuringClientClose(t *testing.T) {
+	cfg := testScannerConfig()
+	p := newTestProxyWithConfig(t, cfg)
+	for _, tc := range []struct {
+		op       ws.OpCode
+		wantPong bool
+	}{{ws.OpPing, true}, {ws.OpPong, false}, {ws.OpText, false}, {ws.OpBinary, false}} {
+		t.Run(opCodeLabel(tc.op), func(t *testing.T) {
+			upstream := &cancelPayloadConn{}
+			relay := &wsRelay{proxy: p, cfg: cfg, upstreamConn: upstream, clientConn: &cancelPayloadConn{}}
+			deadline := time.Now().Add(time.Minute)
+			relay.clientCloseDeadline.Store(&deadline)
+			relay.clientClosing.Store(true)
+			if !relay.answerPingDuringClientClose(t.Context(), tc.op, []byte("as received")) {
+				t.Fatal("helper asked the relay to stop")
+			}
+			if !tc.wantPong {
+				if upstream.writes != 0 {
+					t.Fatalf("frame %v produced an upstream write", tc.op)
+				}
+				return
+			}
+			reply, err := ws.ReadFrame(&upstream.written)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if reply.Header.OpCode != ws.OpPong || !reply.Header.Masked || string(ws.UnmaskFrame(reply).Payload) != "as received" {
+				t.Fatalf("upstream reply = %+v %q, want masked Pong echoing the received payload", reply.Header, ws.UnmaskFrame(reply).Payload)
 			}
 		})
 	}

@@ -78,9 +78,7 @@ func TestWSProxyRequestPolicy_MatchingFrameBlocks(t *testing.T) {
 	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte(`{"action":"deleteAll"}`)); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	if _, _, err := wsutil.ReadServerData(conn); err == nil {
-		t.Fatal("matching discriminator frame should close the connection")
-	}
+	requireWSCloseCode(t, conn, ws.StatusPolicyViolation)
 }
 
 func TestWSProxyRequestPolicy_JSONContentTypeScopedFrameBlocks(t *testing.T) {
@@ -98,9 +96,7 @@ func TestWSProxyRequestPolicy_JSONContentTypeScopedFrameBlocks(t *testing.T) {
 	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte(`{"action":"deleteAll"}`)); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	if _, _, err := wsutil.ReadServerData(conn); err == nil {
-		t.Fatal("content_type-scoped discriminator frame should close the connection")
-	}
+	requireWSCloseCode(t, conn, ws.StatusPolicyViolation)
 }
 
 // A present-but-non-string discriminator value in a frame is opaque and must
@@ -117,9 +113,7 @@ func TestWSProxyRequestPolicy_OpaqueFrameBlocks(t *testing.T) {
 	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte(`{"action":["delete"]}`)); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	if _, _, err := wsutil.ReadServerData(conn); err == nil {
-		t.Fatal("opaque (non-string) discriminator frame should close the connection")
-	}
+	requireWSCloseCode(t, conn, ws.StatusPolicyViolation)
 }
 
 // A non-JSON text frame on a route with a body-predicate rule cannot be
@@ -138,9 +132,7 @@ func TestWSProxyRequestPolicy_NonJSONFrameFailsClosed(t *testing.T) {
 	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte("not json")); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	if _, _, err := wsutil.ReadServerData(conn); err == nil {
-		t.Fatal("non-JSON frame on a body-predicate route should fail closed")
-	}
+	requireWSCloseCode(t, conn, ws.StatusPolicyViolation)
 }
 
 // on_parse_error=warn relaxes the parse-error fail-closed: a non-JSON frame is
