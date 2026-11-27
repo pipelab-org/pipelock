@@ -326,6 +326,7 @@ func (c *cancelPayloadConn) SetReadDeadline(d time.Time) error {
 	c.deadlines = append(c.deadlines, d)
 	return nil
 }
+
 func (c *cancelPayloadConn) SetWriteDeadline(d time.Time) error {
 	c.writeDeadlines = append(c.writeDeadlines, d)
 	return nil
