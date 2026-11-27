@@ -50,7 +50,10 @@ type wsServerEnd struct {
 
 // readWSServerEnd reads server frames without answering them. Validating a
 // received Close must not depend on writing the Close reply, which fails when
-// the peer closes right after sending its own.
+// the peer closes right after sending its own. ws.ReadFrame does not enforce
+// RFC 6455 frame rules, so each header is checked before a control frame is
+// skipped: an oversized, fragmented or masked server frame is an error, not
+// something to step over on the way to EOF.
 func readWSServerEnd(conn net.Conn, wait time.Duration) wsServerEnd {
 	_ = conn.SetReadDeadline(time.Now().Add(wait))
 	for {
@@ -58,8 +61,8 @@ func readWSServerEnd(conn net.Conn, wait time.Duration) wsServerEnd {
 		if err != nil {
 			return wsServerEnd{err: err}
 		}
-		if frame.Header.Masked {
-			frame = ws.UnmaskFrame(frame)
+		if err := ws.CheckHeader(frame.Header, ws.StateClientSide); err != nil {
+			return wsServerEnd{err: fmt.Errorf("server sent an invalid frame (op=%v len=%d): %w", frame.Header.OpCode, frame.Header.Length, err)}
 		}
 		switch frame.Header.OpCode {
 		case ws.OpClose:
@@ -109,6 +112,12 @@ func wsTestCloseThenDisconnect(code ws.StatusCode) func(net.Conn) {
 	}
 }
 
+// wsTestWriteOversizedPing writes a Ping with a 200-byte payload, past the
+// 125 bytes RFC 6455 allows a control frame. ws.WriteFrame does not refuse it.
+func wsTestWriteOversizedPing(c net.Conn) {
+	_ = ws.WriteFrame(c, ws.NewPingFrame(make([]byte, 200)))
+}
+
 func runWSEvidenceCase(t *testing.T, server func(net.Conn), check func(net.Conn) error, wantErr string) {
 	t.Helper()
 	client, srv := net.Pipe()
@@ -145,6 +154,10 @@ func TestWSCloseEvidenceRejectsEverythingButTheExpectedClose(t *testing.T) {
 		{name: "bare disconnect", server: func(c net.Conn) { _ = c.Close() }, wantErr: "want WebSocket close"},
 		{name: "silent until deadline", server: func(net.Conn) {}, wantErr: "want WebSocket close"},
 		{name: "data message", server: func(c net.Conn) { _ = wsutil.WriteServerMessage(c, ws.OpText, []byte("forwarded")) }, wantErr: "got a data frame"},
+		{name: "oversized ping before the close", server: func(c net.Conn) {
+			wsTestWriteOversizedPing(c)
+			wsTestCloseThenDisconnect(ws.StatusPolicyViolation)(c)
+		}, wantErr: "invalid frame"},
 	} {
 		t.Run(tc.name, func(t *testing.T) { runWSEvidenceCase(t, tc.server, check, tc.wantErr) })
 	}
@@ -164,6 +177,10 @@ func TestWSEndEvidenceAcceptsOnlyEOFOrTheAllowedClose(t *testing.T) {
 		{name: "other close code", server: wsTestCloseThenDisconnect(ws.StatusPolicyViolation), wantErr: "want EOF or 1002"},
 		{name: "silent until deadline", server: func(net.Conn) {}, wantErr: "want EOF or WebSocket close 1002"},
 		{name: "data message", server: func(c net.Conn) { _ = wsutil.WriteServerMessage(c, ws.OpText, []byte("forwarded")) }, wantErr: "got a data frame"},
+		{name: "oversized ping then disconnect", server: func(c net.Conn) {
+			wsTestWriteOversizedPing(c)
+			_ = c.Close()
+		}, wantErr: "invalid frame"},
 	} {
 		t.Run(tc.name, func(t *testing.T) { runWSEvidenceCase(t, tc.server, check, tc.wantErr) })
 	}
