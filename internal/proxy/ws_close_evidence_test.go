@@ -57,9 +57,15 @@ type wsServerEnd struct {
 // something to step over on the way to EOF.
 func readWSServerEnd(conn net.Conn, wait time.Duration) wsServerEnd {
 	_ = conn.SetReadDeadline(time.Now().Add(wait))
+	reader := io.LimitedReader{R: conn}
 	for {
-		header, err := ws.ReadHeader(conn)
+		reader.N = ws.MaxHeaderSize
+		header, err := ws.ReadHeader(&reader)
 		if err != nil {
+			// ReadHeader may see EOF on a later read within the same header.
+			if errors.Is(err, io.EOF) && reader.N < ws.MaxHeaderSize {
+				err = io.ErrUnexpectedEOF
+			}
 			return wsServerEnd{err: err}
 		}
 		// Check the header before reading its payload: a peer that sends an
@@ -79,10 +85,20 @@ func readWSServerEnd(conn net.Conn, wait time.Duration) wsServerEnd {
 			}
 			return wsServerEnd{err: fmt.Errorf("frame payload (op=%v len=%d): %w", header.OpCode, header.Length, err)}
 		}
-		if header.OpCode == ws.OpClose {
-			code, reason := ws.ParseCloseFrameData(payload)
-			return wsServerEnd{closed: true, code: code, reason: reason}
+		if header.OpCode != ws.OpClose {
+			continue
 		}
+		switch len(payload) {
+		case 0:
+			return wsServerEnd{closed: true}
+		case 1:
+			return wsServerEnd{err: fmt.Errorf("close frame status: %w", io.ErrUnexpectedEOF)}
+		}
+		code, reason := ws.ParseCloseFrameData(payload)
+		if err := ws.CheckCloseFrameData(code, reason); err != nil {
+			return wsServerEnd{err: fmt.Errorf("invalid close payload: %w", err)}
+		}
+		return wsServerEnd{closed: true, code: code, reason: reason}
 	}
 }
 
@@ -165,6 +181,44 @@ func TestWSServerEndLeavesUnexpectedDataPayloadUnread(t *testing.T) {
 	}
 	if got := input.Len(); got != len(payload) {
 		t.Fatalf("unread payload bytes = %d, want %d", got, len(payload))
+	}
+}
+
+func TestWSEndEvidenceRejectsPartialExtendedHeader(t *testing.T) {
+	// RFC 6455 uses the extended length field for a 126-byte data frame.
+	frame := ws.NewBinaryFrame(make([]byte, 126))
+	input := io.LimitReader(wsWire(t, frame), 2)
+	client, server := net.Pipe()
+	t.Cleanup(func() { _ = client.Close(); _ = server.Close() })
+	conn := readerConn{Reader: input, Conn: client}
+
+	if err := wsEndEvidence(conn, ws.StatusProtocolError, time.Second); !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("err = %v, want unexpected EOF", err)
+	}
+}
+
+func TestWSCloseEvidenceValidatesPayload(t *testing.T) {
+	const status = ws.StatusPolicyViolation
+	payload := ws.NewCloseFrameBody(status, "é")
+	client, server := net.Pipe()
+	t.Cleanup(func() { _ = client.Close(); _ = server.Close() })
+	for _, tc := range []struct {
+		name    string
+		payload []byte
+		want    ws.StatusCode
+		wantErr error
+	}{
+		{name: "empty payload"},
+		{name: "complete reason", payload: payload, want: status},
+		{name: "partial reason", payload: payload[:len(payload)-1], want: status, wantErr: ws.ErrProtocolInvalidUTF8},
+		{name: "partial status", payload: payload[:1], wantErr: io.ErrUnexpectedEOF},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			conn := readerConn{Reader: wsWire(t, ws.NewCloseFrame(tc.payload)), Conn: client}
+			if err := wsCloseEvidence(conn, tc.want, time.Second); !errors.Is(err, tc.wantErr) {
+				t.Fatalf("err = %v, want %v", err, tc.wantErr)
+			}
+		})
 	}
 }
 
