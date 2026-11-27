@@ -155,14 +155,18 @@ func TestEmitCorrelation_MCPHTTPListenerRefusals(t *testing.T) {
 	for _, tc := range []struct {
 		name, tag, want, label string
 		headers                func(http.Header)
+		identityRefusal        bool
 	}{
-		{"header_dlp", mcpCorrTag, mcpCorrTag, scanner.AuditMCPHeaderDLP, func(h http.Header) { h.Set("Authorization", "Bearer AKIA"+"Z7VRSQ5TJN2XMPLQ") }},
-		{"tool_policy", mcpCorrTag, mcpCorrTag, scanner.AuditMCPToolPolicy, nil},
-		{"invalid_tag", "invalid tag", "", scanner.AuditMCPToolPolicy, nil},
-		{"secret_tag", "AKIA" + "Z7VRSQ5TJN2XMPLQ", "", scanner.AuditMCPToolPolicy, nil},
-		{"absent_tag", "", "", scanner.AuditMCPToolPolicy, nil},
-		{"origin_before_vetting", mcpCorrTag, "", scanner.AuditMCPProtocol, func(h http.Header) { h.Set("Origin", "https://untrusted.example") }},
-		{"protocol_before_vetting", mcpCorrTag, "", scanner.AuditMCPProtocol, func(h http.Header) { h.Set("MCP-Protocol-Version", "invalid") }},
+		{"header_dlp", mcpCorrTag, mcpCorrTag, scanner.AuditMCPHeaderDLP, func(h http.Header) { h.Set("Authorization", "Bearer AKIA"+"Z7VRSQ5TJN2XMPLQ") }, false},
+		{"tool_policy", mcpCorrTag, mcpCorrTag, scanner.AuditMCPToolPolicy, nil, false},
+		{"invalid_tag", "invalid tag", "", scanner.AuditMCPToolPolicy, nil, false},
+		{"secret_tag", "AKIA" + "Z7VRSQ5TJN2XMPLQ", "", scanner.AuditMCPToolPolicy, nil, false},
+		{"absent_tag", "", "", scanner.AuditMCPToolPolicy, nil, false},
+		{"origin_before_vetting", mcpCorrTag, "", scanner.AuditMCPProtocol, func(h http.Header) { h.Set("Origin", "https://untrusted.example") }, false},
+		{"protocol_before_vetting", mcpCorrTag, "", scanner.AuditMCPProtocol, func(h http.Header) { h.Set("MCP-Protocol-Version", "invalid") }, false},
+		// A server identity refusal happens after the scanner is ready, so the
+		// tag can be vetted and must reach the refusal's block event.
+		{"server_identity_refusal", mcpCorrTag, mcpCorrTag, scanner.AuditAgentIdentity, nil, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			sink := &mcpCorrelationSink{}
@@ -174,6 +178,11 @@ func TestEmitCorrelation_MCPHTTPListenerRefusals(t *testing.T) {
 			opts := MCPProxyOpts{
 				Scanner: testScannerForHTTP(t), AuditLogger: logger, CorrelationHeader: mcpCorrHeader,
 				PolicyCfg: buildPolicyConfig(config.ActionBlock, []config.ToolPolicyRule{{Name: "deny-echo", ToolPattern: "^echo$", Action: config.ActionBlock}}),
+			}
+			if tc.identityRefusal {
+				opts.ServerIdentityHeadersFn = func(http.Header) ServerIdentity {
+					return ServerIdentity{Refusal: identityRefusalText}
+				}
 			}
 			baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, opts)
 			headers := currentWireHeaders("tools/call", "echo")
