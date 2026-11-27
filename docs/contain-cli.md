@@ -719,7 +719,8 @@ Flags:
 Exit code is 0 if every check passed, 1 if any check failed, and 2 if the
 diagnosis was incomplete because a check skipped or was inconclusive. Missing
 tools skip; unattributable raw-egress failures report `unknown` rather than
-claiming containment.
+claiming containment. A check that reports `off`, such as `filesystem_confinement`
+when `containment.filesystem.mode` is `off`, doesn't change the exit code.
 
 After the result summary, `doctor` prints the resolved evidence paths so operators know where to find audit logs and signed receipts:
 
