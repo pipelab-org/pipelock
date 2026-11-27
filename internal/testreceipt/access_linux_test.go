@@ -17,6 +17,33 @@ import (
 	"github.com/spf13/cobra"
 )
 
+func TestCreatedV3StreamIgnoresExistingStreams(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("a.receipt-v3.jsonl")
+	write("b.receipt-v3.jsonl")
+	before, err := v3StreamNames(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created, err := createdV3Stream(dir, before); err != nil || created {
+		t.Fatalf("pre-existing streams counted as created: %t, %v", created, err)
+	}
+	write("unrelated.jsonl")
+	if created, err := createdV3Stream(dir, before); err != nil || created {
+		t.Fatalf("non-stream file counted as created: %t, %v", created, err)
+	}
+	write("c.receipt-v3.jsonl")
+	if created, err := createdV3Stream(dir, before); err != nil || !created {
+		t.Fatalf("new stream not detected: %t, %v", created, err)
+	}
+}
+
 func TestObservedSuccessRules(t *testing.T) {
 	const valid = `{"kind":"verify_result","verdict":"VALID","exit_code":0}`
 	for _, tc := range []struct {

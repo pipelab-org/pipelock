@@ -495,6 +495,10 @@ func runAccessProbe(t *testing.T, suite AccessOracle, cmd *cobra.Command, name s
 	for _, arg := range args {
 		argv = append(argv, replace.Replace(arg))
 	}
+	before, err := v3StreamNames(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	watch := watchEvidence(t, dir, file)
 	var out bytes.Buffer
 	code := suite.Invoke(t, argv, &out, side, existing)
@@ -513,12 +517,15 @@ func runAccessProbe(t *testing.T, suite AccessOracle, cmd *cobra.Command, name s
 			}
 			return true
 		}
+		// A runtime that appends opens the existing stream and starts its own.
+		// Only a stream this invocation created excuses the missing verdict; a
+		// second stream that was already present proves nothing.
 		if code == 0 && got.file {
-			streams, err := filepath.Glob(filepath.Join(dir, "*.receipt-v3.jsonl"))
+			created, err := createdV3Stream(dir, before)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(streams) > 1 {
+			if created {
 				return true
 			}
 		}
@@ -527,6 +534,33 @@ func runAccessProbe(t *testing.T, suite AccessOracle, cmd *cobra.Command, name s
 		t.Errorf("%s opened v3 evidence and exited successfully without a v3 verification verdict", name)
 	}
 	return true
+}
+
+// v3StreamNames lists the receipt-profile stream files in dir.
+func v3StreamNames(dir string) (map[string]bool, error) {
+	streams, err := filepath.Glob(filepath.Join(dir, "*.receipt-v3.jsonl"))
+	if err != nil {
+		return nil, err
+	}
+	names := make(map[string]bool, len(streams))
+	for _, stream := range streams {
+		names[filepath.Base(stream)] = true
+	}
+	return names, nil
+}
+
+// createdV3Stream reports whether dir now holds a stream absent from before.
+func createdV3Stream(dir string, before map[string]bool) (bool, error) {
+	after, err := v3StreamNames(dir)
+	if err != nil {
+		return false, err
+	}
+	for name := range after {
+		if !before[name] {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func validObservedSuccess(name string, access observedAccess, output string) bool {

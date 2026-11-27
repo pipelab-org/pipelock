@@ -914,8 +914,8 @@ func TestExpireCmd_RefusesReceiptProfileDirectory(t *testing.T) {
 	cmd.SetErr(&buf)
 	cmd.SetArgs([]string{"expire", "--receipt-dir", dir, "--retention-days", "1"})
 	err := cmd.Execute()
-	if err == nil || !strings.Contains(err.Error(), "pipelock verify-receipt") {
-		t.Fatalf("expire on a receipt-profile directory = %v, want verifier guidance", err)
+	if err == nil || !strings.Contains(err.Error(), "pipelock verify-receipt --chain") {
+		t.Fatalf("expire on a receipt-profile directory = %v, want directory verifier guidance", err)
 	}
 	after, readErr := os.ReadFile(filepath.Clean(profile))
 	if readErr != nil || !bytes.Equal(after, content) {
