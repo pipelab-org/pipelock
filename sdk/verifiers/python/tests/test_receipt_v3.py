@@ -454,6 +454,17 @@ def test_directory_rejects_an_evidence_subdirectory(tmp_path):
         verify_v3([tmp_path], V3Options(directory=True))
 
 
+def test_directory_does_not_accept_a_nested_receipt_profile(tmp_path):
+    name = "11111111111111111111111111111111-0000000000000000.receipt-v3.jsonl"
+    shutil.copyfile(VECTORS / "g04-absent-max-write-error-pin" / name, tmp_path / name)
+    leaf = tmp_path / "mid" / "leaf"
+    leaf.mkdir(parents=True)
+    shutil.copyfile(VECTORS / "g04-absent-max-write-error-pin" / name, leaf / name)
+    with pytest.raises(ValueError, match="pipelock verify-receipt --chain") as caught:
+        verify_v3([tmp_path], V3Options(directory=True, allow_unpinned=True))
+    assert str(leaf) in str(caught.value)
+
+
 def test_partial_history_acceptance_requires_the_named_missing_predecessor():
     path = next(
         p
