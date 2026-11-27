@@ -4,6 +4,7 @@
 package proxy
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -66,23 +67,21 @@ func readWSServerEnd(conn net.Conn, wait time.Duration) wsServerEnd {
 		if err := ws.CheckHeader(header, ws.StateClientSide); err != nil {
 			return wsServerEnd{err: fmt.Errorf("server sent an invalid frame (op=%v len=%d): %w", header.OpCode, header.Length, err)}
 		}
-		frame := ws.Frame{Header: header, Payload: make([]byte, header.Length)}
-		if _, err := io.ReadFull(conn, frame.Payload); err != nil {
+		if !header.OpCode.IsControl() {
+			return wsServerEnd{data: &header}
+		}
+		// CheckHeader limits control payloads to ws.MaxControlFramePayloadSize.
+		payload := make([]byte, header.Length)
+		if _, err := io.ReadFull(conn, payload); err != nil {
 			// A frame cut off mid-payload is a truncated frame, never a clean end.
 			if errors.Is(err, io.EOF) {
 				err = io.ErrUnexpectedEOF
 			}
 			return wsServerEnd{err: fmt.Errorf("frame payload (op=%v len=%d): %w", header.OpCode, header.Length, err)}
 		}
-		switch frame.Header.OpCode {
-		case ws.OpClose:
-			code, reason := ws.ParseCloseFrameData(frame.Payload)
+		if header.OpCode == ws.OpClose {
+			code, reason := ws.ParseCloseFrameData(payload)
 			return wsServerEnd{closed: true, code: code, reason: reason}
-		case ws.OpPing, ws.OpPong:
-			continue
-		default:
-			header := frame.Header
-			return wsServerEnd{data: &header}
 		}
 	}
 }
@@ -148,6 +147,24 @@ func runWSEvidenceCase(t *testing.T, server func(net.Conn), check func(net.Conn)
 	}
 	if err == nil || !strings.Contains(err.Error(), wantErr) {
 		t.Fatalf("err = %v, want it to contain %q", err, wantErr)
+	}
+}
+
+func TestWSServerEndLeavesUnexpectedDataPayloadUnread(t *testing.T) {
+	var input bytes.Buffer
+	payload := []byte("x")
+	if err := ws.WriteFrame(&input, ws.NewBinaryFrame(payload)); err != nil {
+		t.Fatal(err)
+	}
+	client, server := net.Pipe()
+	t.Cleanup(func() { _ = client.Close(); _ = server.Close() })
+
+	end := readWSServerEnd(readerConn{Reader: &input, Conn: client}, time.Second)
+	if end.data == nil || end.data.OpCode != ws.OpBinary {
+		t.Fatalf("expected binary data evidence, got %+v", end)
+	}
+	if got := input.Len(); got != len(payload) {
+		t.Fatalf("unread payload bytes = %d, want %d", got, len(payload))
 	}
 }
 
