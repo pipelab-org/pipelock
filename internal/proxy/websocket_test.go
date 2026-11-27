@@ -819,10 +819,7 @@ func TestWSProxyDLPBlocked(t *testing.T) {
 	}
 
 	// The proxy should close with a policy violation.
-	_, _, err := wsutil.ReadServerData(conn)
-	if err == nil {
-		t.Fatal("expected error (connection should be closed by proxy), got nil")
-	}
+	requireWSCloseCode(t, conn, ws.StatusPolicyViolation)
 }
 
 func TestWSProxyBodyPromptInjectionHardBlocksNonProviderWarnMode(t *testing.T) {
@@ -893,10 +890,7 @@ func TestWSProxyBinaryBlocked(t *testing.T) {
 	}
 
 	// Should be closed with policy violation.
-	_, _, err := wsutil.ReadServerData(conn)
-	if err == nil {
-		t.Fatal("expected error (binary blocked), got nil")
-	}
+	requireWSCloseCode(t, conn, ws.StatusPolicyViolation)
 }
 
 func TestWSProxyBinaryAllowed(t *testing.T) {
@@ -1857,10 +1851,7 @@ func TestWSProxyInjectionBlocked(t *testing.T) {
 	}
 
 	// The proxy should close the connection after detecting injection.
-	_, _, err := wsutil.ReadServerData(conn)
-	if err == nil {
-		t.Fatal("expected error (injection blocked), got nil")
-	}
+	requireWSCloseCode(t, conn, ws.StatusPolicyViolation)
 }
 
 func TestWSProxyInjectionWarn(t *testing.T) {
@@ -2119,10 +2110,7 @@ func TestWSProxyMaxMessageSize(t *testing.T) {
 	}
 
 	// Should be closed with message too big.
-	_, _, err := wsutil.ReadServerData(conn)
-	if err == nil {
-		t.Fatal("expected error (message too large), got nil")
-	}
+	requireWSCloseCode(t, conn, ws.StatusMessageTooBig)
 }
 
 func TestWSProxyCompressedFrameRejected_ClientSide(t *testing.T) {
@@ -2158,10 +2146,7 @@ func TestWSProxyCompressedFrameRejected_ClientSide(t *testing.T) {
 	}
 
 	// Proxy should close with protocol error.
-	_, _, err := wsutil.ReadServerData(conn)
-	if err == nil {
-		t.Fatal("expected close after RSV1 frame, got nil error")
-	}
+	requireWSCloseCode(t, conn, ws.StatusProtocolError)
 }
 
 func TestWSProxyCompressedFrameRejected_ServerSide(t *testing.T) {
@@ -2208,10 +2193,7 @@ func TestWSProxyCompressedFrameRejected_ServerSide(t *testing.T) {
 	}
 
 	// Proxy should close the connection due to RSV1 in server response.
-	_, _, readErr := wsutil.ReadServerData(conn)
-	if readErr == nil {
-		t.Fatal("expected close after server RSV1 frame, got nil error")
-	}
+	requireWSCloseCode(t, conn, ws.StatusProtocolError)
 }
 
 func TestWSProxyCompressionExtensionStripped(t *testing.T) {
@@ -3344,10 +3326,7 @@ func TestWSProxy_CrossMessageDLP_SplitKey(t *testing.T) {
 	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte(suffix)); err != nil {
 		t.Fatalf("write msg2: %v", err)
 	}
-	_, _, err = wsutil.ReadServerData(conn)
-	if err == nil {
-		t.Fatal("expected connection closed on msg2 (cross-message DLP), got nil")
-	}
+	requireWSCloseCode(t, conn, ws.StatusPolicyViolation)
 }
 
 func TestWSProxy_ValidThreeFrameCleanFragmentAllowed(t *testing.T) {
@@ -3446,10 +3425,7 @@ func TestWSProxy_CrossMessageDLP_ThreeWaySplit(t *testing.T) {
 	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte(parts[2])); err != nil {
 		t.Fatalf("write part[2]: %v", err)
 	}
-	_, _, err := wsutil.ReadServerData(conn)
-	if err == nil {
-		t.Fatal("expected connection closed on part[2] (three-way split DLP), got nil")
-	}
+	requireWSCloseCode(t, conn, ws.StatusPolicyViolation)
 }
 
 func TestWSProxy_CrossMessageDLP_CleanSequence(t *testing.T) {
@@ -3571,10 +3547,7 @@ func TestWSProxy_CrossMessageDLP_LongMessageSplit(t *testing.T) {
 	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte(keySuffix)); err != nil {
 		t.Fatalf("write msg2: %v", err)
 	}
-	_, _, err := wsutil.ReadServerData(conn)
-	if err == nil {
-		t.Fatal("expected connection closed on msg2 (cross-message DLP should catch split key with 4096 overlap)")
-	}
+	requireWSCloseCode(t, conn, ws.StatusPolicyViolation)
 }
 
 func TestWSProxy_CrossMessageDLP_AnthropicKey(t *testing.T) {
@@ -3603,10 +3576,7 @@ func TestWSProxy_CrossMessageDLP_AnthropicKey(t *testing.T) {
 	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte(part2)); err != nil {
 		t.Fatalf("write part2: %v", err)
 	}
-	_, _, err := wsutil.ReadServerData(conn)
-	if err == nil {
-		t.Fatal("expected connection closed on part2 (cross-message Anthropic key DLP), got nil")
-	}
+	requireWSCloseCode(t, conn, ws.StatusPolicyViolation)
 }
 
 func TestWSProxyRedaction_CrossMessageDLPFailClosedWhenEnforceDisabled(t *testing.T) {
@@ -3724,10 +3694,7 @@ func TestWSProxy_CrossMessageDLP_FragmentThenSplit(t *testing.T) {
 	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte(suffix)); err != nil {
 		t.Fatalf("write split suffix: %v", err)
 	}
-	_, _, err = wsutil.ReadServerData(conn)
-	if err == nil {
-		t.Fatal("expected cross-message DLP block after fragment+split sequence, got nil")
-	}
+	requireWSCloseCode(t, conn, ws.StatusPolicyViolation)
 }
 
 func TestWSBlockedDomain(t *testing.T) {
@@ -4014,10 +3981,7 @@ func TestWSProxyBinaryBlocked_ServerSide(t *testing.T) {
 	}
 
 	// Proxy should close the connection due to binary frame from upstream.
-	_, _, readErr := wsutil.ReadServerData(conn)
-	if readErr == nil {
-		t.Fatal("expected close after server binary frame, got nil error")
-	}
+	requireWSCloseCode(t, conn, ws.StatusPolicyViolation)
 }
 
 func TestWSProxyBinaryMediaPolicy_StripsServerImage(t *testing.T) {
@@ -4113,10 +4077,7 @@ func TestWSProxyOversizedFrame_ServerSide(t *testing.T) {
 	}
 
 	// Proxy should close the connection due to oversized frame from upstream.
-	_, _, readErr := wsutil.ReadServerData(conn)
-	if readErr == nil {
-		t.Fatal("expected close after oversized server frame, got nil error")
-	}
+	requireWSCloseCode(t, conn, ws.StatusMessageTooBig)
 }
 
 func TestWSProxyInjectionStrip_ServerSide(t *testing.T) {
@@ -4187,10 +4148,7 @@ func TestWSProxyInvalidUTF8_ServerSide(t *testing.T) {
 	}
 
 	// Proxy should close the connection due to invalid UTF-8 from upstream.
-	_, _, readErr := wsutil.ReadServerData(conn)
-	if readErr == nil {
-		t.Fatal("expected close after server invalid UTF-8, got nil error")
-	}
+	requireWSCloseCode(t, conn, ws.StatusInvalidFramePayloadData)
 }
 
 func TestWSProxyFragmentError_ServerSide(t *testing.T) {
@@ -4235,10 +4193,7 @@ func TestWSProxyFragmentError_ServerSide(t *testing.T) {
 		t.Fatalf("write: %v", writeErr)
 	}
 
-	_, _, readErr := wsutil.ReadServerData(conn)
-	if readErr == nil {
-		t.Fatal("expected close after server fragment error, got nil error")
-	}
+	requireWSCloseCode(t, conn, ws.StatusProtocolError)
 }
 
 func TestWSProxyInvalidUTF8_ClientSide(t *testing.T) {
@@ -4273,10 +4228,7 @@ func TestWSProxyInvalidUTF8_ClientSide(t *testing.T) {
 	}
 
 	// Proxy should close the connection due to invalid UTF-8 from client.
-	_, _, readErr := wsutil.ReadServerData(conn)
-	if readErr == nil {
-		t.Fatal("expected close after client invalid UTF-8, got nil error")
-	}
+	requireWSCloseCode(t, conn, ws.StatusInvalidFramePayloadData)
 }
 
 func TestWSProxyOversizedControlFrame_ServerSide(t *testing.T) {
@@ -4324,10 +4276,12 @@ func TestWSProxyOversizedControlFrame_ServerSide(t *testing.T) {
 		t.Fatalf("write: %v", writeErr)
 	}
 
-	_, _, readErr := wsutil.ReadServerData(conn)
-	if readErr == nil {
-		t.Fatal("expected close after server oversized control frame, got nil error")
-	}
+	// The relay closes only the upstream side for an oversized upstream
+	// control frame, so the client sees the connection end without a Close.
+	// It must end before the deadline and deliver nothing.
+	_ = conn.SetReadDeadline(time.Now().Add(testwait.Deadline(10 * time.Second)))
+	_, _, endErr := wsutil.ReadServerData(conn)
+	requireWSClosed(t, endErr)
 }
 
 func TestWSProxyInjectionAsk_ServerSide(t *testing.T) {
@@ -4350,10 +4304,7 @@ func TestWSProxyInjectionAsk_ServerSide(t *testing.T) {
 	}
 
 	// ActionAsk is not supported for WebSocket, so proxy should block (fail closed).
-	_, _, readErr := wsutil.ReadServerData(conn)
-	if readErr == nil {
-		t.Fatal("expected close for ask action on WebSocket, got nil error")
-	}
+	requireWSCloseCode(t, conn, ws.StatusPolicyViolation)
 }
 
 func TestWSProxyAPIKeyHeader(t *testing.T) {
@@ -4436,10 +4387,7 @@ func TestWSProxyAddressPoisoningBlocked(t *testing.T) {
 	}
 
 	// Connection should be closed with policy violation.
-	_, _, err := wsutil.ReadServerData(conn)
-	if err == nil {
-		t.Fatal("expected connection closed (address poisoning block), got nil error")
-	}
+	requireWSCloseCode(t, conn, ws.StatusPolicyViolation)
 }
 
 // TestWSProxyAddressPoisoningAudit verifies that address poisoning in audit

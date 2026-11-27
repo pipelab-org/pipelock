@@ -157,9 +157,7 @@ func TestDefaultIdentityReviewWebSocketReload(t *testing.T) {
 	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte("after")); err != nil {
 		t.Fatal(err)
 	}
-	if msg, _, err := wsutil.ReadServerData(conn); err == nil {
-		t.Fatalf("old identity connection forwarded after reload: %q", msg)
-	}
+	requireWSCloseCode(t, conn, ws.StatusPolicyViolation)
 }
 
 func TestDefaultIdentityReviewIssuerPeerIsolation(t *testing.T) {
