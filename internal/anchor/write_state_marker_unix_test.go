@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -57,29 +58,62 @@ func TestWriteStateMarkerFileDoesNotReplaceImmutableIdentity(t *testing.T) {
 	}
 }
 
+// markerChildDirEnv carries the marker directory to the re-executed
+// child that runs WriteStateMarker under a zero RLIMIT_FSIZE.
+const markerChildDirEnv = "PIPELOCK_ANCHOR_MARKER_CHILD_DIR"
+
+// TestWriteStateMarkerRejectsTempFileWriteFailure lowers RLIMIT_FSIZE in a
+// re-executed child. The limit is process-wide, so lowering it here would also
+// limit the test harness's own log writes and fail the package run with
+// "file too large". The parent never changes its own limit.
 func TestWriteStateMarkerRejectsTempFileWriteFailure(t *testing.T) {
-	if raceEnabled {
-		t.Skip("RLIMIT_FSIZE is process-wide and can interfere with the race test harness")
+	if dir := os.Getenv(markerChildDirEnv); dir != "" {
+		writeStateMarkerUnderZeroFileSizeLimit(t, dir)
+		return
 	}
-	var old syscall.Rlimit
-	if err := syscall.Getrlimit(syscall.RLIMIT_FSIZE, &old); err != nil {
+
+	var before syscall.Rlimit
+	if err := syscall.Getrlimit(syscall.RLIMIT_FSIZE, &before); err != nil {
 		t.Fatalf("Getrlimit: %v", err)
 	}
-	signal.Ignore(syscall.SIGXFSZ)
-	restoreLimit := func() {
-		_ = syscall.Setrlimit(syscall.RLIMIT_FSIZE, &old)
+	dir := t.TempDir()
+	cmd := exec.CommandContext(t.Context(), os.Args[0], // #nosec G204,G702 -- controlled re-exec of this test binary.
+		"-test.run=^TestWriteStateMarkerRejectsTempFileWriteFailure$", "-test.count=1", "-test.v")
+	cmd.Env = append(os.Environ(), markerChildDirEnv+"="+dir)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("temp write failure child: %v\n%s", err, out)
 	}
-	t.Cleanup(func() {
-		restoreLimit()
-		signal.Reset(syscall.SIGXFSZ)
-	})
-	limited := old
+	// A filter that matched nothing would also exit zero, so require the
+	// child's own pass line.
+	if !strings.Contains(string(out), "--- PASS: TestWriteStateMarkerRejectsTempFileWriteFailure") {
+		t.Fatalf("temp write failure child did not run the check:\n%s", out)
+	}
+
+	var after syscall.Rlimit
+	if err := syscall.Getrlimit(syscall.RLIMIT_FSIZE, &after); err != nil {
+		t.Fatalf("Getrlimit after child: %v", err)
+	}
+	if after != before {
+		t.Fatalf("parent RLIMIT_FSIZE changed from %+v to %+v", before, after)
+	}
+	assertNoTempStateMarkers(t, dir)
+}
+
+// writeStateMarkerUnderZeroFileSizeLimit runs in the child process only. The
+// lowered limit dies with the process, so nothing is restored.
+func writeStateMarkerUnderZeroFileSizeLimit(t *testing.T, dir string) {
+	t.Helper()
+	signal.Ignore(syscall.SIGXFSZ)
+	var limited syscall.Rlimit
+	if err := syscall.Getrlimit(syscall.RLIMIT_FSIZE, &limited); err != nil {
+		t.Fatalf("Getrlimit: %v", err)
+	}
 	limited.Cur = 0
 	if err := syscall.Setrlimit(syscall.RLIMIT_FSIZE, &limited); err != nil {
 		t.Fatalf("Setrlimit: %v", err)
 	}
 
-	dir := t.TempDir()
 	err := WriteStateMarker(dir, StateMarker{
 		SessionID:    "proxy",
 		RootHash:     strings.Repeat("a", 64),
@@ -88,13 +122,17 @@ func TestWriteStateMarkerRejectsTempFileWriteFailure(t *testing.T) {
 		BundleSHA256: strings.Repeat("b", 64),
 		BundlePath:   filepath.Join(dir, "bundle.json"),
 	})
-	restoreLimit()
 	if err == nil || !strings.Contains(err.Error(), "write anchor-state temp file") {
 		t.Fatalf("WriteStateMarker err = %v, want temp write failure", err)
 	}
-	matches, globErr := filepath.Glob(filepath.Join(dir, "anchor-state.d", ".anchor-state-*.tmp"))
-	if globErr != nil {
-		t.Fatalf("Glob temp markers: %v", globErr)
+	assertNoTempStateMarkers(t, dir)
+}
+
+func assertNoTempStateMarkers(t *testing.T, dir string) {
+	t.Helper()
+	matches, err := filepath.Glob(filepath.Join(dir, "anchor-state.d", ".anchor-state-*.tmp"))
+	if err != nil {
+		t.Fatalf("Glob temp markers: %v", err)
 	}
 	if len(matches) != 0 {
 		t.Fatalf("temporary marker files remained after write failure: %v", matches)
