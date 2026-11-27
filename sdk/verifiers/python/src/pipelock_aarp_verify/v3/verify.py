@@ -160,10 +160,14 @@ def _nested_receipt_profile(root: Path) -> Path | None:
             if _unfollowed_dir(child):
                 pending.append(child)
                 continue
-            if not child.is_file():
-                continue
-            if _identify(child) is not None or (
-                legacy_candidate(child.name) and _starts_with_profile(child)
+            # A profile name claims the directory whatever the entry type,
+            # as in the Rust and TypeScript verifiers.
+            if _identify(child) is not None:
+                return path
+            if (
+                child.is_file()
+                and legacy_candidate(child.name)
+                and _starts_with_profile(child)
             ):
                 return path
     return None
