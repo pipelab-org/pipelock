@@ -904,7 +904,8 @@ func TestExpireCmd_RefusesReceiptProfileDirectory(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	profile := filepath.Join(dir, "stream.receipt-v3.jsonl")
-	if err := os.WriteFile(profile, nil, 0o600); err != nil {
+	content := []byte("{\"kind\":\"example\"}\n")
+	if err := os.WriteFile(profile, content, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	var buf bytes.Buffer
@@ -916,8 +917,9 @@ func TestExpireCmd_RefusesReceiptProfileDirectory(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "pipelock verify-receipt") {
 		t.Fatalf("expire on a receipt-profile directory = %v, want verifier guidance", err)
 	}
-	if _, statErr := os.Stat(profile); statErr != nil {
-		t.Fatalf("receipt-profile file changed: %v", statErr)
+	after, readErr := os.ReadFile(filepath.Clean(profile))
+	if readErr != nil || !bytes.Equal(after, content) {
+		t.Fatalf("receipt-profile file changed: %q, %v", after, readErr)
 	}
 }
 
