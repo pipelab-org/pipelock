@@ -9,8 +9,10 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash"
+	"io"
 	"mime"
 	"regexp"
 	"sort"
@@ -747,20 +749,54 @@ func writeFramed(h hash.Hash, b []byte) {
 // canonicalizeJSON parses JSON and re-serializes with sorted keys.
 // Returns the original bytes if parsing fails (preserves fail-closed: hash
 // still changes if the raw bytes change, which is conservative).
+//
+// Numbers are decoded without float64 rounding, so two values that differ
+// only in an integer above 2^53 hash differently. Integer literals keep their
+// exact digits; every other number is spelled through float64 as before. An
+// integer up to 2^53 prints the same either way, so only integers above it
+// change their canonical form.
 func canonicalizeJSON(raw json.RawMessage) []byte {
 	if len(raw) == 0 {
 		return nil
 	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
 	var v interface{}
-	if err := json.Unmarshal(raw, &v); err != nil {
+	if err := dec.Decode(&v); err != nil {
 		return raw // unparseable: hash raw bytes (conservative)
 	}
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		return raw // trailing data: hash raw bytes, as json.Unmarshal refused it
+	}
 	// json.Marshal sorts map keys deterministically in Go.
-	canonical, err := json.Marshal(v)
+	canonical, err := json.Marshal(canonicalJSONNumbers(v))
 	if err != nil {
 		return raw
 	}
 	return canonical
+}
+
+// canonicalJSONNumbers keeps an integer literal's exact digits and spells any
+// other number through float64, the form canonicalizeJSON always used for it.
+func canonicalJSONNumbers(v interface{}) interface{} {
+	switch t := v.(type) {
+	case map[string]interface{}:
+		for k, e := range t {
+			t[k] = canonicalJSONNumbers(e)
+		}
+	case []interface{}:
+		for i, e := range t {
+			t[i] = canonicalJSONNumbers(e)
+		}
+	case json.Number:
+		if !strings.ContainsAny(string(t), ".eE") {
+			return t
+		}
+		if f, err := t.Float64(); err == nil {
+			return f
+		}
+	}
+	return v
 }
 
 // writeBool writes a capability boolean to the hash. nil = 0, false = 1, true = 2.
