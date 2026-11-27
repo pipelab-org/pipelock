@@ -29,6 +29,7 @@ func TestInterceptIssuerUploadLocation(t *testing.T) {
 		unissued       bool
 		secret         bool
 		responseExempt bool
+		truncated      bool
 		want           int
 	}{
 		{name: "201 PATCH", status: http.StatusCreated, method: http.MethodPatch, want: http.StatusOK},
@@ -42,6 +43,10 @@ func TestInterceptIssuerUploadLocation(t *testing.T) {
 		{name: "response exempt unissued", status: http.StatusAccepted, method: http.MethodPatch, responseExempt: true, unissued: true, want: http.StatusForbidden},
 		{name: "response exempt foreign", status: http.StatusAccepted, method: http.MethodPatch, responseExempt: true, foreign: true, want: http.StatusForbidden},
 		{name: "response exempt secret", status: http.StatusAccepted, method: http.MethodPatch, responseExempt: true, secret: true, want: http.StatusForbidden},
+		// The exempt path streams the issuing response unscanned. A body that
+		// ends before its declared length was never delivered, so the
+		// location it carried must not earn issuer relief.
+		{name: "response exempt truncated body", status: http.StatusAccepted, method: http.MethodPatch, responseExempt: true, truncated: true, want: http.StatusForbidden},
 		{name: "unissued value", status: http.StatusAccepted, method: http.MethodPatch, unissued: true, want: http.StatusForbidden},
 		{name: "unissued value 204", status: http.StatusNoContent, method: http.MethodPatch, unissued: true, want: http.StatusForbidden},
 		{name: "foreign 201", status: http.StatusCreated, method: http.MethodPut, foreign: true, want: http.StatusForbidden},
@@ -65,6 +70,14 @@ func TestInterceptIssuerUploadLocation(t *testing.T) {
 			upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path == "/v2/project/blobs/uploads/" {
 					w.Header().Set("Location", location)
+					if tc.truncated {
+						// Declare more bytes than are sent; returning early
+						// makes the server close the connection mid-body.
+						w.Header().Set("Content-Length", "64")
+						w.WriteHeader(tc.status)
+						_, _ = io.WriteString(w, "partial")
+						return
+					}
 					w.WriteHeader(tc.status)
 					return
 				}
@@ -100,13 +113,22 @@ func TestInterceptIssuerUploadLocation(t *testing.T) {
 					Upstream: upstream, Cache: cache, Pool: pool, Config: cfg, Scanner: sc,
 					Logger: logger, Metrics: m, Request: req, Proxy: p,
 					Agent: "agent-one", ActorAuth: envelope.ActorAuthBound,
+					AllowIncompleteResponse: tc.truncated,
 				})
+				if resp == nil {
+					return 0, nil
+				}
 				_, _ = io.Copy(io.Discard, resp.Body)
 				_ = resp.Body.Close()
 				return resp.StatusCode, resp.Header
 			}
 			issuedStatus, issuedHeader := do(http.MethodPost, "/v2/project/blobs/uploads/")
-			if issuedStatus != tc.status || issuedHeader.Get("Location") != location {
+			// A truncated issuance is aborted: the client gets no complete
+			// response, so only the follow-up outcome is asserted.
+			if tc.truncated && issuedStatus != 0 {
+				t.Fatalf("truncated issuance delivered status %d, want an aborted response", issuedStatus)
+			}
+			if !tc.truncated && (issuedStatus != tc.status || issuedHeader.Get("Location") != location) {
 				t.Fatalf("issuance: status=%d Location=%q, want %d %q", issuedStatus, issuedHeader.Get("Location"), tc.status, location)
 			}
 			followValue := value

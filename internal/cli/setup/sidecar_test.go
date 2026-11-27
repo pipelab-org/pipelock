@@ -915,8 +915,7 @@ func TestRunSidecar_EmittedProxyState(t *testing.T) {
 				if lookupErr != nil {
 					t.Skip("Helm unavailable; chart policy checks cover rendering")
 				}
-				// #nosec G204 -- fixed chart and generated values in a private t.TempDir.
-				data, err = exec.CommandContext(t.Context(), "helm", "template", "pipelock", "../../../charts/pipelock", "-f", filepath.Join(output, "values.yaml")).CombinedOutput()
+				data, err = helmTemplate(t, "pipelock", "../../../charts/pipelock", "-f", filepath.Join(output, "values.yaml"))
 				if err != nil {
 					t.Fatalf("helm render: %v: %s", err, data)
 				}
@@ -926,8 +925,7 @@ func TestRunSidecar_EmittedProxyState(t *testing.T) {
 				if err := os.WriteFile(rendered, data, 0o600); err != nil {
 					t.Fatal(err)
 				}
-				// #nosec G204 -- fixed validation chart and private generated input.
-				checked, err := exec.CommandContext(t.Context(), "helm", "template", "state-check", "../../../scripts/helmstate", "--set-file", "manifests.emitted="+rendered).CombinedOutput()
+				checked, err := helmTemplate(t, "state-check", "../../../scripts/helmstate", "--set-file", "manifests.emitted="+rendered)
 				if err != nil || !bytes.Contains(checked, []byte("decoded Helm proxy state checks passed")) {
 					t.Fatalf("decoded Helm state checks: %v: %s", err, checked)
 				}
