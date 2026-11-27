@@ -57,12 +57,22 @@ type wsServerEnd struct {
 func readWSServerEnd(conn net.Conn, wait time.Duration) wsServerEnd {
 	_ = conn.SetReadDeadline(time.Now().Add(wait))
 	for {
-		frame, err := ws.ReadFrame(conn)
+		header, err := ws.ReadHeader(conn)
 		if err != nil {
 			return wsServerEnd{err: err}
 		}
-		if err := ws.CheckHeader(frame.Header, ws.StateClientSide); err != nil {
-			return wsServerEnd{err: fmt.Errorf("server sent an invalid frame (op=%v len=%d): %w", frame.Header.OpCode, frame.Header.Length, err)}
+		// Check the header before reading its payload: a peer that sends an
+		// oversized header and disconnects must not end as a clean EOF.
+		if err := ws.CheckHeader(header, ws.StateClientSide); err != nil {
+			return wsServerEnd{err: fmt.Errorf("server sent an invalid frame (op=%v len=%d): %w", header.OpCode, header.Length, err)}
+		}
+		frame := ws.Frame{Header: header, Payload: make([]byte, header.Length)}
+		if _, err := io.ReadFull(conn, frame.Payload); err != nil {
+			// A frame cut off mid-payload is a truncated frame, never a clean end.
+			if errors.Is(err, io.EOF) {
+				err = io.ErrUnexpectedEOF
+			}
+			return wsServerEnd{err: fmt.Errorf("frame payload (op=%v len=%d): %w", header.OpCode, header.Length, err)}
 		}
 		switch frame.Header.OpCode {
 		case ws.OpClose:
@@ -110,6 +120,12 @@ func wsTestCloseThenDisconnect(code ws.StatusCode) func(net.Conn) {
 		_ = ws.WriteFrame(c, ws.NewCloseFrame(ws.NewCloseFrameBody(code, "")))
 		_ = c.Close()
 	}
+}
+
+// wsTestWriteFrameHeaderOnly writes a frame header announcing a payload and
+// none of the payload.
+func wsTestWriteFrameHeaderOnly(c net.Conn, op ws.OpCode, length int64) {
+	_ = ws.WriteHeader(c, ws.Header{Fin: true, OpCode: op, Length: length})
 }
 
 // wsTestWriteOversizedPing writes a Ping with a 200-byte payload, past the
@@ -177,6 +193,14 @@ func TestWSEndEvidenceAcceptsOnlyEOFOrTheAllowedClose(t *testing.T) {
 		{name: "other close code", server: wsTestCloseThenDisconnect(ws.StatusPolicyViolation), wantErr: "want EOF or 1002"},
 		{name: "silent until deadline", server: func(net.Conn) {}, wantErr: "want EOF or WebSocket close 1002"},
 		{name: "data message", server: func(c net.Conn) { _ = wsutil.WriteServerMessage(c, ws.OpText, []byte("forwarded")) }, wantErr: "got a data frame"},
+		{name: "oversized ping header then disconnect", server: func(c net.Conn) {
+			wsTestWriteFrameHeaderOnly(c, ws.OpPing, 200)
+			_ = c.Close()
+		}, wantErr: "invalid frame"},
+		{name: "truncated valid ping then disconnect", server: func(c net.Conn) {
+			wsTestWriteFrameHeaderOnly(c, ws.OpPing, 4)
+			_ = c.Close()
+		}, wantErr: "unexpected EOF"},
 		{name: "oversized ping then disconnect", server: func(c net.Conn) {
 			wsTestWriteOversizedPing(c)
 			_ = c.Close()
