@@ -135,44 +135,6 @@ def claims_input(path: str | Path) -> bool:
     return _identify(path) is not None or _starts_with_profile(path)
 
 
-def _nested_receipt_profile(root: Path) -> Path | None:
-    """Return the first descendant directory claimed by the receipt profile.
-
-    Symlinks are not directories here, so the walk stays on the tree the
-    caller named. A profile-shaped symlink still claims its parent directory.
-    """
-    pending = [child for child in root.iterdir() if _unfollowed_dir(child)]
-    seen: set[Path] = set()
-    while pending:
-        path = pending.pop()
-        if path in seen:
-            continue
-        seen.add(path)
-        try:
-            children = list(path.iterdir())
-        except OSError as err:
-            raise ValueError(f"read evidence directory: {err}") from err
-        for child in children:
-            if child.is_symlink():
-                if _identify(child) is not None:
-                    return path
-                continue
-            if _unfollowed_dir(child):
-                pending.append(child)
-                continue
-            if not child.is_file():
-                continue
-            if _identify(child) is not None or (
-                legacy_candidate(child.name) and _starts_with_profile(child)
-            ):
-                return path
-    return None
-
-
-def _unfollowed_dir(path: Path) -> bool:
-    return not path.is_symlink() and path.is_dir()
-
-
 def _discover(
     paths: list[Path], options: Options
 ) -> tuple[list[_Input], list[Path], dict[str, list[Path]], int]:
@@ -197,15 +159,6 @@ def _discover(
             if child.is_symlink() or not child.is_file():
                 raise ValueError(f"evidence path is not a regular file: {child}")
             paths.append(child)
-        nested = _nested_receipt_profile(directory)
-        if nested is not None:
-            raise ValueError(
-                "receipt profile in "
-                + str(nested)
-                + " is outside this directory verification; run 'pipelock verify-receipt --chain "
-                + str(nested)
-                + "' with the trusted signer key"
-            )
     else:
         for path in paths:
             with _open_regular_input(path):

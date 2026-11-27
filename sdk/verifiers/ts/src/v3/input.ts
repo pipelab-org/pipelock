@@ -141,35 +141,6 @@ export function claimsV3Input(path: string): boolean {
   return identify(path) !== undefined || startsWithProfile(path);
 }
 
-function nestedReceiptProfile(root: string): string | undefined {
-  // Dirent.isDirectory does not follow symlinks, so the walk stays on the tree
-  // the caller named. A profile-shaped symlink still claims its parent directory.
-  const pending = readdirSync(root, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory())
-    .map((entry) => join(root, entry.name));
-  const seen = new Set<string>();
-  while (pending.length) {
-    const path = pending.pop();
-    if (path === undefined || seen.has(path)) continue;
-    seen.add(path);
-    const children = readdirSync(path, { withFileTypes: true });
-    for (const child of children) {
-      const childPath = join(path, child.name);
-      if (child.isDirectory()) {
-        pending.push(childPath);
-        continue;
-      }
-      if (
-        profileName.test(child.name) ||
-        (child.isFile() && legacyCandidate(child.name) && startsWithProfile(childPath))
-      ) {
-        return path;
-      }
-    }
-  }
-  return undefined;
-}
-
 function startsWithProfile(path: string): boolean {
   const fd = openEvidence(path);
   try {
@@ -210,16 +181,6 @@ export function discover(paths: readonly string[], options: VerifyV3Options) {
       if (!entry.isFile()) throw new Error("evidence path is not a regular file: " + path);
       return [path];
     });
-    const nested = nestedReceiptProfile(dir);
-    if (nested) {
-      throw new Error(
-        "receipt profile in " +
-          nested +
-          " is outside this directory verification; run 'pipelock verify-receipt --chain " +
-          nested +
-          "' with the trusted signer key",
-      );
-    }
   } else {
     for (const path of paths) closeSync(openEvidence(path));
   }

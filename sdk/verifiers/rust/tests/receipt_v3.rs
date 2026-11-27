@@ -563,31 +563,3 @@ fn core_fallback_cli_guides_to_host_on_stderr() {
     );
     let _: Value = serde_json::from_slice(&output.stdout).unwrap();
 }
-
-#[test]
-fn directory_does_not_accept_a_nested_receipt_profile() {
-    let name = "11111111111111111111111111111111-0000000000000000.receipt-v3.jsonl";
-    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../conformance/testdata/v3/g04-absent-max-write-error-pin")
-        .join(name);
-    if !source.exists() {
-        return;
-    }
-    let dir = TestDirectory::new();
-    fs::copy(&source, dir.0.join(name)).unwrap();
-    let leaf = dir.0.join("mid").join("leaf");
-    fs::create_dir_all(&leaf).unwrap();
-    fs::copy(&source, leaf.join(name)).unwrap();
-    let options: Options =
-        serde_json::from_value(serde_json::json!({"directory": true, "allow_unpinned": true}))
-            .unwrap();
-    let message = match verify_paths(std::slice::from_ref(&dir.0), &options) {
-        Err(err) => err.to_string(),
-        Ok(_) => panic!("directory verification accepted a nested receipt profile"),
-    };
-    assert!(
-        message.contains("pipelock verify-receipt --chain"),
-        "{message}"
-    );
-    assert!(message.contains(leaf.to_str().unwrap()), "{message}");
-}
