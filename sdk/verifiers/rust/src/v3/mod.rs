@@ -226,6 +226,51 @@ fn has_profile(path: &Path) -> Result<bool> {
     }
 }
 
+fn nested_receipt_profile(root: &Path) -> Result<Option<PathBuf>> {
+    // Symlinks are not directories (DirEntry::file_type does not follow them),
+    // so the walk stays on the tree the caller named. A profile-shaped symlink
+    // still claims its parent directory.
+    let mut pending = Vec::new();
+    for entry in
+        fs::read_dir(root).map_err(|err| input_error(format!("read evidence directory: {err}")))?
+    {
+        let entry = entry.map_err(|err| input_error(format!("read evidence directory: {err}")))?;
+        let kind = entry
+            .file_type()
+            .map_err(|err| input_error(format!("stat evidence path: {err}")))?;
+        if kind.is_dir() {
+            pending.push(entry.path());
+        }
+    }
+    let mut seen = BTreeSet::new();
+    while let Some(path) = pending.pop() {
+        if !seen.insert(path.clone()) {
+            continue;
+        }
+        for entry in fs::read_dir(&path)
+            .map_err(|err| input_error(format!("read evidence directory: {err}")))?
+        {
+            let entry =
+                entry.map_err(|err| input_error(format!("read evidence directory: {err}")))?;
+            let kind = entry
+                .file_type()
+                .map_err(|err| input_error(format!("stat evidence path: {err}")))?;
+            let child = entry.path();
+            if kind.is_dir() {
+                pending.push(child);
+                continue;
+            }
+            let child_name = name(&child);
+            if identify(&child_name).is_some()
+                || (kind.is_file() && cutover::candidate(&child_name) && has_profile(&child)?)
+            {
+                return Ok(Some(path));
+            }
+        }
+    }
+    Ok(None)
+}
+
 /// Tests whether a filename or evidence prefix claims the v3 or later profile.
 pub fn claims_input(path: &Path) -> Result<bool> {
     if identify(&name(path)).is_some() {
@@ -250,7 +295,7 @@ fn discover(paths: &[PathBuf], options: &Options) -> Result<Discovery> {
             .map_err(|e| input_error(format!("resolve evidence directory: {e}")))?;
         let mut selected = BTreeSet::new();
         let entries =
-            fs::read_dir(dir).map_err(|e| input_error(format!("read evidence directory: {e}")))?;
+            fs::read_dir(&dir).map_err(|e| input_error(format!("read evidence directory: {e}")))?;
         for entry in entries {
             let entry = entry.map_err(|e| input_error(format!("read evidence directory: {e}")))?;
             let path = entry.path();
@@ -285,6 +330,13 @@ fn discover(paths: &[PathBuf], options: &Options) -> Result<Discovery> {
             } else {
                 found.ignored += 1;
             }
+        }
+        if let Some(nested) = nested_receipt_profile(&dir)? {
+            return Err(input_error(format!(
+                "receipt profile in {} is outside this directory verification; run 'pipelock verify-receipt --chain {}' with the trusted signer key",
+                nested.display(),
+                nested.display()
+            )));
         }
         selected
     } else {
