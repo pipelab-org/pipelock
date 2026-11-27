@@ -535,7 +535,8 @@ func validObservedSuccess(name string, access observedAccess, output string) boo
 	if !access.file && (name == "init" || name == "doctor") {
 		return strings.Contains(output, "pipelock verify-receipt --chain")
 	}
-	if name != "verify-receipt" && name != "chain" && name != "v3" {
+	// A verdict counts only when the verifier actually read the stream.
+	if (name != "verify-receipt" && name != "chain" && name != "v3") || !access.file {
 		return false
 	}
 	var result struct {
