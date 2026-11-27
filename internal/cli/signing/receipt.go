@@ -217,7 +217,10 @@ Examples:
 				if locationErr != nil {
 					var claimed *fs.PathError
 					if errors.Is(locationErr, recorder.ErrLegacyEvidenceFormat) && errors.As(locationErr, &claimed) {
-						dir := filepath.Join(chainDir, filepath.Dir(claimed.Path))
+						dir := filepath.Dir(claimed.Path)
+						if !filepath.IsAbs(dir) {
+							dir = filepath.Join(chainDir, dir)
+						}
 						return evidenceReadError(fmt.Errorf("%w at %q; run 'pipelock verify-receipt --chain %s' with the trusted signer key", recorder.ErrLegacyEvidenceFormat, dir, dir))
 					}
 					return evidenceReadError(fmt.Errorf("extracting session receipts: resolve evidence location: %w", locationErr))
