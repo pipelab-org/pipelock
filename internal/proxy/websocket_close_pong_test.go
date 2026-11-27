@@ -92,8 +92,6 @@ func TestWSProxyAnswersUpstreamPingDuringCloseGrace(t *testing.T) {
 		if frame.Header.OpCode == ws.OpClose {
 			return
 		}
-		if frame.Header.OpCode != ws.OpPing && frame.Header.OpCode != ws.OpPong {
-			t.Fatalf("data reached the client after it sent Close: %+v", frame.Header)
-		}
+		t.Fatalf("frame reached the client after it sent Close: %+v", frame.Header)
 	}
 }
