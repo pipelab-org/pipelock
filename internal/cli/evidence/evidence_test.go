@@ -28,6 +28,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/coveragecert"
 	"github.com/luckyPipewrench/pipelock/internal/evidence/endproof"
+	"github.com/luckyPipewrench/pipelock/internal/evidence/receiptinput"
 	"github.com/luckyPipewrench/pipelock/internal/evidenceview"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
@@ -914,8 +915,8 @@ func TestExpireCmd_RefusesReceiptProfileDirectory(t *testing.T) {
 	cmd.SetErr(&buf)
 	cmd.SetArgs([]string{"expire", "--receipt-dir", dir, "--retention-days", "1"})
 	err := cmd.Execute()
-	if err == nil || !strings.Contains(err.Error(), "pipelock verify-receipt --chain") {
-		t.Fatalf("expire on a receipt-profile directory = %v, want directory verifier guidance", err)
+	if !errors.Is(err, receiptinput.ErrUnsupported) || !strings.Contains(err.Error(), "pipelock verify-receipt --chain") {
+		t.Fatalf("expire on a receipt-profile directory = %v, want the unsupported-format refusal with directory verifier guidance", err)
 	}
 	after, readErr := os.ReadFile(filepath.Clean(profile))
 	if readErr != nil || !bytes.Equal(after, content) {
