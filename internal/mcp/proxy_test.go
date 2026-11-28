@@ -4931,6 +4931,85 @@ func TestRunProxy_SubprocessExitReturnsWithOpenClientInput(t *testing.T) {
 	}
 }
 
+// TestRunProxy_SubprocessExitReleasesBlockedRefusalWrite covers a refusal
+// write that is still blocked on the client when the server exits: the drain
+// times out, and the client-output interruption must release that write so
+// RunProxy can return.
+func TestRunProxy_SubprocessExitReleasesBlockedRefusalWrite(t *testing.T) {
+	if runtime.GOOS == osWindows {
+		t.Skip("shell subprocess test requires unix")
+	}
+	exitFile := filepath.Join(t.TempDir(), "server-may-exit")
+	// The server stays up until the test lets it exit, after the refusal write is blocked.
+	command := []string{"sh", "-c", `while [ ! -e "$1" ]; do sleep 0.05; done; exit 3`, "sh", exitFile}
+
+	sc := testScannerWithAction(t, "warn")
+	opts := MCPProxyOpts{Scanner: sc, InputCfg: &InputScanConfig{Enabled: true, Action: "block", OnParseError: "block"}}
+	clientIn, clientWriter := io.Pipe()
+	t.Cleanup(func() { _ = clientWriter.Close() })
+	out := newBlockingRefusalWriter()
+	logBuf := &syncBuffer{}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- RunProxy(context.Background(), clientIn, out, logBuf, command, opts)
+	}()
+
+	// A request input scanning refuses: the refusal is written to the client.
+	secret := "sk-ant-" + strings.Repeat("z", 25)
+	_, _ = clientWriter.Write([]byte(makeRequest(99, "tools/call", map[string]string{"key": secret}) + "\n"))
+
+	select {
+	case <-out.entered:
+	case <-time.After(testwait.Deadline(10 * time.Second)):
+		t.Fatal("refusal write never reached the client output")
+	}
+	if err := os.WriteFile(exitFile, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrSubprocessExit) {
+			t.Fatalf("RunProxy error = %v, want ErrSubprocessExit", err)
+		}
+	case <-time.After(testwait.Deadline(20 * time.Second)):
+		t.Fatal("RunProxy did not return while a refusal write stayed blocked on the client")
+	}
+	select {
+	case <-out.released:
+	case <-time.After(testwait.Deadline(5 * time.Second)):
+		t.Fatal("the blocked refusal write was not released")
+	}
+}
+
+// blockingRefusalWriter blocks every Write until Close, the interruption
+// RunProxy applies after a drain timeout.
+type blockingRefusalWriter struct {
+	entered   chan struct{}
+	enterOnce sync.Once
+	release   chan struct{}
+	closeOnce sync.Once
+	released  chan struct{}
+	relOnce   sync.Once
+}
+
+func newBlockingRefusalWriter() *blockingRefusalWriter {
+	return &blockingRefusalWriter{entered: make(chan struct{}), release: make(chan struct{}), released: make(chan struct{})}
+}
+
+func (w *blockingRefusalWriter) Write(_ []byte) (int, error) {
+	w.enterOnce.Do(func() { close(w.entered) })
+	<-w.release
+	w.relOnce.Do(func() { close(w.released) })
+	return 0, io.ErrClosedPipe
+}
+
+func (w *blockingRefusalWriter) Close() error {
+	w.closeOnce.Do(func() { close(w.release) })
+	return nil
+}
+
 // interruptRecordingWriter is a client output that records the interruption
 // RunProxy applies after a drain timeout.
 type interruptRecordingWriter struct {
