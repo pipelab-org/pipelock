@@ -336,13 +336,14 @@ func TestLogsRejectsReceiptAndOversizedInput(t *testing.T) {
 }
 
 func TestLogsFollowRejectsReceiptAndOversizedInput(t *testing.T) {
-	for _, tc := range []struct{ name, content, want string }{
-		{"receipt", "{\"payloadType\":\"application/vnd.pipelock.receipt.v3+json\"}", "receipt v3 evidence"},
-		{"oversized", strings.Repeat("x", 70<<10), "oversized line"},
+	for _, tc := range []struct{ name, initial, content, want string }{
+		{"receipt", "", "{\"payloadType\":\"application/vnd.pipelock.receipt.v3+json\"}", "receipt v3 evidence"},
+		{"split receipt", "{\"pay", "loadType\":\"application/vnd.pipelock.receipt.v3+json\"}\n", "receipt v3 evidence"},
+		{"oversized", "", strings.Repeat("x", 70<<10), "oversized line"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "audit.log")
-			if err := os.WriteFile(path, []byte("ready\n"), 0o600); err != nil {
+			if err := os.WriteFile(path, []byte("ready\n"+tc.initial), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			ctx, cancel := context.WithCancel(context.Background())
@@ -369,6 +370,9 @@ func TestLogsFollowRejectsReceiptAndOversizedInput(t *testing.T) {
 			case err := <-done:
 				if err == nil || !strings.Contains(err.Error(), tc.want) {
 					t.Fatalf("got %v, want %q", err, tc.want)
+				}
+				if tc.initial != "" && strings.Contains(output.String(), tc.initial) {
+					t.Fatal("printed an unclassified partial line")
 				}
 			case <-time.After(testwait.Deadline(5 * time.Second)):
 				t.Fatal("follow did not reject input")

@@ -124,6 +124,9 @@ func TestReceiptProbeResultBranches(t *testing.T) {
 		{0, &zero, "VALID", "nested", true, "", true},
 		{0, &zero, "VALID", "nested", true, "child", false},
 		{0, &zero, "VALID", "mixed", true, "", false},
+		{0, &zero, "INVALID", "mixed", true, "", true},
+		{0, &zero, "INVALID", "nested", true, "child", true},
+		{0, &zero, "INVALID", "nested", false, "", true},
 	} {
 		err := receiptProbeResultError(tc.code, tc.report, tc.verdict, tc.fixture, tc.dir, tc.location)
 		if (err != nil) != tc.bad {

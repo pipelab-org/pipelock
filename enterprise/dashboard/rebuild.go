@@ -76,7 +76,7 @@ func refuseReadModelSources(sourceDir, command, reader string) error {
 	}
 	paths, err := boundedEvidencePaths(sourceDir)
 	if err != nil {
-		return nil
+		return err
 	}
 	for _, path := range paths {
 		if err := receiptinput.Refuse(path, command, reader); err != nil {

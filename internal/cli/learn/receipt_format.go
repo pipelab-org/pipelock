@@ -24,9 +24,11 @@ func withLegacyReceiptOutput(command, output, fallback string, write func() erro
 	if evidencename.ClaimsReceiptName(filepath.Base(filepath.Clean(output))) {
 		return receiptinput.UnsupportedDirectory(command, reader)
 	}
-	// Lifecycle output requires a provisioned parent; preserve that contract.
-	if _, err := existingLifecycleReceiptPath(output); err != nil {
-		return err
+	// Promote and rollback require a provisioned parent.
+	if command == "learn promote" || command == "learn rollback" {
+		if _, err := existingLifecycleReceiptPath(output); err != nil {
+			return err
+		}
 	}
 	return withLegacyReceiptDirectory(command, filepath.Dir(output), func() error {
 		if err := receiptinput.Refuse(output, command, reader); errors.Is(err, receiptinput.ErrUnsupported) {

@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/testreceipt"
@@ -38,6 +39,18 @@ func TestDashboardRefusesReceiptV3(t *testing.T) {
 		testreceipt.RequiresV3Refusal(t, indexErr, "dashboard", "the dashboard read model")
 		testreceipt.RequiresV3Refusal(t, RebuildReadModel(RebuildOptions{SourceDir: dir}), "dashboard rebuild", "the dashboard read model")
 	})
+}
+
+func TestDashboardRebuildRejectsIncompleteInventory(t *testing.T) {
+	dir := t.TempDir()
+	for i := 0; i <= maxEvidenceVerificationFiles; i++ {
+		if err := os.WriteFile(filepath.Join(dir, strconv.Itoa(i)), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := refuseReadModelSources(dir, "dashboard", "the dashboard read model"); err == nil {
+		t.Fatal("guard accepted incomplete inventory")
+	}
 }
 
 func TestDashboardRefusesReceiptV3InResolvedSubdir(t *testing.T) {

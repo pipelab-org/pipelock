@@ -490,6 +490,9 @@ func VerifyBase(dir, base string, opts BaseVerifyOptions, modes ...recorder.Evid
 			return report, err
 		}
 		defer func() {
+			if err := recorder.RefuseReceiptDirectory(dir, modes...); err != nil && retErr == nil {
+				retErr = err
+			}
 			finalGroups := map[string]bool{}
 			final, scanErr := opts.recorderIndex(dir, finalGroups)
 			after, checkErr := fingerprintBaseShards(final, baseSessions(final, base))

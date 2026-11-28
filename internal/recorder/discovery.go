@@ -98,6 +98,39 @@ func RefuseReceiptDirectory(dir string, modes ...EvidenceReadMode) error {
 	return refuseRemainingReceiptNames(handle, dir)
 }
 
+// ReadLegacyDirectoryBounded inventories and checks a directory once.
+// maxEntries must be positive; exceeding it leaves the inventory unclassified.
+func ReadLegacyDirectoryBounded(dir string, maxEntries int) ([]fs.DirEntry, error) {
+	handle, err := OpenEvidenceDirectory(dir)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = handle.Close() }()
+	var all []fs.DirEntry
+	for {
+		remaining := maxEntries - len(all)
+		batchSize := min(sessionHistoryDirBatch, remaining)
+		if batchSize < 1 {
+			batchSize = 1
+		}
+		entries, readErr := handle.ReadDir(batchSize)
+		if len(entries) > remaining {
+			return nil, fmt.Errorf("%w: evidence directory exceeds %d entries", ErrEvidenceReadLimitExceeded, maxEntries)
+		}
+		all = append(all, entries...)
+		if errors.Is(readErr, io.EOF) {
+			break
+		}
+		if readErr != nil {
+			return nil, readErr
+		}
+	}
+	if err := refuseReceiptDirectoryEntries(dir, all, EvidenceReadMode{}); err != nil {
+		return nil, err
+	}
+	return all, nil
+}
+
 // The inventory may retain only a bounded prefix. Check the remaining names
 // in batches so a profile outside the returned entries still claims the directory.
 func refuseRemainingReceiptNames(handle *os.File, dir string) error {

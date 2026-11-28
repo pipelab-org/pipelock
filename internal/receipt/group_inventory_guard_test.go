@@ -128,6 +128,12 @@ func TestReceiptGroupEvidencePresentBoundsLegacyDirectory(t *testing.T) {
 	if present, err := ReceiptGroupEvidencePresent(dir, 1); err != nil || present {
 		t.Fatalf("empty directory: present=%v err=%v", present, err)
 	}
+	if err := os.WriteFile(filepath.Join(dir, "legacy-a"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if present, err := ReceiptGroupEvidencePresent(dir, 1); err != nil || present {
+		t.Fatalf("directory at limit: present=%v err=%v", present, err)
+	}
 	for _, name := range []string{"legacy-a", "legacy-b"} {
 		if err := os.WriteFile(filepath.Join(dir, name), nil, 0o600); err != nil {
 			t.Fatal(err)
@@ -135,5 +141,27 @@ func TestReceiptGroupEvidencePresentBoundsLegacyDirectory(t *testing.T) {
 	}
 	if _, err := ReceiptGroupEvidencePresent(dir, 1); !errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) {
 		t.Fatalf("unbounded directory accepted: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "stream.receipt-v3.jsonl"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReceiptGroupEvidencePresent(dir, 1); !errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) {
+		t.Fatalf("unbounded refusal scan: %v", err)
+	}
+}
+
+func TestVerifyBaseRefusesProfileAddedDuringVerification(t *testing.T) {
+	src := filepath.Join(walkConformanceTestdata, "run-chains", "valid")
+	dir := copyShardDir(t, src)
+	previous := betweenVerificationReads
+	betweenVerificationReads = func(string) {
+		if err := os.WriteFile(filepath.Join(dir, "stream.receipt-v3.jsonl"), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() { betweenVerificationReads = previous })
+	_, err := VerifyBase(dir, "proxy", BaseVerifyOptions{TrustedKeys: corpusKeys(src)})
+	if !errors.Is(err, recorder.ErrLegacyEvidenceFormat) {
+		t.Fatalf("VerifyBase error = %v", err)
 	}
 }
