@@ -70,7 +70,11 @@ type StalenessMarker struct {
 	Status     string    `json:"status"`
 }
 
-func refuseReadModelSources(sourceDir, command, reader string) error {
+// readModelReader names the dashboard read model in receipt v3 refusals.
+const readModelReader = "the dashboard read model"
+
+func refuseReadModelSources(sourceDir, command string) error {
+	const reader = readModelReader
 	if err := receiptinput.RefuseTree(sourceDir, command, reader); err != nil {
 		return err
 	}
@@ -92,7 +96,7 @@ func refuseReadModelSources(sourceDir, command, reader string) error {
 }
 
 func RebuildReadModel(opts RebuildOptions) error {
-	if err := refuseReadModelSources(opts.SourceDir, "dashboard rebuild", "the dashboard read model"); err != nil {
+	if err := refuseReadModelSources(opts.SourceDir, "dashboard rebuild"); err != nil {
 		if errors.Is(err, receiptinput.ErrUnsupported) {
 			return err
 		}

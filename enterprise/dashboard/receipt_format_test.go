@@ -44,7 +44,7 @@ func TestDashboardRefusesReceiptV3(t *testing.T) {
 }
 
 func TestDashboardRebuildGuardChecksEveryFileInLargeDirectory(t *testing.T) {
-	const command, reader = "dashboard", "the dashboard read model"
+	const command = "dashboard"
 	dir := t.TempDir()
 	for i := 0; i <= maxEvidenceVerificationFiles; i++ {
 		if err := os.WriteFile(filepath.Join(dir, "evidence-s"+strconv.Itoa(i)+"-0.jsonl"), []byte("{}\n"), 0o600); err != nil {
@@ -52,7 +52,7 @@ func TestDashboardRebuildGuardChecksEveryFileInLargeDirectory(t *testing.T) {
 		}
 	}
 	// A large legacy directory stays usable.
-	if err := refuseReadModelSources(dir, command, reader); err != nil {
+	if err := refuseReadModelSources(dir, command); err != nil {
 		t.Fatalf("large legacy directory refused: %v", err)
 	}
 	// A receipt-profile file past the bounded listing is still refused.
@@ -60,7 +60,7 @@ func TestDashboardRebuildGuardChecksEveryFileInLargeDirectory(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "evidence-v3.jsonl"), []byte(profile), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := refuseReadModelSources(dir, command, reader); !errors.Is(err, receiptinput.ErrUnsupported) {
+	if err := refuseReadModelSources(dir, command); !errors.Is(err, receiptinput.ErrUnsupported) {
 		t.Fatalf("large directory with receipt-profile evidence = %v, want unsupported", err)
 	}
 }
