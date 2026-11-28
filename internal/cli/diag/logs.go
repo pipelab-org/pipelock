@@ -51,8 +51,16 @@ Examples:
 			defer f.Close() //nolint:errcheck // read-only file
 
 			var lines []string
+			var pending string
 			sc := bufio.NewScanner(f)
-			sc.Split(evidencename.SplitLegacyJSONLines)
+			sc.Split(func(data []byte, atEOF bool) (int, []byte, error) {
+				advance, token, splitErr := evidencename.SplitLegacyJSONLines(data, atEOF)
+				if follow && atEOF && token != nil && advance == len(data) && len(data) > 0 && data[len(data)-1] != '\n' {
+					pending = string(token)
+					return advance, nil, splitErr
+				}
+				return advance, token, splitErr
+			})
 			for sc.Scan() {
 				line := sc.Text()
 				if filter != "" && !matchFilter(line, filter) {
@@ -79,7 +87,6 @@ Examples:
 			if follow {
 				cmd.PrintErrln("--- following (Ctrl+C to stop) ---")
 				reader := bufio.NewReader(f)
-				var pending string
 				for {
 					select {
 					case <-cmd.Context().Done():

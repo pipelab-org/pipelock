@@ -82,7 +82,7 @@ func LoadDeliveryHealth(path string) (DeliveryHealth, error) {
 }
 
 func InspectReadModelIndex(indexPath, sourceDir string) (ReadModelIndex, bool, error) {
-	if err := refuseReadModelSources(sourceDir, "dashboard", "the dashboard read model"); err != nil {
+	if err := refuseReadModelSources(sourceDir, "dashboard"); err != nil {
 		return ReadModelIndex{}, false, err
 	}
 	data, err := readFileLimit(indexPath, maxReadModelIndexBytes)

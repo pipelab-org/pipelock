@@ -238,16 +238,13 @@ func TestRatifyInteractiveRejectsOneRuleAndSignsReceipt(t *testing.T) {
 	dir := t.TempDir()
 	candidate := writeCandidateEnvelope(t, dir, testRatifyContract())
 	out := filepath.Join(dir, "ratified.yaml")
-	receiptOut := filepath.Join(dir, "ratify.jsonl")
-	cmd, stdout := learnTestCmd("r\ne\n")
-
-	err := runRatify(cmd, ratifyFlags{
-		candidatePath: candidate,
-		outPath:       out,
-		receiptOut:    receiptOut,
-		interactive:   true,
-		deterministic: true,
-	})
+	receiptOut := filepath.Join(dir, "new-receipts", "ratify.jsonl")
+	cmd := ratifyCmd()
+	stdout := &bytes.Buffer{}
+	cmd.SetIn(strings.NewReader("r\ne\n"))
+	cmd.SetOut(stdout)
+	cmd.SetArgs([]string{"--candidate", candidate, "--out", out, "--receipt-out", receiptOut, "--interactive", "--deterministic"})
+	err := cmd.Execute()
 	if err != nil {
 		t.Fatalf("runRatify: %v", err)
 	}
@@ -287,19 +284,13 @@ func TestForgetRemovesRuleWritesTombstoneAndRedactionReceipt(t *testing.T) {
 	dir := t.TempDir()
 	candidate := writeCandidateEnvelope(t, dir, testRatifyContract())
 	out := filepath.Join(dir, "forgotten.yaml")
-	receiptOut := filepath.Join(dir, "redaction.jsonl")
+	receiptOut := filepath.Join(dir, "new-receipts", "redaction.jsonl")
 	tombstoneDir := filepath.Join(dir, "tombstones")
-	cmd, stdout := learnTestCmd("")
-
-	err := runForget(cmd, forgetFlags{
-		candidatePath: candidate,
-		ruleID:        "r-enforce",
-		reason:        "legal-ticket-123",
-		outPath:       out,
-		tombstoneDir:  tombstoneDir,
-		receiptOut:    receiptOut,
-		deterministic: true,
-	})
+	cmd := forgetCmd()
+	stdout := &bytes.Buffer{}
+	cmd.SetOut(stdout)
+	cmd.SetArgs([]string{"--candidate", candidate, "--rule-id", "r-enforce", "--reason", "legal-ticket-123", "--out", out, "--tombstone-dir", tombstoneDir, "--receipt-out", receiptOut, "--deterministic"})
+	err := cmd.Execute()
 	if err != nil {
 		t.Fatalf("runForget: %v", err)
 	}

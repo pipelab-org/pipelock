@@ -225,6 +225,9 @@ func receiptProbeResultError(code int, reportCode *int, verdict, fixture string,
 	if reportCode == nil || code != *reportCode || verdict == "" {
 		return fmt.Errorf("v3 verdict %q does not explain exit %d", verdict, code)
 	}
+	if code == 0 && verdict != "VALID" {
+		return fmt.Errorf("successful v3 verification has verdict %q", verdict)
+	}
 	switch fixture {
 	case "signed":
 		if verdict != "VALID" || code != 0 {

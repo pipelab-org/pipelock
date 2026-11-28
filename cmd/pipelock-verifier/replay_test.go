@@ -106,6 +106,14 @@ func runReplayCommand(t *testing.T, args ...string) (replayReport, string, int) 
 	return report, stdout.String(), exitCode
 }
 
+func TestReplayMissingReceiptJSON(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing.json")
+	report, output, code := runReplayCommand(t, "--json", "--policy", "policy.yaml", path)
+	if code != cliutil.ExitConfig || report.Error == "" {
+		t.Fatalf("exit = %d, report = %+v, output = %q", code, report, output)
+	}
+}
+
 func TestReplay_StableVerdict(t *testing.T) {
 	dir := t.TempDir()
 	ar := receipt.ActionRecord{

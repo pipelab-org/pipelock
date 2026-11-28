@@ -404,6 +404,20 @@ func walkInventoryNames(dir string, visit func(string) error) error {
 // shard look like ordinary single-session evidence. A positive maxEntries
 // applies the same fail-closed directory bound used by read-only views.
 func ReceiptGroupEvidencePresent(dir string, maxEntries int) (bool, error) {
+	if maxEntries > 0 {
+		entries, err := recorder.ReadLegacyDirectoryBounded(dir, maxEntries)
+		if err != nil {
+			return false, err
+		}
+		return inspectGroupEvidence(dir, func(visit func(string) error) error {
+			for _, entry := range entries {
+				if err := visit(entry.Name()); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+	}
 	if err := recorder.RefuseReceiptDirectory(dir); err != nil {
 		return false, err
 	}
@@ -420,13 +434,21 @@ func walkLegacyInventoryNames(dir string, excluded map[string]bool, visit func(s
 }
 
 func receiptGroupEvidencePresent(dir string, maxEntries int, excluded map[string]bool) (bool, error) {
+	return inspectGroupEvidence(dir, func(visit func(string) error) error {
+		count := 0
+		return walkLegacyInventoryNames(dir, excluded, func(name string) error {
+			count++
+			if maxEntries > 0 && count > maxEntries {
+				return fmt.Errorf("%w: evidence directory exceeds %d entries", recorder.ErrEvidenceReadLimitExceeded, maxEntries)
+			}
+			return visit(name)
+		})
+	})
+}
+
+func inspectGroupEvidence(dir string, walk func(func(string) error) error) (bool, error) {
 	found := errors.New("receipt group evidence found")
-	count := 0
-	err := walkLegacyInventoryNames(dir, excluded, func(name string) error {
-		count++
-		if maxEntries > 0 && count > maxEntries {
-			return fmt.Errorf("%w: evidence directory exceeds %d entries", recorder.ErrEvidenceReadLimitExceeded, maxEntries)
-		}
+	err := walk(func(name string) error {
 		if strings.HasPrefix(name, "receipt-group-") {
 			return found
 		}

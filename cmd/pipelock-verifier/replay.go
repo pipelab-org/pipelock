@@ -120,16 +120,17 @@ const (
 )
 
 func runReplay(stdout, stderr io.Writer, receiptPath string, opts replayOptions) error {
+	report := replayReport{
+		ReceiptPath: filepath.Clean(receiptPath),
+		PolicyPath:  filepath.Clean(opts.policyPath),
+	}
 	if err := receiptinput.Refuse(receiptPath, "replay", "the replay verifier"); err != nil {
+		report.Error = fmt.Sprintf("read receipt: %v", err)
+		emitReplayReport(stdout, stderr, report, opts.jsonOutput)
 		return cliutil.ExitCodeError(cliutil.ExitConfig, err)
 	}
 	if strings.TrimSpace(opts.policyPath) == "" {
 		return cliutil.ExitCodeError(exitUsage, fmt.Errorf("--policy is required"))
-	}
-
-	report := replayReport{
-		ReceiptPath: filepath.Clean(receiptPath),
-		PolicyPath:  filepath.Clean(opts.policyPath),
 	}
 
 	// Step 1: load + verify the receipt.
