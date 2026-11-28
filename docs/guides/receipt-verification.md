@@ -920,6 +920,21 @@ verifier-CI workflow runs these tests on every PR.
 
 For TypeScript and Rust CLI directory verification, `--dir` defaults to the legacy `proxy` session. Pass `--session-id proxy.run.<id>` for a full run chain, using the full ID from its evidence filename. A direct JSONL file argument checks only that shard.
 
+### Receipt v3 readers
+
+This table describes source on `main`. Pipelock release binaries and the published `pipelock-verify` package do not read v3. Check the provenance of your verifier build before using it to appraise v3 evidence.
+
+| Reader on `main` | V3-only evidence | Directory with both legacy and v3 evidence |
+|---|---|---|
+| `pipelock verify-receipt --chain <dir>` | Verifies | Verifies the v3 streams and checks legacy evidence against the cutover inventory |
+| Standalone Go `pipelock-verifier chain --dir <dir>` | Verifies | Verifies the v3 streams and checks legacy evidence against the cutover inventory |
+| Browser wasm verifier built from this source | Verifies within browser limits | Verifies within browser limits |
+| In-tree TypeScript, Rust, and Python v3 readers | Verify | Return `USE_HOST_VERIFIER` as an unsupported finding. Use `pipelock verify-receipt --chain <dir>`. |
+
+The TypeScript, Rust, and Python implementations also return `USE_HOST_VERIFIER` when a stream pins a non-empty cutover inventory, even if you pass only v3 stream files. They have separate commands or APIs for legacy evidence. The browser v3 verifier returns `USE_HOST_VERIFIER` when its input exceeds its archive limits. See the [v3 result and exit codes](../cli/verify-receipt.md#receipt-v3-on-main).
+
+On `main`, legacy evidence readers such as `pipelock logs`, `pipelock report`, dashboard evidence views, and fleet reports refuse v3. `pipelock doctor` checks writer prerequisites and directs you to the verifier for v3 evidence. The [reader inventory](../security/receipt-readers.json) lists each reader's role. Plan which workflows need legacy evidence before switching a recorder directory.
+
 ## Audit Packet v0 schema
 
 The canonical packet schema lives at [`sdk/audit-packet/`](../../sdk/audit-packet/).
@@ -1011,6 +1026,8 @@ file named by `flight_recorder.signing_key_path`.
 - [Configuration reference](../configuration.md#flight-recorder-v21) for all recorder fields
 
 ## Enable v3 receipts
+
+These steps require a build from `main`. For verification commands and compatibility, see [receipt v3 readers](#receipt-v3-readers).
 
 Set `flight_recorder.receipt_format: v3` in the configuration for
 `pipelock run` or `pipelock mcp proxy`. Enable the flight recorder, set

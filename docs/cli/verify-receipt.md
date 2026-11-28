@@ -2,6 +2,30 @@
 
 Verify a signed receipt, a chain, a whole recorder, or a receipt group. Pin the trusted signer with `--key`; repeat it for rotated keys. See the [receipt verification guide](../guides/receipt-verification.md) for formats and trust limits.
 
+## Receipt v3 on main
+
+Use a build from `main` for receipt v3. The v3 reader and writer are unreleased.
+
+```bash
+pipelock verify-receipt --chain evidence --key signer.pub
+```
+
+Pass the evidence directory for both v3-only evidence and a directory switched from legacy to v3. For v3-only evidence, you can also pass the stream files as positional arguments. The verifier emits canonical JSON by default. It reports `verdict`, `integrity`, `completeness`, and `trust_state` separately. Usage and unreadable input errors exit 2 without a result document.
+
+| Verdict | Exit | Meaning |
+|---|---|---|
+| `VALID` | 0 | Verification succeeded with pinned trust, proven stream ends, and no accepted gaps. |
+| `VALID, GAPS ACCEPTED` | 0 | Verification succeeded with pinned trust and an explicit acceptance of a gap or discontinuity. |
+| `SELF-CONSISTENT ONLY` | 1 by default | The evidence verifies against its own signer keys. `--allow-unpinned` permits exit 0. |
+| `VALID PREFIX, END UNPROVEN` | 3 by default | The verified prefix has an unproven end. With `--allow-prefix`, the exit is 0 if trust is pinned or `--allow-unpinned` is set, and 1 otherwise. |
+| `INCOMPLETE` | 3 | A required part of the evidence is missing or couldn't be appraised. |
+| `UNSUPPORTED` | 3 | The verifier can't appraise a required profile or feature. |
+| `INVALID` | 1 | The evidence failed verification or a caller requirement. |
+
+Both opt-in flags preserve the verdict. Only `VALID` is an unqualified pass. Check the appraised counts for unknown outcomes even when the stream verifies. An independently known v3 tip can prove a stream's end with `--expect-head STREAM:SEQ:sha256:HEX` or `--expect-seq STREAM:SEQ`. V3 verification refuses `--whole-recorder` and `--require-seal`. See the [receipt v3 result contract](../specs/receipt-v3.md#caller-requirements-and-result).
+
+## ActionReceipt v1 and EvidenceReceipt v2
+
 ```bash
 pipelock verify-receipt receipt.json --key signer.pub
 pipelock verify-receipt --chain evidence --whole-recorder --key signer.pub

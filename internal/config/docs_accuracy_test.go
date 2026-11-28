@@ -75,6 +75,28 @@ func TestDocsDeclareLiveStatsAndDefaults(t *testing.T) {
 		mustContain(t, priorArt, "may carry a receipt ID")
 		mustNotContain(t, priorArt, "response header (opaque ULID receipt ID)")
 	})
+
+	t.Run("receipt v3 operator docs", func(t *testing.T) {
+		cli := readDocAccuracyFile(t, root, "docs/cli/verify-receipt.md")
+		mustContain(t, cli, "## ActionReceipt v1 and EvidenceReceipt v2")
+		mustContain(t, cli, "The v3 reader and writer are unreleased.")
+		mustContain(t, cli, "pipelock verify-receipt --chain evidence --key signer.pub")
+		for _, row := range []string{
+			"| `VALID` | 0 |",
+			"| `VALID, GAPS ACCEPTED` | 0 |",
+			"| `SELF-CONSISTENT ONLY` | 1 by default |",
+			"| `VALID PREFIX, END UNPROVEN` | 3 by default |",
+			"| `INCOMPLETE` | 3 |",
+			"| `UNSUPPORTED` | 3 |",
+			"| `INVALID` | 1 |",
+		} {
+			mustContain(t, cli, row)
+		}
+		guide := readDocAccuracyFile(t, root, "docs/guides/receipt-verification.md")
+		mustContain(t, guide, "`USE_HOST_VERIFIER`")
+		mustContain(t, guide, "[reader inventory](../security/receipt-readers.json)")
+		mustContain(t, guide, "the published `pipelock-verify` package do not read v3")
+	})
 }
 
 func TestDocsLocalLinksResolve(t *testing.T) {

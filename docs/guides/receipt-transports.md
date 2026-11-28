@@ -1,6 +1,6 @@
 # Receipt Transport Coverage
 
-Pipelock emits Ed25519-signed action receipts for enforcement decisions across proxy transports. Receipts are written to the flight recorder as `action_receipt` entries and linked into a tamper-evident hash chain via `chain_prev_hash` and `chain_seq`.
+Pipelock emits Ed25519-signed action receipts for enforcement decisions across proxy transports. The tables below describe legacy receipts. The flight recorder writes ActionReceipt v1 as `action_receipt` entries linked by `chain_prev_hash` and `chain_seq`.
 
 For HTTP-shaped responses, `X-Pipelock-Receipt` optionally returns the proxy-minted `action_id` after the matching receipt has been recorded. A caller can retain that value beside its own request ID and later verify the signed receipt; the header alone is not proof. The header is available for blocks and for allow responses when `flight_recorder.require_receipts` records admission before egress. Best-effort allow responses intentionally remain uncorrelated until a pre-emission design is introduced.
 
@@ -138,3 +138,9 @@ With required receipts, each configured receipt family must confirm its durable 
 Receipt emission failures are logged and do not fail requests by default. Set `flight_recorder.require_receipts: true` to require allow-path receipts before forwarding traffic; if signing fails or the recorder is unavailable, Pipelock blocks the action with `receipt_emission_failed` instead of sending it upstream. This includes TLS-intercepted CONNECT inner HTTP requests: their durable `intent` receipt is emitted before the upstream request is attempted. Block-path receipts remain best-effort because the underlying action has already been denied.
 
 `require_receipts` covers the per-request, configured receipt-covered enforcement points — `allow`/`block` decisions on `tools/call` and on A2A methods, plus the request-path proxy decisions — not "every byte that flows." It does not mint a separate receipt for each clean frame of a streamed exchange: per-frame allow receipts on a long-lived stream (for example each clean WebSocket frame, or each clean SSE chunk) would be O(n) in stream length, so clean streaming frames are intentionally summarized rather than emitted individually. A blocked frame still emits its block receipt. CONNECT handshake-header DLP blocks are logged and counted without a signed receipt. See the [transport coverage matrix](transport-modes.md#signed-action-receipt-coverage) for receipt-covered paths and exceptions.
+
+## Receipt v3 on main
+
+With v3 and required receipts, Pipelock confirms the releasing record on disk before it releases the covered effect. The record shows what Pipelock decided. A separate outcome record shows what Pipelock observed. When an intent survives without a confirmed outcome, the verifier can report `outcome_unknown`. If a write or flush fails, a successor stream pins the last confirmed record. After a crash without a signed close, a successor can pin the last complete record it found, and the predecessor's end remains unproven unless independently established.
+
+The v3 action record's `policy.source` names the source of the policy hash or records that it was unavailable. See the [receipt v3 setup guide](receipt-verification.md#enable-v3-receipts) and the [receipt v3 specification](../specs/receipt-v3.md).
