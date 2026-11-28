@@ -87,7 +87,7 @@ func readLoadV3(ctx context.Context, dir string, key ed25519.PublicKey, counts *
 	return result, nil
 }
 
-func finishV3Integrity(ctx context.Context, opt options, dirs runDirs, plan workload, sink *sink, shutdown shutdownReport) integrityReport {
+func finishV3Integrity(ctx context.Context, opt options, dirs runDirs, plan workload, sink *sink, outcomes []requestOutcome, shutdown shutdownReport) integrityReport {
 	rep := integrityReport{
 		Verdict: verdictPass, Kinds: make(map[string]kindReport), Reasons: []string{},
 		ReceiptAttribution: "aggregate", Shutdown: shutdown,
@@ -98,6 +98,13 @@ func finishV3Integrity(ctx context.Context, opt options, dirs runDirs, plan work
 	var blocked int
 	for slot, hits := range sink.hits() {
 		b := plan.blocked(slot)
+		validResponse := false
+		if slot < len(outcomes) {
+			validResponse = outcomes[slot].expectedResponse()
+		}
+		if !validResponse {
+			rep.fail(fmt.Sprintf("%s: request did not complete with the expected response", plan.key(slot)))
+		}
 		accountSink(&rep.Sink, b, hits, plan.key(slot))
 		if b {
 			blocked++

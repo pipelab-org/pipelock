@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
@@ -114,19 +115,38 @@ func TestV3LoadVerificationReport(t *testing.T) {
 	plan := newWorkload(1, 0, 1)
 	plan.blockOffset = 0
 	receiver := &sink{plan: plan, seen: make([]atomic.Int32, plan.total())}
-	integrity := finishV3Integrity(t.Context(), options{}, dirs, plan, receiver, shutdownReport{Clean: true})
+	integrity := finishV3Integrity(t.Context(), options{}, dirs, plan, receiver, []requestOutcome{{ran: true}}, shutdownReport{Clean: true})
 	if integrity.Verdict != verdictPass || integrity.Kinds["v3_block_decision"].Observed != 1 {
 		t.Fatalf("integrity: %+v", integrity)
 	}
+	for _, tc := range []struct {
+		name           string
+		warm, measured phaseResult
+	}{
+		{"warmup transport error", phaseResult{outcomes: []requestOutcome{{ran: true, transportErr: true}}}, phaseResult{}},
+		{"warmup unexpected response", phaseResult{outcomes: []requestOutcome{{ran: true, bodyMismatch: true}}}, phaseResult{}},
+		{"measured transport error", phaseResult{}, phaseResult{outcomes: []requestOutcome{{ran: true, transportErr: true}}}},
+		{"measured unexpected response", phaseResult{}, phaseResult{outcomes: []requestOutcome{{ran: true, bodyMismatch: true}}}},
+		{"body read error", phaseResult{}, phaseResult{outcomes: []requestOutcome{{ran: true, bodyReadErr: true}}}},
+		{"not run", phaseResult{}, phaseResult{outcomes: []requestOutcome{{}}}},
+		{"missing outcome", phaseResult{}, phaseResult{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := finishIntegrity(t.Context(), options{receiptFormat: config.ReceiptFormatV3}, modeBest, dirs, nil, plan, receiver, tc.warm, tc.measured, time.Time{}, shutdownReport{Clean: true}, nil)
+			if got.Verdict != verdictFail {
+				t.Fatalf("unexpected response accepted: %+v", got)
+			}
+		})
+	}
 	plan.blockOffset = 1
-	integrity = finishV3Integrity(t.Context(), options{restartAfter: 1}, dirs, plan, receiver, shutdownReport{Error: "stop failed"})
+	integrity = finishV3Integrity(t.Context(), options{restartAfter: 1}, dirs, plan, receiver, []requestOutcome{{ran: true}}, shutdownReport{Error: "stop failed"})
 	if integrity.Verdict != verdictFail || integrity.ReceiptMissing != 4 || len(integrity.Reasons) < 3 {
 		t.Fatalf("integrity missed failed effects, sink or restart: %+v", integrity)
 	}
 	if err := os.MkdirAll(filepath.Join(dirs.recorder, "ael", "run"), 0o750); err != nil {
 		t.Fatal(err)
 	}
-	integrity = finishV3Integrity(t.Context(), options{}, dirs, plan, receiver, shutdownReport{Clean: true})
+	integrity = finishV3Integrity(t.Context(), options{}, dirs, plan, receiver, []requestOutcome{{ran: true}}, shutdownReport{Clean: true})
 	if integrity.Verdict != verdictFail || !strings.Contains(integrity.Verify.Output, "legacy agent event log") {
 		t.Fatalf("unexpected mixed format result: %+v", integrity)
 	}

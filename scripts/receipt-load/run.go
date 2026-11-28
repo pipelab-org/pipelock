@@ -330,7 +330,7 @@ func execute(ctx context.Context, opt options, mode string, dirs runDirs, plan w
 		perf.invalidate("warmup was interrupted")
 	}
 	for _, out := range warm.outcomes {
-		if !out.ran || out.transportErr || out.bodyReadErr || out.bodyMismatch {
+		if !out.expectedResponse() {
 			perf.invalidate("warmup did not complete with expected responses")
 			break
 		}
@@ -583,7 +583,8 @@ func (s *sampler) close() {
 // folds in the shutdown and offline verification results.
 func finishIntegrity(ctx context.Context, opt options, mode string, dirs runDirs, env []string, plan workload, sink *sink, warm, measured phaseResult, end time.Time, shutdown shutdownReport, perf *performanceReport) integrityReport {
 	if mode != modeOff && opt.receiptFormat == config.ReceiptFormatV3 {
-		return finishV3Integrity(ctx, opt, dirs, plan, sink, shutdown)
+		outcomes := append(append(make([]requestOutcome, 0, plan.total()), warm.outcomes...), measured.outcomes...)
+		return finishV3Integrity(ctx, opt, dirs, plan, sink, outcomes, shutdown)
 	}
 	var obs *recorderObservation
 	var scanErr error

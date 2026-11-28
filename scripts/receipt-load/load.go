@@ -49,6 +49,10 @@ type requestOutcome struct {
 	receiptHeader    string
 }
 
+func (out requestOutcome) expectedResponse() bool {
+	return out.ran && !out.transportErr && !out.bodyReadErr && !out.bodyMismatch
+}
+
 // phaseResult holds every per-request outcome for a phase, indexed by the
 // per-phase request index, plus the monotonic wall time the phase took.
 type phaseResult struct {
