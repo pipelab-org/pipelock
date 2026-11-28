@@ -18,6 +18,7 @@ import (
 	"testing/iotest"
 
 	contract "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/evidencename"
 )
 
 func TestCallerOptionsParse(t *testing.T) {
@@ -150,11 +151,11 @@ func TestCallerPins(t *testing.T) {
 func TestInputClaims(t *testing.T) {
 	dir := t.TempDir()
 	profile := filepath.Join(dir, "example.jsonl")
-	if err := os.WriteFile(profile, []byte(contract.ProfileEnvelopePrefix), 0o600); err != nil {
+	if err := os.WriteFile(profile, []byte(evidencename.ReceiptProfilePrefix), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	contentDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(contentDir, "activation-receipts.jsonl"), []byte(contract.ProfileEnvelopePrefix), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(contentDir, "activation-receipts.jsonl"), []byte(evidencename.ReceiptProfilePrefix), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	unknownProfile := filepath.Join(dir, "example.receipt-v4.jsonl")
@@ -544,4 +545,70 @@ func coreDiscover(paths []string, opts Options, skip string) ([]inputFile, []str
 	}
 	files, _, inventories, _, err := discover(selected, Options{}, skip)
 	return files, old, inventories, ignored, err
+}
+
+func TestDiscoveryRejectsProfileNamedDirectory(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "empty.receipt-v3.jsonl"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	_, _, _, _, err := discover([]string{dir}, Options{Directory: true}, "")
+	if err == nil || !strings.Contains(err.Error(), "not a regular file") {
+		t.Fatalf("discover = %v, want non-regular evidence error", err)
+	}
+}
+
+func TestNestedReceiptProfileDiscovery(t *testing.T) {
+	root := t.TempDir()
+	child := filepath.Join(root, "child")
+	nested := filepath.Join(child, "nested")
+	if err := os.MkdirAll(nested, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := nestedReceiptProfile(root, entries); err != nil || got != "" {
+		t.Fatalf("empty tree: %q, %v", got, err)
+	}
+	if err := os.WriteFile(filepath.Join(nested, "stream.receipt-v3.jsonl"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := nestedReceiptProfile(root, entries); err != nil || got != nested {
+		t.Fatalf("nested profile: %q, %v", got, err)
+	}
+	if _, _, _, _, err := discover([]string{root}, Options{Directory: true}, ""); err == nil || !strings.Contains(err.Error(), "outside this directory verification") {
+		t.Fatalf("discover: %v", err)
+	}
+	if err := os.RemoveAll(child); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := nestedReceiptProfile(root, entries); err == nil {
+		t.Fatal("removed child accepted")
+	}
+}
+
+func TestNestedReceiptProfilePropagatesUnidentifiedContent(t *testing.T) {
+	root := t.TempDir()
+	child := filepath.Join(root, "child")
+	if err := os.Mkdir(child, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(child, "evidence-proxy-0.jsonl"), []byte(strings.Repeat(" ", (64<<10)+1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := nestedReceiptProfile(root, entries); !errors.Is(err, evidencename.ErrReceiptContentUnidentified) {
+		t.Fatalf("nested profile: %v", err)
+	}
+	if _, _, _, _, err := discover([]string{root}, Options{Directory: true}, ""); !errors.Is(err, evidencename.ErrReceiptContentUnidentified) {
+		t.Fatalf("discover: %v", err)
+	}
+	if !ClaimsContent([]byte("  "+evidencename.ReceiptProfilePrefix)) || ClaimsContent([]byte("{}")) {
+		t.Fatal("content claim mismatch")
+	}
 }

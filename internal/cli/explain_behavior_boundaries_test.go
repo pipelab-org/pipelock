@@ -170,17 +170,8 @@ func TestExplainEventReaderAndFieldFailureBoundaries(t *testing.T) {
 		err:  sentinel,
 	}, 16)
 	_, tooLong, err := readExplainEventAuditLine(reader, 8)
-	if !tooLong || err == nil || !strings.Contains(err.Error(), "scan audit log") {
+	if !tooLong || err != nil {
 		t.Fatalf("tooLong = %v, err = %v", tooLong, err)
-	}
-
-	reader = bufio.NewReaderSize(&explainFailReader{
-		data: []byte("fragment"),
-		err:  sentinel,
-	}, 16)
-	err = discardExplainEventAuditLineRemainder(reader)
-	if err == nil || !strings.Contains(err.Error(), "scan audit log") {
-		t.Fatalf("discard error = %v", err)
 	}
 
 	raw := map[string]any{

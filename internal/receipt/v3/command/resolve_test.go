@@ -22,6 +22,12 @@ func TestResolveDirectory(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(mixed, v3File), data, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.MkdirAll(filepath.Join(mixed, "streams", "v3only"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mixed, "streams", "v3only", v3File), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Mkdir(filepath.Join(mixed, "operational"), 0o750); err != nil {
 		t.Fatal(err)
 	}
@@ -46,6 +52,9 @@ func TestResolveDirectory(t *testing.T) {
 		{name: "v3 root", dir: mixed, want: mixedAbs},
 		{name: "legacy location", dir: legacy, want: filepath.Join(legacy, "operational")},
 		{name: "explicit location skips the v3 root", dir: mixed, location: "missing", wantErr: "missing"},
+		{name: "explicit location holding only v3", dir: mixed, location: "streams/v3only", want: filepath.Join(mixedAbs, "streams", "v3only")},
+		{name: "explicit location cannot leave the root", dir: mixed, location: "../outside", wantErr: "descendant"},
+		{name: "explicit legacy location in a v3 root", dir: mixed, location: "operational", want: filepath.Join(mixedAbs, "operational")},
 		{name: "missing directory", dir: filepath.Join(t.TempDir(), "missing"), wantErr: "missing"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

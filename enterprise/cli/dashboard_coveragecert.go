@@ -17,6 +17,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/evidence/receiptinput"
+
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/atomicfile"
@@ -121,6 +123,9 @@ func runCoverageCertGenerate(cmd *cobra.Command, opts coverageCertGenerateOption
 	}
 
 	cleanDir := filepath.Clean(opts.receiptDir)
+	if err := receiptinput.RefuseLocation(cleanDir, "dashboard coverage-cert generate", "coverage certificates"); err != nil {
+		return fmt.Errorf("--receipt-dir: %w", err)
+	}
 	protected := map[string]string{
 		"the signing key":    opts.signingKeyFile,
 		"--license-crl-file": effectiveCoverageLicenseCRLFile(opts.licenseCRLFile),

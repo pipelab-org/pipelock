@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/luckyPipewrench/pipelock/internal/evidence/receiptinput"
+
 	"github.com/luckyPipewrench/pipelock/internal/evidence/endproof"
 	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
@@ -23,6 +25,9 @@ import (
 // the internal gate the rig runs on every packet before publish; the separate
 // binary test proves the same packet verifies from a clean machine.
 func VerifyPacketDir(dir, keyHex string) error {
+	if err := receiptinput.Refuse(dir, "audit packet", "the audit packet verifier"); err != nil {
+		return err
+	}
 	packetPath := filepath.Join(dir, "packet.json")
 	data, err := recorder.ReadEvidenceFileBounded(filepath.Clean(packetPath), recorder.MaxEvidenceReadFileBytes)
 	if err != nil {
@@ -49,6 +54,9 @@ func VerifyPacketDir(dir, keyHex string) error {
 		return fmt.Errorf("evidence path %q is not local to the packet directory", pkt.Artifacts.Evidence)
 	}
 	evidencePath := filepath.Join(dir, pkt.Artifacts.Evidence)
+	if err := receiptinput.Refuse(evidencePath, "audit packet", "the audit packet verifier"); err != nil {
+		return err
+	}
 	evidence, err := recorder.ReadEvidenceFileBounded(filepath.Clean(evidencePath), recorder.MaxEvidenceReadFileBytes)
 	if err != nil {
 		return fmt.Errorf("extracting evidence: %w", err)
@@ -61,6 +69,9 @@ func VerifyPacketDir(dir, keyHex string) error {
 // bytes. It is the browser/WASM verifier path: no directory or filesystem is
 // required.
 func VerifyPacketBytes(packetJSON, evidenceJSONL []byte, keyHex string) error {
+	if err := receiptinput.RefusePayload(evidenceJSONL, "audit packet", "the audit packet verifier"); err != nil {
+		return err
+	}
 	if int64(len(packetJSON)) > recorder.MaxEvidenceReadFileBytes {
 		return fmt.Errorf("packet.json exceeds %d bytes", recorder.MaxEvidenceReadFileBytes)
 	}

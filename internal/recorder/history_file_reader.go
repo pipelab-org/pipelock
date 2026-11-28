@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+
+	"github.com/luckyPipewrench/pipelock/internal/evidencename"
 )
 
 // WalkEvidenceFileReader supplies a seekable snapshot of a regular no-follow
@@ -16,6 +18,9 @@ import (
 func WalkEvidenceFileReader(path string, consume func(io.ReadSeeker) error) error {
 	if consume == nil {
 		return errors.New("evidence file consumer is required")
+	}
+	if err := evidencename.RefuseReceiptName(path); err != nil {
+		return err
 	}
 	file, before, err := OpenEvidenceFile(path)
 	if err != nil {

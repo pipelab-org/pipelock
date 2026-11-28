@@ -72,6 +72,16 @@ candidate artifact plus tombstone-index evidence for local private erasure.`,
 }
 
 func runForget(cmd *cobra.Command, flags forgetFlags) error {
+	output := flags.outPath
+	if output == "" {
+		output = flags.candidatePath
+	}
+	return withLegacyReceiptOutput("learn forget", flags.receiptOut, filepath.Join(filepath.Dir(output), "redaction-receipts.jsonl"), func() error {
+		return runForgetLegacy(cmd, flags)
+	})
+}
+
+func runForgetLegacy(cmd *cobra.Command, flags forgetFlags) error {
 	if strings.TrimSpace(flags.ruleID) == "" {
 		return fmt.Errorf("%w: --rule-id is required", ErrRuleNotFound)
 	}

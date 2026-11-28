@@ -87,6 +87,9 @@ func TestStreamWriterCutoverCommitsAtFirstStream(t *testing.T) {
 	if inventoryPin == "" || hasV3Entry(entries) {
 		t.Fatalf("expected inventory without a v3 stream: %v", entries)
 	}
+	if claimed, checkErr := DirectoryHasV3(dir); checkErr != nil || claimed {
+		t.Fatalf("uncommitted cutover inventory claimed directory: %t, %v", claimed, checkErr)
+	}
 	inventoryPath := filepath.Join(dir, InventoryFilename(inventoryPin))
 	body, err := os.ReadFile(filepath.Clean(inventoryPath))
 	if err != nil {

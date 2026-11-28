@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/luckyPipewrench/pipelock/internal/contract/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/evidencename"
 )
 
 // LegacyCorpusDir returns a directory with legacy recorder shards and their
@@ -30,7 +30,8 @@ func LegacyCorpusDir(t testing.TB, dir string) string {
 			continue
 		}
 		shard := strings.HasPrefix(name, "evidence-")
-		if receipt.ProfileFilenameVersion(name) != "" || shard && hasProfileEnvelope(t, filepath.Join(dir, name)) {
+		_, profile := evidencename.ReceiptProfileVersion(name)
+		if profile || shard && hasProfileEnvelope(t, filepath.Join(dir, name)) {
 			excluded[name] = true
 			continue
 		}
@@ -69,7 +70,7 @@ func hasProfileEnvelope(t testing.TB, path string) bool {
 		t.Fatal(err)
 	}
 	defer func() { _ = file.Close() }()
-	claimed, err := receipt.HasProfileEnvelope(file)
+	claimed, err := evidencename.ProbeReceiptContent(file)
 	if err != nil {
 		t.Fatal(err)
 	}

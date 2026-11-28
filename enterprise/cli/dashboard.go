@@ -28,6 +28,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/cli/runtime"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/emit"
+	"github.com/luckyPipewrench/pipelock/internal/evidence/receiptinput"
 	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/securefile"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
@@ -282,6 +283,9 @@ func (prepared *dashboardPreparedRuntime) prepare(cmd *cobra.Command, opts dashb
 	}
 	if !info.IsDir() {
 		return fmt.Errorf("--receipt-dir %q is not a directory", opts.receiptDir)
+	}
+	if err := receiptinput.RefuseLocation(filepath.Clean(opts.receiptDir), "dashboard serve", "the dashboard"); err != nil {
+		return err
 	}
 	anchorResolver, err := dashboard.NewFileAnchorResolver(
 		opts.receiptDir, opts.anchorLocalLog, opts.rekorLogKeys, opts.anchorExpected,

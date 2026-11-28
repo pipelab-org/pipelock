@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/evidence/receiptinput"
+
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/replaycapture"
 )
@@ -54,6 +56,9 @@ func AssembleFromEvidence(evidenceFile, pubKeyHex, outDir string, generatedAt ti
 
 func assembleFromEvidenceCore(evidenceFile, pubKeyHex string, sc *replaycapture.Scenario, outDir string, generatedAt time.Time, audience replaycapture.Audience) (*replaycapture.AssembleResult, error) {
 	cleanPath := filepath.Clean(evidenceFile)
+	if err := receiptinput.Refuse(cleanPath, "playground assemble", "the playground"); err != nil {
+		return nil, err
+	}
 
 	if _, err := os.Stat(cleanPath); err != nil {
 		return nil, fmt.Errorf("evidence file: %w", err)

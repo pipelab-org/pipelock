@@ -238,8 +238,8 @@ func walkHistoryPrefixShard(location EvidenceLocation, sessionID string, prefix 
 
 // WalkSessionHistory resolves dir and walks one session's complete history.
 // See WalkSessionHistoryResolved.
-func WalkSessionHistory(dir, sessionID string, consume func(Entry) error) error {
-	location, err := ResolveEvidenceLocation(dir, "")
+func WalkSessionHistory(dir, sessionID string, consume func(Entry) error, modes ...EvidenceReadMode) error {
+	location, err := ResolveEvidenceLocation(dir, "", modes...)
 	if err != nil {
 		return fmt.Errorf("resolve evidence location: %w", err)
 	}
@@ -536,6 +536,9 @@ func (e *EvidenceFileReadError) Unwrap() error { return e.err }
 // to the exact bytes this one verified. It returns the file identity observed
 // at open.
 func WalkEvidenceFile(path string, raw io.Writer, consume func(Entry) error) (os.FileInfo, error) {
+	if err := evidencename.RefuseReceiptName(path); err != nil {
+		return nil, err
+	}
 	if info, err := os.Lstat(filepath.Clean(path)); err == nil && !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("%w: evidence file is symlinked or non-regular", ErrEvidenceRefused)
 	}
@@ -744,7 +747,7 @@ func (c *historyCursor) acceptInventory(inventory historyInventory) error {
 func (c *historyCursor) checkInventory() error {
 	_, _, inventory, err := scanHistoryWindowBound(c.location, c.sessionID, c.after, 1, c.prefix)
 	if err != nil {
-		if c.prefix != nil {
+		if c.prefix != nil || errors.Is(err, ErrLegacyEvidenceFormat) {
 			return err
 		}
 		return fmt.Errorf("%w: rechecking evidence directory: %s", ErrEvidenceChanged, err.Error())
@@ -777,6 +780,9 @@ func scanHistoryWindowBound(location EvidenceLocation, sessionID string, after *
 	foundPrefix := false
 	for {
 		batch, readErr := directory.ReadDir(sessionHistoryDirBatch)
+		if err := refuseReceiptDirectoryEntries(location.Dir, batch, location.ReadMode); err != nil {
+			return nil, false, inventory, err
+		}
 		for _, de := range batch {
 			name := de.Name()
 			if location.ExcludedNames[name] {

@@ -16,6 +16,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/luckyPipewrench/pipelock/internal/evidence/receiptinput"
+
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
@@ -147,8 +149,14 @@ func verifyLegacyEpochInventoryCmd() *cobra.Command {
 }
 
 func runInventoryLegacyEpochs(cmd *cobra.Command, opts legacyInventoryOptions) error {
+	if err := receiptinput.Refuse(opts.receiptDir, "evidence inventory-legacy-epochs", "the legacy evidence reader"); err != nil {
+		return err
+	}
 	location, err := resolveLegacyInventoryLocation(opts.receiptDir, opts.locationID, opts.sessionID)
 	if err != nil {
+		return err
+	}
+	if err := receiptinput.Refuse(location.Dir, "evidence inventory-legacy-epochs", "the legacy evidence reader"); err != nil {
 		return err
 	}
 	out, parent, err := resolveLegacyInventoryOutput(opts.outFile, location.Root)
@@ -171,6 +179,9 @@ func runInventoryLegacyEpochs(cmd *cobra.Command, opts legacyInventoryOptions) e
 		return fmt.Errorf("lock stopped evidence directory: %w", err)
 	}
 	defer func() { _ = lock.Close() }()
+	if err := receiptinput.Refuse(location.Dir, "evidence inventory-legacy-epochs", "the legacy evidence reader"); err != nil {
+		return err
+	}
 	document, err := buildLegacyInventory(location, strings.TrimSpace(opts.sessionID))
 	if err != nil {
 		return err
@@ -202,8 +213,14 @@ func runInventoryLegacyEpochs(cmd *cobra.Command, opts legacyInventoryOptions) e
 }
 
 func runVerifyLegacyEpochInventory(cmd *cobra.Command, opts verifyLegacyInventoryOptions) error {
+	if err := receiptinput.Refuse(opts.receiptDir, "evidence verify-legacy-epoch-inventory", "the legacy evidence reader"); err != nil {
+		return err
+	}
 	location, err := resolveLegacyInventoryLocation(opts.receiptDir, opts.locationID, opts.sessionID)
 	if err != nil {
+		return err
+	}
+	if err := receiptinput.Refuse(location.Dir, "evidence verify-legacy-epoch-inventory", "the legacy evidence reader"); err != nil {
 		return err
 	}
 	wantDigest := strings.ToLower(strings.TrimSpace(opts.inventorySHA256))
@@ -250,6 +267,9 @@ func runVerifyLegacyEpochInventory(cmd *cobra.Command, opts verifyLegacyInventor
 		return fmt.Errorf("lock stopped evidence directory: %w", err)
 	}
 	defer func() { _ = lock.Close() }()
+	if err := receiptinput.Refuse(location.Dir, "evidence verify-legacy-epoch-inventory", "the legacy evidence reader"); err != nil {
+		return err
+	}
 	recomputed, err := buildLegacyInventory(location, strings.TrimSpace(opts.sessionID))
 	if err != nil {
 		return err

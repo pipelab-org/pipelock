@@ -404,6 +404,9 @@ func walkInventoryNames(dir string, visit func(string) error) error {
 // shard look like ordinary single-session evidence. A positive maxEntries
 // applies the same fail-closed directory bound used by read-only views.
 func ReceiptGroupEvidencePresent(dir string, maxEntries int) (bool, error) {
+	if err := recorder.RefuseReceiptDirectory(dir); err != nil {
+		return false, err
+	}
 	return receiptGroupEvidencePresent(dir, maxEntries, nil)
 }
 
@@ -476,7 +479,7 @@ func firstGroupEvidenceEntry(path string) (recorder.Entry, bool, error) {
 		})
 		return first, seen, err
 	}
-	if recorder.IsEvidenceUnavailable(err) || errors.Is(err, os.ErrNotExist) {
+	if recorder.IsEvidenceUnavailable(err) || errors.Is(err, os.ErrNotExist) || errors.Is(err, recorder.ErrLegacyEvidenceFormat) {
 		return first, seen, err
 	}
 	// Other malformed legacy evidence is classified by its normal verifier.
@@ -504,7 +507,7 @@ func walkLegacySessionHistory(dir, session string, excluded map[string]bool, vis
 	if len(excluded) == 0 {
 		return recorder.WalkSessionHistory(dir, session, visit)
 	}
-	location, err := recorder.ResolveEvidenceLocation(dir, "")
+	location, err := recorder.ResolveEvidenceLocation(dir, "", recorder.MixedReceiptProfiles)
 	if err != nil {
 		return fmt.Errorf("resolve evidence location: %w", err)
 	}

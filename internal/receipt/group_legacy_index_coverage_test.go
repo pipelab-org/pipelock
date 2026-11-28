@@ -9,7 +9,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -19,7 +18,7 @@ func TestLegacyExclusionIndexRefusesUnavailableInventoryAndScratch(t *testing.T)
 	if sessions, err := ResolveBaseSessionsExcludingReceiptGroups(missing, "proxy"); sessions != nil || !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("missing legacy inventory sessions=%v err=%v", sessions, err)
 	}
-	if report, err := VerifyBase(missing, "proxy", BaseVerifyOptions{ExcludeReceiptGroupSessions: true}); err == nil || report.Base != "proxy" || !strings.Contains(err.Error(), "listing sessions") {
+	if report, err := VerifyBase(missing, "proxy", BaseVerifyOptions{ExcludeReceiptGroupSessions: true}); err == nil || report.Base != "proxy" || !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("missing excluded base report=%+v err=%v", report, err)
 	}
 	t.Setenv("TMPDIR", missing)

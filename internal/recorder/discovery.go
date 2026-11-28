@@ -6,6 +6,7 @@ package recorder
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path"
@@ -13,6 +14,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/luckyPipewrench/pipelock/internal/evidencename"
 )
 
 var (
@@ -30,14 +33,94 @@ type EvidenceLocation struct {
 	// ExcludedNames are immediate files claimed by another evidence profile
 	// in this verification. The authoritative history walkers skip them.
 	ExcludedNames map[string]bool
+	// ReadMode is carried to later directory inventories of this location.
+	ReadMode EvidenceReadMode
+}
+
+// EvidenceReadMode determines whether a legacy inventory can omit known
+// receipt-profile files that another verifier will check separately.
+//
+// The mode is a struct so that no constant or literal outside this package can
+// stand in for it: a numeric type would let DiscoverEvidenceLocations(dir, 1)
+// opt in without naming MixedReceiptProfiles.
+type EvidenceReadMode struct{ mixed bool }
+
+// MixedReceiptProfiles is reserved for callers that independently handle
+// receipt profiles in the same directory. It never relaxes a legacy decoder.
+var MixedReceiptProfiles = EvidenceReadMode{mixed: true}
+
+func (mode EvidenceReadMode) allowsMixedReceiptProfiles() bool {
+	return mode.mixed
+}
+
+func evidenceReadMode(modes []EvidenceReadMode) EvidenceReadMode {
+	for _, mode := range modes {
+		if mode.mixed {
+			return MixedReceiptProfiles
+		}
+	}
+	return EvidenceReadMode{}
+}
+
+func refuseReceiptDirectoryEntries(dir string, entries []fs.DirEntry, mode EvidenceReadMode) error {
+	if !mode.allowsMixedReceiptProfiles() {
+		if name := evidencename.ReceiptProfileEntry(entries); name != "" {
+			return legacyEvidenceFormatError(filepath.Join(dir, name))
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || !entry.Type().IsRegular() || !evidencename.IsLegacyReceiptCandidate(entry.Name()) {
+				continue
+			}
+			path := filepath.Join(dir, entry.Name())
+			claimed, err := fileClaimsReceiptProfile(path)
+			if err != nil {
+				return &fs.PathError{Op: "probe evidence format", Path: path, Err: err}
+			}
+			if claimed {
+				return legacyEvidenceFormatError(path)
+			}
+		}
+	}
+	return nil
+}
+
+// RefuseReceiptDirectory refuses receipt-profile filenames in one immediate
+// evidence location using the same secured directory open as other readers.
+func RefuseReceiptDirectory(dir string, modes ...EvidenceReadMode) error {
+	if evidenceReadMode(modes).allowsMixedReceiptProfiles() {
+		return nil
+	}
+	handle, err := OpenEvidenceDirectory(dir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = handle.Close() }()
+	return refuseRemainingReceiptNames(handle, dir)
+}
+
+// The inventory may retain only a bounded prefix. Check the remaining names
+// in batches so a profile outside the returned entries still claims the directory.
+func refuseRemainingReceiptNames(handle *os.File, dir string) error {
+	for {
+		entries, readErr := handle.ReadDir(sessionHistoryDirBatch)
+		if err := refuseReceiptDirectoryEntries(dir, entries, EvidenceReadMode{}); err != nil {
+			return err
+		}
+		if errors.Is(readErr, io.EOF) {
+			return nil
+		}
+		if readErr != nil {
+			return readErr
+		}
+	}
 }
 
 // DiscoverEvidenceLocations finds evidence-file directories under root without
 // following symlinks. Each location holds its immediate evidence files. Any
 // unreadable path or symlink fails closed so missing evidence cannot look
 // absent.
-func DiscoverEvidenceLocations(root string) ([]EvidenceLocation, error) {
-	return discoverEvidenceLocations(root, nil, nil)
+func DiscoverEvidenceLocations(root string, modes ...EvidenceReadMode) ([]EvidenceLocation, error) {
+	return discoverEvidenceLocations(root, nil, nil, modes...)
 }
 
 // ResolveEvidenceRoot checks the operator's walked path before returning
@@ -55,7 +138,7 @@ func ResolveEvidenceRoot(root string) (string, error) {
 
 // discoverEvidenceLocations anchors traversal to an opened root. The optional
 // hooks let tests replace the pathname around the final root open.
-func discoverEvidenceLocations(root string, beforeRootOpen, afterRootOpen func()) ([]EvidenceLocation, error) {
+func discoverEvidenceLocations(root string, beforeRootOpen, afterRootOpen func(), modes ...EvidenceReadMode) ([]EvidenceLocation, error) {
 	cleanRoot, err := ResolveEvidenceRoot(root)
 	if err != nil {
 		return nil, err
@@ -101,6 +184,7 @@ func discoverEvidenceLocations(root string, beforeRootOpen, afterRootOpen func()
 		return nil, fmt.Errorf("evidence root changed while opening: %q", root)
 	}
 
+	mode := evidenceReadMode(modes)
 	locations := make([]EvidenceLocation, 0)
 	rootFS := rootHandle.FS()
 	err = fs.WalkDir(rootFS, ".", func(relPath string, entry fs.DirEntry, walkErr error) error {
@@ -120,7 +204,7 @@ func discoverEvidenceLocations(root string, beforeRootOpen, afterRootOpen func()
 		if !entryInfo.IsDir() {
 			return nil
 		}
-		hasEvidence, readErr := directoryHasEvidenceFiles(rootFS, relPath)
+		hasEvidence, readErr := directoryHasEvidenceFiles(rootFS, relPath, filepath.Join(cleanRoot, filepath.FromSlash(relPath)), mode)
 		if readErr != nil {
 			return fmt.Errorf("read evidence directory %q: %w", relPath, readErr)
 		}
@@ -133,7 +217,7 @@ func discoverEvidenceLocations(root string, beforeRootOpen, afterRootOpen func()
 			id = relPath
 			dir = filepath.Join(cleanRoot, filepath.FromSlash(relPath))
 		}
-		locations = append(locations, EvidenceLocation{Root: cleanRoot, ID: id, Dir: dir})
+		locations = append(locations, EvidenceLocation{Root: cleanRoot, ID: id, Dir: dir, ReadMode: mode})
 		// A directory containing evidence is a location, not a chain boundary.
 		// Descendants can hold independent evidence files and must be discovered
 		// so a reader never mistakes a partial traversal for complete evidence.
@@ -286,9 +370,12 @@ func validateEvidenceRootComponents(cleanRoot string) (fs.FileInfo, error) {
 	return rootInfo, nil
 }
 
-func directoryHasEvidenceFiles(rootFS fs.FS, dir string) (bool, error) {
+func directoryHasEvidenceFiles(rootFS fs.FS, dir, absoluteDir string, mode EvidenceReadMode) (bool, error) {
 	entries, err := fs.ReadDir(rootFS, dir)
 	if err != nil {
+		return false, err
+	}
+	if err := refuseReceiptDirectoryEntries(absoluteDir, entries, mode); err != nil {
 		return false, err
 	}
 	for _, entry := range entries {
@@ -325,8 +412,8 @@ func isEvidenceRawSidecar(name string) bool {
 // consume. An empty locationID preserves legacy behavior when exactly one
 // location exists. It refuses an ambiguous root rather than silently choosing
 // a location.
-func ResolveEvidenceLocation(root, locationID string) (EvidenceLocation, error) {
-	locations, err := DiscoverEvidenceLocations(root)
+func ResolveEvidenceLocation(root, locationID string, modes ...EvidenceReadMode) (EvidenceLocation, error) {
+	locations, err := DiscoverEvidenceLocations(root, modes...)
 	if err != nil {
 		return EvidenceLocation{}, err
 	}
@@ -347,7 +434,7 @@ func ResolveEvidenceLocation(root, locationID string) (EvidenceLocation, error) 
 		if absErr != nil {
 			return EvidenceLocation{}, fmt.Errorf("resolve evidence root: %w", absErr)
 		}
-		return EvidenceLocation{Root: cleanRoot, Dir: cleanRoot}, nil
+		return EvidenceLocation{Root: cleanRoot, Dir: cleanRoot, ReadMode: evidenceReadMode(modes)}, nil
 	}
 	if len(locations) == 1 {
 		return locations[0], nil

@@ -28,6 +28,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/coveragecert"
 	"github.com/luckyPipewrench/pipelock/internal/evidence/endproof"
+	"github.com/luckyPipewrench/pipelock/internal/evidence/receiptinput"
 	"github.com/luckyPipewrench/pipelock/internal/evidenceview"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
@@ -900,6 +901,29 @@ func TestExpireCmd_RetentionDisabledIsNoOp(t *testing.T) {
 	}
 }
 
+func TestExpireCmd_RefusesReceiptProfileDirectory(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	profile := filepath.Join(dir, "stream.receipt-v3.jsonl")
+	content := []byte("{\"kind\":\"example\"}\n")
+	if err := os.WriteFile(profile, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	cmd := Cmd()
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"expire", "--receipt-dir", dir, "--retention-days", "1"})
+	err := cmd.Execute()
+	if !errors.Is(err, receiptinput.ErrUnsupported) || !strings.Contains(err.Error(), "pipelock verify-receipt --chain") {
+		t.Fatalf("expire on a receipt-profile directory = %v, want the unsupported-format refusal with directory verifier guidance", err)
+	}
+	after, readErr := os.ReadFile(filepath.Clean(profile))
+	if readErr != nil || !bytes.Equal(after, content) {
+		t.Fatalf("receipt-profile file changed: %q, %v", after, readErr)
+	}
+}
+
 func writeExpireTestFile(t *testing.T, dir, name string) string {
 	t.Helper()
 	path := filepath.Join(dir, name)
@@ -1483,7 +1507,7 @@ func TestExpireCmd_ErrorPaths(t *testing.T) {
 				}
 				return []string{"expire", "--receipt-dir", dir, "--retention-days", "0"}
 			},
-			wantErr: "evidence expire does not support v3 receipt directories",
+			wantErr: "evidence expire: receipt v3 evidence is not supported",
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1499,6 +1523,33 @@ func TestExpireCmd_ErrorPaths(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), tt.wantErr) {
 				t.Fatalf("error = %q, want substring %q", err.Error(), tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestEvidenceServeHandlerRefusesNewReceiptProfiles(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		profileAtRoot bool
+	}{{"root", true}, {"location", false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			location := filepath.Join(root, "child")
+			if err := os.Mkdir(location, 0o750); err != nil {
+				t.Fatal(err)
+			}
+			target := location
+			if tc.profileAtRoot {
+				target = root
+			}
+			if err := os.WriteFile(filepath.Join(target, "stream.receipt-v3.jsonl"), nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			response := httptest.NewRecorder()
+			evidenceServeHandler(recorder.EvidenceLocation{Root: root, Dir: location}, "session").ServeHTTP(response, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil))
+			if response.Code != http.StatusUnprocessableEntity || !strings.Contains(response.Body.String(), "receipt v3 evidence") {
+				t.Fatalf("status %d body %q", response.Code, response.Body.String())
 			}
 		})
 	}

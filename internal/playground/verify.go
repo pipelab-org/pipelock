@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/luckyPipewrench/pipelock/internal/evidence/receiptinput"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/replaycapture"
 )
@@ -328,6 +329,9 @@ func VerifyArchivedReplay(dir, orchestratorPubHex string) (VerifyReport, error) 
 
 func verifyRun(dir, orchestratorPubHex string, archive bool) (VerifyReport, error) {
 	cleanDir := filepath.Clean(dir)
+	if err := receiptinput.RefuseTree(cleanDir, "verify-run", "the playground"); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return VerifyReport{OrchestratorKey: orchestratorPubHex}, err
+	}
 	root, err := os.OpenRoot(cleanDir)
 	if err != nil {
 		return VerifyReport{OrchestratorKey: orchestratorPubHex}, fmt.Errorf("open run directory: %w", err)

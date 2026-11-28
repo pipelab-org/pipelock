@@ -181,8 +181,9 @@ type SessionListResult struct {
 	Truncated bool
 }
 
-// ListSessionsBounded returns unique session IDs while enforcing a hard ceiling
-// on directory entries read. Zero means unbounded.
+// ListSessionsBounded returns unique session IDs with a ceiling on selected
+// directory entries. All names are screened for receipt profiles. Zero means
+// an unbounded result.
 func ListSessionsBounded(dir string, maxEntries int) ([]string, error) {
 	result, err := ListSessionsBoundedResult(dir, maxEntries)
 	if err != nil {
@@ -303,8 +304,9 @@ const (
 
 // IsRecorderOwnedFile reports whether name is a file the recorder or the
 // receipt chain writes into an evidence directory: a JSONL shard, a raw-escrow
-// sidecar, a restart continuity link, a run's lifetime writer lock, or the
-// anchor-state marker.
+// sidecar, a restart continuity link, a run's lifetime writer lock, the
+// anchor-state marker, a receipt-profile stream ("*.receipt-vN.jsonl", every
+// version, as the v3 claim rule does), or a v3 cutover inventory.
 //
 // A command that writes its own output into or beside an evidence directory
 // must refuse every one of these, because an atomic replace destroys evidence
@@ -313,6 +315,12 @@ const (
 // finding every guard that listed the old names.
 func IsRecorderOwnedFile(name string) bool {
 	if _, _, ok := ParseEvidenceFilename(name); ok {
+		return true
+	}
+	if evidencename.ClaimsReceiptName(name) {
+		return true
+	}
+	if _, ok := evidencename.CutoverInventoryHash(name); ok {
 		return true
 	}
 	switch {

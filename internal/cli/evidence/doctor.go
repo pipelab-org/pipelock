@@ -17,6 +17,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/evidence/receiptinput"
+	"github.com/luckyPipewrench/pipelock/internal/evidencename"
+
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
@@ -300,21 +303,42 @@ func runEvidenceDoctorSnapshot(dir string, afterScan func()) (evidenceDoctorRepo
 		return evidenceDoctorReport{}, fmt.Errorf("%q is not a directory", dir)
 	}
 
+	switch err := receiptinput.RefuseTree(cleanDir, "evidence doctor", "the evidence doctor"); {
+	case errors.Is(err, receiptinput.ErrUnsupported):
+		return evidenceDoctorReport{}, err
+	case errors.Is(err, recorder.ErrEvidenceReadLimitExceeded):
+		return evidenceDoctorReport{
+			Dir: cleanDir, ReadIncomplete: true, ScanTruncated: true, FilesSkipped: 1,
+			Findings: []evidenceDoctorFinding{{Kind: "directory_read_error", Message: err.Error()}},
+		}, nil
+	}
 	locations, err := recorder.DiscoverEvidenceLocations(cleanDir)
 	if err != nil {
 		// Discovery failures leave the corpus unavailable, without establishing
 		// corruption. Preserve a nonzero result and a zero health metric.
+		kind := "directory_read_error"
+		var pathErr *os.PathError
+		if errors.As(err, &pathErr) && evidencename.IsLegacyReceiptCandidate(filepath.Base(pathErr.Path)) {
+			kind = "file_read_unavailable"
+		}
 		return evidenceDoctorReport{
 			Dir:            cleanDir,
 			ReadIncomplete: true,
 			Findings: []evidenceDoctorFinding{{
-				Kind:    "directory_read_error",
+				Kind:    kind,
 				Message: "discover evidence locations: " + err.Error(),
 			}},
 		}, nil
 	}
 	if len(locations) == 0 || locations[0].ID != "" {
 		locations = append([]recorder.EvidenceLocation{{Root: cleanDir, Dir: cleanDir}}, locations...)
+	}
+	for _, location := range locations {
+		if location.Dir != cleanDir {
+			if err := receiptinput.Refuse(location.Dir, "evidence doctor", "the evidence doctor"); errors.Is(err, receiptinput.ErrUnsupported) {
+				return evidenceDoctorReport{}, err
+			}
+		}
 	}
 	before, err := doctorCorpusInventory(locations)
 	if err != nil {

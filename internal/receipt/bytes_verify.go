@@ -11,6 +11,8 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/luckyPipewrench/pipelock/internal/evidencename"
+
 	"github.com/luckyPipewrench/pipelock/internal/contract"
 	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 )
@@ -105,6 +107,9 @@ func (v *UnanchoredSuffixVerifier) Add(raw []byte) error {
 // compatibility rule for historical action_record.detected_patterns metadata.
 // All ordinary receipts retain the stricter exact-emitted-byte check.
 func verifyV1SuffixBytesWithKey(raw []byte, expectedKeyHex string) error {
+	if err := evidencename.RefuseReceiptContent(raw); err != nil {
+		return err
+	}
 	strictErr := VerifyV1BytesWithKey(raw, expectedKeyHex)
 	if strictErr == nil {
 		return nil
@@ -160,6 +165,9 @@ func (v *UnanchoredSuffixVerifier) Finish() (UnanchoredSuffixResult, error) {
 // by the caller. It is additive: existing object-taking verification continues
 // to use VerifyWithKey.
 func VerifyV1BytesWithKey(raw []byte, expectedKeyHex string) error {
+	if err := evidencename.RefuseReceiptContent(raw); err != nil {
+		return err
+	}
 	if err := jsonscan.RejectDuplicateKeys(raw); err != nil {
 		return fmt.Errorf("verify v1 receipt bytes: %w", err)
 	}

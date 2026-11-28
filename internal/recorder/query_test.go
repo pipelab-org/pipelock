@@ -379,7 +379,10 @@ func TestQuerySession_ZeroReadLimitsUseDefaultPerFileCeilings(t *testing.T) {
 	t.Run("bytes", func(t *testing.T) {
 		dir := t.TempDir()
 		path := filepath.Join(dir, "evidence-sess-1-0.jsonl")
-		if err := os.WriteFile(path, []byte(strings.Repeat("\n", int(recorder.MaxEvidenceReadFileBytes)+1)), 0o600); err != nil {
+		// A legacy record first, so the format probe identifies the file, then
+		// blank lines past the default byte ceiling.
+		head := `{"v":2,"seq":0,"ts":"2026-01-01T00:00:00Z","session_id":"sess-1","type":"request"}` + "\n"
+		if err := os.WriteFile(path, []byte(head+strings.Repeat("\n", int(recorder.MaxEvidenceReadFileBytes)+1)), 0o600); err != nil {
 			t.Fatal(err)
 		}
 
@@ -1055,6 +1058,14 @@ func TestIsRecorderOwnedFile(t *testing.T) {
 		{"chain-link-proxy.run.00112233445566778899aabbccddeeff.json", true},
 		{recorder.RunWriterLockPrefix + "proxy.run.00112233445566778899aabbccddeeff" + recorder.RunWriterLockSuffix, true},
 		{"anchor-state.json", true},
+		// A v3 stream shard, any later receipt profile, and the cutover inventory
+		// are receipt-chain files an atomic replace must not destroy.
+		{"11111111111111111111111111111111-0000000000000000.receipt-v3.jsonl", true},
+		{"11111111111111111111111111111111-0000000000000000.receipt-v4.jsonl", true},
+		{"stream.receipt-v3.jsonl", true},
+		{"receipt-v3-cutover-" + strings.Repeat("ab", 32) + ".json", true},
+		{"receipt-v3-cutover-notes.json", false},
+		{"x.receipt-v3.jsonl.bak", false},
 		// Operator outputs that happen to sit beside evidence are not owned.
 		{"bundle.json", false},
 		{"report.md", false},

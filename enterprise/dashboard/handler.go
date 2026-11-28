@@ -24,6 +24,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/evidence/receiptinput"
+
 	"github.com/luckyPipewrench/pipelock/internal/evidenceview"
 	"github.com/luckyPipewrench/pipelock/internal/license"
 )
@@ -868,6 +870,10 @@ func (d *dashboardHandler) handleOverview(w http.ResponseWriter, r *http.Request
 }
 
 func writeEvidenceReadError(w http.ResponseWriter, err error, fallback string) {
+	if errors.Is(err, receiptinput.ErrUnsupported) {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
 	if errors.Is(err, errReceiptGroupNeedsVerification) {
 		http.Error(w, "receipt group evidence requires group verification; run pipelock verify-receipt with --chain set to the evidence directory and --key set to a trusted public key", http.StatusConflict)
 		return
@@ -964,7 +970,7 @@ func (d *dashboardHandler) handleAgents(w http.ResponseWriter, r *http.Request) 
 	filter := d.model.ResolveFilter(r)
 	groups, err := d.model.Agents(filter)
 	if err != nil {
-		http.Error(w, "could not read agent evidence", http.StatusInternalServerError)
+		writeEvidenceReadError(w, err, "could not read agent evidence")
 		return
 	}
 	data := agentsPageData{
@@ -995,7 +1001,7 @@ func (d *dashboardHandler) handleAgent(w http.ResponseWriter, r *http.Request) {
 	filter := d.model.ResolveFilter(r)
 	group, found, err := d.model.Agent(agentID, filter)
 	if err != nil {
-		http.Error(w, "could not read agent evidence", http.StatusInternalServerError)
+		writeEvidenceReadError(w, err, "could not read agent evidence")
 		return
 	}
 	if !found {
@@ -1253,7 +1259,7 @@ func (d *dashboardHandler) handleSessionReceipt(w http.ResponseWriter, r *http.R
 	actionID := parts[2]
 	detail, found, err := d.model.ReceiptActionDetail(sessionID, actionID)
 	if err != nil {
-		http.Error(w, "could not read receipt detail", http.StatusInternalServerError)
+		writeEvidenceReadError(w, err, "could not read receipt detail")
 		return
 	}
 	if !found {

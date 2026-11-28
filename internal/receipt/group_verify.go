@@ -68,6 +68,11 @@ func (r ReceiptGroupResult) predecessorError() error {
 // closed shard with bounded per-shard memory. It returns a verdict rather than
 // making an incomplete group look like a valid single session.
 func VerifyReceiptGroup(dir, groupID string, trusted []string) ReceiptGroupResult {
+	if err := recorder.RefuseReceiptDirectory(dir); err != nil {
+		result := ReceiptGroupResult{GroupID: groupID, Verdict: GroupInvalid}
+		result.setReadError(err)
+		return result
+	}
 	return verifyReceiptGroupWithIndex(dir, groupID, trusted, nil)
 }
 
@@ -287,7 +292,11 @@ func verifyReceiptGroupScoped(dir, groupID string, trusted []string, scope group
 		return result
 	}
 	// Recorder location discovery walks beyond the group inventory's AEL paths.
-	if _, err := recorder.ResolveEvidenceLocation(dir, ""); err != nil {
+	var modes []recorder.EvidenceReadMode
+	if len(scope.excluded) != 0 {
+		modes = append(modes, recorder.MixedReceiptProfiles)
+	}
+	if _, err := recorder.ResolveEvidenceLocation(dir, "", modes...); err != nil {
 		result.setReadError(err)
 		return result
 	}
@@ -322,6 +331,9 @@ type ReceiptGroupInventoryResult struct {
 // callers must not present an earlier GROUP_VALID as an overall pass if this
 // function returns an error or a non-valid group count.
 func VerifyReceiptGroups(dir string, trusted []string, visit func(ReceiptGroupResult) error) (ReceiptGroupInventoryResult, error) {
+	if err := recorder.RefuseReceiptDirectory(dir); err != nil {
+		return ReceiptGroupInventoryResult{}, err
+	}
 	return VerifyLegacyReceiptGroups(dir, trusted, nil, visit)
 }
 

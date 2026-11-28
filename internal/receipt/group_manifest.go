@@ -306,6 +306,9 @@ func SignReceiptGroupOpen(open ReceiptGroupOpen, key ed25519.PrivateKey) (Receip
 
 // UnmarshalReceiptGroupOpen accepts only canonical signed bytes under a trusted key.
 func UnmarshalReceiptGroupOpen(raw []byte, trusted []string) (ReceiptGroupOpen, error) {
+	if err := evidencename.RefuseReceiptContent(raw); err != nil {
+		return ReceiptGroupOpen{}, err
+	}
 	open, err := strictGroupArtifact[ReceiptGroupOpen](raw)
 	if err != nil {
 		return open, err
@@ -340,6 +343,9 @@ func SignReceiptGroupClose(manifest ReceiptGroupClose, open ReceiptGroupOpen, op
 
 // UnmarshalReceiptGroupClose verifies signature and exact opening membership.
 func UnmarshalReceiptGroupClose(raw []byte, open ReceiptGroupOpen, openHash string, trusted []string) (ReceiptGroupClose, error) {
+	if err := evidencename.RefuseReceiptContent(raw); err != nil {
+		return ReceiptGroupClose{}, err
+	}
 	manifest, err := strictGroupArtifact[ReceiptGroupClose](raw)
 	if err != nil {
 		return manifest, err
@@ -373,6 +379,9 @@ func SignReceiptGroupTransition(tr ReceiptGroupTransition, successor, predecesso
 
 // UnmarshalReceiptGroupTransition verifies the exact predecessor and successor pair.
 func UnmarshalReceiptGroupTransition(raw []byte, successor, predecessor ReceiptGroupOpen, newHash, oldHash, closeHash string, trusted []string) (ReceiptGroupTransition, error) {
+	if err := evidencename.RefuseReceiptContent(raw); err != nil {
+		return ReceiptGroupTransition{}, err
+	}
 	tr, err := strictGroupArtifact[ReceiptGroupTransition](raw)
 	if err != nil {
 		return tr, err

@@ -7,6 +7,7 @@ package command
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -183,9 +184,36 @@ func ResolveDirectory(dir, locationID string) (string, error) {
 			}
 		}
 	}
-	location, err := recorder.ResolveEvidenceLocation(dir, locationID)
+	// An explicit location selects one directory for the profile verifier, which
+	// checks any receipt-profile files in it. The root listing must not refuse
+	// the selection, so this is one of the verifier's mixed-profile opt-ins.
+	location, err := recorder.ResolveEvidenceLocation(dir, locationID, recorder.MixedReceiptProfiles)
 	if err != nil {
+		// Recorder locations hold legacy evidence. A directory that holds only
+		// receipt-profile files is still a location for this verifier.
+		if claimed, ok := claimedLocation(dir, locationID); ok {
+			return claimed, nil
+		}
 		return "", err
 	}
 	return location.Dir, nil
+}
+
+// claimedLocation resolves a descendant directory of root that the profile
+// verifier claims, using the same walked-path checks as the root.
+func claimedLocation(root, locationID string) (string, bool) {
+	if locationID == "" || !filepath.IsLocal(locationID) {
+		return "", false
+	}
+	candidate, err := recorder.ResolveEvidenceRoot(filepath.Join(root, locationID))
+	if err != nil {
+		return "", false
+	}
+	handle, err := recorder.OpenEvidenceDirectory(candidate)
+	if err != nil {
+		return "", false
+	}
+	_ = handle.Close()
+	claimed, err := v3.ClaimsInput(candidate, true)
+	return candidate, err == nil && claimed
 }

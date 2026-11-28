@@ -14,6 +14,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/luckyPipewrench/pipelock/internal/evidencename"
 	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 )
 
@@ -193,6 +194,9 @@ var ErrTrailingTokens = errors.New("trailing tokens after receipt")
 // The verify path runs through Unmarshal, so this closes the gaps on the verify
 // side without touching the signing input (Sign uses Marshal, not Unmarshal).
 func Unmarshal(data []byte) (Receipt, error) {
+	if err := evidencename.RefuseReceiptContent(data); err != nil {
+		return Receipt{}, err
+	}
 	if err := jsonscan.RejectDuplicateKeys(data); err != nil {
 		return Receipt{}, fmt.Errorf("unmarshal receipt: %w", err)
 	}

@@ -658,32 +658,20 @@ func TestExplainEventCmd_ErrorPaths(t *testing.T) {
 	}
 }
 
-func TestScanExplainEvent_BoundaryLongLineFailsClosedAsSkipped(t *testing.T) {
+func TestScanExplainEvent_RefusesOversizedLine(t *testing.T) {
 	longLine := strings.Repeat("x", 1<<20+1)
-	lookup, err := scanExplainEvent(strings.NewReader(longLine), "req-1")
-	if err != nil {
-		t.Fatalf("scanExplainEvent long line returned hard error: %v", err)
-	}
-	if lookup.found {
-		t.Fatal("oversized malformed line must not match an event")
-	}
-	if lookup.skippedLines != 1 {
-		t.Fatalf("skippedLines = %d, want 1", lookup.skippedLines)
-	}
-}
-
-func TestScanExplainEvent_OversizedLineSkippedThenFound(t *testing.T) {
-	longLine := strings.Repeat("x", 1<<20+1)
-	body := longLine + "\n" + `{"event":"allowed","request_id":"req-after","status_code":200}` + "\n"
-	lookup, err := scanExplainEvent(strings.NewReader(body), "req-after")
-	if err != nil {
-		t.Fatalf("scanExplainEvent returned error: %v", err)
-	}
-	if !lookup.found {
-		t.Fatal("oversized malformed line must not hide later valid events")
-	}
-	if lookup.skippedLines != 1 {
-		t.Fatalf("skippedLines = %d, want 1", lookup.skippedLines)
+	for _, tc := range []struct {
+		name, body string
+	}{
+		{"unterminated", longLine},
+		{"before matching event", longLine + "\n" + `{"event":"allowed","request_id":"req-after","status_code":200}` + "\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			lookup, err := scanExplainEvent(strings.NewReader(tc.body), "req-after")
+			if lookup.found || err == nil || !strings.Contains(err.Error(), "cannot inspect an oversized line; for receipt evidence use 'pipelock verify-receipt <path>'") {
+				t.Fatalf("found=%t, err=%v, want oversized-line refusal with verifier guidance", lookup.found, err)
+			}
+		})
 	}
 }
 

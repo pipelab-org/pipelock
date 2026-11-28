@@ -247,7 +247,7 @@ func (c *startupGroupVerification) prepareShards(open ReceiptGroupOpen, hash str
 
 func verifyGroupShardHeadUsing(dir string, open ReceiptGroupOpen, hash string, index int, c *startupGroupVerification) (ReceiptGroupShardHead, error) {
 	if c == nil {
-		return VerifyGroupShardHead(dir, open, hash, index)
+		return verifyGroupShardHeadWithSession(dir, open, hash, index, nil)
 	}
 	if err := c.walkOptions().Check(); err != nil {
 		return ReceiptGroupShardHead{}, err

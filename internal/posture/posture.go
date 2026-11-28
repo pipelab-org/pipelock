@@ -23,6 +23,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/discover"
+	"github.com/luckyPipewrench/pipelock/internal/evidence/receiptinput"
 	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
@@ -638,6 +639,11 @@ func collectFlightRecorderEvidence(cfg *config.Config) (FlightRecorderCounts, er
 			return result, nil
 		}
 		return FlightRecorderCounts{}, fmt.Errorf("read flight recorder dir: %w", err)
+	}
+	// The count below only understands legacy recorder files. A receipt-profile
+	// stream must not be reported, and signed, as zero receipts.
+	if err := receiptinput.RefuseLocation(dir, "posture", "posture evidence collection"); err != nil {
+		return FlightRecorderCounts{}, err
 	}
 	result.ScannerVerdict = make(map[string]VerdictCount)
 

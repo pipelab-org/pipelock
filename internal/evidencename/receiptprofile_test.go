@@ -1,0 +1,196 @@
+// Copyright 2026 Pipelab
+// SPDX-License-Identifier: Apache-2.0
+
+package evidencename
+
+import (
+	"errors"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"testing/iotest"
+)
+
+func TestReceiptProfileVersion(t *testing.T) {
+	for name, want := range map[string]string{
+		"s.receipt-v3.jsonl":     "3",
+		"s.receipt-v4.jsonl":     "4",
+		"s.receipt-v0012.jsonl":  "0012",
+		"s.receipt-v3.jsonl.bak": "",
+		"s.receipt-v.jsonl":      "",
+		"receipt-v3.jsonl":       "",
+		"evidence-a-0.jsonl":     "",
+	} {
+		got, ok := ReceiptProfileVersion(name)
+		if got != want || ok != (want != "") {
+			t.Errorf("ReceiptProfileVersion(%q) = %q, %t; want %q", name, got, ok, want)
+		}
+	}
+}
+
+func TestClaimsReceiptContent(t *testing.T) {
+	if !ClaimsReceiptContent([]byte(" \t\n" + ReceiptProfilePrefix + "v3+json\"}")) {
+		t.Error("profile prefix not claimed")
+	}
+	for _, data := range []string{"", "{\"v\":1}"} {
+		if ClaimsReceiptContent([]byte(data)) {
+			t.Errorf("ClaimsReceiptContent(%q) = true", data)
+		}
+	}
+}
+
+func TestCutoverInventoryHash(t *testing.T) {
+	hash := strings.Repeat("0f", 32)
+	if got, ok := CutoverInventoryHash("receipt-v3-cutover-" + hash + ".json"); !ok || got != hash {
+		t.Errorf("valid inventory = %q, %t", got, ok)
+	}
+	for _, name := range []string{
+		"receipt-v3-cutover-" + hash + ".jsonl",
+		"receipt-v3-cutover-" + strings.ToUpper(hash) + ".json",
+		"receipt-v3-cutover-" + hash[:62] + ".json",
+		"receipt-v3-cutover-.json",
+		hash + ".json",
+	} {
+		if _, ok := CutoverInventoryHash(name); ok {
+			t.Errorf("CutoverInventoryHash(%q) accepted", name)
+		}
+	}
+}
+
+func TestIsLegacyReceiptCandidate(t *testing.T) {
+	for name, want := range map[string]bool{
+		"evidence-proxy-0.jsonl":      true,
+		"receipt-group-a.json":        true,
+		"activation-receipts.jsonl":   true,
+		"redaction-receipts.jsonl":    true,
+		"ratification-receipts.jsonl": true,
+		"evidence-v3.jsonl":           false,
+		"notes.txt":                   false,
+		"receipt-group-a.jsonl":       false,
+	} {
+		if got := IsLegacyReceiptCandidate(name); got != want {
+			t.Errorf("IsLegacyReceiptCandidate(%q) = %t, want %t", name, got, want)
+		}
+	}
+}
+
+func TestProbeReceiptContentWhitespaceLimit(t *testing.T) {
+	const limit = 64 << 10
+	for _, tc := range []struct {
+		name, whitespace string
+		want             bool
+		unidentified     bool
+	}{
+		{"at limit", strings.Repeat(" ", limit), true, false},
+		{"past limit", strings.Repeat(" ", limit+1), false, true},
+		{"unicode past byte limit", strings.Repeat("\u2002", limit/3+1), false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			claimed, err := ProbeReceiptContent(strings.NewReader(tc.whitespace + ReceiptProfilePrefix))
+			if claimed != tc.want || errors.Is(err, ErrReceiptContentUnidentified) != tc.unidentified ||
+				(err != nil && !tc.unidentified) {
+				t.Fatalf("claimed=%t, err=%v, want %t (unidentified %t)", claimed, err, tc.want, tc.unidentified)
+			}
+		})
+	}
+	// Past the budget the probe refuses rather than calling the input legacy,
+	// and it still reads only the bounded prefix.
+	const size = 1 << 20
+	r := strings.NewReader(strings.Repeat(" ", size))
+	claimed, err := ProbeReceiptContent(r)
+	if !errors.Is(err, ErrReceiptContentUnidentified) || claimed || size-r.Len() > limit+len(ReceiptProfilePrefix) {
+		t.Fatalf("claimed=%t, err=%v, read %d bytes; want a bounded refusal", claimed, err, size-r.Len())
+	}
+}
+
+func TestReceiptProfileEntryIgnoresDirectories(t *testing.T) {
+	dir := t.TempDir()
+	const name = "empty.receipt-v3.jsonl"
+	if err := os.Mkdir(filepath.Join(dir, name), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := ReceiptProfileEntry(entries); got != "" {
+		t.Fatalf("directory claimed its parent as %q", got)
+	}
+}
+
+func TestProbeReceiptContentErrorsAndShortInput(t *testing.T) {
+	readErr := errors.New("profile prefix read failed")
+	for _, tc := range []struct {
+		name  string
+		input io.Reader
+		want  bool
+		err   error
+	}{
+		{"envelope", strings.NewReader(ReceiptProfilePrefix + "v3+json"), true, nil},
+		{"legacy", strings.NewReader(strings.Repeat("x", len(ReceiptProfilePrefix))), false, nil},
+		{"partial", strings.NewReader(ReceiptProfilePrefix[:len(ReceiptProfilePrefix)-1]), false, nil},
+		{"empty", strings.NewReader(""), false, nil},
+		{"read error", iotest.ErrReader(readErr), false, readErr},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ProbeReceiptContent(tc.input)
+			if got != tc.want || !errors.Is(err, tc.err) {
+				t.Fatalf("got (%v, %v), want (%v, %v)", got, err, tc.want, tc.err)
+			}
+		})
+	}
+}
+
+func TestRefuseReceiptNameNormalizesPath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "stream.receipt-v3.jsonl") + string(filepath.Separator) + "."
+	if err := RefuseReceiptName(path); !errors.Is(err, ErrReceiptProfile) {
+		t.Fatalf("RefuseReceiptName(%q) = %v, want receipt refusal", path, err)
+	}
+}
+
+func TestReceiptProfileRefusalAndSplit(t *testing.T) {
+	for _, directory := range []bool{false, true} {
+		err := UnsupportedReceiptProfile(directory)
+		if !errors.Is(err, ErrReceiptProfile) || strings.Contains(err.Error(), "--chain") != directory {
+			t.Fatalf("directory=%t: %v", directory, err)
+		}
+	}
+	for _, tc := range []struct {
+		name, input, line string
+		eof, refused      bool
+		advance           int
+	}{
+		{"complete legacy", "{}\nnext", "{}", false, false, 3},
+		{"partial legacy", "{}", "", false, false, 0},
+		{"final legacy", "{}", "{}", true, false, 2},
+		{"complete profile", ReceiptProfilePrefix + "v3\n", "", false, true, 0},
+		{"partial profile", ReceiptProfilePrefix + "v3", "", false, true, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			advance, line, err := SplitLegacyJSONLines([]byte(tc.input), tc.eof)
+			if advance != tc.advance || string(line) != tc.line || errors.Is(err, ErrReceiptProfile) != tc.refused || (err != nil && !tc.refused) {
+				t.Fatalf("got advance=%d line=%q err=%v", advance, line, err)
+			}
+		})
+	}
+	if err := RefuseReceiptName("legacy.jsonl"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestReceiptProfileEntryFindsFile(t *testing.T) {
+	dir := t.TempDir()
+	const name = "stream.receipt-v3.jsonl"
+	if err := os.WriteFile(filepath.Join(dir, name), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := ReceiptProfileEntry(entries); got != name {
+		t.Fatalf("got %q, want %q", got, name)
+	}
+}

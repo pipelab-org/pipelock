@@ -11,6 +11,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+
+	"github.com/luckyPipewrench/pipelock/internal/evidencename"
 )
 
 // ErrTornTail identifies an incomplete final JSONL write, never a malformed
@@ -143,6 +145,9 @@ func inspectJSONLRecords(input io.Reader, path string, validate func([]byte) err
 		payload := bytes.TrimSuffix(bytes.TrimSuffix(line, []byte("\n")), []byte("\r"))
 		if len(payload) > MaxEntryLineBytes {
 			return fmt.Errorf("tail line exceeds %d-byte recorder entry limit", MaxEntryLineBytes)
+		}
+		if err := evidencename.RefuseReceiptContent(line); err != nil {
+			return err
 		}
 		record := []byte(TrimEntryLine(string(line)))
 		if bytes.IndexByte(record, 0) >= 0 {

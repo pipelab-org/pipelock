@@ -19,13 +19,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/evidence/receiptinput"
+
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/coveragecertverify"
 	"github.com/luckyPipewrench/pipelock/internal/evidenceview"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
-	"github.com/luckyPipewrench/pipelock/internal/receipt/v3"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/signingflag"
 )
@@ -106,9 +107,15 @@ func runView(cmd *cobra.Command, opts viewOptions) error {
 	if err != nil {
 		return err
 	}
+	if err := receiptinput.Refuse(opts.receiptDir, "evidence view", "the evidence scorecard"); err != nil {
+		return err
+	}
 	location, locationErr := recorder.ResolveEvidenceLocation(opts.receiptDir, opts.locationID)
 	if locationErr != nil {
 		return fmt.Errorf("resolve evidence location: %w", locationErr)
+	}
+	if err := receiptinput.Refuse(location.Dir, "evidence view", "the evidence scorecard"); err != nil {
+		return err
 	}
 	trusted, err := signingflag.ParseTrustedSigners(opts.trustedSigners)
 	if err != nil {
@@ -194,29 +201,49 @@ func runExpire(cmd *cobra.Command, opts expireOptions, retentionChanged bool) er
 	if retentionDays < 0 {
 		return errors.New("--retention-days must be non-negative")
 	}
-	switched, err := v3.DirectoryHasV3(dir)
-	if err != nil {
-		return fmt.Errorf("open flight recorder: %w", err)
-	}
-	if switched {
-		return errors.New("evidence expire does not support v3 receipt directories")
+	if err := receiptinput.RefuseTree(dir, "evidence expire", "the legacy evidence reader"); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
 	}
 	if retentionDays == 0 {
 		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "retention disabled for %s; expired 0 old raw escrow sidecar(s)\n", filepath.Clean(dir))
 		return nil
 	}
-	rec, err := recorder.New(recorder.Config{
-		Enabled:       true,
-		Dir:           dir,
-		RetentionDays: retentionDays,
-	}, nil, nil)
-	if err != nil {
-		return fmt.Errorf("open flight recorder: %w", err)
+	var removed int
+	expire := func() error {
+		rec, err := recorder.New(recorder.Config{
+			Enabled:       true,
+			Dir:           dir,
+			RetentionDays: retentionDays,
+		}, nil, nil)
+		if err != nil {
+			if errors.Is(err, recorder.ErrLegacyEvidenceFormat) {
+				return receiptinput.UnsupportedDirectory("evidence expire", "the legacy evidence reader")
+			}
+			return fmt.Errorf("open flight recorder: %w", err)
+		}
+		defer func() { _ = rec.Close() }()
+		n, err := rec.ExpireOldFiles()
+		if err != nil {
+			return fmt.Errorf("expire evidence files: %w", err)
+		}
+		removed = n
+		return nil
 	}
-	defer func() { _ = rec.Close() }()
-	removed, err := rec.ExpireOldFiles()
-	if err != nil {
-		return fmt.Errorf("expire evidence files: %w", err)
+	if statInfo, statErr := os.Stat(filepath.Clean(dir)); statErr == nil && statInfo.IsDir() {
+		err := recorder.WithEvidenceWriterCeremonyLock(filepath.Clean(dir), func() error {
+			if err := receiptinput.RefuseTree(dir, "evidence expire", "the legacy evidence reader"); err != nil {
+				return err
+			}
+			return expire()
+		})
+		if errors.Is(err, recorder.ErrLegacyEvidenceFormat) {
+			return receiptinput.UnsupportedDirectory("evidence expire", "the legacy evidence reader")
+		}
+		if err != nil {
+			return err
+		}
+	} else if err := expire(); err != nil {
+		return err
 	}
 	_, _ = fmt.Fprintf(
 		cmd.OutOrStdout(),
@@ -259,9 +286,15 @@ func runServe(cmd *cobra.Command, opts serveOptions) error {
 	if err != nil {
 		return err
 	}
+	if err := receiptinput.Refuse(opts.receiptDir, "evidence serve", "the evidence scorecard"); err != nil {
+		return err
+	}
 	location, locationErr := recorder.ResolveEvidenceLocation(opts.receiptDir, opts.locationID)
 	if locationErr != nil {
 		return fmt.Errorf("resolve evidence location: %w", locationErr)
+	}
+	if err := receiptinput.Refuse(location.Dir, "evidence serve", "the evidence scorecard"); err != nil {
+		return err
 	}
 	sessionID, err := resolveServeSessionResolved(location, opts.sessionID)
 	if err != nil {
@@ -317,6 +350,16 @@ func evidenceServeHandler(location recorder.EvidenceLocation, sessionID string) 
 		if r.Method != http.MethodGet {
 			w.Header().Set("Allow", http.MethodGet)
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if location.Root != "" && location.Root != location.Dir {
+			if err := receiptinput.Refuse(location.Root, "evidence serve", "the evidence scorecard"); err != nil {
+				http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+				return
+			}
+		}
+		if err := receiptinput.Refuse(location.Dir, "evidence serve", "the evidence scorecard"); err != nil {
+			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 			return
 		}
 		html, err := renderSessionHTML(location, sessionID, nil, "Pipelock Evidence Report")

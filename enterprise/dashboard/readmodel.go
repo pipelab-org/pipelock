@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/evidence/receiptinput"
+
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/evidenceview"
 	"github.com/luckyPipewrench/pipelock/internal/license"
@@ -299,6 +301,9 @@ func (m *ReadModel) ReceiptDetail(sessionID, actionID string) (evidenceview.Deci
 // ReceiptActionDetail loads every record of one action. The CALLER redacts
 // per RBAC, record by record.
 func (m *ReadModel) ReceiptActionDetail(sessionID, actionID string) (ReceiptActionDetail, bool, error) {
+	if err := receiptinput.RefuseLocation(m.receiptDir, "dashboard", "the dashboard"); err != nil {
+		return ReceiptActionDetail{}, false, err
+	}
 	receipts, truncated, err := receipt.ExtractReceiptsFromSessionDirWithLimits(m.receiptDir, sessionID, m.receiptReadLimit, dashboardEvidenceDirectoryEntryLimit)
 	if err != nil {
 		return ReceiptActionDetail{}, false, fmt.Errorf("read session %s receipts: %w", sessionID, err)

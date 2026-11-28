@@ -24,6 +24,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/discover"
+	"github.com/luckyPipewrench/pipelock/internal/evidence/receiptinput"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
@@ -80,10 +81,12 @@ type initAuditorResult struct {
 
 // Auditor phase status values reported in the init summary and JSON output.
 const (
-	auditorStatusInstalled        = "installed"
-	auditorStatusSkippedFlag      = "skipped_flag"
-	auditorStatusSkippedDryRun    = "skipped_dry_run"
-	auditorStatusSkippedNoSystemd = "skipped_no_systemd"
+	auditorStatusInstalled             = "installed"
+	auditorStatusSkippedFlag           = "skipped_flag"
+	auditorStatusSkippedDryRun         = "skipped_dry_run"
+	auditorStatusSkippedNoSystemd      = "skipped_no_systemd"
+	auditorStatusSkippedReceiptProfile = "skipped_receipt_profile"
+	auditorStatusSkippedEvidenceAccess = "skipped_evidence_access"
 	// An existing config that cannot be loaded, or that configures no
 	// flight_recorder.dir, leaves nothing for the auditor to watch. That
 	// outcome still gets a status: "not installed" must never be reported by
@@ -441,11 +444,43 @@ func runEvidenceAuditorPhase(cmd *cobra.Command, opts initOptions, cfg *config.C
 		// recorder-less config that a real run would install something it
 		// would in fact skip.
 		planned := "Would install " + evidenceAuditorDisclosure[len("Installing "):]
-		planned += " A real run installs it only on Linux with a usable systemd --user session and a configured flight_recorder.dir, and names the skip reason otherwise."
+		planned += " A real run installs it only on Linux with a usable systemd --user session and a configured legacy flight_recorder.dir, and names the skip reason otherwise."
 		if !opts.jsonOutput {
 			_, _ = fmt.Fprintf(w, "  %s\n\n", planned)
 		}
 		return &initAuditorResult{Status: auditorStatusSkippedDryRun, Detail: planned}, nil
+	}
+
+	flightRecorder := cfg.FlightRecorder
+	installAuditor := result.Setup.Written
+	skipStatus := auditorStatusSkippedNoRecorderDir
+	skipReason := "existing config configures no flight_recorder.dir to audit"
+	if result.Setup.SkippedExsting {
+		// Preserve init's historic no-op behavior for an arbitrary existing
+		// config. A previously generated, valid config is enough to repair a
+		// missing managed auditor on rerun without rewriting the config.
+		existing, loadErr := config.Load(configPath)
+		switch {
+		case loadErr != nil:
+			skipStatus = auditorStatusSkippedUnreadableConfig
+			skipReason = fmt.Sprintf("existing config could not be read: %v", loadErr)
+		case existing.FlightRecorder.Dir != "":
+			flightRecorder = existing.FlightRecorder
+			installAuditor = true
+		}
+	}
+	auditorRecorderDir := flightRecorder.Dir
+	if installAuditor {
+		const profileGuidance = "Check v3 evidence health with 'pipelock verify-receipt --chain <dir>'"
+		if flightRecorder.EffectiveReceiptFormat() == config.ReceiptFormatV3 {
+			return &initAuditorResult{Status: auditorStatusSkippedReceiptProfile, Detail: profileGuidance}, nil
+		}
+		switch err := receiptinput.RefuseTree(auditorRecorderDir, "init", "the evidence corpus auditor"); {
+		case errors.Is(err, receiptinput.ErrUnsupported):
+			return &initAuditorResult{Status: auditorStatusSkippedReceiptProfile, Detail: profileGuidance}, nil
+		case err != nil && !errors.Is(err, os.ErrNotExist):
+			return &initAuditorResult{Status: auditorStatusSkippedEvidenceAccess, Detail: err.Error()}, nil
+		}
 	}
 
 	if unavailable, reason := evidenceAuditorUserSystemdUnavailable(cmd.Context()); unavailable {
@@ -463,24 +498,6 @@ func runEvidenceAuditorPhase(cmd *cobra.Command, opts initOptions, cfg *config.C
 		return &initAuditorResult{Status: auditorStatusSkippedNoSystemd, Detail: reason}, nil
 	}
 
-	auditorRecorderDir := cfg.FlightRecorder.Dir
-	installAuditor := result.Setup.Written
-	skipStatus := auditorStatusSkippedNoRecorderDir
-	skipReason := "existing config configures no flight_recorder.dir to audit"
-	if result.Setup.SkippedExsting {
-		// Preserve init's historic no-op behavior for an arbitrary existing
-		// config. A previously generated, valid config is enough to repair a
-		// missing managed auditor on rerun without rewriting the config.
-		existing, loadErr := config.Load(configPath)
-		switch {
-		case loadErr != nil:
-			skipStatus = auditorStatusSkippedUnreadableConfig
-			skipReason = fmt.Sprintf("existing config could not be read: %v", loadErr)
-		case existing.FlightRecorder.Dir != "":
-			auditorRecorderDir = existing.FlightRecorder.Dir
-			installAuditor = true
-		}
-	}
 	if !installAuditor {
 		if !opts.jsonOutput {
 			_, _ = fmt.Fprintf(w, "  Evidence corpus auditor: skipped (%s)\n\n", skipReason)
@@ -839,7 +856,8 @@ func printProof(w interface{ Write([]byte) (int, error) }, result *initResult, c
 			_, _ = fmt.Fprintln(w, "  Evidence auditor:   skipped (--no-auditor)")
 		case auditorStatusSkippedDryRun:
 			_, _ = fmt.Fprintln(w, "  Evidence auditor:   skipped (dry run)")
-		case auditorStatusSkippedNoSystemd, auditorStatusSkippedNoRecorderDir, auditorStatusSkippedUnreadableConfig:
+		case auditorStatusSkippedNoSystemd, auditorStatusSkippedNoRecorderDir, auditorStatusSkippedUnreadableConfig,
+			auditorStatusSkippedReceiptProfile, auditorStatusSkippedEvidenceAccess:
 			_, _ = fmt.Fprintf(w, "  Evidence auditor:   skipped (%s)\n", result.Auditor.Detail)
 		}
 	}

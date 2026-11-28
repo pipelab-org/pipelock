@@ -1,0 +1,182 @@
+// Copyright 2026 Pipelab
+// SPDX-License-Identifier: Apache-2.0
+
+package readerinventory
+
+import (
+	"encoding/json"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+const module = "github.com/luckyPipewrench/pipelock/"
+
+type reader struct {
+	Package string `json:"package"`
+	Role    string `json:"role"`
+	Reason  string `json:"reason"`
+	Test    string `json:"test,omitempty"`
+}
+
+type listedPackage struct {
+	ImportPath   string
+	Imports      []string
+	GoFiles      []string
+	TestGoFiles  []string
+	XTestGoFiles []string
+}
+
+func TestReceiptReaderInventory(t *testing.T) {
+	root := filepath.Join("..", "..", "..")
+	data, err := os.ReadFile("../../../docs/security/receipt-readers.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var registry []reader
+	if err := json.Unmarshal(data, &registry); err != nil {
+		t.Fatal(err)
+	}
+
+	packages := make(map[string]bool)
+	importers := make(map[string]bool)
+	tests := make(map[string]map[string]bool)
+	source := make(map[string]map[string]bool)
+	for _, tags := range []string{"", "enterprise"} {
+		collectPackages(t, root, tags, packages, importers, tests, source)
+	}
+
+	wasm := exec.CommandContext(t.Context(), "go", "list", "./cmd/pipelock-verifier-wasm") // #nosec G204 -- fixed Go target.
+	wasm.Dir = root
+	wasm.Env = append(os.Environ(), "GOOS=js", "GOARCH=wasm")
+	if output, err := wasm.CombinedOutput(); err != nil {
+		t.Fatalf("list browser verifier: %v\n%s", err, output)
+	}
+	packages["cmd/pipelock-verifier-wasm"] = true
+
+	registered := make(map[string]bool, len(registry))
+	for _, entry := range registry {
+		if registered[entry.Package] {
+			t.Errorf("duplicate receipt reader entry: %s", entry.Package)
+		}
+		registered[entry.Package] = true
+		if !packages[entry.Package] {
+			t.Errorf("receipt reader package no longer exists: %s", entry.Package)
+		}
+		if entry.Reason == "" {
+			t.Errorf("receipt reader entry %s needs a reason", entry.Package)
+		}
+		switch entry.Role {
+		case "writer", "not-a-reader":
+			if entry.Package != "internal/recorder" && entry.Package != "internal/receipt" && !strings.HasPrefix(entry.Package, "internal/receipt/") {
+				var files []string
+				for name := range source[entry.Package] {
+					files = append(files, name)
+				}
+				if reads := receiptReads(t, root, entry.Package, files); len(reads) != 0 {
+					t.Errorf("%s has role %q but reads receipt evidence at %s", entry.Package, entry.Role, strings.Join(reads, ", "))
+				}
+			}
+		case "v3-verifier", "refuses-v3", "v3-runtime", "test-fixture":
+			testPackage, testName, external := strings.Cut(entry.Test, ":")
+			if !external {
+				testPackage, testName = entry.Package, entry.Test
+			}
+			if !tests[testPackage][testName] {
+				t.Errorf("receipt reader entry %s needs an existing behavior test, got %q", entry.Package, entry.Test)
+			}
+		default:
+			t.Errorf("receipt reader entry %s has invalid role %q", entry.Package, entry.Role)
+		}
+	}
+	for pkg := range importers {
+		if !registered[pkg] {
+			t.Errorf("receipt evidence importer %s is missing from docs/security/receipt-readers.json", pkg)
+		}
+	}
+}
+
+func collectPackages(t *testing.T, root, tags string, packages, importers map[string]bool, tests, source map[string]map[string]bool) {
+	t.Helper()
+	cmd := exec.CommandContext(t.Context(), "go", "list", "-tags", tags, "-json=ImportPath,Imports,GoFiles,TestGoFiles,XTestGoFiles", "./...") // #nosec G204 -- Go tool, fixed flags and build tags.
+	cmd.Dir = root
+	output, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("go list with tags %q: %v", tags, err)
+	}
+	dec := json.NewDecoder(strings.NewReader(string(output)))
+	for {
+		var pkg listedPackage
+		if err := dec.Decode(&pkg); err == io.EOF {
+			return
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		name, local := strings.CutPrefix(pkg.ImportPath, module)
+		if !local {
+			continue
+		}
+		packages[name] = true
+		if source[name] == nil {
+			source[name] = make(map[string]bool)
+		}
+		for _, file := range pkg.GoFiles {
+			source[name][file] = true
+		}
+		for _, path := range pkg.Imports {
+			if isReceiptEvidenceImport(path) {
+				importers[name] = true
+				break
+			}
+		}
+		if tests[name] == nil {
+			tests[name] = make(map[string]bool)
+		}
+		for _, path := range append(pkg.TestGoFiles, pkg.XTestGoFiles...) {
+			file, err := parser.ParseFile(token.NewFileSet(), filepath.Join(root, name, path), nil, parser.SkipObjectResolution)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, decl := range file.Decls {
+				if fn, ok := decl.(*ast.FuncDecl); ok && fn.Recv == nil && strings.HasPrefix(fn.Name.Name, "Test") {
+					tests[name][fn.Name.Name] = true
+				}
+			}
+		}
+	}
+}
+
+func isReceiptEvidenceImport(path string) bool {
+	rel, local := strings.CutPrefix(path, module)
+	if !local {
+		return false
+	}
+	switch rel {
+	case "internal/receipt", "internal/recorder", "internal/contract/receipt", "internal/evidence", "internal/evidenceview":
+		return true
+	}
+	return strings.HasPrefix(rel, "internal/receipt/") || strings.HasPrefix(rel, "internal/evidence/")
+}
+
+// The browser verifier must remain free of SQLite dependencies on js/wasm.
+func TestBrowserVerifierBuildsForWasm(t *testing.T) {
+	root := filepath.Join("..", "..", "..")
+	cmd := exec.CommandContext(t.Context(), "go", "list", "-deps", "./cmd/pipelock-verifier-wasm") // #nosec G204 -- Go tool, fixed arguments.
+	cmd.Dir = root
+	cmd.Env = append(os.Environ(), "GOOS=js", "GOARCH=wasm")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("browser verifier dependency graph does not resolve for js/wasm: %v\n%s", err, output)
+	}
+	for _, dependency := range strings.Fields(string(output)) {
+		if strings.Contains(strings.ToLower(dependency), "sqlite") {
+			t.Fatalf("browser verifier imports SQLite dependency %q", dependency)
+		}
+	}
+}

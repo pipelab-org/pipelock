@@ -24,6 +24,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contract"
 	"github.com/luckyPipewrench/pipelock/internal/contract/shadow"
+	"github.com/luckyPipewrench/pipelock/internal/evidence/receiptinput"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
@@ -88,12 +89,28 @@ provide --agent and configure learn.capture_dir; the command reads
 }
 
 func runShadow(cmd *cobra.Command, flags shadowFlags) error {
+	const command = "learn shadow"
+	if filepath.IsAbs(flags.recorderDir) {
+		if err := receiptinput.RefuseTree(flags.recorderDir, command, "learn lifecycle receipts"); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	if flags.sessionsDir != "" {
+		if err := receiptinput.RefuseTree(flags.sessionsDir, command, "shadow replay"); err != nil {
+			return fmt.Errorf("inspect sessions dir: %w", err)
+		}
+	}
 	if flags.duration <= 0 {
 		return fmt.Errorf("learn shadow: --duration must be positive")
 	}
 	cfg, err := loadConfig(flags.configPath)
 	if err != nil {
 		return err
+	}
+	if flags.sessionsDir == "" && flags.agent != "" && filepath.IsAbs(cfg.Learn.CaptureDir) {
+		if err := receiptinput.RefuseTree(cfg.Learn.CaptureDir, command, "shadow replay"); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("inspect configured capture dir: %w", err)
+		}
 	}
 	cfg.Internal = nil
 	cfg.DLP.ScanEnv = false
@@ -208,11 +225,20 @@ func runShadow(cmd *cobra.Command, flags shadowFlags) error {
 			return err
 		}
 	}
-	if err := writeShadowReports(cmd, report, flags); err != nil {
+	var receiptsEmitted int
+	write := func() error {
+		if err := writeShadowReports(cmd, report, flags); err != nil {
+			return err
+		}
+		var err error
+		receiptsEmitted, err = emitShadowReceipts(flags, env.Body, report, now)
 		return err
 	}
-	receiptsEmitted, err := emitShadowReceipts(flags, env.Body, report, now)
-	if err != nil {
+	if filepath.IsAbs(flags.recorderDir) {
+		if err := withLegacyReceiptDirectory(command, flags.recorderDir, write); err != nil {
+			return err
+		}
+	} else if err := write(); err != nil {
 		return err
 	}
 

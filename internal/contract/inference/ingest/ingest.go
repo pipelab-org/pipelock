@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/luckyPipewrench/pipelock/internal/evidence/receiptinput"
+
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
@@ -114,6 +116,10 @@ func (s streamState) run(input io.Reader, entries chan<- Entry, errs chan<- erro
 
 	for scanner.Scan() {
 		lineNo++
+		if err := receiptinput.RefusePayload(scanner.Bytes(), "learn compile", "contract inference"); err != nil {
+			errs <- err
+			return
+		}
 		rec, err := parseRecorderEntry(scanner.Bytes())
 		if err != nil {
 			droppedLines++

@@ -15,7 +15,7 @@ import (
 
 	"filippo.io/edwards25519"
 
-	contract "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/evidencename"
 )
 
 type signature struct {
@@ -51,13 +51,15 @@ func Genesis(stream string) string {
 	return Digest([]byte(layoutGenesisDomain + "\x00" + stream))
 }
 
+const profilePrefix = evidencename.ReceiptProfilePrefix
+
 func parseLine(line []byte, skip string) (Record, string) {
 	if skip != codeLineSize && len(line) > maxLineBytes {
 		return Record{}, codeLineSize
 	}
 	content, ok := bytes.CutPrefix(line, []byte(layoutPrefix))
 	if !ok {
-		if profile, found := bytes.CutPrefix(line, []byte(contract.ProfileEnvelopePrefix)); found {
+		if profile, found := bytes.CutPrefix(line, []byte(profilePrefix)); found {
 			if value, _, delimited := bytes.Cut(profile, []byte("\"")); delimited && string(value) != "v3+json" {
 				return Record{}, codeUnknownProfile
 			}

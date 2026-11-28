@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/luckyPipewrench/pipelock/internal/evidencename"
 	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 )
 
@@ -16,6 +17,9 @@ import (
 // supplied by the caller. It is additive: existing object-taking verification
 // continues to use VerifyWithKey.
 func VerifyV2BytesWithKey(raw []byte, pubKey ed25519.PublicKey, expectedSignerKeyID string) error {
+	if err := evidencename.RefuseReceiptContent(raw); err != nil {
+		return err
+	}
 	if err := jsonscan.RejectDuplicateKeys(raw); err != nil {
 		return fmt.Errorf("verify v2 receipt bytes: %w", err)
 	}

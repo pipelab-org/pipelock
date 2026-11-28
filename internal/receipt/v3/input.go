@@ -19,6 +19,8 @@ import (
 	"strings"
 
 	contract "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/evidence/receiptinput"
+	"github.com/luckyPipewrench/pipelock/internal/evidencename"
 )
 
 type Head struct {
@@ -101,7 +103,7 @@ type inputFile struct {
 	code   string
 }
 
-var streamName = regexp.MustCompile(`^([0-9a-f]{32})-([0-9]{16})\.receipt-v3\.jsonl$`)
+var streamName = regexp.MustCompile(`^([0-9a-f]{32})-([0-9]{16})$`)
 
 // ParseHead parses the v3 command-line form stream:seq:sha256:digest.
 func ParseHead(value string) (Head, error) {
@@ -145,15 +147,15 @@ func DecodeKeys(keys []string) ([]ed25519.PublicKey, error) {
 func identify(path string) (inputFile, bool) {
 	file := inputFile{path: path, start: -1}
 	name := filepath.Base(path)
-	version := contract.ProfileFilenameVersion(name)
-	if version == "" {
+	version, profile := evidencename.ReceiptProfileVersion(name)
+	if !profile {
 		return file, false
 	}
 	if version != "3" {
 		file.code = codeUnknownProfile
 		return file, true
 	}
-	fields := streamName.FindStringSubmatch(name)
+	fields := streamName.FindStringSubmatch(strings.TrimSuffix(name, layoutFileSuffix))
 	if fields == nil {
 		file.code = codeFileLayout
 		return file, true
@@ -165,32 +167,13 @@ func identify(path string) (inputFile, bool) {
 
 // ClaimsInput identifies a v3 or later receipt claim before legacy dispatch.
 func ClaimsInput(path string, directory bool) (bool, error) {
-	if directory {
-		dir, entries, err := readInputDirectory(path)
-		if err != nil {
-			return false, err
-		}
-		var probeErr error
-		for _, entry := range entries {
-			if _, known := identify(entry.Name()); known {
-				return true, nil
-			}
-			if !entry.IsDir() && legacyCandidate(entry.Name()) && entry.Type().IsRegular() {
-				claimed, err := startsWithProfile(filepath.Join(dir, entry.Name()))
-				if claimed {
-					return true, nil
-				}
-				if probeErr == nil {
-					probeErr = err
-				}
-			}
-		}
-		return false, probeErr
-	}
-	if _, known := identify(path); known {
-		return true, nil
-	}
-	return startsWithProfile(path)
+	return receiptinput.ClaimsInput(path, directory)
+}
+
+// ClaimsContent identifies the receipt profile prefix on a byte-oriented input
+// that has no filename, such as a fleet audit payload.
+func ClaimsContent(data []byte) bool {
+	return evidencename.ClaimsReceiptContent(data)
 }
 
 func startsWithProfile(path string) (bool, error) {
@@ -199,11 +182,45 @@ func startsWithProfile(path string) (bool, error) {
 		return false, fmt.Errorf("open evidence file: %w", err)
 	}
 	defer func() { _ = f.Close() }()
-	claimed, err := contract.HasProfileEnvelope(f)
-	if err != nil {
-		return false, fmt.Errorf("read evidence prefix: %w", err)
+	return evidencename.ProbeReceiptContent(f)
+}
+
+// nestedReceiptProfile reports the first descendant directory claimed by the
+// receipt profile. Symlinks are not directories (DirEntry.IsDir does not
+// follow them), so the walk stays on the tree the operator named.
+func nestedReceiptProfile(root string, entries []os.DirEntry) (string, error) {
+	pending := make([]string, 0)
+	for _, entry := range entries {
+		if entry.IsDir() {
+			pending = append(pending, filepath.Join(root, entry.Name()))
+		}
 	}
-	return claimed, nil
+	seen := make(map[string]struct{}, len(pending))
+	for len(pending) > 0 {
+		path := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		seen[path] = struct{}{}
+		children, err := os.ReadDir(path)
+		if err != nil {
+			return "", fmt.Errorf("read evidence directory: %w", err)
+		}
+		claimed, err := receiptinput.ClaimsDirectory(path, children)
+		if err != nil {
+			return "", err
+		}
+		if claimed {
+			return path, nil
+		}
+		for _, child := range children {
+			if child.IsDir() {
+				pending = append(pending, filepath.Join(path, child.Name()))
+			}
+		}
+	}
+	return "", nil
 }
 
 func readInputDirectory(path string) (string, []os.DirEntry, error) {
@@ -231,9 +248,8 @@ func discover(paths []string, opts Options, skip string) (files []inputFile, leg
 		paths = nil
 		for _, entry := range entries {
 			path := filepath.Join(dir, entry.Name())
-			_, v3 := identify(path)
 			_, isInventory := inventoryID(entry.Name())
-			if v3 || isInventory || legacyCandidate(entry.Name()) {
+			if evidencename.ClaimsReceiptName(entry.Name()) || isInventory || legacyCandidate(entry.Name()) {
 				if !entry.Type().IsRegular() {
 					return nil, nil, nil, 0, fmt.Errorf("evidence path is not a regular file: %s", path)
 				}
@@ -241,6 +257,17 @@ func discover(paths []string, opts Options, skip string) (files []inputFile, leg
 			} else {
 				ignored++
 			}
+		}
+		// A claimed root is verified from its own files. A descendant directory
+		// that holds a receipt profile is a separate location; counting it as
+		// ignored and reporting the root VALID would present a partial tree as
+		// complete. The same claim rule as every other reader applies here.
+		nested, nestErr := nestedReceiptProfile(dir, entries)
+		if nestErr != nil {
+			return nil, nil, nil, 0, nestErr
+		}
+		if nested != "" {
+			return nil, nil, nil, 0, fmt.Errorf("receipt profile in %s is outside this directory verification; run 'pipelock verify-receipt --chain %s' with the trusted signer key", nested, nested)
 		}
 	}
 	ordered := slices.Clone(paths)

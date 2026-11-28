@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor"
+	"github.com/luckyPipewrench/pipelock/internal/evidence/receiptinput"
 )
 
 // AuditKeyResolver resolves follower audit signing keys from the authenticated
@@ -193,6 +194,8 @@ func writeAuditSinkError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, ErrAuditBatchConflict)
 	case errors.Is(err, ErrAuditForkDetected):
 		writeError(w, http.StatusConflict, ErrAuditForkDetected)
+	case errors.Is(err, receiptinput.ErrUnsupported):
+		writeError(w, http.StatusUnprocessableEntity, err)
 	case errors.Is(err, ErrInvalidStoreRecord):
 		writeError(w, http.StatusBadRequest, ErrInvalidStoreRecord)
 	case errors.Is(err, ErrFollowerRequired):

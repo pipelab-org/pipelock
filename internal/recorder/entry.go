@@ -21,6 +21,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/evidencename"
+
 	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 )
 
@@ -491,6 +493,9 @@ func ReadEntries(path string) ([]Entry, error) {
 }
 
 func readEntries(path string, limits entryReadLimits) ([]Entry, bool, int64, error) {
+	if err := evidencename.RefuseReceiptName(path); err != nil {
+		return nil, false, 0, err
+	}
 	f, err := os.Open(filepath.Clean(path))
 	if err != nil {
 		return nil, false, 0, fmt.Errorf("opening evidence file: %w", err)
@@ -534,6 +539,9 @@ func readEntriesFromReader(r io.Reader, limits entryReadLimits) ([]Entry, bool, 
 // calls consume once per entry in file order. Any returned error invalidates
 // the whole walk, because consume may already have seen earlier entries.
 func WalkEntries(path string, consume func(Entry) error) error {
+	if err := evidencename.RefuseReceiptName(path); err != nil {
+		return err
+	}
 	f, err := os.Open(filepath.Clean(path))
 	if err != nil {
 		return fmt.Errorf("opening evidence file: %w", err)
@@ -640,6 +648,9 @@ func walkEntriesFromReader(r io.Reader, limits entryReadLimits, consume func(Ent
 			continue
 		}
 		if limits.MaxEntries > 0 && delivered >= limits.MaxEntries {
+			if err := evidencename.RefuseReceiptContent([]byte(trimmed)); err != nil {
+				return false, bytesRead, fmt.Errorf("line %d: %w", lineNum, err)
+			}
 			return true, bytesRead, nil
 		}
 
@@ -668,6 +679,9 @@ func walkEntriesFromReader(r io.Reader, limits entryReadLimits, consume func(Ent
 // before decoding could collapse them. Streaming consumers use this same
 // parser so they cannot disagree with recorder verification.
 func ParseEntryLine(line []byte) (Entry, error) {
+	if err := evidencename.RefuseReceiptContent(line); err != nil {
+		return Entry{}, err
+	}
 	trimmed := []byte(TrimEntryLine(string(line)))
 	if len(trimmed) == 0 {
 		return Entry{}, errors.New("empty recorder entry")

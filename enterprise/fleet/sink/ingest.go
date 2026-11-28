@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor"
+	"github.com/luckyPipewrench/pipelock/internal/evidence/receiptinput"
 	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
@@ -385,6 +386,8 @@ func statusForError(err error) int {
 		return http.StatusForbidden
 	case errors.Is(err, ErrBatchConflict), errors.Is(err, ErrForkDetected):
 		return http.StatusConflict
+	case errors.Is(err, receiptinput.ErrUnsupported):
+		return http.StatusUnprocessableEntity
 	default:
 		return http.StatusInternalServerError
 	}

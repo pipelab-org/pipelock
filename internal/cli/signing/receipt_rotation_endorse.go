@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/evidence/receiptinput"
+
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/atomicfile"
@@ -87,11 +89,17 @@ Example:
 			); err != nil {
 				return err
 			}
+			if err := receiptinput.RefuseLocation(chainDir, "receipt rotation endorse", "legacy receipt rotation"); err != nil {
+				return err
+			}
 			ceremonyLock, err := recorder.AcquireEvidenceCeremonyLock(filepath.Clean(chainDir))
 			if err != nil {
 				return fmt.Errorf("lock stopped receipt chain: %w", err)
 			}
 			defer func() { _ = ceremonyLock.Close() }()
+			if err := receiptinput.RefuseLocation(chainDir, "receipt rotation endorse", "legacy receipt rotation"); err != nil {
+				return err
+			}
 			if !cmd.Flags().Changed("session") {
 				sessionID, err = resolveOneReceiptSession(recorder.EvidenceLocation{Dir: filepath.Clean(chainDir)}, sessionID)
 				if err != nil {

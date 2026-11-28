@@ -9,12 +9,17 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
 
 // FindTerminalReceiptGroup finds the unique group of base that has no signed
 // successor opening. It verifies every opening against pinned signer keys,
 // then checks predecessor links and terminal candidates in memory.
 func FindTerminalReceiptGroup(dir, base string, trusted []string) (string, bool, error) {
+	if err := recorder.RefuseReceiptDirectory(dir); err != nil {
+		return "", false, err
+	}
 	if len(trusted) == 0 {
 		return "", false, errors.New("receipt group terminal discovery requires a trusted signer key")
 	}

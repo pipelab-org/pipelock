@@ -20,6 +20,7 @@ import (
 
 	contract "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/evidence/endproof"
+	"github.com/luckyPipewrench/pipelock/internal/evidencename"
 	legacy "github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
@@ -41,13 +42,11 @@ type legacyBatch struct {
 }
 
 func legacyCandidate(name string) bool {
-	_, _, isRecorder := recorder.ParseEvidenceFilename(name)
-	return isRecorder || isGroupArtifact(name) || name == "activation-receipts.jsonl" ||
-		name == "redaction-receipts.jsonl" || name == "ratification-receipts.jsonl"
+	return evidencename.IsLegacyReceiptCandidate(name)
 }
 
 func isGroupArtifact(name string) bool {
-	return strings.HasPrefix(name, "receipt-group-") && strings.HasSuffix(name, ".json")
+	return evidencename.IsReceiptGroupArtifact(name)
 }
 
 func (v *verification) verifyLegacy(paths []string, excluded map[string]bool) (map[legacyIdentity]legacyPresentation, error) {
@@ -130,7 +129,7 @@ func (v *verification) verifyLegacy(paths []string, excluded map[string]bool) (m
 		if absErr != nil {
 			return nil, fmt.Errorf("resolve legacy receipt directory: %w", absErr)
 		}
-		location := recorder.EvidenceLocation{Root: root, Dir: root, ExcludedNames: excluded}
+		location := recorder.EvidenceLocation{Root: root, Dir: root, ExcludedNames: excluded, ReadMode: recorder.MixedReceiptProfiles}
 		batch := legacyBatch{recorder: true, session: session}
 		// Bind a wrapper's exclusion to the files as they were before the read.
 		stamps := sessionStamps(sessionPaths[session], session)
@@ -314,7 +313,7 @@ func (v *verification) legacyContinuityLabel(dir, base string, keys []string, gr
 	if !changed {
 		report, err = legacy.VerifyBase(dir, base, legacy.BaseVerifyOptions{
 			TrustedKeys: keys, ExcludeReceiptGroupSessions: grouped, ExcludedNames: excluded,
-		})
+		}, recorder.MixedReceiptProfiles)
 		changed = !settled()
 	}
 	if !changed && err == nil && report.Healthy() {

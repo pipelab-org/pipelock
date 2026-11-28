@@ -14,6 +14,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/evidencename"
+
 	"github.com/luckyPipewrench/pipelock/internal/contract"
 )
 
@@ -28,6 +30,9 @@ import (
 // Ordinary JCS-equivalent formatting is permitted by this profile. Call
 // VerifyV2BytesWithKey when exact Go-emitted serialization is also required.
 func ParseEvidenceReceipt(raw []byte) (EvidenceReceipt, error) {
+	if err := evidencename.RefuseReceiptContent(raw); err != nil {
+		return EvidenceReceipt{}, err
+	}
 	if isSecretEgressWire(raw) {
 		if err := validateSecretEgressWire(raw); err != nil {
 			return EvidenceReceipt{}, err
