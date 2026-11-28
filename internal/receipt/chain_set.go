@@ -490,9 +490,7 @@ func VerifyBase(dir, base string, opts BaseVerifyOptions, modes ...recorder.Evid
 			return report, err
 		}
 		defer func() {
-			if err := recorder.RefuseReceiptDirectory(dir, modes...); err != nil && retErr == nil {
-				retErr = err
-			}
+			refuseErr := recorder.RefuseReceiptDirectory(dir, modes...)
 			finalGroups := map[string]bool{}
 			final, scanErr := opts.recorderIndex(dir, finalGroups)
 			after, checkErr := fingerprintBaseShards(final, baseSessions(final, base))
@@ -523,6 +521,11 @@ func VerifyBase(dir, base string, opts BaseVerifyOptions, modes ...recorder.Evid
 				}
 				// A typed finding is the existing unavailable-result surface.
 				retErr = nil
+			}
+			// Receipt v3 evidence found at the end refuses the directory even
+			// when the inventory also changed; that typed refusal wins.
+			if refuseErr != nil && (retErr == nil || errors.Is(refuseErr, recorder.ErrLegacyEvidenceFormat)) {
+				retErr = refuseErr
 			}
 		}()
 	}

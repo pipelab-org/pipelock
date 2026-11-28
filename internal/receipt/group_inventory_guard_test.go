@@ -165,3 +165,36 @@ func TestVerifyBaseRefusesProfileAddedDuringVerification(t *testing.T) {
 		t.Fatalf("VerifyBase error = %v", err)
 	}
 }
+
+// A receipt v3 file and a growing legacy shard in the same verification
+// window: the inventory change must not clear the receipt-format refusal.
+func TestVerifyBaseKeepsProfileRefusalWhenShardAlsoChanges(t *testing.T) {
+	src := filepath.Join(walkConformanceTestdata, "run-chains", "valid")
+	dir := copyShardDir(t, src)
+	shards, err := filepath.Glob(filepath.Join(dir, "evidence-proxy.run.*.jsonl"))
+	if err != nil || len(shards) == 0 {
+		t.Fatalf("legacy shards: %v %v", shards, err)
+	}
+	previous := betweenVerificationReads
+	betweenVerificationReads = func(string) {
+		if err := os.WriteFile(filepath.Join(dir, "stream.receipt-v3.jsonl"), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		f, err := os.OpenFile(filepath.Clean(shards[0]), os.O_APPEND|os.O_WRONLY, 0o600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, writeErr := f.WriteString("\n")
+		if closeErr := f.Close(); writeErr != nil || closeErr != nil {
+			t.Fatalf("append: %v %v", writeErr, closeErr)
+		}
+	}
+	t.Cleanup(func() { betweenVerificationReads = previous })
+	report, err := VerifyBase(dir, "proxy", BaseVerifyOptions{TrustedKeys: corpusKeys(src)})
+	if !errors.Is(err, recorder.ErrLegacyEvidenceFormat) {
+		t.Fatalf("VerifyBase error = %v", err)
+	}
+	if report.Healthy() {
+		t.Fatal("changed inventory reported healthy")
+	}
+}
