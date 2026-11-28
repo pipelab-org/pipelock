@@ -12,6 +12,11 @@ Incomplete runs are lower bounds.
 
     python3 scripts/ci_test_durations.py --write shard-a.json shard-b.json ...
 
+For a failed CI run, use --recover-ci-artifacts DIRECTORY with the downloaded
+artifact directories. It reports unusable shards and prints candidate weights
+without lowering recorded weights. The scheduled refresh uses --ci-artifacts
+and requires every shard.
+
 Only trees listed in TEST_SPLITS are recorded. Measurements are merged per test
 name: a re-measured test takes its new time, an unmeasured test keeps its old
 one, and a test no longer in the tree is dropped, so a partial refresh from a
@@ -22,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -242,7 +248,7 @@ def merge(
     return {"trees": trees}
 
 
-def artifact_complete(path: Path) -> bool:
+def artifact_complete(path: Path, *, recovery: bool = False) -> bool:
     """Require terminal package results and no unfinished tests in a CI stream."""
     packages: dict[str, str | None] = {}
     pending: set[tuple[str, str]] = set()
@@ -251,12 +257,31 @@ def artifact_complete(path: Path) -> bool:
             try:
                 event = json.loads(line)
             except json.JSONDecodeError:
+                if recovery:
+                    return False
                 continue
             if not isinstance(event, dict) or not isinstance(event.get("Package"), str):
+                # go help buildjson: go test -json interleaves build events,
+                # which identify the package by ImportPath instead of Package.
+                if recovery and not (isinstance(event, dict) and event.get("Action") == "build-output"
+                                     and isinstance(event.get("ImportPath"), str) and event["ImportPath"]):
+                    return False
                 continue
             package = event["Package"]
             packages.setdefault(package, None)
             name, action = event.get("Test"), event.get("Action")
+            if recovery:
+                if not package or (name is not None and not isinstance(name, str)):
+                    return False
+                if action not in ("start", "run", "pause", "cont", "pass", "bench", "output", "skip"):
+                    return False
+                if action == "pass" or "Elapsed" in event:
+                    elapsed = event.get("Elapsed")
+                    if (not isinstance(elapsed, (int, float)) or isinstance(elapsed, bool)
+                            or not math.isfinite(elapsed) or elapsed < 0):
+                        return False
+                if action == "start":
+                    packages[package] = None
             if isinstance(name, str):
                 key = (package, name)
                 if action == "run":
@@ -340,19 +365,29 @@ def partial_overrides(paths: list[Path]) -> dict:
     return result
 
 
-def ci_artifact_inputs(directory: Path) -> list[Path]:
+def ci_artifact_inputs(directory: Path, *, recovery: bool = False) -> list[Path]:
     """Require every Go 1.26 producer before treating a refresh as CI evidence."""
     inputs: list[Path] = []
     for lane in ("oss", "enterprise"):
         for shard in SHARDS:
             profile = directory / f"go-test-json-{lane}-go126-{shard}" / f"go-test-{lane}.json"
-            if not profile.is_file() or profile.stat().st_size == 0:
-                raise ValueError(f"missing or empty CI timing artifact: {profile}")
-            if not artifact_complete(profile):
-                raise ValueError(f"incomplete or failed CI timing artifact: {profile}")
-            if not collect([profile]) and not collect_packages([profile]):
-                raise ValueError(f"CI timing artifact has no measured results: {profile}")
+            try:
+                if not profile.is_file() or profile.stat().st_size == 0:
+                    raise ValueError(f"missing or empty CI timing artifact: {profile}")
+                if not artifact_complete(profile, recovery=recovery):
+                    raise ValueError(f"incomplete or failed CI timing artifact: {profile}")
+                if not collect([profile]) and not collect_packages([profile]):
+                    raise ValueError(f"CI timing artifact has no measured results: {profile}")
+            except (OSError, ValueError, OverflowError) as error:
+                if not recovery:
+                    raise
+                print(f"Skipping {profile.parent.name}: {error}", file=sys.stderr)
+                continue
             inputs.append(profile)
+    if recovery:
+        if not inputs:
+            raise ValueError("no usable CI timing artifacts")
+        print(f"Using {len(inputs)} of {2 * len(SHARDS)} CI timing artifacts for candidate weights", file=sys.stderr)
     return inputs
 
 
@@ -361,13 +396,19 @@ def main() -> int:
     parser.add_argument("inputs", nargs="*", type=Path, help="go test -json output files")
     parser.add_argument("--write", action="store_true", help=f"update {DURATIONS_FILE.name}")
     parser.add_argument("--ci-artifacts", type=Path, help="require the complete Go 1.26 CI artifact directory")
+    parser.add_argument("--recover-ci-artifacts", type=Path,
+                        help="print conservative candidate weights from usable Go 1.26 CI shards")
     parser.add_argument("--partial", action="store_true",
                         help="inputs contain only changed tests, not complete packages")
     args = parser.parse_args()
+    recovery = args.recover_ci_artifacts is not None
+    if recovery and (args.ci_artifacts or args.inputs or args.partial or args.write):
+        parser.error("--recover-ci-artifacts cannot be combined with other input or write options")
     if args.ci_artifacts and args.inputs:
         parser.error("use either --ci-artifacts or input files")
+    artifacts = args.recover_ci_artifacts or args.ci_artifacts
     try:
-        inputs = ci_artifact_inputs(args.ci_artifacts) if args.ci_artifacts else args.inputs
+        inputs = ci_artifact_inputs(artifacts, recovery=recovery) if artifacts else args.inputs
     except ValueError as error:
         print(f"ci_test_durations.py: {error}", file=sys.stderr)
         return 1
@@ -386,15 +427,25 @@ def main() -> int:
         print("ci_test_durations.py: no test results in the inputs", file=sys.stderr)
         return 1
     inventory = {tree: set(tree_test_names(ROOT / HEAVY_TREES[tree])) for tree in TEST_SPLITS}
-    result = merge(previous, measured, inventory)
     merged_packages = dict(load_package_durations())
+    if recovery:
+        for tree, tests in measured.items():
+            recorded = previous.get(tree, {})
+            measured[tree] = {name: max(seconds, recorded.get(name, 0.0)) for name, seconds in tests.items()
+                              if name in inventory[tree]}
+        packages = {name: max(seconds, merged_packages.get(name, 0.0)) for name, seconds in packages.items()}
+    result = merge(previous, measured, None if recovery else inventory)
     merged_packages.update(packages)
     if merged_packages:
         result["packages"] = dict(sorted(merged_packages.items()))
     for tree, tests in result["trees"].items():
         print(f"{tree}: {len(tests)} tests, {sum(tests.values()):.0f}s measured", file=sys.stderr)
     print(f"rest packages: {len(merged_packages)}", file=sys.stderr)
-    text = json.dumps(result, indent=1, sort_keys=False) + "\n"
+    try:
+        text = json.dumps(result, indent=1, sort_keys=False, allow_nan=not recovery) + "\n"
+    except ValueError as error:
+        print(f"ci_test_durations.py: invalid candidate weights: {error}", file=sys.stderr)
+        return 1
     if args.write:
         DURATIONS_FILE.write_text(text, encoding="utf-8")
     else:
