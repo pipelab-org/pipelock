@@ -2,6 +2,14 @@
 
 Build with `go build -o receipt-load ./scripts/receipt-load`, then run `./receipt-load --binary ./pipelock --out NEW_OUTPUT_DIRECTORY`. The harness drives a local proxy and sink, measures performance, and checks receipt evidence. Process measurements require Linux `/proc`; if the initial measurement is unavailable after proxy launch, the run exits `1` because startup receipt emission may already have been attempted. `run.sh OUTPUT_DIRECTORY` builds both binaries and preserves the harness exit code; its own build/setup failures return `4`. `matrix.sh` records each cell's exact status in `scope.exit` and fails the matrix if any cell fails.
 
+The expected receipt format is set by `--receipt-format legacy` (the default) or
+`--receipt-format v3`. Each enabled mode checks the on-disk format against this
+setting. V3 runs use one receipt chain. They pin the run's signing key, require
+a `VALID` v3 result, and count signed upstream, delivery, and block records.
+When a run restarts, the final v3 history must extend the verified pre-restart
+tip. The v3 run reports aggregate receipt counts alongside per-request sink
+checks. Legacy runs retain the existing whole-recorder seal and AEL checks.
+
 | Code | Meaning |
 | --- | --- |
 | 0 | Receipt integrity passed and performance was measured. |

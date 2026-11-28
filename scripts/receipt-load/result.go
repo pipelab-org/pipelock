@@ -28,6 +28,7 @@ const (
 type result struct {
 	SchemaVersion  int               `json:"schema_version"`
 	Mode           string            `json:"mode"`
+	ReceiptFormat  string            `json:"receipt_format,omitempty"`
 	ReceiptChains  int               `json:"receipt_chains"`
 	Requests       int               `json:"requests"`
 	WarmupRequests int               `json:"warmup_requests"`

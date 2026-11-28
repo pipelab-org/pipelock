@@ -293,9 +293,9 @@
   },
   {
     "package": "scripts/receipt-load",
-    "role": "test-fixture",
-    "reason": "Load harness that reads only the legacy recorder chains it writes for its own run.",
-    "test": "TestReviewR2RecorderFileSelection"
+    "role": "v3-verifier",
+    "reason": "Checks the expected writer format and counts verified v3 actions.",
+    "test": "TestLoadExpectedReceiptFormat"
   },
   {
     "package": "tools/gen-shadow-example",
