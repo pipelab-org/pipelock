@@ -9,6 +9,7 @@ forward-compatibility guarantee verifiers must honor.
 |--------|---------------|---------------|----------------------|
 | ActionReceipt | `receipt.ReceiptVersion` (`internal/receipt/receipt.go:17`) | `1` | `receipt.VerifyWithKey` (`internal/receipt/receipt.go:66`) |
 | EvidenceReceipt | `receipt_version` (`internal/contract/receipt`) | `2` | `VerifyWithKey`; `VerifyV2BytesWithKey` for exact emitted bytes |
+| Receipt v3 (unreleased) | `v` in the signed payload | `3` | `pipelock verify-receipt --chain <dir>` on `main` |
 | Evidence recovery seal | `version` with `kind: "recovery_seal"` | `1` | Go, TypeScript, and Rust directory verifiers |
 | AARP assurance envelope | `aarp.Profile` (`internal/aarp/doc.go:50`) | `"aarp/v0.1"` | `aarp.Verify` (`internal/aarp/verify.go:67`) |
 
@@ -117,6 +118,12 @@ Go, TypeScript, Rust and Python reference validators must agree on new-kind
 acceptance and rejection before live emission. An older reader which does not
 understand the new kind must reject it explicitly. Existing v1 and v2 fixtures
 retain their original meaning and remain verifiable.
+
+### Receipt v3
+
+[Receipt v3](../specs/receipt-v3.md) records each step of a decision as a signed line in a hash-linked stream. In a new evidence directory, Pipelock defaults to ActionReceipt v1 and EvidenceReceipt v2. On `main`, opt in with `flight_recorder.receipt_format: v3` and use one receipt chain and one writer per evidence directory. The v3 format is unreleased.
+
+When you switch an existing directory to v3, its first v3 stream binds an inventory of the older chains' final positions. Verify the whole directory to check those links. ActionReceipt v1 and EvidenceReceipt v2 retain their own separate chains and remain verifiable. To roll back to an older binary or switch back to legacy writing, use a new, empty evidence directory. Keep the switched directory and its inventory together for verification. See [supported v3 readers](../guides/receipt-verification.md#receipt-v3-readers).
 
 ### AARP v0.1 assurance envelope
 
