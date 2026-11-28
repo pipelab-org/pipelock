@@ -2628,9 +2628,9 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 			if c, ok := clientIn.(io.Closer); ok {
 				_ = c.Close()
 			}
-			if opts.receiptEffects.enabled {
-				interruptNativeOutput(clientOut)
-			}
+			// Release a refusal write still blocked on the client, as the
+			// session-exit branch does, so it cannot outlive RunProxy.
+			interruptNativeOutput(clientOut)
 			logAsync(safeLogW, "pipelock: timed out waiting for MCP input drain after the MCP server exited\n")
 		}
 	}

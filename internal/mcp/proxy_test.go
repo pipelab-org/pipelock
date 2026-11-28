@@ -4904,11 +4904,11 @@ func TestRunProxy_SubprocessExitReturnsWithOpenClientInput(t *testing.T) {
 			clientIn, clientWriter := io.Pipe()
 			t.Cleanup(func() { _ = clientWriter.Close() })
 
-			var out bytes.Buffer
+			out := &interruptRecordingWriter{}
 			logBuf := &syncBuffer{}
 			done := make(chan error, 1)
 			go func() {
-				done <- RunProxy(context.Background(), clientIn, &out, logBuf, tt.command, opts)
+				done <- RunProxy(context.Background(), clientIn, out, logBuf, tt.command, opts)
 			}()
 			if tt.write {
 				_, _ = clientWriter.Write([]byte(mcpToolCall(mcpAllowedTool, "") + "\n"))
@@ -4922,6 +4922,38 @@ func TestRunProxy_SubprocessExitReturnsWithOpenClientInput(t *testing.T) {
 			case <-time.After(testwait.Deadline(20 * time.Second)):
 				t.Fatal("RunProxy hung after the server exited while client input stayed open")
 			}
+			// The drain timed out with client input still open, so client
+			// output must be released too, with or without receipts.
+			if !out.interrupted() {
+				t.Fatal("client output was not interrupted after the drain timed out")
+			}
 		})
 	}
+}
+
+// interruptRecordingWriter is a client output that records the interruption
+// RunProxy applies after a drain timeout.
+type interruptRecordingWriter struct {
+	mu     sync.Mutex
+	buf    bytes.Buffer
+	closed bool
+}
+
+func (w *interruptRecordingWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.Write(p)
+}
+
+func (w *interruptRecordingWriter) Close() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.closed = true
+	return nil
+}
+
+func (w *interruptRecordingWriter) interrupted() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.closed
 }
