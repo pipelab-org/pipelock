@@ -22,6 +22,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
 const (
@@ -130,6 +132,7 @@ func parseFlags(args []string) (options, []string, string, error) {
 	concurrency := fs.Int("concurrency", 128, "concurrent clients")
 	modes := fs.String("modes", "off,best,required", "comma-separated modes")
 	destinations := fs.String("destinations", destinationsSingle, "destination workload: single or per-request")
+	receiptFormat := fs.String("receipt-format", config.ReceiptFormatLegacy, "expected receipt writer format: legacy or v3")
 	chains := fs.Int("chains", 1, "number of signed receipt chains (1 to 32)")
 	rules := fs.String("rules", rulesEmpty, `rule bundles to load: "empty" for none, or a directory that is copied and hashed`)
 	seed := fs.Uint64("seed", 1, "workload seed; fixes request keys and which requests are blocked")
@@ -146,6 +149,15 @@ func parseFlags(args []string) (options, []string, string, error) {
 	}
 	if *destinations != destinationsSingle && *destinations != destinationsPerRequest {
 		return options{}, nil, "", fmt.Errorf("invalid --destinations %q", *destinations)
+	}
+	switch *receiptFormat {
+	case config.ReceiptFormatLegacy:
+	case config.ReceiptFormatV3:
+		if *chains != 1 {
+			return options{}, nil, "", fmt.Errorf("--receipt-format v3 requires --chains 1")
+		}
+	default:
+		return options{}, nil, "", fmt.Errorf("invalid --receipt-format %q", *receiptFormat)
 	}
 	maxInt := int(^uint(0) >> 1)
 	if *restartAfter != 0 && (*restartAfter < 0 || *restartAfter >= *n) {
@@ -177,6 +189,6 @@ func parseFlags(args []string) (options, []string, string, error) {
 	}
 	return options{
 		destinations: *destinations, binary: absBinary, out: absOut, rules: *rules, requests: *n, warmup: *warmup, concurrency: *concurrency,
-		chains: *chains, seed: *seed, window: *window, readyTimeout: *readyTimeout, requestTimeout: *requestTimeout, shutdownTimeout: *shutdown, verifyTimeout: *verifyTimeout, restartAfter: *restartAfter,
+		receiptFormat: *receiptFormat, chains: *chains, seed: *seed, window: *window, readyTimeout: *readyTimeout, requestTimeout: *requestTimeout, shutdownTimeout: *shutdown, verifyTimeout: *verifyTimeout, restartAfter: *restartAfter,
 	}, list, *lock, nil
 }
