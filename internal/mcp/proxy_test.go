@@ -4949,10 +4949,17 @@ func TestRunProxy_SubprocessExitReleasesBlockedRefusalWrite(t *testing.T) {
 	t.Cleanup(func() { _ = clientWriter.Close() })
 	out := newBlockingRefusalWriter()
 	logBuf := &syncBuffer{}
+	// On every exit path, including a failed assertion before the server is
+	// allowed to exit: stop the proxy, release the blocked write and let the
+	// waiting shell loop finish.
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	t.Cleanup(func() { _ = out.Close() })
+	t.Cleanup(func() { _ = os.WriteFile(exitFile, nil, 0o600) })
 
 	done := make(chan error, 1)
 	go func() {
-		done <- RunProxy(context.Background(), clientIn, out, logBuf, command, opts)
+		done <- RunProxy(ctx, clientIn, out, logBuf, command, opts)
 	}()
 
 	// A request input scanning refuses: the refusal is written to the client.
