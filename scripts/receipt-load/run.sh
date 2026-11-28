@@ -51,9 +51,15 @@ scratch=""
 trap 'if [[ -n "$scratch" ]]; then rm -rf "$scratch"; fi' EXIT
 scratch=$(mktemp -d "${TMPDIR:-/tmp}/receipt-load.XXXXXX") || { exit_if_cancelled; exit 4; }
 exit_if_cancelled
-go build -o "$scratch/receipt-load" ./scripts/receipt-load || { exit_if_cancelled; exit 4; }
+harness="$scratch/receipt-load"
+go build -o "$harness" ./scripts/receipt-load || { exit_if_cancelled; exit 4; }
+if [[ ! -f "$harness" || ! -x "$harness" ]]; then
+  exit_if_cancelled
+  printf 'receipt-load: cannot execute the built harness at %q (check TMPDIR permissions and mount options)\n' "$harness" >&2
+  exit 4
+fi
 exit_if_cancelled
-"$scratch/receipt-load" --binary "$repo/pipelock" --out "$1" \
+"$harness" --binary "$repo/pipelock" --out "$1" \
   --requests "${RECEIPT_LOAD_REQUESTS:-1000000}" \
   --warmup "${RECEIPT_LOAD_WARMUP:-1000}" \
   --concurrency "${RECEIPT_LOAD_CONCURRENCY:-128}" \
