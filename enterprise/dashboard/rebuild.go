@@ -75,6 +75,11 @@ func refuseReadModelSources(sourceDir, command, reader string) error {
 		return err
 	}
 	paths, err := boundedEvidencePaths(sourceDir)
+	if errors.Is(err, errEvidenceVerificationTooLarge) {
+		// The rebuild reads every evidence file, however many there are, so
+		// check every one of them too rather than refusing a large directory.
+		paths, err = evidencePaths(sourceDir)
+	}
 	if err != nil {
 		return err
 	}
