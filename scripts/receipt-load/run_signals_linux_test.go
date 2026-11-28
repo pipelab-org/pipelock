@@ -14,12 +14,14 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/testexec"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // runSignalProcess keeps diagnostics readable while the command is running.
@@ -259,6 +261,48 @@ func releaseRunFixture(t *testing.T, path string) {
 	defer func() { _ = f.Close() }()
 	if _, err := f.Write([]byte("x")); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRunReportsUnlaunchableBuildAsSetupFailure(t *testing.T) {
+	// Use a reserved ELF machine type so the kernel refuses the executable
+	// even on hosts with cross-architecture emulation installed.
+	invalidELF := make([]byte, 64)
+	copy(invalidELF, "\x7fELF\x02\x01\x01")
+	copy(invalidELF[16:], "\x02\x00\xff\xff\x01\x00\x00\x00")
+	for _, tc := range []struct {
+		name       string
+		body       []byte
+		executable bool
+	}{
+		{"permission", []byte("#!/bin/sh\nexit 0\n"), false},
+		{"exec-format", invalidELF, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			harness := filepath.Join(root, "harness")
+			if tc.executable {
+				testexec.WriteExecutable(t, harness, tc.body, 0o700)
+			} else if err := os.WriteFile(harness, tc.body, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			writeRunBuildStubs(t, root)
+			ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(10*time.Second))
+			defer cancel()
+			cmd := exec.CommandContext(ctx, "bash", "./run.sh", filepath.Join(root, "out")) // #nosec G204 -- fixed launcher with isolated build fixture.
+			cmd.Env = append(os.Environ(), "PATH="+root+":"+os.Getenv("PATH"), "HARNESS_STUB="+harness, "TMPDIR="+root)
+			out, err := cmd.CombinedOutput()
+			var exit *exec.ExitError
+			if !errors.As(err, &exit) || exit.ExitCode() != exitHarness {
+				t.Fatalf("run.sh exit=%v, want setup exit %d; output=%s", err, exitHarness, out)
+			}
+			if !strings.Contains(string(out), "cannot execute the built harness") {
+				t.Fatalf("missing launch diagnostic: %s", out)
+			}
+			if paths, err := filepath.Glob(filepath.Join(root, "receipt-load.*")); err != nil || len(paths) != 0 {
+				t.Fatalf("scratch cleanup: paths=%v, error=%v", paths, err)
+			}
+		})
 	}
 }
 

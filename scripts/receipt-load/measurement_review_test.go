@@ -558,7 +558,8 @@ func TestMatrixRefusesInvalidReleaseSettings(t *testing.T) {
 }
 
 func TestRunPreservesHarnessExitCode(t *testing.T) {
-	for _, code := range []int{1, 2, 3, 4} {
+	// 126 can also come from the shell when it cannot execute the harness.
+	for _, code := range []int{1, 2, 3, 4, 126} {
 		t.Run(strconv.Itoa(code), func(t *testing.T) {
 			root := t.TempDir()
 			marker := filepath.Join(root, "ran")
