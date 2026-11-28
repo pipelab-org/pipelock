@@ -211,3 +211,49 @@ func TestRefuseReceiptDirectory(t *testing.T) {
 		t.Fatalf("mixed mode: %v", err)
 	}
 }
+
+func TestReadLegacyDirectoryBounded(t *testing.T) {
+	write := func(t *testing.T, dir string, names ...string) {
+		t.Helper()
+		for _, name := range names {
+			if err := os.WriteFile(filepath.Join(dir, name), nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	t.Run("within budget", func(t *testing.T) {
+		dir := t.TempDir()
+		write(t, dir, "evidence-a-0.jsonl", "evidence-b-0.jsonl")
+		entries, err := ReadLegacyDirectoryBounded(dir, 3)
+		if err != nil || len(entries) != 2 {
+			t.Fatalf("entries=%d err=%v", len(entries), err)
+		}
+	})
+	t.Run("exactly at budget", func(t *testing.T) {
+		dir := t.TempDir()
+		write(t, dir, "evidence-a-0.jsonl", "evidence-b-0.jsonl")
+		if entries, err := ReadLegacyDirectoryBounded(dir, 2); err != nil || len(entries) != 2 {
+			t.Fatalf("entries=%d err=%v", len(entries), err)
+		}
+	})
+	t.Run("over budget fails closed", func(t *testing.T) {
+		dir := t.TempDir()
+		write(t, dir, "evidence-a-0.jsonl", "evidence-b-0.jsonl", "evidence-c-0.jsonl")
+		entries, err := ReadLegacyDirectoryBounded(dir, 2)
+		if !errors.Is(err, ErrEvidenceReadLimitExceeded) || entries != nil {
+			t.Fatalf("entries=%v err=%v, want read-limit refusal", entries, err)
+		}
+	})
+	t.Run("receipt profile refused", func(t *testing.T) {
+		dir := t.TempDir()
+		write(t, dir, "evidence-a-0.jsonl", "stream.receipt-v3.jsonl")
+		if _, err := ReadLegacyDirectoryBounded(dir, 10); !errors.Is(err, ErrLegacyEvidenceFormat) {
+			t.Fatalf("err=%v, want receipt-profile refusal", err)
+		}
+	})
+	t.Run("missing directory", func(t *testing.T) {
+		if _, err := ReadLegacyDirectoryBounded(filepath.Join(t.TempDir(), "missing"), 2); err == nil {
+			t.Fatal("missing directory accepted")
+		}
+	})
+}
