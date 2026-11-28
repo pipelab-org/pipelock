@@ -17,7 +17,7 @@ Pass the evidence directory for both v3-only evidence and a directory switched f
 | `VALID` | 0 | Verification succeeded with pinned trust, proven stream ends, and no accepted gaps. |
 | `VALID, GAPS ACCEPTED` | 0 | Verification succeeded with pinned trust and an explicit acceptance of a gap or discontinuity. |
 | `SELF-CONSISTENT ONLY` | 1 by default | The evidence verifies against its own signer keys. `--allow-unpinned` permits exit 0. |
-| `VALID PREFIX, END UNPROVEN` | 3 by default | The verified prefix has an unproven end. `--allow-prefix` permits exit 0 with pinned trust. An unpinned prefix also needs `--allow-unpinned`. |
+| `VALID PREFIX, END UNPROVEN` | 3 by default | The verified prefix has an unproven end. With `--allow-prefix`, the exit is 0 if trust is pinned or `--allow-unpinned` is set, and 1 otherwise. |
 | `INCOMPLETE` | 3 | A required part of the evidence is missing or couldn't be appraised. |
 | `UNSUPPORTED` | 3 | The verifier can't appraise a required profile or feature. |
 | `INVALID` | 1 | The evidence failed verification or a caller requirement. |

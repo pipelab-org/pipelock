@@ -141,6 +141,6 @@ Receipt emission failures are logged and do not fail requests by default. Set `f
 
 ## Receipt v3 on main
 
-With v3 and required receipts, Pipelock confirms the releasing record on disk before it releases the covered effect. The record shows what Pipelock decided. A separate outcome record shows what Pipelock observed. If a write or flush fails, a successor stream pins the last confirmed record. After a crash without a signed close, a successor can pin the last complete record it found, and the predecessor's end remains unproven unless independently established.
+With v3 and required receipts, Pipelock confirms the releasing record on disk before it releases the covered effect. The record shows what Pipelock decided. A separate outcome record shows what Pipelock observed. When an intent survives without a confirmed outcome, the verifier can report `outcome_unknown`. If a write or flush fails, a successor stream pins the last confirmed record. After a crash without a signed close, a successor can pin the last complete record it found, and the predecessor's end remains unproven unless independently established.
 
 The v3 action record's `policy.source` names the source of the policy hash or records that it was unavailable. See the [receipt v3 setup guide](receipt-verification.md#enable-v3-receipts) and the [receipt v3 specification](../specs/receipt-v3.md).

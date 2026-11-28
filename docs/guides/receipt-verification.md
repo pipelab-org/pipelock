@@ -931,7 +931,7 @@ This table describes source on `main`. Pipelock release binaries and the publish
 | Browser wasm verifier built from this source | Verifies within browser limits | Verifies within browser limits |
 | In-tree TypeScript, Rust, and Python v3 readers | Verify | Return `USE_HOST_VERIFIER` as an unsupported finding. Use `pipelock verify-receipt --chain <dir>`. |
 
-The TypeScript, Rust, and Python implementations still have separate commands or APIs for legacy evidence. The browser v3 verifier also returns `USE_HOST_VERIFIER` when its input exceeds its archive limits. See the [v3 result and exit codes](../cli/verify-receipt.md#receipt-v3-on-main).
+The TypeScript, Rust, and Python implementations also return `USE_HOST_VERIFIER` when a stream pins a non-empty cutover inventory, even if you pass only v3 stream files. They have separate commands or APIs for legacy evidence. The browser v3 verifier returns `USE_HOST_VERIFIER` when its input exceeds its archive limits. See the [v3 result and exit codes](../cli/verify-receipt.md#receipt-v3-on-main).
 
 On `main`, legacy evidence readers such as `pipelock logs`, `pipelock report`, dashboard evidence views, and fleet reports refuse v3. `pipelock doctor` checks writer prerequisites and directs you to the verifier for v3 evidence. The [reader inventory](../security/receipt-readers.json) lists each reader's role. Plan which workflows need legacy evidence before switching a recorder directory.
 
