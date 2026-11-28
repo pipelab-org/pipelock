@@ -53,13 +53,16 @@ scratch=$(mktemp -d "${TMPDIR:-/tmp}/receipt-load.XXXXXX") || { exit_if_cancelle
 exit_if_cancelled
 harness="$scratch/receipt-load"
 go build -o "$harness" ./scripts/receipt-load || { exit_if_cancelled; exit 4; }
-if [[ ! -f "$harness" || ! -x "$harness" ]]; then
-  exit_if_cancelled
-  printf 'receipt-load: cannot execute the built harness at %q (check TMPDIR permissions and mount options)\n' "$harness" >&2
-  exit 4
-fi
 exit_if_cancelled
-"$harness" --binary "$repo/pipelock" --out "$1" \
+# Bash's execfail works in a fresh shell, but an exec failure exits a subshell
+# unconditionally. On success exec keeps the PID used to forward signals.
+BASH_ENV= "$BASH" -c '
+  shopt -s execfail
+  exec "$@" || {
+    printf "receipt-load: cannot execute the built harness at %q (check the build target and TMPDIR permissions and mount options)\n" "$1" >&2
+    exit 4
+  }
+' receipt-load-launch "$harness" --binary "$repo/pipelock" --out "$1" \
   --requests "${RECEIPT_LOAD_REQUESTS:-1000000}" \
   --warmup "${RECEIPT_LOAD_WARMUP:-1000}" \
   --concurrency "${RECEIPT_LOAD_CONCURRENCY:-128}" \
