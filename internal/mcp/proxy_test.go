@@ -25,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/deferred"
 	"github.com/luckyPipewrench/pipelock/internal/testwait"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
@@ -4870,5 +4871,57 @@ func TestRunProxy_ResponseTimeoutReturnsWithOpenClientInput(t *testing.T) {
 	}
 	if !strings.Contains(logBuf.String(), "upstream response timeout") {
 		t.Fatalf("expected upstream response timeout log, got: %s", logBuf.String())
+	}
+}
+
+// TestRunProxy_SubprocessExitReturnsWithOpenClientInput covers the same open
+// client input as the response-timeout case above, for a server that exits on
+// its own: the client is waiting for a reply and keeps stdin open, so the
+// input-scanner goroutine never sees EOF. RunProxy must still return (the
+// client then sees stdout close) instead of waiting forever for client input.
+func TestRunProxy_SubprocessExitReturnsWithOpenClientInput(t *testing.T) {
+	if runtime.GOOS == osWindows {
+		t.Skip("shell subprocess test requires unix")
+	}
+	tests := []struct {
+		name     string
+		command  []string
+		write    bool
+		receipts bool
+	}{
+		{name: "server reads the request then exits", command: []string{"sh", "-c", "read -r line; exit 3"}, write: true},
+		{name: "server exits before any request", command: []string{"sh", "-c", "exit 3"}},
+		{name: "receipts enabled: server reads the request then exits", command: []string{"sh", "-c", "read -r line; exit 3"}, write: true, receipts: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sc := testScannerWithAction(t, "warn")
+			opts := testOpts(sc)
+			if tt.receipts {
+				writer, _ := openMCPV3RegressionWriter(t, deferred.SurfaceMCPStdio)
+				opts = opts.WithV3ReceiptWriter(writer)
+			}
+			clientIn, clientWriter := io.Pipe()
+			t.Cleanup(func() { _ = clientWriter.Close() })
+
+			var out bytes.Buffer
+			logBuf := &syncBuffer{}
+			done := make(chan error, 1)
+			go func() {
+				done <- RunProxy(context.Background(), clientIn, &out, logBuf, tt.command, opts)
+			}()
+			if tt.write {
+				_, _ = clientWriter.Write([]byte(mcpToolCall(mcpAllowedTool, "") + "\n"))
+			}
+
+			select {
+			case err := <-done:
+				if !errors.Is(err, ErrSubprocessExit) {
+					t.Fatalf("RunProxy error = %v, want ErrSubprocessExit", err)
+				}
+			case <-time.After(testwait.Deadline(20 * time.Second)):
+				t.Fatal("RunProxy hung after the server exited while client input stayed open")
+			}
+		})
 	}
 }
