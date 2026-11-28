@@ -115,7 +115,7 @@ func TestV3LoadVerificationReport(t *testing.T) {
 	plan := newWorkload(1, 0, 1)
 	plan.blockOffset = 0
 	receiver := &sink{plan: plan, seen: make([]atomic.Int32, plan.total())}
-	integrity := finishV3Integrity(t.Context(), options{}, dirs, plan, receiver, []requestOutcome{{ran: true}}, shutdownReport{Clean: true})
+	integrity := finishV3Integrity(t.Context(), v3IntegrityRun{opt: options{}, dirs: dirs, plan: plan, sink: receiver, outcomes: []requestOutcome{{ran: true}}, shutdown: shutdownReport{Clean: true}})
 	if integrity.Verdict != verdictPass || integrity.Kinds["v3_block_decision"].Observed != 1 {
 		t.Fatalf("integrity: %+v", integrity)
 	}
@@ -139,14 +139,14 @@ func TestV3LoadVerificationReport(t *testing.T) {
 		})
 	}
 	plan.blockOffset = 1
-	integrity = finishV3Integrity(t.Context(), options{restartAfter: 1}, dirs, plan, receiver, []requestOutcome{{ran: true}}, shutdownReport{Error: "stop failed"})
+	integrity = finishV3Integrity(t.Context(), v3IntegrityRun{opt: options{restartAfter: 1}, dirs: dirs, plan: plan, sink: receiver, outcomes: []requestOutcome{{ran: true}}, shutdown: shutdownReport{Error: "stop failed"}})
 	if integrity.Verdict != verdictFail || integrity.ReceiptMissing != 4 || len(integrity.Reasons) < 3 {
 		t.Fatalf("integrity missed failed effects, sink or restart: %+v", integrity)
 	}
 	if err := os.MkdirAll(filepath.Join(dirs.recorder, "ael", "run"), 0o750); err != nil {
 		t.Fatal(err)
 	}
-	integrity = finishV3Integrity(t.Context(), options{}, dirs, plan, receiver, []requestOutcome{{ran: true}}, shutdownReport{Clean: true})
+	integrity = finishV3Integrity(t.Context(), v3IntegrityRun{opt: options{}, dirs: dirs, plan: plan, sink: receiver, outcomes: []requestOutcome{{ran: true}}, shutdown: shutdownReport{Clean: true}})
 	if integrity.Verdict != verdictFail || !strings.Contains(integrity.Verify.Output, "legacy agent event log") {
 		t.Fatalf("unexpected mixed format result: %+v", integrity)
 	}

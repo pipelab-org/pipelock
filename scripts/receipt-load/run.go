@@ -584,7 +584,7 @@ func (s *sampler) close() {
 func finishIntegrity(ctx context.Context, opt options, mode string, dirs runDirs, env []string, plan workload, sink *sink, warm, measured phaseResult, end time.Time, shutdown shutdownReport, perf *performanceReport) integrityReport {
 	if mode != modeOff && opt.receiptFormat == config.ReceiptFormatV3 {
 		outcomes := append(append(make([]requestOutcome, 0, plan.total()), warm.outcomes...), measured.outcomes...)
-		return finishV3Integrity(ctx, opt, dirs, plan, sink, outcomes, shutdown)
+		return finishV3Integrity(ctx, v3IntegrityRun{opt: opt, dirs: dirs, plan: plan, sink: sink, outcomes: outcomes, shutdown: shutdown})
 	}
 	var obs *recorderObservation
 	var scanErr error

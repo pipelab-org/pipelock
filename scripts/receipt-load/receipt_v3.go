@@ -87,7 +87,18 @@ func readLoadV3(ctx context.Context, dir string, key ed25519.PublicKey, counts *
 	return result, nil
 }
 
-func finishV3Integrity(ctx context.Context, opt options, dirs runDirs, plan workload, sink *sink, outcomes []requestOutcome, shutdown shutdownReport) integrityReport {
+// v3IntegrityRun is what a finished v3 load run hands to the integrity check.
+type v3IntegrityRun struct {
+	opt      options
+	dirs     runDirs
+	plan     workload
+	sink     *sink
+	outcomes []requestOutcome
+	shutdown shutdownReport
+}
+
+func finishV3Integrity(ctx context.Context, run v3IntegrityRun) integrityReport {
+	opt, dirs, plan, sink, outcomes, shutdown := run.opt, run.dirs, run.plan, run.sink, run.outcomes, run.shutdown
 	rep := integrityReport{
 		Verdict: verdictPass, Kinds: make(map[string]kindReport), Reasons: []string{},
 		ReceiptAttribution: "aggregate", Shutdown: shutdown,
