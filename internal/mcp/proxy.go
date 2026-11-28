@@ -2613,11 +2613,26 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: timed out waiting for MCP input drain after session teardown\n")
 		}
 	default:
-		// Wait for stdin goroutine to finish (server exit closes pipe, unblocking scanner).
-		<-inputDone
-
-		// Wait for blocked channel drain to complete.
-		<-blockedDone
+		// The server exited on its own. Its exit does not end the input
+		// goroutine, which is blocked reading the CLIENT's stdin; a client still
+		// waiting for a reply keeps that open, so an unbounded wait here never
+		// returns. Bound the drain exactly as the sandboxed path does, then
+		// return so the client sees stdout close instead of hanging.
+		drainParent, drainGrace := ctx, 5*time.Second
+		if opts.receiptEffects.enabled {
+			drainParent, drainGrace = context.WithoutCancel(ctx), sessionGrace
+		}
+		drainCtx, drainCancel := context.WithTimeout(drainParent, drainGrace)
+		defer drainCancel()
+		if !waitMCPInputDrain(drainCtx, inputDone, blockedDone) {
+			if c, ok := clientIn.(io.Closer); ok {
+				_ = c.Close()
+			}
+			// Release a refusal write still blocked on the client, as the
+			// session-exit branch does, so it cannot outlive RunProxy.
+			interruptNativeOutput(clientOut)
+			logAsync(safeLogW, "pipelock: timed out waiting for MCP input drain after the MCP server exited\n")
+		}
 	}
 	scanErr = stdioReplyFailure(scanErr, replyFailed)
 	if errors.Is(scanErr, transport.ErrResponseTimeout) {
